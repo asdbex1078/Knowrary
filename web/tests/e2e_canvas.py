@@ -755,6 +755,88 @@ async def case_edge_vertices(page: Page, ck: Check) -> None:
     ck.add("双击清掉手工拐点", picked not in ck.layout()["edges"], str(ck.layout()["edges"]))
 
 
+# ---------------------------------------------------------------- 阶段 6：历史视图
+
+async def case_history(page: Page, ck: Check, vault: Path) -> None:
+    """历史视图：只有带 year 的节点进图、泳道与刻度、被激活金线、滑块回放、全程不写结构布局。"""
+    (vault / "nodes/组A/甲.md").write_text(
+        "---\nname: 甲\nfield: 测试\ndesc: 甲\nyear: 1990\n---\n# 甲\n\n正文\n\n"
+        "## 关系\n- 被激活:: [[丙]] (2005)\n", "utf-8")
+    (vault / "nodes/组B/丙.md").write_text(
+        "---\nname: 丙\nfield: 测试\ndesc: 丙\nyear: 2005\n---\n# 丙\n\n正文\n", "utf-8")
+    (vault / "nodes/组B/庚.md").write_text(
+        "---\nname: 庚\nfield: 另一域\ndesc: 庚\nyear: 2015\n---\n# 庚\n\n正文\n", "utf-8")
+    # 有效期节点：2000 年起、2010 年废止，用来验 F4.5
+    (vault / "nodes/组B/辛.md").write_text(
+        "---\nname: 辛\nfield: 另一域\ndesc: 辛\nyear: 2000\nstart_year: 2000\nend_year: 2010\n---\n"
+        "# 辛\n\n正文\n", "utf-8")
+    await click_text(page, "header button", "重新加载")
+    await wait_render(page, 4)
+    before = ck.layout()["revision"]
+
+    await click_text(page, "header button", "历史视图")
+    lanes = await poll(page, "document.querySelectorAll('[data-shape=\"kg-lane\"]').length",
+                       lambda v: (v or 0) >= 2, timeout=15)
+    ck.add("按 field 分出泳道", (lanes or 0) == 2, f"{lanes} 条泳道（测试 / 另一域）")
+    ticks = await poll(page, "document.querySelectorAll('[data-shape=\"kg-tick\"]').length",
+                       lambda v: (v or 0) >= 4, timeout=8)
+    ck.add("X 轴画出年份刻度", (ticks or 0) == 4, f"{ticks} 个刻度（1990/2000/2005/2015）")
+    shown = await page.ev("""JSON.stringify([...document.querySelectorAll('[data-shape="kg-node"]')]
+      .map((e) => e.getAttribute('data-cell-id')).sort())""")
+    ck.add("没有 year 的节点不进历史图", json.loads(shown) == ["丙", "庚", "甲", "辛"], shown)
+    gold = await page.ev("document.querySelectorAll('.x6-edge path.kg-flow').length")
+    ck.add("被激活画成金色流动虚线", (gold or 0) == 1, f"{gold} 条")
+
+    # 只数个数抓不到"全叠在原点"这种错（CSS transform 会盖掉 SVG 的 transform 属性），
+    # 所以要按屏幕坐标核对：年份越晚的节点越靠右，且彼此不重叠。
+    rects = json.loads(await page.ev("""JSON.stringify([...document.querySelectorAll('[data-shape="kg-node"]')]
+      .map((e) => { const r = e.getBoundingClientRect();
+        return [e.getAttribute('data-cell-id'), Math.round(r.x), Math.round(r.y)]; }))"""))
+    at = dict((r[0], r[1]) for r in rects)
+    ordered = at.get("甲", 0) < at.get("丙", 0) < at.get("庚", 0)
+    ck.add("节点按年份从左到右真的分开了", ordered and len({r[1] for r in rects}) == 4,
+           f"甲 {at.get('甲')} < 丙 {at.get('丙')} < 庚 {at.get('庚')}")
+
+    # 滑块拖到 1990：只剩当年之前的节点
+    await page.ev("""(() => {
+      const el = document.querySelector('.timeline-bar input[type="range"]');
+      el.value = '1990';
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+      return 'moved';
+    })()""")
+    left = await poll(page, "document.querySelectorAll('[data-shape=\"kg-node\"]').length",
+                      lambda v: v == 1, timeout=12)
+    ck.add("时间滑块按年份过滤", left == 1, f"≤1990 时剩 {left} 个节点")
+
+    # 有效期过滤：辛 2000 年起、2010 年废止，看 2015 年时它不该还在图上
+    await page.ev("""(() => {
+      const el = document.querySelector('.timeline-bar input[type="range"]');
+      el.value = '2015';
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+      return 'moved';
+    })()""")
+    await poll(page, "document.querySelectorAll('[data-shape=\"kg-node\"]').length", lambda v: v == 4, timeout=12)
+    await click_text(page, ".timeline-bar label", "有效期")
+    ids = await poll(page, """JSON.stringify([...document.querySelectorAll('[data-shape="kg-node"]')]
+      .map((e) => e.getAttribute('data-cell-id')).sort())""", lambda v: v and "辛" not in v, timeout=12)
+    ck.add("有效期过滤掉当年已废止的节点", "辛" not in (ids or "x"), f"2015 年还在图上的是 {ids}")
+    await click_text(page, ".timeline-bar label", "有效期")     # 关掉，别影响后面的用例
+
+    # 切一条时间线：泳道换成所选分组的直接子分组
+    await click_text(page, ".timeline-bar .chips button", "组B")
+    lane_names = await poll(page, """JSON.stringify([...document.querySelectorAll('[data-shape="kg-lane"] text')]
+      .map((t) => t.textContent))""", lambda v: v and v != "[]", timeout=12)
+    ck.add("选中分组后泳道跟着换", "组B" in (lane_names or ""), lane_names or "没取到泳道名")
+
+    ck.add("历史视图不修改结构布局", ck.layout()["revision"] == before,
+           f"revision 仍是 {before}")
+
+    await click_text(page, "header button", "结构视图")
+    back = await poll(page, "document.querySelectorAll('[data-shape=\"kg-node\"]').length",
+                      lambda v: (v or 0) >= 4, timeout=15)
+    ck.add("切回结构视图恢复原图", (back or 0) >= 4, f"{back} 个节点")
+
+
 async def scenarios(page: Page, api: str, results: list) -> None:
     ck = Check(api)
     await case_initial(page, ck)
@@ -776,6 +858,7 @@ async def scenarios(page: Page, api: str, results: list) -> None:
     await case_finalize(page, ck)
     await case_image(page, ck, VAULT_HOLDER[0])
     await case_edge_vertices(page, ck)
+    await case_history(page, ck, VAULT_HOLDER[0])
     results.extend(ck.items)
 
 

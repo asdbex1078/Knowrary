@@ -174,6 +174,27 @@ export function registerShapes() {
     },
   }, true)
 
+  // 历史视图的泳道：一条横贯全图的浅色带子，左上角写分组名
+  Graph.registerNode('kg-lane', {
+    inherit: 'rect',
+    markup: [{ tagName: 'rect', selector: 'body' }, { tagName: 'text', selector: 'label' }],
+    attrs: {
+      body: { rx: 10, ry: 10, fill: '#f6f8fa', stroke: '#e3e8ee', strokeWidth: 1 },
+      label: { refX: 14, refY: 18, fontSize: 12.5, fontWeight: 600, textAnchor: 'start' },
+    },
+  }, true)
+
+  // 历史视图的年份刻度：一根竖线加年份标签
+  Graph.registerNode('kg-tick', {
+    inherit: 'rect',
+    width: 1, height: 40,
+    markup: [{ tagName: 'rect', selector: 'body' }, { tagName: 'text', selector: 'label' }],
+    attrs: {
+      body: { width: 1, refHeight: '100%', fill: '#dfe4ea' },
+      label: { refX: 0, refY: -8, fontSize: 12, fontWeight: 600, textAnchor: 'middle' },
+    },
+  }, true)
+
   Graph.registerNode('kg-cluster', {
     inherit: 'rect',
     width: CLUSTER_W,
@@ -254,6 +275,24 @@ export function imageAttrs(image) {
     img: { 'xlink:href': `/api/asset/${encodeURIComponent(image.file)}` },
     body: { stroke: tokens().groupStroke },
     caption: { text: image.file, fill: tokens().edgeLabel },
+  }
+}
+
+export function laneAttrs(name) {
+  const t = tokens()
+  return { body: { fill: t.groupFill, stroke: t.groupStroke }, label: { text: name, fill: t.edgeLabel } }
+}
+
+export function tickAttrs(year) {
+  const t = tokens()
+  return { body: { fill: t.grid }, label: { text: String(year), fill: t.edgeLabel } }
+}
+
+/** 跨代激活（GPU 1999 → 深度学习 2012）：金色虚线 + 流动动画，一眼看出"点燃"关系。 */
+export function activationAttrs() {
+  return {
+    line: { stroke: '#d8a838', strokeWidth: 2.4, strokeDasharray: '8 5', class: 'kg-flow',
+            targetMarker: { name: 'block', width: 9, height: 7 } },
   }
 }
 

@@ -5,8 +5,51 @@ import { Selection } from '@antv/x6-plugin-selection'
 import { Transform } from '@antv/x6-plugin-transform'
 import { clusterSummary, containerOf } from './lod'
 import { CLUSTER_H, CLUSTER_W, FAMILY_STYLE, clusterBox, NODE_H, NODE_W, aggregateAttrs, aggregateLabel, clusterAttrs,
-         edgeAttrs, groupAttrs, imageAttrs, nodeAttrs, noteAttrs, paletteFor, refAttrs, registerShapes,
-         sizeFor, tokens } from './shapes'
+         activationAttrs, edgeAttrs, groupAttrs, imageAttrs, laneAttrs, nodeAttrs, noteAttrs, paletteFor,
+         refAttrs, registerShapes, sizeFor, tickAttrs, tokens } from './shapes'
+import { AXIS_H, buildTimeline } from './timeline'
+
+/**
+ * 历史视图的画布元素：泳道 + 年份刻度 + 有 year 的节点 + 两端都在图里的边。
+ * 与结构视图共用同一个 X6 实例与节点形状，只是位置来源不同（设计文档 3.8）。
+ */
+export function buildHistoryCells(index, layout, options = {}) {
+  const plan = buildTimeline(index, layout, options)
+  const byId = new Map(index.nodes.map((n) => [n.id, n]))
+  const fields = [...new Set(index.nodes.map((n) => n.field).filter(Boolean))].sort().map((f) => `field:${f}`)
+  const colorKeys = [...Object.keys(layout.groups), ...fields]
+  const nodes = []
+  for (const lane of plan.lanes) {
+    nodes.push({ id: `lane:${lane.name}`, shape: 'kg-lane', x: -40, y: lane.y,
+                 width: lane.width + 80, height: lane.h, zIndex: 1, attrs: laneAttrs(lane.name),
+                 data: { kind: 'lane' } })
+  }
+  for (const tick of plan.ticks) {
+    nodes.push({ id: `tick:${tick.year}`, shape: 'kg-tick', x: tick.x + 40, y: AXIS_H,
+                 width: 1, height: Math.max(plan.height - AXIS_H, 80), zIndex: 2,
+                 attrs: tickAttrs(tick.year), data: { kind: 'tick' } })
+  }
+  for (const [id, box] of plan.placed) {
+    const meta = byId.get(id)
+    const group = layout.nodes?.[id]?.group
+    nodes.push({
+      id, shape: 'kg-node', x: box.x, y: box.y, width: box.w, height: box.h, zIndex: 10,
+      attrs: nodeAttrs(meta, null, paletteFor(group || (meta?.field ? `field:${meta.field}` : null), colorKeys)),
+      data: { kind: 'node', group: group || null, field: meta?.field || null },
+    })
+  }
+  const edges = plan.edges.map((e) => {
+    const gold = e.type === '被激活'
+    const attrs = gold ? activationAttrs() : edgeAttrs(e.family)
+    return {
+      id: e.id, source: e.source, target: e.target, zIndex: gold ? 8 : 5,
+      attrs, connector: { name: 'smooth' },
+      data: { kind: 'edge', family: e.family, type: e.type, year: e.year ?? null,
+              baseWidth: attrs.line.strokeWidth },
+    }
+  })
+  return { nodes, edges, plan }
+}
 
 export const LABEL_ZOOM = 0.8 // 边标签只在放大到这个比例以上才画（性能守则 4）
 
@@ -252,6 +295,18 @@ function edgeLabel(edge) {
       rect: { fill: '#f7f8fa', stroke: 'none' },
     },
   }
+}
+
+/**
+ * 程序化改完视口后，立刻把虚拟渲染的可视区同步一次。
+ *
+ * X6 的虚拟渲染只在 translate / scale / resize 事件上按 200ms 节流刷新可视区，
+ * 而 mount() 之后紧接着 zoomToFit 落在同一个节流窗口里：视口外的 cell 建了 DOM
+ * 却没拿到 transform，看上去就是"一堆节点挤在左上角不见了"。历史视图又宽又扁，
+ * 首屏之外的部分几乎全中招。
+ */
+export function syncRenderArea(graph) {
+  graph.renderer?.setRenderArea?.(graph.getGraphArea())
 }
 
 export function mount(graph, cells) {

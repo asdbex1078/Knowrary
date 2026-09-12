@@ -1,0 +1,178 @@
+// 历史视图布局（设计文档 3.8）：X 轴锁死在年份上，所以这里可以放心自动布局——
+// 位置不是算法乱猜的，是数据本身决定的。历史视图的坐标不持久化，每次进入重算。
+import { NODE_H, NODE_W, sizeFor } from './shapes'
+
+export const YEAR_W = 130          // 一年最多占多少像素（跨度小时用这个）
+export const YEAR_W_MIN = 30       // 一年最少占多少像素
+export const TARGET_W = 2800       // 整条时间轴的目标宽度：跨度越大，年宽自动越窄
+export const COMPACT_GAP = 20      // 紧凑模式下，空白超过这么多年就压缩
+export const COMPACT_W = 180       // 压缩后的固定宽度
+export const ROW_H = 86            // 泳道内一行的高度
+export const LANE_PAD = 30         // 泳道上下留白
+export const LANE_TITLE_H = 26     // 泳道标题占的高度，节点从它下面开始排
+export const LANE_GAP = 24
+export const BLOCK_GAP = 60        // 多条时间线叠加时，块与块之间的空行
+export const AXIS_H = 40
+
+/** 分组的所有后代（含自己）。 */
+export function descendants(groups, gid) {
+  const out = new Set([gid])
+  let grew = true
+  while (grew) {
+    grew = false
+    for (const [id, g] of Object.entries(groups)) {
+      if (g.parent && out.has(g.parent) && !out.has(id)) {
+        out.add(id)
+        grew = true
+      }
+    }
+  }
+  return out
+}
+
+/** 时间线选择器的选项：layout 分组树的任意层级，按层级缩进。 */
+export function timelineOptions(layout) {
+  const groups = layout?.groups || {}
+  const depth = (id, seen = new Set()) => {
+    const g = groups[id]
+    if (!g?.parent || seen.has(id)) return 0
+    seen.add(id)
+    return 1 + depth(g.parent, seen)
+  }
+  return Object.entries(groups)
+    .map(([id, g]) => ({ id, name: g.name, depth: depth(id) }))
+    .sort((a, b) => (a.depth - b.depth) || a.name.localeCompare(b.name, 'zh'))
+}
+
+/**
+ * 年份 → x 的比例尺。
+ *
+ * 年宽按跨度自适应：真实数据跨了 1936–2018，固定 130px/年会拉出一万像素，
+ * 适应窗口之后整张图缩成一条线什么都看不清。紧凑模式再把长空白段压成固定宽度。
+ */
+export function yearScale(years, compact) {
+  const sorted = [...new Set(years)].sort((a, b) => a - b)
+  if (!sorted.length) return { at: () => 0, ticks: [], width: 0, unit: YEAR_W }
+  const span = sorted[sorted.length - 1] - sorted[0]
+  const unit = span > 0 ? Math.min(YEAR_W, Math.max(YEAR_W_MIN, TARGET_W / span)) : YEAR_W
+  const pos = new Map([[sorted[0], 0]])
+  let x = 0
+  for (let i = 1; i < sorted.length; i++) {
+    const gap = sorted[i] - sorted[i - 1]
+    x += compact && gap > COMPACT_GAP ? COMPACT_W : gap * unit
+    pos.set(sorted[i], x)
+  }
+  const at = (year) => {
+    if (pos.has(year)) return pos.get(year)
+    // 落在两个已知年份之间：按线性段插值，紧凑段则取压缩后的比例
+    const prev = [...pos.keys()].filter((y) => y < year).pop()
+    const next = [...pos.keys()].find((y) => y > year)
+    if (prev === undefined) return 0
+    if (next === undefined) return pos.get(prev) + (year - prev) * unit
+    const span = pos.get(next) - pos.get(prev)
+    return pos.get(prev) + span * ((year - prev) / (next - prev))
+  }
+  return { at, ticks: sorted.map((y) => ({ year: y, x: pos.get(y) })), width: x, unit }
+}
+
+/** 泳道归属：选了时间线就按它的直接子分组分，没选就按 field。 */
+function laneOf(node, layout, selected) {
+  const place = layout.nodes?.[node.id]
+  const groups = layout.groups || {}
+  if (!selected.length) return node.field || '(未指定)'
+  for (const root of selected) {
+    const family = descendants(groups, root)
+    if (!place?.group || !family.has(place.group)) continue
+    let cur = place.group
+    while (cur && groups[cur]?.parent && groups[cur].parent !== root) cur = groups[cur].parent
+    const name = groups[cur]?.parent === root ? groups[cur].name : `${groups[root]?.name} · 直属`
+    return `${groups[root]?.name || root}／${name}`
+  }
+  return null
+}
+
+/** 泳道内的扫描线放置：按年份从左到右，撞上了就往下挪一行。 */
+function packLane(items) {
+  const rows = []
+  for (const item of items.sort((a, b) => a.year - b.year || a.id.localeCompare(b.id))) {
+    let row = rows.findIndex((end) => end <= item.x)
+    if (row < 0) {
+      row = rows.length
+      rows.push(0)
+    }
+    rows[row] = item.x + item.w + 24
+    item.row = row
+  }
+  return rows.length || 1
+}
+
+/**
+ * 时间滑块拖到 t 时，这个节点还该不该出现。
+ *
+ * 默认是"出生年 ≤ t"的叙事视角；勾上有效期就换成区间视角（F4.5，法律 / 标准场景）：
+ * start_year ≤ t < end_year，2010 年废止的东西在 2015 年就不该还挂在图上。
+ */
+export function visibleAt(node, upto, validity) {
+  if (upto === null) return true
+  if (!validity) return node.year <= upto
+  const start = typeof node.start_year === 'number' ? node.start_year : node.year
+  const end = typeof node.end_year === 'number' ? node.end_year : null
+  return start <= upto && (end === null || upto < end)
+}
+
+/**
+ * 组装一张历史图。
+ * opts: { timelines, families, compact, upto, validity }
+ */
+export function buildTimeline(index, layout, opts = {}) {
+  const { timelines = [], families = new Set(['演化']), compact = false, upto = null,
+          validity = false } = opts
+  const withYear = index.nodes.filter((n) => !n.virtual && typeof n.year === 'number')
+  const laneNames = new Map()
+  const kept = []
+  for (const node of withYear) {
+    const lane = laneOf(node, layout, timelines)
+    if (lane === null) continue                     // 不在所选时间线里
+    if (!visibleAt(node, upto, validity)) continue
+    laneNames.set(lane, true)
+    kept.push({ node, lane })
+  }
+  const scale = yearScale(kept.map((k) => k.node.year), compact)
+
+  const placed = new Map()
+  const lanes = []
+  let y = AXIS_H + LANE_GAP
+  let lastBlock = null
+  for (const lane of [...laneNames.keys()].sort((a, b) => a.localeCompare(b, 'zh'))) {
+    const block = lane.split('／')[0]
+    if (lastBlock !== null && block !== lastBlock) y += BLOCK_GAP     // 多条时间线之间留空行
+    lastBlock = block
+    const items = kept.filter((k) => k.lane === lane).map(({ node }) => {
+      const size = sizeFor(node)
+      return { id: node.id, year: node.year, w: size.w, h: size.h, x: scale.at(node.year) }
+    })
+    const rows = packLane(items)
+    const h = rows * ROW_H + LANE_PAD + LANE_TITLE_H
+    const top = y + LANE_TITLE_H + LANE_PAD / 2      // 标题下面才开始排节点，别压着泳道名
+    for (const item of items) placed.set(item.id, { ...item, y: top + item.row * ROW_H, lane })
+    lanes.push({ name: lane, y, h, width: scale.width + NODE_W + 80 })
+    y += h + LANE_GAP
+  }
+
+  const edges = index.edges.filter((e) => families.has(e.family)
+    && placed.has(e.source) && placed.has(e.target))
+  // 两端都有 year 才画，所以缺年份的演化边是"数据欠账"，单独报出来而不是悄悄丢掉
+  const missingYear = index.edges.filter((e) => e.family === '演化' && e.year == null
+    && placed.has(e.source) && placed.has(e.target)).map((e) => e.id)
+  const skipped = withYear.length - kept.length
+  return {
+    placed, lanes, ticks: scale.ticks, width: scale.width + NODE_W + 80,
+    height: y, edges,
+    diagnostics: {
+      noYear: index.nodes.filter((n) => !n.virtual && typeof n.year !== 'number').length,
+      missingYear, skipped,
+    },
+  }
+}
+
+export const NODE_FALLBACK = { w: NODE_W, h: NODE_H }

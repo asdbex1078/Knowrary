@@ -11,9 +11,10 @@ import { clone, createHistory, diffPatch, isEmptyPatch } from './canvas/history'
 import { createPatcher } from './canvas/patcher'
 import { computeCollapsed } from './canvas/lod'
 import {
-  LABEL_ZOOM, applyEdgeLabels, applyViewport, buildCells, createGraph, currentViewport,
-  highlightEdges, mount, movedPositions,
+  LABEL_ZOOM, applyEdgeLabels, applyViewport, buildCells, buildHistoryCells, createGraph, currentViewport,
+  highlightEdges, mount, movedPositions, syncRenderArea,
 } from './canvas/render'
+import { timelineOptions } from './canvas/timeline'
 import { communityLayout, compareWithGroups } from './canvas/communities'
 import { mindmapLayout, toPatch } from './canvas/layouts'
 import { FAMILIES, FAMILY_STYLE, setTheme } from './canvas/shapes'
@@ -50,6 +51,12 @@ const digest = shallowRef(null)          // GET /api/digest：欠账清单
 const dueIds = shallowRef(new Set())     // 今天该复习的节点，画布上点一个金色小圆点
 const placing = ref(false)
 const showPicker = ref(false)   // 贴图面板
+// 历史视图（阶段 6）：X 轴锁在年份上，坐标不持久化，进来一次算一次
+const mode = ref('structure')
+const hist = reactive({ compact: false, validity: false, upto: null, 演化: true, 依赖: false, 对照: false })
+const histPlan = shallowRef(null)
+const timelines = ref([])          // 选中的 layout 分组 id（空 = 全部）
+let playing = null
 const autoLod = ref(true)                // 缩小自动折叠成簇卡片（设计文档 3.7）
 const focusGroup = ref(null)             // 聚焦的域：点簇卡片进入，只展开它
 const search = ref('')                   // 工具条搜索框
@@ -99,6 +106,7 @@ async function load() {
 
 // view: 'stored' 用 layout 里存的视口（首次加载）/ 'fit' 适应内容（换布局后）/ 'keep' 保持当前（切族、展开聚合束）
 function render({ view = 'keep' } = {}) {
+  if (mode.value === 'history') return renderHistory({ view })
   const g = graph.value
   collapsedIds.value = computeCollapsed(layoutDoc.value, g.zoom(),
     { auto: autoLod.value, focus: focusGroup.value })
@@ -120,10 +128,94 @@ function render({ view = 'keep' } = {}) {
   } else {
     applyViewport(g, layoutDoc.value.viewport)
   }
+  syncRenderArea(g)
   applyingViewport = false
 }
 
 const staleDays = (n) => (n.placedAt ? Math.floor((Date.now() - Date.parse(n.placedAt)) / 86400000) : 0)
+
+// —— 阶段 6：历史视图 ——
+
+const histFamilies = () => new Set(['演化', '依赖', '对照'].filter((f) => hist[f]))
+const yearRange = computed(() => {
+  const years = (indexDoc.value?.nodes || []).filter((n) => typeof n.year === 'number').map((n) => n.year)
+  return years.length ? [Math.min(...years), Math.max(...years)] : [0, 0]
+})
+const timelineChoices = computed(() => timelineOptions(layoutDoc.value))
+
+function renderHistory({ view = 'fit' } = {}) {
+  const g = graph.value
+  const cells = buildHistoryCells(indexDoc.value, layoutDoc.value, {
+    timelines: timelines.value, families: histFamilies(), compact: hist.compact, upto: hist.upto,
+    validity: hist.validity,
+  })
+  histPlan.value = cells.plan
+  applyingViewport = true
+  // 先定视口再建 cell：X6 的调度器按"当前可视区"决定一个 cell 建好之后要不要摆位，
+  // 先 mount 再改视口的话，落在旧视口之外的 cell 会建出 DOM 却没有 transform——
+  // 时间轴又宽又扁，首屏之外的节点几乎全中招，看上去就是"全堆在左上角"。
+  if (view !== 'keep') {
+    g.zoomToRect({ x: -80, y: 0, width: cells.plan.width + 160, height: cells.plan.height + 60 },
+                 { maxScale: 1, minScale: 0.35 })
+  }
+  syncRenderArea(g)
+  mount(g, cells)
+  applyingViewport = false
+  const d = cells.plan.diagnostics
+  const parts = [`${cells.plan.placed.size} 个有 year 的节点 · ${cells.edges.length} 条边`]
+  if (d.noYear) parts.push(`${d.noYear} 个节点没有 year，不进历史图`)
+  if (d.missingYear.length) parts.push(`${d.missingYear.length} 条演化边缺年份（${d.missingYear[0]} …）`)
+  setBanner(parts.join('；'), d.missingYear.length ? 'error' : '')
+}
+
+async function switchMode(next) {
+  if (mode.value === next) return
+  stopPlay()
+  await patcher.value.flush()           // 离开结构视图前先把手上的改动落盘
+  mode.value = next
+  markHistoryContainer(next)
+  if (next === 'structure') {
+    expanded.value = new Set()
+    render({ view: 'stored' })
+    setBanner('')
+  } else {
+    renderHistory({ view: 'fit' })
+  }
+}
+
+/** 历史视图给容器加个类名，节点的渐显动画只在这个模式下生效。 */
+function markHistoryContainer(next) {
+  graph.value?.container?.classList?.toggle('kg-history', next === 'history')
+}
+
+function setUpto(value) {
+  hist.upto = value === '' || value === null ? null : Number(value)
+  renderHistory({ view: 'keep' })
+}
+
+function togglePlay() {
+  if (playing) return stopPlay()
+  const [min, max] = yearRange.value
+  if (hist.upto === null || hist.upto >= max) hist.upto = min
+  playing = setInterval(() => {
+    if (hist.upto === null || hist.upto >= max) return stopPlay()
+    hist.upto += 1
+    renderHistory({ view: 'keep' })
+  }, 220)
+}
+
+function stopPlay() {
+  if (playing) clearInterval(playing)
+  playing = null
+}
+
+function toggleTimeline(id) {
+  const next = timelines.value.includes(id)
+    ? timelines.value.filter((x) => x !== id)
+    : [...timelines.value, id]
+  timelines.value = next
+  renderHistory({ view: 'fit' })
+}
 
 function reportProblems(index, layout) {
   const parts = []
@@ -136,8 +228,11 @@ function reportProblems(index, layout) {
 }
 
 // 与本地镜像（= 服务端最新状态）比对，值没变就不发；mount() 建父子关系触发的事件天然被过滤掉
+// 写盘总闸：预览布局时画布是"草稿"；历史视图是浏览视图，坐标本来就不持久化
+const writable = () => !preview.value && mode.value === 'structure'
+
 function queueIfChanged(kind, id, patch) {
-  if (preview.value) return   // 预览布局时画布是"草稿"，不写盘
+  if (!writable()) return
   const store = kind === 'group' ? layoutDoc.value.groups : layoutDoc.value.nodes
   const cur = store[id]
   if (cur && Object.entries(patch).every(([k, v]) => (typeof v === 'number' ? Math.round(cur[k]) === v : (cur[k] ?? null) === v))) {
@@ -263,7 +358,7 @@ function bindEvents(g) {
     setBanner('已清掉这条边的手工拐点')
   }))
   g.on('edge:change:vertices', safe(({ edge }) => {
-    if (!ready.value || (edge.getData() || {}).kind !== 'edge') return
+    if (!ready.value || !writable() || (edge.getData() || {}).kind !== 'edge') return
     const vertices = edge.getVertices().map((v) => ({ x: Math.round(v.x), y: Math.round(v.y) }))
     const style = { vertices, router: layoutDoc.value.edges?.[edge.id]?.router || null }
     layoutDoc.value = { ...layoutDoc.value, edges: { ...(layoutDoc.value.edges || {}), [edge.id]: style } }
@@ -275,6 +370,7 @@ function bindEvents(g) {
 
 /** 给边挂上拐点手柄：拖圆点造拐点，双击边清空。别的边先摘掉手柄，画面才不乱。 */
 function editVertices(edge) {
+  if (!writable()) return
   const g = graph.value
   g.getEdges().forEach((e) => e.id !== edge.id && e.removeTools())
   edge.addTools([{ name: 'vertices', args: { attrs: { r: 5, fill: '#fff', stroke: '#2d6cdf', strokeWidth: 2 } } }])
@@ -282,7 +378,7 @@ function editVertices(edge) {
 }
 
 function saveViewport() {
-  if (!ready.value || applyingViewport) return
+  if (!ready.value || applyingViewport || !writable()) return
   patcher.value.queueViewport(currentViewport(graph.value))
 }
 
@@ -590,6 +686,7 @@ function addRef() {
 const LIST_KEY = { note: 'notes', ref: 'refs', img: 'images' }
 
 function saveList(kind, updater) {
+  if (!writable()) return
   const key = LIST_KEY[kind]
   const items = (layoutDoc.value[key] || []).map(updater).filter(Boolean)
   layoutDoc.value = { ...layoutDoc.value, [key]: items }
@@ -786,7 +883,10 @@ function toggleTheme() {
 
 function fit() {
   ready.value = true   // 点按钮属于用户操作，之后的视口值该落盘
-  graph.value.zoomToFit({ padding: 60, maxScale: 1 })
+  graph.value.zoomToFit(mode.value === 'history'
+    ? { padding: 40, maxScale: 1, minScale: 0.35 }
+    : { padding: 60, maxScale: 1 })
+  syncRenderArea(graph.value)
 }
 
 async function reload() {
@@ -841,6 +941,7 @@ function onGlobalError(e) {
 }
 
 onBeforeUnmount(() => {
+  stopPlay()
   window.removeEventListener('keydown', onKeydown)
   window.removeEventListener('error', onGlobalError)
   window.removeEventListener('unhandledrejection', onGlobalError)
@@ -852,13 +953,19 @@ onBeforeUnmount(() => {
   <div class="app">
     <header>
       <span class="brand">Knowrary</span>
-      <span class="muted">结构视图</span>
-      <span v-if="focusGroup" class="muted">聚焦：{{ layoutDoc?.groups?.[focusGroup]?.name }}</span>
-      <span class="muted">节点 {{ stats.nodes }} · 组内边 {{ edgesShown }}<template v-if="aggShown"> · 跨组 {{ aggShown }} 束</template>
+      <span class="tabs">
+        <button :class="{ primary: mode === 'structure' }" @click="switchMode('structure')">结构视图</button>
+        <button :class="{ primary: mode === 'history' }" title="只看有 year 的节点，X 轴是年份"
+                @click="switchMode('history')">历史视图</button>
+      </span>
+      <span v-if="focusGroup && mode === 'structure'" class="muted">聚焦：{{ layoutDoc?.groups?.[focusGroup]?.name }}</span>
+      <span v-if="mode === 'structure'" class="muted">节点 {{ stats.nodes }} · 组内边 {{ edgesShown }}<template v-if="aggShown"> · 跨组 {{ aggShown }} 束</template>
         / 共 {{ stats.edges }} · stub {{ stats.stubs }}
         <template v-if="inboxCount"> · Inbox {{ inboxCount }}</template>
       </span>
-      <span class="families">
+      <span v-else class="muted">有 year 的节点 {{ histPlan?.placed.size ?? 0 }} · 泳道 {{ histPlan?.lanes.length ?? 0 }}
+        · {{ yearRange[0] }}–{{ yearRange[1] }}</span>
+      <span v-if="mode === 'structure'" class="families">
         <label v-for="f in FAMILIES" :key="f">
           <input type="checkbox" v-model="visible[f]" @change="render()" />
           <i class="swatch" :style="{ borderTopColor: FAMILY_STYLE[f].stroke,
@@ -866,11 +973,11 @@ onBeforeUnmount(() => {
           {{ f }}
         </label>
       </span>
-      <label class="families">
+      <label v-if="mode === 'structure'" class="families">
         <input type="checkbox" v-model="aggregate" @change="expanded = new Set(); render()" />
         聚合跨组边
       </label>
-      <label class="families" title="缩小时把分组折叠成簇卡片（点卡片展开）">
+      <label v-if="mode === 'structure'" class="families" title="缩小时把分组折叠成簇卡片（点卡片展开）">
         <input type="checkbox" v-model="autoLod" @change="render()" />
         自动折叠
         <span v-if="collapsedIds.size" class="muted">（{{ collapsedIds.size }} 簇）</span>
@@ -883,8 +990,8 @@ onBeforeUnmount(() => {
           </li>
         </ul>
       </span>
-      <button title="在视口中心加一张便签（只存 layout，不进 md）" @click="addNote">＋便签</button>
-      <button title="贴一张 assets/ 里的图（只存 layout，不进 md）"
+      <button v-if="mode === 'structure'" title="在视口中心加一张便签（只存 layout，不进 md）" @click="addNote">＋便签</button>
+      <button v-if="mode === 'structure'" title="贴一张 assets/ 里的图（只存 layout，不进 md）"
               @click="showPicker = !showPicker">＋图片</button>
       <button :class="{ primary: inboxCount && !showInbox }" title="写好了还没上画布的节点"
               @click="showInbox = !showInbox; showInbox && refreshInbox()">
@@ -898,14 +1005,16 @@ onBeforeUnmount(() => {
         <button class="primary" @click="applyPreview">应用布局</button>
         <button @click="cancelPreview">取消</button>
       </template>
-      <select v-else class="layout-menu" @change="onPick($event.target.value); $event.target.value = ''">
+      <select v-else-if="mode === 'structure'" class="layout-menu" @change="onPick($event.target.value); $event.target.value = ''">
         <option value="">视图 / 布局…</option>
         <option v-for="(spec, kind) in LAYOUTS" :key="kind" :value="kind">{{ spec.label }}</option>
         <option v-if="has3d" value="3d">3D 总览（新页面）</option>
       </select>
-      <button v-if="focusGroup" class="primary" @click="exitGroup">← 返回全景</button>
-      <button :disabled="!canUndo || !!preview" title="撤销（⌘Z / Ctrl+Z）" @click="undo">↶ 撤销</button>
-      <button :disabled="!canRedo || !!preview" title="重做（⇧⌘Z / Ctrl+Y）" @click="redo">↷ 重做</button>
+      <button v-if="focusGroup && mode === 'structure'" class="primary" @click="exitGroup">← 返回全景</button>
+      <template v-if="mode === 'structure'">
+        <button :disabled="!canUndo || !!preview" title="撤销（⌘Z / Ctrl+Z）" @click="undo">↶ 撤销</button>
+        <button :disabled="!canRedo || !!preview" title="重做（⇧⌘Z / Ctrl+Y）" @click="redo">↷ 重做</button>
+      </template>
       <button @click="fit">适应窗口</button>
       <button title="画布没反应时点这里重建（不影响已保存的布局）" @click="rebuildGraph('手动重建')">恢复画布</button>
       <button :title="theme === 'dark' ? '切到浅色' : '切到深色'" @click="toggleTheme">{{ theme === 'dark' ? '☀︎' : '☾' }}</button>
@@ -914,12 +1023,41 @@ onBeforeUnmount(() => {
       <span class="status" :class="status">{{ statusText }}</span>
     </header>
 
+    <div v-if="mode === 'history'" class="timeline-bar">
+      <span class="muted">时间线</span>
+      <span class="chips">
+        <button :class="{ primary: !timelines.length }" @click="timelines = []; renderHistory({ view: 'fit' })">全部</button>
+        <button v-for="opt in timelineChoices" :key="opt.id" :class="{ primary: timelines.includes(opt.id) }"
+                :title="`按「${opt.name}」切一条独立时间线（可多选叠加）`" @click="toggleTimeline(opt.id)">
+          {{ '· '.repeat(opt.depth) }}{{ opt.name }}
+        </button>
+      </span>
+      <span class="families">
+        <label v-for="f in ['演化', '依赖', '对照']" :key="f">
+          <input type="checkbox" v-model="hist[f]" @change="renderHistory({ view: 'keep' })" />{{ f }}
+        </label>
+        <label title="空白超过 20 年的区段压缩成固定宽度">
+          <input type="checkbox" v-model="hist.compact" @change="renderHistory({ view: 'fit' })" />紧凑
+        </label>
+        <label title="按 start_year ≤ 当前年 &lt; end_year 过滤：只看那一年仍然有效的东西（法律 / 标准场景）">
+          <input type="checkbox" v-model="hist.validity" @change="renderHistory({ view: 'keep' })" />有效期
+        </label>
+      </span>
+      <span class="slider">
+        <button :title="playing ? '暂停' : '按年回放'" @click="togglePlay">{{ playing ? '❙❙' : '▶' }}</button>
+        <input type="range" :min="yearRange[0]" :max="yearRange[1]" :value="hist.upto ?? yearRange[1]"
+               @input="setUpto($event.target.value)" />
+        <span class="muted">{{ hist.upto === null ? '全部年份' : `≤ ${hist.upto}` }}</span>
+        <button v-if="hist.upto !== null" class="mini" title="放开年份限制" @click="setUpto(null)">✕</button>
+      </span>
+    </div>
+
     <div v-if="banner" class="banner" :class="bannerKind">{{ banner }}</div>
 
     <main>
-      <ImagePicker v-if="showPicker" @pick="addImage" @close="showPicker = false"
+      <ImagePicker v-if="showPicker && mode === 'structure'" @pick="addImage" @close="showPicker = false"
                    @error="setBanner($event, 'error')" />
-      <InboxTray v-if="showInbox" :items="inboxItems" :busy="placing"
+      <InboxTray v-if="showInbox && mode === 'structure'" :items="inboxItems" :busy="placing"
                  @place="placeOne" @place-all="placeAll" @close="showInbox = false" />
       <div ref="canvasEl" class="canvas" @dragover.prevent @drop="onCanvasDrop" />
       <aside v-if="selected">
@@ -1011,7 +1149,9 @@ onBeforeUnmount(() => {
       <DigestPanel v-if="showDigest" :digest="digest" @goto="gotoNode" @refresh="refreshDigest"
                    @review="markReviewed" @close="showDigest = false" />
     </main>
-    <div class="hint">拖空白平移 · 滚轮缩放 · shift+拖空白框选 · 拖节点到别的分组框内即改归属（松手 300ms 后自动保存，⌘Z 可撤销）·
+    <div v-if="mode === 'history'" class="hint">X 轴是年份，Y 轴是泳道（选了时间线就按它的直接子分组分）·
+      金色流动虚线是「被激活」的跨代关系 · 拖滑块按年回放 · 历史视图只是浏览，不会改结构布局</div>
+    <div v-else class="hint">拖空白平移 · 滚轮缩放 · shift+拖空白框选 · 拖节点到别的分组框内即改归属（松手 300ms 后自动保存，⌘Z 可撤销）·
       悬停/选中节点高亮它的边 · 点簇卡片放大进那个域（Esc 或「返回全景」退回）· 点「跨组 n 束」展开明细</div>
   </div>
 </template>

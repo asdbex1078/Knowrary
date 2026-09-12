@@ -119,3 +119,20 @@ ul.thumbs li { border: 1px solid var(--line); border-radius: 6px; padding: 6px; 
 ul.thumbs li:hover { background: var(--btn-hover); }
 ul.thumbs img { width: 100%; height: 96px; object-fit: contain; display: block; background: var(--chip);
   border-radius: 4px; }
+
+/* 历史视图（阶段 6） */
+.tabs { display: flex; gap: 6px; }
+.timeline-bar { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding: 6px 14px;
+  background: var(--panel); border-bottom: 1px solid var(--line); }
+.timeline-bar .chips { display: flex; gap: 6px; flex-wrap: wrap; max-width: 46vw; }
+.timeline-bar .chips button { padding: 2px 8px; font-size: 12px; }
+.timeline-bar .slider { display: flex; align-items: center; gap: 8px; }
+.timeline-bar .slider input[type='range'] { width: 220px; }
+/* 跨代激活：金色虚线往前流 */
+@keyframes kg-dash { to { stroke-dashoffset: -26; } }
+.x6-edge path.kg-flow { animation: kg-dash 1.1s linear infinite; }
+/* 时间滑块一动就重建节点，借这个动画做"逐个浮现"。
+   只能动 opacity：CSS 的 transform 会盖掉 SVG 元素自己的 transform 属性，
+   一加位移，X6 给每个 cell 算好的坐标就全被拍回原点堆在左上角。 */
+@keyframes kg-fade { from { opacity: 0; } to { opacity: 1; } }
+.kg-history .x6-node { animation: kg-fade .32s ease both; }
