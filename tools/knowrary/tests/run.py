@@ -464,6 +464,113 @@ def 写回后仍然可解析且索引更新():
     assert again.data["stats"]["errors"] == 0, again.data["errors"]
 
 
+# ---------------------------------------------------------------- 阶段 4：复习 / 放置 / Digest
+
+import datetime as _dt  # noqa: E402  （只有阶段 4 用例需要）
+
+
+def placed_vault() -> tuple[Path, dict, dict]:
+    """三个已上画布的节点 + 一个刚写好还没上画布的 d。"""
+    vault, r = build({
+        "nodes/组A/a.md": node_md("A", rels="- 部件:: [[b]]", extra="learned: 2026-09-01\n"),
+        "nodes/组A/b.md": node_md("B"),
+        "nodes/组B/c.md": node_md("C"),
+    })
+    layout = core.build_initial_layout(r.data)
+    core.write(vault / "nodes/组A/d.md", node_md("D", rels="- 部件:: [[a]]"))
+    return vault, core.build_index(vault).data, layout
+
+
+@case
+def 复习间隔按次数推进():
+    assert core.next_due_for(None, "2026-09-01") == "2026-09-02"          # learned + 1 天
+    entry = {"reviews": ["2026-09-10"]}
+    assert core.next_due_for(entry, None) == "2026-09-11"                 # 第 1 次后隔 1 天
+    entry["reviews"].append("2026-09-11")
+    assert core.next_due_for(entry, None) == "2026-09-13"                 # 第 2 次后隔 2 天
+    entry["reviews"] += ["2026-09-13", "2026-09-17", "2026-09-24", "2026-10-09", "2026-11-08"]
+    assert core.next_due_for(entry, None) == "2026-12-08"                 # 到顶后固定 30 天
+    assert core.next_due_for({"reviews": []}, None) is None               # 既没复习过也没 learned
+    assert core.next_due_for(None, "不是日期") is None
+
+
+@case
+def 到期列表按日期排序且跳过stub():
+    vault, index, _ = placed_vault()
+    log = {"nodes": {}}
+    due = core.due_nodes(index, log, _dt.date(2026, 9, 12))
+    assert [d["id"] for d in due] == ["a"], due                            # 只有 a 填了 learned
+    assert due[0]["overdue_days"] == 10 and due[0]["reviews"] == 0, due[0]
+    core.record_review(vault, "a", _dt.date(2026, 9, 12))
+    assert core.due_nodes(index, core.load_log(vault), _dt.date(2026, 9, 12)) == []
+    assert core.load_log(vault)["nodes"]["a"]["next_due"] == "2026-09-13"
+
+
+@case
+def 放置按关系族加权投票选分组():
+    _, index, layout = placed_vault()
+    assert core.inbox_ids(index, layout) == ["d"], core.inbox_ids(index, layout)
+    assert core.target_group("d", index, layout) == layout["nodes"]["a"]["group"]
+    # 把 a 挪到组B：投票跟着邻居走，不看 d 自己的 field
+    layout["nodes"]["a"]["group"] = layout["nodes"]["c"]["group"]
+    assert core.target_group("d", index, layout) == layout["nodes"]["c"]["group"]
+
+
+@case
+def 排满的分组会往下长一行而不是挤开别人():
+    _, index, layout = placed_vault()
+    gid = layout["nodes"]["a"]["group"]
+    before = {nid: dict(n) for nid, n in layout["nodes"].items()}
+    old_h = layout["groups"][gid]["h"]
+
+    assert core.place_node("d", index, layout, gid=gid) is None, "框内还有空位？这个用例就没意义了"
+    box, grown = core.place_or_grow("d", index, layout, today="2026-09-12", gid=gid)
+    assert box and box["group"] == gid and box["state"] == "draft", box
+    assert box["anchor"] == "a" and box["placedAt"] == "2026-09-12", box
+    assert grown[gid] == old_h + core.CELL_H, grown
+    assert layout["nodes"] == before, "长框时挪动了已有节点"
+    assert box["y"] + box["h"] <= layout["groups"][gid]["y"] + grown[gid], "节点落在长高后的框外"
+
+
+@case
+def 长框会压到兄弟组时宁可不放():
+    _, index, layout = placed_vault()
+    gid = layout["nodes"]["a"]["group"]
+    box = layout["groups"][gid]
+    layout["groups"]["挡路的"] = {"name": "挡路的", "x": box["x"], "y": box["y"] + box["h"] + 4,
+                                  "w": box["w"], "h": 100.0, "parent": box.get("parent"),
+                                  "collapsed": False, "pinned": None, "color": None}
+    assert core.plan_growth(gid, layout) is None
+    assert core.place_or_grow("d", index, layout, gid=gid) == (None, {})
+
+
+@case
+def digest_汇总欠账():
+    vault, index, layout = placed_vault()
+    box, grown = core.place_or_grow("d", index, layout, today="2026-09-01")
+    layout["nodes"]["d"] = box
+    for k, h in grown.items():
+        layout["groups"][k]["h"] = h
+    d = core.build_digest(vault, index, layout, _dt.date(2026, 9, 12))
+    assert d["counts"]["inbox"] == 0 and d["counts"]["drafts"] == 1, d["counts"]
+    assert d["drafts"][0]["days"] == 11 and d["drafts"][0]["stale"] is True, d["drafts"]
+    assert d["counts"]["due"] == 1 and d["due"][0]["id"] == "a", d["due"]
+    assert any(b["count"] >= 1 for b in d["bridges"]) or not d["bridges"], d["bridges"]
+
+
+@case
+def digest_重复候选认出近似名字():
+    vault, r = build({
+        "nodes/x/通用寄存器.md": node_md("通用寄存器"),
+        "nodes/x/专用寄存器.md": node_md("专用寄存器"),
+        "nodes/x/完全无关的东西.md": node_md("完全无关的东西"),
+    })
+    d = core.build_digest(vault, r.data, core.build_initial_layout(r.data), _dt.date(2026, 9, 12))
+    pairs = {tuple(sorted((x["a"], x["b"]))) for x in d["duplicates"]}
+    assert ("专用寄存器", "通用寄存器") in pairs, d["duplicates"]
+    assert all("完全无关的东西" not in p for p in pairs), pairs
+
+
 @case
 def 真实_vault_无错误():
     if not (REPO / "nodes").is_dir():

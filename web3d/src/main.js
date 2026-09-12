@@ -20,6 +20,46 @@ const FAMILY_COLORS = {
 
 const el = (id) => document.getElementById(id)
 
+// ---- 自诊断：卡死时要能留下证据 ----
+const TRACE = []                 // 最近若干次指针事件
+let lastFrame = performance.now()
+let frozenFor = 0
+
+function startWatchdog() {
+  const tick = () => {
+    const now = performance.now()
+    const gap = now - lastFrame
+    lastFrame = now
+    // 页面不可见时浏览器本来就会节流 rAF，别误报；只在可见且卡超过 3 秒才提示
+    if (gap > 3000 && !document.hidden) {
+      frozenFor = Math.round(gap)
+      el('stat').textContent = `⚠️ 画布刚卡了 ${frozenFor}ms —— 点「重建画布」可恢复，按 D 看诊断`
+    }
+    requestAnimationFrame(tick)
+  }
+  requestAnimationFrame(tick)
+
+  for (const type of ['pointerdown', 'pointerup', 'pointercancel', 'contextmenu', 'mousedown', 'mouseup']) {
+    window.addEventListener(type, (e) => {
+      TRACE.push(`${new Date().toISOString().slice(14, 23)} ${type} btn${e.button ?? '-'} ` +
+                 `${(e.target?.tagName || '').toLowerCase()}${e.target?.id ? '#' + e.target.id : ''}`)
+      if (TRACE.length > 24) TRACE.shift()
+    }, { capture: true })
+  }
+  window.addEventListener('keydown', (e) => {
+    if (e.key.toLowerCase() === 'd') showDiag()
+  })
+  window.__diag = () => TRACE.join('\n')
+}
+
+function showDiag() {
+  const info = el('info')
+  info.innerHTML = `<h3>诊断</h3><div class="d">最近一次卡顿：${frozenFor || 0}ms</div>` +
+    `<pre style="white-space:pre-wrap;font-size:11px;max-height:320px;overflow:auto">${TRACE.join('\n')}</pre>` +
+    `<button onclick="navigator.clipboard.writeText(window.__diag())">复制这些事件</button>`
+  info.style.display = 'block'
+}
+
 async function boot() {
   const index = await (await fetch('../api/index')).json()
   const real = index.nodes.filter((n) => !n.virtual)
@@ -71,8 +111,10 @@ async function boot() {
     renderer,
     background: '#0d1117',
     data: { nodes, edges },
-    node: { type: 'sphere', state: { active: { lineWidth: 3, stroke: '#fff' } } },
-    edge: { type: 'line3d', state: { active: { stroke: '#ffffff', lineWidth: 2.5 } } },
+    // 不给 3D 元素配 state 样式：lineWidth / stroke 是 2D 描边属性，球体是 Mesh 没有描边，
+    // 套上去会把球渲染没、并把渲染管线搞坏（表现为"鼠标碰到线就卡死、两端的球消失"）。
+    node: { type: 'sphere' },
+    edge: { type: 'line3d' },
     layout: {
       type: 'd3-force-3d',
       numDimensions: 3,
@@ -84,8 +126,9 @@ async function boot() {
     },
     // 只留"环绕 + 缩放"：drag-canvas-3d（平移相机）和 observe-canvas-3d（环绕）都绑左键拖动，
     // 同时开会互相打架，相机可能被推到越过焦点的位姿，看起来就是"卡死不能动"。
-    behaviors: ['observe-canvas-3d', 'zoom-canvas-3d',
-      { type: 'hover-activate', degree: 1 }, { type: 'click-select' }],
+    // 同理去掉 hover-activate / click-select：它们都靠 state 样式工作。
+    // 悬停要看邻居，改成安全的做法——只读数据、不改 3D 元素的样式（见下面的 bindHover）。
+    behaviors: ['observe-canvas-3d', 'zoom-canvas-3d'],
     plugins: [
       { type: '3d-light', directional: { direction: [0, 0.5, 1], specular: [0.3, 0.3, 0.3] },
         ambient: { color: '#ffffff', intensity: 0.55 } },
@@ -101,6 +144,9 @@ async function boot() {
       el('stat').textContent = `交互出错：${err.message}（点「适应视图」回正）`
     }
   }
+  guardRightButton(graph)
+  startWatchdog()
+  bindHover(graph, index)
   graph.on('node:click', safe((e) => showInfo(index, e.target?.id || e.itemId)))
   graph.on('canvas:click', safe(() => { el('info').style.display = 'none' }))
   await graph.render()
@@ -112,8 +158,54 @@ async function boot() {
     setTimeout(() => { if (!touched) fitCamera(graph) }, delay)
   }
   autoSpin(graph)
-  document.getElementById('fit').onclick = () => fitCamera(graph)
+  // 「适应视图」同时兼任"卡住了点这里"：先重置交互状态，再回正相机
+  document.getElementById('fit').onclick = () => {
+    try {
+      graph.setBehaviors((prev) => [...prev])
+    } catch (err) {
+      el('stat').textContent = `重置交互失败：${err.message}`
+    }
+    fitCamera(graph)
+  }
+  // 最后一招：整个图销毁重建（相当于 2D 那边的「恢复画布」）
+  document.getElementById('rebuild').onclick = async () => {
+    el('stat').textContent = '重建中…'
+    try {
+      graph.destroy()
+    } catch { /* 已经坏掉的实例，忽略 */ }
+    document.getElementById('container').replaceChildren()   // 清掉残留的旧 canvas（否则底部会留一条黑边）
+    el('info').style.display = 'none'
+    frozenFor = 0
+    await boot()
+  }
   window.__g6 = graph
+}
+
+/**
+ * 悬停提示：只读 index 数据，绝不改 3D 元素样式。
+ * G6 的 hover-activate 会给元素套 state 样式，而 3D 元素吃不下 2D 的描边属性——
+ * 这正是"鼠标碰到线就卡死"的根因，所以这里自己做，且只动 DOM。
+ */
+function bindHover(graph, index) {
+  const tip = el('tip')
+  const base = tip.textContent
+  const byId = new Map(index.nodes.map((n) => [n.id, n]))
+  const byEdge = new Map(index.edges.map((e) => [e.id, e]))
+  const show = (text) => { tip.textContent = text || base }
+  const onNode = (e) => {
+    const node = byId.get(e.target?.id)
+    if (node) show(`${node.name || node.id}　度数 ${node.degree}　权重 ${(node.weight * 100).toFixed(0)}%　（点击看详情）`)
+  }
+  const onEdge = (e) => {
+    const edge = byEdge.get(e.target?.id)
+    if (edge) show(`${edge.source}　${edge.type} →　${edge.target}　（${edge.family}${edge.year ? ' ' + edge.year : ''}）`)
+  }
+  // 不同版本的事件名不一致，两种都绑上（只改 DOM 文本，重复触发也无害）
+  for (const evt of ['node:pointerenter', 'node:pointerover']) graph.on(evt, onNode)
+  for (const evt of ['edge:pointerenter', 'edge:pointerover']) graph.on(evt, onEdge)
+  for (const evt of ['node:pointerleave', 'edge:pointerleave', 'canvas:pointerenter']) {
+    graph.on(evt, () => show(''))
+  }
 }
 
 function showInfo(index, id) {
@@ -133,6 +225,30 @@ function showInfo(index, id) {
     ${node.in?.length ? `<ul>${node.in.slice(0, 6).map((x) => line(x, 'in')).join('')}</ul>` : ''}
     <a class="btn" href="../?focus=${encodeURIComponent(node.id)}">在 2D 结构视图里定位 →</a>`
   el('info').style.display = 'block'
+}
+
+/**
+ * 右键防护。ObserveCanvas3D 绑的是 G6 的 `drag`，**不区分鼠标按键**：
+ * 右键按下也会进入拖拽状态，而浏览器弹出的原生右键菜单会吞掉 pointerup，
+ * 拖拽状态就永远结束不了 —— 表现就是"右键点几下之后整个图都不能动了"。
+ * 对策：容器上禁掉原生右键菜单，并在捕获阶段拦掉右键/中键的指针事件，
+ * 让相机行为只认左键。
+ */
+function guardRightButton(graph) {
+  const container = document.getElementById('container')
+  container.addEventListener('contextmenu', (e) => e.preventDefault())
+  for (const type of ['pointerdown', 'pointerup', 'mousedown', 'mouseup']) {
+    container.addEventListener(type, (e) => {
+      if (e.button === 0) return
+      e.preventDefault()
+      e.stopPropagation()
+    }, { capture: true })
+  }
+  // 万一还是卡住（切标签页、拖到窗口外松手），重置行为即可清掉内部拖拽状态
+  const reset = () => graph.setBehaviors((prev) => [...prev])
+  window.addEventListener('blur', reset)
+  document.addEventListener('visibilitychange', () => document.hidden && reset())
+  window.__resetBehaviors = reset
 }
 
 /** 把相机拉到能看全整团的距离：3D 没有 zoomToFit，得按包围盒自己算。 */

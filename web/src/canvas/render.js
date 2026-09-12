@@ -54,7 +54,7 @@ function groupDepth(groups, id, seen = new Set()) {
 }
 
 export function buildCells(index, layout, options = {}) {
-  const { families = null, showLabels = false, collapsed = new Set(), zoom = 1 } = options
+  const { families = null, showLabels = false, collapsed = new Set(), zoom = 1, due = new Set() } = options
   // 折叠后节点"显示成谁"：最外层被折叠的祖先分组，或它自己
   const visibleOf = (nid) => containerOf(layout, nid, collapsed)
   const hasCollapsedAncestor = (gid) => {
@@ -105,7 +105,7 @@ export function buildCells(index, layout, options = {}) {
       id: nid, shape: 'kg-node', x: n.x, y: n.y,
       width: meta ? size.w : (n.w || NODE_W), height: meta ? size.h : (n.h || NODE_H),
       zIndex: 10,
-      attrs: meta ? nodeAttrs(meta, n, colorOf(n.group, meta.field)) : orphanAttrs(nid),
+      attrs: meta ? nodeAttrs(meta, n, colorOf(n.group, meta.field), due.has(nid)) : orphanAttrs(nid),
       data: { kind: 'node', group: n.group || null, orphan: !meta, field: meta?.field || null },
     })
   }

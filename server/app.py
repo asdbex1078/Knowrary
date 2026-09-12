@@ -13,7 +13,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from .contracts import ChangeResult, ChangeSet, FileDiff, LayoutPatch, LayoutRead, LayoutSaved, NodeDetail
+from . import curation
+from .contracts import (ChangeResult, ChangeSet, FileDiff, InboxRead, LayoutPatch, LayoutRead, LayoutSaved,
+                        NodeDetail, PlaceRequest, PlaceResult, ReviewDone)
 from .index_service import current_index, invalidate
 from .layout_store import (LayoutBroken, PatchRejected, RevisionConflict, apply_patch, find_orphans,
                            load_or_init)
@@ -94,6 +96,45 @@ def get_node(node_id: str) -> NodeDetail:
         in_edges=[edges[i] for i in meta.get("in", []) if i in edges],
         obsidian_uri=f"obsidian://open?vault={quote(vault.name)}&file={quote(meta['path'])}",
     )
+
+
+@app.get("/api/inbox", response_model=InboxRead)
+def get_inbox() -> InboxRead:
+    """索引里有、画布上还没有的节点，附带建议分组。"""
+    return curation.inbox(vault_path())
+
+
+@app.post("/api/place", response_model=PlaceResult)
+def post_place(req: PlaceRequest) -> PlaceResult:
+    """把 Inbox 节点放上画布：只在已有分组框里找空位，放不下就留在 Inbox。"""
+    try:
+        return curation.place(vault_path(), req)
+    except curation.PlaceRejected as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except RevisionConflict as exc:
+        raise HTTPException(status_code=409, detail={
+            "message": str(exc), "current_revision": exc.current.revision,
+            "hint": "重新 GET /api/layout 后基于新 revision 重试"}) from exc
+
+
+@app.get("/api/digest")
+def get_digest() -> dict:
+    """图谱欠账清单：草稿 / 待复习 / stub / 跨分组桥 / 重复候选 / 环。只读。"""
+    return curation.digest(vault_path())
+
+
+@app.get("/api/review/due")
+def get_review_due() -> dict:
+    return curation.review_due(vault_path())
+
+
+@app.post("/api/review/{node_id}", response_model=ReviewDone)
+def post_review(node_id: str) -> ReviewDone:
+    """记一次复习：只写 review-log.json，不碰 md，也不碰 layout。"""
+    try:
+        return curation.mark_reviewed(vault_path(), node_id)
+    except curation.PlaceRejected as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 @app.post("/api/changes", response_model=ChangeResult)

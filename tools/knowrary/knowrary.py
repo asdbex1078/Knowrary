@@ -27,10 +27,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import llm_backend  # 同目录模块
-from core import (Diagnostics, Edge, Node, RelationTypes, build_index, build_initial_layout,
-                  dump_frontmatter, find_orphans, first_paragraph, index_path, layout_path,
-                  load_json, load_previous, load_relation_types, load_vault, read, stamp,
-                  validate_index, write, write_json_atomic)
+from core import (Diagnostics, Edge, Node, RelationTypes, build_digest, build_index,
+                  build_initial_layout, due_nodes, dump_frontmatter, find_orphans, first_paragraph,
+                  index_path, layout_path, load_json, load_log, load_previous, load_relation_types,
+                  load_vault, read, record_review, stamp, validate_index, write, write_json_atomic)
 from core.mdio import RE_ID_OK, RE_LINK
 
 HERE = Path(__file__).resolve().parent
@@ -296,6 +296,57 @@ def cmd_layout(args: argparse.Namespace) -> None:
         print(f"  ⚠ [{o['kind']}] {o['id']}：{o['reason']}")
     for nid in inbox[:10]:
         print(f"  · Inbox：{nid}")
+    sys.exit(0)
+
+
+def _layout_doc(vault: Path, index: dict) -> dict:
+    """读 layout.json；还没有就现算一份初始布局（只在内存里用，不落盘）。"""
+    path = layout_path(vault)
+    return load_json(path) if path.exists() else build_initial_layout(index)
+
+
+def cmd_review(args: argparse.Namespace) -> None:
+    """review due：今天该复习什么；review done <id>：记一次复习（只写 review-log.json）。"""
+    vault = Path(args.vault).resolve()
+    index = build_index(vault, load_previous(index_path(vault))).data
+    if args.action == "done":
+        if not args.node:
+            raise SystemExit("用法：review done <节点 id>")
+        if not any(n["id"] == args.node and not n.get("virtual") for n in index["nodes"]):
+            raise SystemExit(f"节点 `{args.node}` 不在索引里")
+        entry = record_review(vault, args.node)
+        print(f"已记录第 {len(entry['reviews'])} 次复习，下次到期 {entry['next_due']}")
+        return
+    due = due_nodes(index, load_log(vault))
+    print(f"今天（{TODAY}）该复习 {len(due)} 个节点：" if due else f"今天（{TODAY}）没有到期的节点")
+    for item in due[: args.max_warn]:
+        overdue = f"逾期 {item['overdue_days']} 天" if item["overdue_days"] else "今天到期"
+        print(f"  · {item['name']}（{item['id']}）— {overdue}，已复习 {item['reviews']} 次")
+    sys.exit(0)
+
+
+def cmd_digest(args: argparse.Namespace) -> None:
+    """图谱欠账清单：Inbox / 草稿 / 待复习 / stub / 跨分组桥 / 重复候选 / 方向矛盾。"""
+    vault = Path(args.vault).resolve()
+    index = build_index(vault, load_previous(index_path(vault))).data
+    d = build_digest(vault, index, _layout_doc(vault, index))
+    c = d["counts"]
+    print(f"{d['generated_at']} 的欠账：Inbox {c['inbox']}，草稿 {c['drafts']}"
+          f"（放久了 {c['stale_drafts']}），待复习 {c['due']}，stub {c['stubs']}，"
+          f"跨分组桥 {c['bridges']}，重复候选 {c['duplicates']}，方向矛盾 {c['cycles']}")
+    n = args.top
+    for nid in d["inbox"][:n]:
+        print(f"  · Inbox：{nid}")
+    for item in d["drafts"][:n]:
+        print(f"  · 草稿：{item['id']}（放了 {item['days']} 天{'，该定稿了' if item['stale'] else ''}）")
+    for item in d["due"][:n]:
+        print(f"  · 待复习：{item['id']}（逾期 {item['overdue_days']} 天）")
+    for b in d["bridges"][:n]:
+        print(f"  · 跨分组桥：{b['from_name']} → {b['to_name']}（{b['count']} 条）")
+    for x in d["duplicates"][:n]:
+        print(f"  · 重复候选：{x['a']} / {x['b']} — {x['reason']}")
+    for msg in d["cycles"][:n]:
+        print(f"  ⚠ 方向矛盾：{msg}")
     sys.exit(0)
 
 
@@ -569,6 +620,18 @@ def add_data_parsers(sub: argparse._SubParsersAction) -> None:
     c.add_argument("vault")
     c.add_argument("--max-warn", type=int, default=40)
     c.set_defaults(fn=cmd_check)
+
+    r = sub.add_parser("review", help="到期复习列表 / 记一次复习")
+    r.add_argument("action", choices=["due", "done"], nargs="?", default="due")
+    r.add_argument("node", nargs="?", help="review done 的节点 id")
+    r.add_argument("--vault", required=True)
+    r.add_argument("--max-warn", type=int, default=20)
+    r.set_defaults(fn=cmd_review)
+
+    g = sub.add_parser("digest", help="图谱欠账清单（Inbox / 草稿 / 待复习 / 桥 / 重复）")
+    g.add_argument("--vault", required=True)
+    g.add_argument("--top", type=int, default=5, help="每类最多列几条")
+    g.set_defaults(fn=cmd_digest)
 
 
 def add_llm_parsers(sub: argparse._SubParsersAction) -> None:

@@ -3,13 +3,16 @@
 CLI（knowrary.py）与后续的本地服务（FastAPI）都只依赖这里，避免两套解析实现漂移。
 """
 from .diagnostics import Diagnostic, Diagnostics
+from .digest import build_digest
 from .index import INDEX_SCHEMA_VERSION, IndexResult, build_index, content_hash, index_path, load_previous
-from .layout import (LAYOUT_SCHEMA_VERSION, build_initial_layout, empty_layout, find_orphans,
-                     layout_path, stamp)
+from .layout import (CELL_H, LAYOUT_SCHEMA_VERSION, NODE_H, NODE_W, build_initial_layout, empty_layout,
+                     find_orphans, layout_path, stamp)
 from .mdio import (NODE_DIRS, RE_LINK, RE_REL_HEADER, dump_frontmatter, first_paragraph, json_safe,
                    load_json, read, split_frontmatter, strip_md, walk_md, write, write_json_atomic,
                    yaml_scalar)
 from .parser import Node, digest_of, load_node, load_vault, validate_frontmatter
+from .placement import inbox_ids, place_node, place_or_grow, plan_growth, target_group
+from .review import due_nodes, load_log, next_due_for, record_review
 from .writer import (ChangeRejected, FileEdit, WriteConflict, apply_to_text, backup, commit, plan,
                      split_sections)
 from .relations import Edge, NormalizedEdge, RelationTypes, load_relation_types, normalize_direction, parse_relations
@@ -17,7 +20,9 @@ from .schema import validate_index
 
 __all__ = [
     "ChangeRejected", "Diagnostic", "Diagnostics", "Edge", "FileEdit", "INDEX_SCHEMA_VERSION",
-    "LAYOUT_SCHEMA_VERSION", "WriteConflict", "apply_to_text", "backup", "commit", "digest_of", "plan",
+    "build_digest", "due_nodes", "inbox_ids", "load_log", "next_due_for", "place_node", "place_or_grow", "plan_growth",
+    "record_review", "target_group",
+    "CELL_H", "LAYOUT_SCHEMA_VERSION", "NODE_H", "NODE_W", "WriteConflict", "apply_to_text", "backup", "commit", "digest_of", "plan",
     "split_sections",
     "build_initial_layout", "empty_layout", "find_orphans", "layout_path", "stamp", "IndexResult", "NODE_DIRS", "Node",
     "NormalizedEdge", "RE_LINK", "RE_REL_HEADER", "RelationTypes", "build_index", "content_hash",

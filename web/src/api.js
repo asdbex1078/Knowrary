@@ -29,3 +29,18 @@ export const patchLayout = (body) => request('/api/layout', {
   headers: { 'Content-Type': 'application/json' },
   body: JSON.stringify(body),
 })
+
+// —— 阶段 4：Inbox / 放置 / 欠账清单 / 复习 ——
+export const fetchInbox = () => request('/api/inbox')
+export const fetchDigest = () => request('/api/digest')
+export const fetchDue = () => request('/api/review/due')
+
+/** 把 Inbox 节点放上画布。不给 group/at 就由服务端按邻居投票找位置。 */
+export const postPlace = (body) => request('/api/place', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify(body),
+})
+
+/** 记一次复习：只写 review-log.json，不碰 md，也不碰 layout。 */
+export const postReview = (id) => request(`/api/review/${encodeURIComponent(id)}`, { method: 'POST' })

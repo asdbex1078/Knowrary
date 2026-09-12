@@ -354,6 +354,123 @@ def 非法变更被拒且不写盘():
     assert md_digest(vault) == digest, "被拒的变更改了 md"
 
 
+# ---------------------------------------------------------------- 阶段 4：Inbox / 放置 / Digest / 复习
+
+def with_inbox_node() -> tuple[TestClient, Path, dict]:
+    """先让布局生成好，再往 vault 里塞一个新节点——它就落在 Inbox 里。"""
+    c, vault = client()
+    layout = get_layout(c)
+    core.write(vault / "nodes/组A/d.md", node_md("D", rels="- 部件:: [[a]]", extra="learned: 2026-09-01\n"))
+    index_service.invalidate()
+    return c, vault, layout
+
+
+@case
+def inbox_列出未上画布的节点并给出建议分组():
+    c, _, layout = with_inbox_node()
+    data = c.get("/api/inbox").json()
+    ids = [i["id"] for i in data["items"]]
+    assert ids == ["d"], ids
+    item = data["items"][0]
+    group_of_a = layout["layout"]["nodes"]["a"]["group"]
+    assert item["suggested_group"] == group_of_a, item          # 唯一的邻居 a 在组A
+    assert item["suggested_group_name"] and item["name"] == "D"
+
+
+@case
+def place_放进建议分组且不与已有节点重叠():
+    c, vault, _ = with_inbox_node()
+    before = md_digest(vault)
+    layout = get_layout(c)
+    r = c.post("/api/place", json={"base_revision": layout["layout"]["revision"], "ids": ["d"]})
+    assert r.status_code == 200, r.text
+    placed = r.json()["placed"]
+    assert len(placed) == 1 and placed[0]["state"] == "draft" and placed[0]["anchor"] == "a", placed
+
+    nodes = get_layout(c)["layout"]["nodes"]
+    assert nodes["d"]["group"] == nodes["a"]["group"] and nodes["d"]["placedAt"], nodes["d"]
+    box = nodes["d"]
+    for nid, other in nodes.items():
+        if nid == "d" or other.get("group") != box["group"]:
+            continue
+        overlap = (box["x"] < other["x"] + other["w"] and other["x"] < box["x"] + box["w"]
+                   and box["y"] < other["y"] + other["h"] and other["y"] < box["y"] + box["h"])
+        assert not overlap, f"d 压在 {nid} 上"
+    assert md_digest(vault) == before, "放置改了 md"
+    assert c.get("/api/inbox").json()["items"] == [], "放完还留在 Inbox"
+
+
+@case
+def place_指定坐标与分组时按人给的来():
+    c, _, layout = with_inbox_node()
+    gid = layout["layout"]["nodes"]["c"]["group"]          # 故意放到没有邻居的组B
+    r = c.post("/api/place", json={"base_revision": layout["layout"]["revision"], "ids": ["d"],
+                                   "group": gid, "at": {"x": 12.0, "y": 34.0}, "state": "final"})
+    assert r.status_code == 200, r.text
+    node = get_layout(c)["layout"]["nodes"]["d"]
+    assert (node["x"], node["y"], node["group"], node["state"]) == (12.0, 34.0, gid, "final"), node
+
+
+@case
+def place_重复放置与未知节点被跳过而不是报错():
+    c, _, layout = with_inbox_node()
+    r = c.post("/api/place", json={"base_revision": layout["layout"]["revision"],
+                                   "ids": ["a", "查无此人", "d"]})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert [p["id"] for p in body["placed"]] == ["d"], body
+    assert {s["id"] for s in body["skipped"]} == {"a", "查无此人"}, body
+
+
+@case
+def place_旧revision与不存在的分组被拒():
+    c, _, layout = with_inbox_node()
+    rev = layout["layout"]["revision"]
+    assert c.post("/api/place", json={"base_revision": rev - 1, "ids": ["d"]}).status_code == 409
+    assert c.post("/api/place", json={"base_revision": rev, "ids": ["d"], "group": "没有这个组"}).status_code == 422
+    assert c.post("/api/place", json={"base_revision": rev, "ids": ["a", "d"],
+                                      "at": {"x": 0, "y": 0}}).status_code == 422
+    assert "d" not in get_layout(c)["layout"]["nodes"], "被拒的请求写进了 layout"
+
+
+@case
+def digest_汇总草稿与跨分组桥与重复候选():
+    c, _, layout = with_inbox_node()
+    c.post("/api/place", json={"base_revision": layout["layout"]["revision"], "ids": ["d"]})
+    d = c.get("/api/digest").json()
+    assert d["counts"]["inbox"] == 0 and d["counts"]["drafts"] == 1, d["counts"]
+    assert d["drafts"][0]["id"] == "d" and d["drafts"][0]["stale"] is False, d["drafts"]
+    bridges = [(b["from_name"], b["to_name"], b["count"]) for b in d["bridges"]]
+    assert bridges, "组A 到 组B 有边，桥不该是空的"
+    assert d["counts"]["due"] >= 1, d["counts"]          # d 的 learned 是 2026-09-01，早就该复习了
+
+
+@case
+def review_复习一次后到期日按间隔推进():
+    c, vault, _ = with_inbox_node()
+    before = md_digest(vault)
+    due_ids = [x["id"] for x in c.get("/api/review/due").json()["due"]]
+    assert "d" in due_ids, due_ids
+
+    r = c.post("/api/review/d")
+    assert r.status_code == 200, r.text
+    first = r.json()
+    assert first["reviews"] == 1 and first["next_due"], first
+    assert "d" not in [x["id"] for x in c.get("/api/review/due").json()["due"]], "复习完还在到期列表里"
+
+    second = c.post("/api/review/d").json()
+    assert second["reviews"] == 2, second
+    assert second["next_due"] > first["next_due"], (first, second)   # 间隔 1 天 → 2 天
+    assert md_digest(vault) == before, "复习改了 md"
+    assert (vault / ".knowrary" / "review-log.json").exists()
+
+
+@case
+def review_未知节点404():
+    c, _, _ = with_inbox_node()
+    assert c.post("/api/review/查无此人").status_code == 404
+
+
 @case
 def health_汇总可用():
     c, _ = client()

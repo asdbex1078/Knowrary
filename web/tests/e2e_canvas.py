@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import platform
 import socket
 import subprocess
 import sys
@@ -58,16 +59,30 @@ def wait_for(url: str, timeout: float = 20.0) -> None:
     raise SystemExit(f"等不到 {url}")
 
 
+def arch_prefix() -> list[str]:
+    """Apple Silicon 上强制走 arm64 切片。
+
+    .venv 里的 python 是 x86_64（Rosetta），子进程默认继承这个偏好，Chrome 就会跑 x64 切片，
+    然后有相当概率启动到一半放弃、不写 DevToolsActivePort——就是"偶发启动失败"的真正来源。
+    """
+    if sys.platform != "darwin":
+        return []
+    translated = subprocess.run(["sysctl", "-n", "sysctl.proc_translated"], capture_output=True, text=True)
+    native_arm = platform.machine() == "arm64" or translated.stdout.strip() == "1"
+    return ["/usr/bin/arch", "-arm64"] if native_arm and Path("/usr/bin/arch").exists() else []
+
+
 def launch_chrome(tmp: Path, api: str, attempts: int = 3):
     """启动无头 Chrome。冷启动偶发不写 DevToolsActivePort，换个 profile 重试即可。"""
     last = None
     for i in range(attempts):
         profile = tmp / f"chrome{i}"
         log = (tmp / f"chrome{i}.log").open("w")
-        proc = subprocess.Popen([CHROME, "--headless=new", "--disable-gpu", "--hide-scrollbars",
-                                 "--no-first-run", "--no-default-browser-check", "--disable-extensions",
-                                 "--window-size=1600,1000", "--remote-debugging-port=0",
-                                 f"--user-data-dir={profile}", api + "/"], stdout=log, stderr=log)
+        proc = subprocess.Popen(arch_prefix()
+                                + [CHROME, "--headless=new", "--disable-gpu", "--hide-scrollbars",
+                                   "--no-first-run", "--no-default-browser-check", "--disable-extensions",
+                                   "--window-size=1600,1000", "--remote-debugging-port=0",
+                                   f"--user-data-dir={profile}", api + "/"], stdout=log, stderr=log)
         try:
             return proc, devtools_base(profile, timeout=25.0)
         except SystemExit as exc:
@@ -534,6 +549,128 @@ async def case_rendered(page: Page, ck: Check) -> None:
            f"分组 {counts['groups']}，节点 {counts['nodes']}，边 {counts['edges']}，状态 {counts['status']}")
 
 
+# ---------------------------------------------------------------- 阶段 4：Inbox / 放置 / 欠账 / 复习
+
+NEW_MD = ("---\nname: {n}\nfield: 测试\ndesc: {n} 的摘要\nlearned: 2020-01-01\n---\n"
+          "# {n}\n\n正文\n\n## 关系\n- 部件:: [[{to}]]\n")
+
+
+async def click_text(page: Page, sel: str, text: str) -> str:
+    out = await page.ev(f"""(() => {{
+      const b = [...document.querySelectorAll({sel!r})].find((x) => x.textContent.includes({text!r}));
+      if (!b) return 'missing';
+      b.click(); return 'ok';
+    }})()""")
+    assert out == "ok", f"点不到「{text}」（{sel}）：{out}"
+    return out
+
+
+async def md_size(vault: Path) -> int:
+    return sum(len(p.read_text("utf-8")) for p in sorted(vault.rglob("*.md")))
+
+
+async def case_inbox_place(page: Page, ck: Check, vault: Path) -> None:
+    """新写的 md 进 Inbox → 「放进去」落成草稿；全程不碰 md。"""
+    (vault / "nodes/组A/戊.md").write_text(NEW_MD.format(n="戊", to="甲"), "utf-8")
+    before = await md_size(vault)
+    await click_text(page, "header button", "重新加载")
+    label = await poll(page, """[...document.querySelectorAll('header button')]
+      .find((b) => b.textContent.trim().startsWith('Inbox'))?.textContent || ''""",
+                       lambda v: "1" in (v or ""))
+    ck.add("新写的节点进 Inbox", "1" in (label or ""), f"按钮上写着「{(label or '').strip()}」")
+
+    await click_text(page, "header button", "Inbox")
+    item = await poll(page, """(() => {
+      const li = document.querySelector('aside.inbox ul.inbox-list li');
+      return li ? li.textContent.replace(/\s+/g, ' ') : '';
+    })()""", lambda v: bool(v))
+    host = ck.layout()["nodes"]["甲"]["group"]                 # 前面的拖拽用例可能把「甲」挪过组
+    host_name = ck.layout()["groups"][host]["name"]
+    ck.add("Inbox 列出它并给出建议分组（跟着邻居走）",
+           "戊" in (item or "") and host_name in (item or ""),
+           f"{(item or '')[:70]}（「甲」在{host_name}）")
+
+    await click_text(page, "aside.inbox ul.inbox-list li button", "放进去")
+    await poll(page, "'x'", lambda _: "戊" in ck.layout()["nodes"], timeout=12)
+    node = ck.layout()["nodes"].get("戊")
+    same_group = bool(node) and node["group"] == host
+    ck.add("放进建议分组并标成草稿", bool(node) and node["state"] == "draft" and same_group,
+           f"{node}")
+    ck.add("放置不碰 md", await md_size(vault) == before, "md 总长度未变")
+    shown = await poll(page, "document.querySelectorAll('[data-cell-id=\"戊\"]').length", lambda v: (v or 0) > 0)
+    ck.add("草稿画在画布上", (shown or 0) > 0, f"{shown} 个 cell")
+
+
+async def case_due_badge(page: Page, ck: Check) -> None:
+    """learned 是 2020 年 → 早该复习；节点右上角点亮金色圆点，面板上能记一次复习。"""
+    fill = await poll(page, """document.querySelector('[data-cell-id="戊"] circle')?.getAttribute('fill') || ''""",
+                      lambda v: v and v != "transparent")
+    ck.add("到期节点亮出复习圆点", (fill or "").lower() == "#e0891f", f"circle fill = {fill}")
+
+    await click_text(page, "header button", "欠账")
+    text = await poll(page, """(() => {
+      const a = document.querySelector('aside.digest');
+      return a ? a.textContent.replace(/\s+/g, ' ') : '';
+    })()""", lambda v: v and "待复习" in v, timeout=12)
+    ck.add("欠账清单列出草稿与待复习", "草稿" in (text or "") and "戊" in (text or ""), (text or "")[:110])
+
+    await click_text(page, "aside.digest ul.edges li button", "✓")
+    banner = await poll(page, "document.querySelector('.banner')?.textContent || ''",
+                        lambda v: "复习" in (v or ""), timeout=12)
+    ck.add("记一次复习后到期列表少一个", "第 1 次复习" in (banner or ""), (banner or "").strip()[:60])
+    gone = await poll(page, """document.querySelector('[data-cell-id="戊"] circle')?.getAttribute('fill') || ''""",
+                      lambda v: v == "transparent")
+    ck.add("复习完圆点熄灭", gone == "transparent", f"circle fill = {gone}")
+
+
+async def case_drag_from_inbox(page: Page, ck: Check, vault: Path) -> None:
+    """从 Inbox 拖到画布：落在哪个分组框里就归哪个组，坐标就是松手的位置。"""
+    (vault / "nodes/组B/己.md").write_text(NEW_MD.format(n="己", to="丙"), "utf-8")
+    await click_text(page, "header button", "重新加载")
+    await poll(page, "document.querySelectorAll('aside.inbox ul.inbox-list li').length", lambda v: (v or 0) >= 1)
+
+    # 落点直接由分组框算：前面的用例会把节点拖来拖去，拿节点当参照物不可靠
+    dropped = await page.ev("""(() => {
+      const g = window.__kg.graph, lay = window.__kg.layout;
+      const gid = Object.keys(lay.groups).find((k) => lay.groups[k].parent);   // 任一二级分组
+      const box = lay.groups[gid];
+      const p = g.localToClient(box.x + box.w / 2, box.y + box.h - 40);
+      const dt = new DataTransfer();
+      dt.setData('text/knowrary-node', '己');
+      document.querySelector('.canvas').dispatchEvent(new DragEvent('drop', {
+        dataTransfer: dt, clientX: Math.round(p.x), clientY: Math.round(p.y),
+        bubbles: true, cancelable: true }));
+      return JSON.stringify({ gid, x: Math.round(p.x), y: Math.round(p.y) });
+    })()""")
+    ck.add("拖放事件已派发", (dropped or "").startswith("{"), str(dropped))
+    await poll(page, "'x'", lambda _: "己" in ck.layout()["nodes"], timeout=12)
+    node = ck.layout()["nodes"].get("己")
+    want = json.loads(dropped)["gid"] if (dropped or "").startswith("{") else None
+    ck.add("拖到哪个分组框就归哪个组", bool(node) and node["group"] == want,
+           f"落在 {node and node['group']}，期望 {want}")
+
+
+async def case_finalize(page: Page, ck: Check) -> None:
+    """草稿确认位置后定稿：金色虚线框变回正常卡片，只改 layout。"""
+    dashed = await poll(page, """document.querySelector('[data-cell-id="己"] rect')
+      ?.getAttribute('stroke-dasharray') || ''""", lambda v: bool(v))
+    ck.add("草稿画成虚线框", bool(dashed), f"stroke-dasharray = {dashed}")
+    await page.ev("""(() => {
+      const cell = document.querySelector('[data-cell-id="己"]');
+      const r = cell.getBoundingClientRect();
+      cell.querySelector('rect').dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true,
+        clientX: r.x + r.width / 2, clientY: r.y + r.height / 2, view: window, button: 0, buttons: 1 }));
+      cell.querySelector('rect').dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true,
+        clientX: r.x + r.width / 2, clientY: r.y + r.height / 2, view: window, button: 0, buttons: 0 }));
+      return 'clicked';
+    })()""")
+    await poll(page, "document.querySelector('aside h3')?.textContent || ''", lambda v: "己" in (v or ""))
+    await click_text(page, "aside button", "定稿")
+    state = await poll(page, "'x'", lambda _: ck.layout()["nodes"].get("己", {}).get("state") == "final", timeout=12)
+    del state
+    ck.add("定稿后不再是草稿", ck.layout()["nodes"]["己"]["state"] == "final", str(ck.layout()["nodes"]["己"]))
+
+
 async def scenarios(page: Page, api: str, results: list) -> None:
     ck = Check(api)
     await case_initial(page, ck)
@@ -549,6 +686,10 @@ async def scenarios(page: Page, api: str, results: list) -> None:
     await case_focus_cluster(page, ck)
     await case_render_complete(page, ck)
     await case_rendered(page, ck)
+    await case_inbox_place(page, ck, VAULT_HOLDER[0])
+    await case_due_badge(page, ck)
+    await case_drag_from_inbox(page, ck, VAULT_HOLDER[0])
+    await case_finalize(page, ck)
     results.extend(ck.items)
 
 

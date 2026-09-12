@@ -245,6 +245,59 @@ class ChangeResult(Strict):
     index_revision: int = 0
 
 
+# ---------------------------------------------------------------- Inbox / 放置 / Digest / 复习（阶段 4）
+
+class InboxItem(Strict):
+    """一条待入画布的节点：带上建议分组，前端不必再自己算一遍。"""
+
+    id: str
+    name: str
+    field: str | None = None
+    desc: str | None = None
+    stub: bool = False
+    degree: int = 0
+    suggested_group: str | None = None
+    suggested_group_name: str | None = None
+
+
+class InboxRead(Strict):
+    items: list[InboxItem] = Field(default_factory=list)
+    index_revision: int = 0
+    layout_revision: int = 0
+
+
+class PlaceRequest(Strict):
+    """把 Inbox 里的节点放到画布上。不给 group/at 就自动找位置（设计文档 3.9）。"""
+
+    base_revision: int
+    ids: list[str]
+    group: str | None = None
+    at: Point | None = None                          # 只在放单个节点时有效
+    state: Literal["final", "draft"] = "draft"
+
+
+class Placed(Strict):
+    id: str
+    x: float
+    y: float
+    group: str
+    state: Literal["final", "draft"]
+    anchor: str | None = None
+
+
+class PlaceResult(Strict):
+    revision: int
+    placed: list[Placed] = Field(default_factory=list)
+    skipped: list[dict[str, str]] = Field(default_factory=list)   # {id, reason}
+    grown_groups: list[str] = Field(default_factory=list)         # 为放下新节点而加高的分组
+
+
+class ReviewDone(Strict):
+    id: str
+    reviews: int
+    next_due: str | None = None
+
+
 class NodeDetail(Strict):
     id: str
     path: str

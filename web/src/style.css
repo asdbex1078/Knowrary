@@ -88,3 +88,22 @@ aside.changes { border-left: 1px solid var(--line); }
   box-shadow: 0 6px 18px rgba(0, 0, 0, .12); }
 .search ul.hits li { padding: 4px 8px; border-radius: 4px; cursor: pointer; }
 .search ul.hits li:hover { background: var(--btn-hover); }
+
+/* Inbox 抽屉与欠账清单（阶段 4）：Inbox 在画布左边，欠账在右边 */
+aside.inbox { width: 280px; border-left: none; border-right: 1px solid var(--line); }
+aside.inbox h3, aside.digest h3 { display: flex; align-items: center; gap: 8px; }
+aside.inbox h3 .mini, aside.digest h3 .mini { margin-left: auto; }
+ul.inbox-list { list-style: none; padding: 0; margin: 10px 0; }
+ul.inbox-list li { position: relative; border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px;
+  margin-bottom: 8px; background: var(--btn); cursor: grab; }
+ul.inbox-list li:hover { background: var(--btn-hover); }
+ul.inbox-list li:active { cursor: grabbing; }
+ul.inbox-list .name { font-weight: 600; }
+ul.inbox-list .muted { font-size: 12px; margin: 2px 0; }
+ul.inbox-list .mini { position: absolute; right: 8px; bottom: 8px; margin: 0; }
+aside.digest section { margin-bottom: 14px; }
+aside.digest ul.edges li { gap: 6px; flex-wrap: wrap; }
+aside.digest a { color: #2d6cdf; cursor: pointer; text-decoration: none; }
+aside.digest a:hover { text-decoration: underline; }
+.warn { color: #a1650b; }
+:root[data-theme='dark'] .warn { color: #e0b45f; }

@@ -119,6 +119,7 @@ export function registerShapes() {
       { tagName: 'rect', selector: 'accent' },
       { tagName: 'text', selector: 'title' },
       { tagName: 'text', selector: 'desc' },
+      { tagName: 'circle', selector: 'due' },
     ],
     attrs: {
       body: { rx: 12, ry: 12, fill: '#fff', stroke: '#c6d0da', strokeWidth: 1.2, class: 'kg-card' },
@@ -127,6 +128,8 @@ export function registerShapes() {
                textWrap: { width: -26, ellipsis: true } },
       desc: { refX: 13, refY: 38, fontSize: 10.5, fill: '#8593a1', textAnchor: 'start',
               textWrap: { width: -26, ellipsis: true } },
+      // 到期复习的小圆点：默认透明，due 时才点亮（不占布局，缩小后仍看得见）
+      due: { r: 4.5, refX: '100%', refX2: -11, refY: 11, fill: 'transparent', stroke: 'none' },
     },
   }, true)
 
@@ -231,7 +234,7 @@ export function clusterAttrs(name, summary, color = NEUTRAL, box = { w: CLUSTER_
 }
 
 /** 节点视觉：按所属分组配色，按度数定档，draft 虚线、stub 灰调。 */
-export function nodeAttrs(indexNode, layoutNode, color = NEUTRAL) {
+export function nodeAttrs(indexNode, layoutNode, color = NEUTRAL, due = false) {
   const draft = layoutNode?.state === 'draft'
   const stub = !!indexNode?.stub
   const size = sizeFor(indexNode)
@@ -268,6 +271,7 @@ export function nodeAttrs(indexNode, layoutNode, color = NEUTRAL) {
       textVerticalAnchor: 'middle',
       textWrap: { width: size.accent ? -32 : -26, ellipsis: true },
     },
+    due: { fill: due ? '#e0891f' : 'transparent', r: size.shape === 'pill' ? 3.5 : 4.5 },
   }
 }
 

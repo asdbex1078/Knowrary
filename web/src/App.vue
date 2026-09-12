@@ -1,6 +1,11 @@
 <script setup>
 import { computed, onBeforeUnmount, onMounted, reactive, ref, shallowRef } from 'vue'
-import { fetchHealth, fetchIndex, fetchLayout, fetchNode, patchLayout, postChanges } from './api'
+import {
+  fetchDigest, fetchDue, fetchHealth, fetchIndex, fetchInbox, fetchLayout, fetchNode,
+  patchLayout, postChanges, postPlace, postReview,
+} from './api'
+import InboxTray from './panels/InboxTray.vue'
+import DigestPanel from './panels/DigestPanel.vue'
 import { clone, createHistory, diffPatch, isEmptyPatch } from './canvas/history'
 import { createPatcher } from './canvas/patcher'
 import { computeCollapsed } from './canvas/lod'
@@ -37,6 +42,12 @@ const edgesShown = ref(0)
 const aggShown = ref(0)
 const has3d = ref(false)          // 服务端有 web3d 构建产物时才显示 3D 入口
 const inboxCount = ref(0)
+const inboxItems = shallowRef([])        // GET /api/inbox：索引里有、画布上还没有的节点
+const showInbox = ref(false)
+const showDigest = ref(false)
+const digest = shallowRef(null)          // GET /api/digest：欠账清单
+const dueIds = shallowRef(new Set())     // 今天该复习的节点，画布上点一个金色小圆点
+const placing = ref(false)
 const autoLod = ref(true)                // 缩小自动折叠成簇卡片（设计文档 3.7）
 const focusGroup = ref(null)             // 聚焦的域：点簇卡片进入，只展开它
 const search = ref('')                   // 工具条搜索框
@@ -77,6 +88,8 @@ async function load() {
   indexRevision.value = index.revision
   Object.assign(stats, { nodes: index.stats.nodes, edges: index.stats.edges, stubs: index.stats.stubs })
   inboxCount.value = index.nodes.filter((n) => !n.virtual && !layout.layout.nodes[n.id]).length
+  refreshInbox()
+  refreshDue()
   ready.value = false
   render({ view: 'stored' })
   reportProblems(index, layout)
@@ -90,6 +103,7 @@ function render({ view = 'keep' } = {}) {
   const cells = buildCells(indexDoc.value, layoutDoc.value, {
     families: visibleFamilies(), showLabels: labelsOn.value,
     aggregate: aggregate.value, expanded: expanded.value, collapsed: collapsedIds.value, zoom: g.zoom(),
+    due: dueIds.value,
   })
   edgesShown.value = cells.edges.filter((e) => e.data.kind === 'edge').length
   aggShown.value = cells.edges.length - edgesShown.value
@@ -107,11 +121,15 @@ function render({ view = 'keep' } = {}) {
   applyingViewport = false
 }
 
+const staleDays = (n) => (n.placedAt ? Math.floor((Date.now() - Date.parse(n.placedAt)) / 86400000) : 0)
+
 function reportProblems(index, layout) {
   const parts = []
   if (index.errors.length) parts.push(`索引有 ${index.errors.length} 个错误（knowrary check 看详情）`)
   if (layout.orphans.length) parts.push(`${layout.orphans.length} 条孤立布局记录（红色虚线节点，不会自动删除）`)
   if (layout.generated) parts.push('已按 field / 目录生成初始布局，拖动即保存')
+  const stale = Object.entries(layout.layout.nodes).filter(([, n]) => n.state === 'draft' && staleDays(n) >= 7)
+  if (stale.length) parts.push(`${stale.length} 个草稿放了一周以上（「欠账」里可以逐个定稿）`)
   setBanner(parts.join('；'), index.errors.length ? 'error' : '')
 }
 
@@ -413,6 +431,109 @@ function addNote() {
   render()
 }
 
+// —— 阶段 4：Inbox 放置 / 欠账清单 / 复习 ——
+
+async function refreshInbox() {
+  try {
+    const data = await fetchInbox()
+    inboxItems.value = data.items
+    inboxCount.value = data.items.length
+  } catch { /* Inbox 拉不到不影响画布本身 */ }
+}
+
+async function refreshDue() {
+  try {
+    dueIds.value = new Set((await fetchDue()).due.map((d) => d.id))
+  } catch { dueIds.value = new Set() }
+}
+
+async function refreshDigest() {
+  digest.value = null
+  try {
+    digest.value = await fetchDigest()
+  } catch (err) {
+    setBanner(`欠账清单加载失败：${err.message}`, 'error')
+  }
+}
+
+/** 放置是服务端算位置 + 服务端写盘，所以本地要整份重读，不能只改内存镜像。 */
+async function place(body, label) {
+  if (placing.value) return
+  placing.value = true
+  try {
+    await patcher.value.flush()                  // 先把手上的拖拽落盘，revision 才对得上
+    const res = await postPlace({ ...body, base_revision: revision.value })
+    await load()
+    const skipped = res.skipped.length ? `，${res.skipped.length} 个没放下（${res.skipped[0].reason}）` : ''
+    const grown = res.grown_groups.length ? `，${res.grown_groups.length} 个分组框往下长了一行` : ''
+    setBanner(`${label}：放上 ${res.placed.length} 个草稿${grown}${skipped}`, res.placed.length ? '' : 'error')
+    if (res.placed.length === 1) gotoNode(res.placed[0].id)
+  } catch (err) {
+    const detailMsg = err.body?.detail?.message || err.body?.detail || err.message
+    setBanner(`放置失败：${detailMsg}`, 'error')
+    if (err.status === 409) await load()
+  } finally {
+    placing.value = false
+  }
+}
+
+const placeOne = (item) => place({ ids: [item.id] }, `放置「${item.name}」`)
+const placeAll = () => place({ ids: inboxItems.value.map((i) => i.id) }, '全部按建议放置')
+
+/** 从 Inbox 拖到画布：落点由鼠标决定，落在哪个分组框里就归哪个组。 */
+function onCanvasDrop(ev) {
+  const id = ev.dataTransfer?.getData('text/knowrary-node')
+  if (!id) return
+  ev.preventDefault()
+  const g = graph.value
+  const p = g.clientToLocal(ev.clientX, ev.clientY)
+  const gid = innermostGroupAt(p.x, p.y)
+  if (!gid) {
+    setBanner('松手的位置不在任何分组框里——拖到某个分组框内，或用「放进去」按钮', 'error')
+    return
+  }
+  place({ ids: [id], group: gid, at: { x: Math.round(p.x - 90), y: Math.round(p.y - 30) } }, `放置「${id}」`)
+}
+
+/** 命中点所在的最内层分组框（嵌套时取最小的那个）。 */
+function innermostGroupAt(x, y) {
+  const groups = layoutDoc.value?.groups || {}
+  let best = null
+  for (const [gid, box] of Object.entries(groups)) {
+    if (x < box.x || y < box.y || x > box.x + box.w || y > box.y + box.h) continue
+    if (!best || box.w * box.h < best.area) best = { gid, area: box.w * box.h }
+  }
+  return best?.gid || null
+}
+
+async function markReviewed(id) {
+  try {
+    const res = await postReview(id)
+    const next = new Set(dueIds.value)
+    next.delete(id)
+    dueIds.value = next
+    render()
+    if (showDigest.value) refreshDigest()
+    setBanner(`已记录第 ${res.reviews} 次复习，下次 ${res.next_due} 再来`)
+  } catch (err) {
+    setBanner(`记录复习失败：${err.message}`, 'error')
+  }
+}
+
+/** 定稿：草稿位置确认下来，金色虚线框变成正常卡片。只改 layout，不碰 md。 */
+function finalize(id) {
+  if (layoutDoc.value.nodes[id]?.state !== 'draft') return
+  queueIfChanged('node', id, { state: 'final' })
+  selected.value = describe(id)
+  render()
+  setBanner(`「${id}」已定稿`)
+}
+
+function toggleDigest() {
+  showDigest.value = !showDigest.value
+  if (showDigest.value) refreshDigest()
+}
+
 function addRef() {
   const target = selected.value?.id
   if (!target) return
@@ -707,6 +828,13 @@ onBeforeUnmount(() => {
         </ul>
       </span>
       <button title="在视口中心加一张便签（只存 layout，不进 md）" @click="addNote">＋便签</button>
+      <button :class="{ primary: inboxCount && !showInbox }" title="写好了还没上画布的节点"
+              @click="showInbox = !showInbox; showInbox && refreshInbox()">
+        Inbox<template v-if="inboxCount"> {{ inboxCount }}</template>
+      </button>
+      <button title="草稿 / 待复习 / 跨分组桥 / 重复候选" @click="toggleDigest">
+        欠账<template v-if="dueIds.size"> · 待复习 {{ dueIds.size }}</template>
+      </button>
       <span class="spacer" />
       <template v-if="preview">
         <button class="primary" @click="applyPreview">应用布局</button>
@@ -731,7 +859,9 @@ onBeforeUnmount(() => {
     <div v-if="banner" class="banner" :class="bannerKind">{{ banner }}</div>
 
     <main>
-      <div ref="canvasEl" class="canvas" />
+      <InboxTray v-if="showInbox" :items="inboxItems" :busy="placing"
+                 @place="placeOne" @place-all="placeAll" @close="showInbox = false" />
+      <div ref="canvasEl" class="canvas" @dragover.prevent @drop="onCanvasDrop" />
       <aside v-if="selected">
         <h3>{{ selected.name || selected.id }}</h3>
         <div class="desc">{{ selected.desc || '（无摘要）' }}</div>
@@ -749,6 +879,10 @@ onBeforeUnmount(() => {
           <button @click="editDesc">改摘要</button>
           <button @click="showRaw = !showRaw">{{ showRaw ? '收起原文' : '看 md 原文' }}</button>
           <button title="在当前视口放一张指向它的引用卡" @click="addRef">放引用卡</button>
+          <button v-if="dueIds.has(selected.id)" class="primary" title="记一次复习（只写 review-log.json）"
+                  @click="markReviewed(selected.id)">✓ 复习过了</button>
+          <button v-if="selected.placed?.state === 'draft'" class="primary"
+                  title="位置确认下来，不再是草稿（只改 layout）" @click="finalize(selected.id)">定稿</button>
         </div>
         <pre v-if="showRaw && detail" class="raw">{{ detail.raw }}</pre>
 
@@ -813,6 +947,9 @@ onBeforeUnmount(() => {
           </div>
         </template>
       </aside>
+
+      <DigestPanel v-if="showDigest" :digest="digest" @goto="gotoNode" @refresh="refreshDigest"
+                   @review="markReviewed" @close="showDigest = false" />
     </main>
     <div class="hint">拖空白平移 · 滚轮缩放 · shift+拖空白框选 · 拖节点到别的分组框内即改归属（松手 300ms 后自动保存，⌘Z 可撤销）·
       悬停/选中节点高亮它的边 · 点簇卡片放大进那个域（Esc 或「返回全景」退回）· 点「跨组 n 束」展开明细</div>
