@@ -119,6 +119,9 @@ function render({ view = 'keep' } = {}) {
   aggShown.value = cells.edges.length - edgesShown.value
   const keep = view === 'keep' ? { zoom: g.zoom(), translate: g.translate() } : null
   applyingViewport = true
+  // 这里保持"先 mount 再定视口"：结构视图指望 virtual 裁掉视口外的元素（几千 cell 的性能大头），
+  // 视口外的 cell 不渲染是它该有的样子，平移过去自然会补上。
+  // 历史视图不同——它一屏就是全部，所以那边反过来先定视口再建 cell（见 renderHistory）。
   mount(g, cells)
   if (keep) {
     g.zoomTo(keep.zoom)
