@@ -6,6 +6,7 @@ import {
 } from './api'
 import InboxTray from './panels/InboxTray.vue'
 import DigestPanel from './panels/DigestPanel.vue'
+import ImagePicker from './panels/ImagePicker.vue'
 import { clone, createHistory, diffPatch, isEmptyPatch } from './canvas/history'
 import { createPatcher } from './canvas/patcher'
 import { computeCollapsed } from './canvas/lod'
@@ -48,6 +49,7 @@ const showDigest = ref(false)
 const digest = shallowRef(null)          // GET /api/digest：欠账清单
 const dueIds = shallowRef(new Set())     // 今天该复习的节点，画布上点一个金色小圆点
 const placing = ref(false)
+const showPicker = ref(false)   // 贴图面板
 const autoLod = ref(true)                // 缩小自动折叠成簇卡片（设计文档 3.7）
 const focusGroup = ref(null)             // 聚焦的域：点簇卡片进入，只展开它
 const search = ref('')                   // 工具条搜索框
@@ -212,7 +214,12 @@ function bindEvents(g) {
     loadDetail(node.id)
   }))
   g.on('node:unselected', safe(() => { selected.value = null; detail.value = null; focus(null) }))
-  g.on('blank:click', safe(() => { selected.value = null; detail.value = null; focus(null) }))
+  g.on('blank:click', safe(() => {
+    selected.value = null
+    detail.value = null
+    focus(null)
+    g.getEdges().forEach((e) => e.removeTools())   // 顺手摘掉拐点手柄
+  }))
   // 悬停即高亮：不点也能看清一个节点牵着哪些线
   g.on('node:mouseenter', safe(({ node }) => { if (node.shape === 'kg-node') focus(node.id) }))
   g.on('node:mouseleave', safe(() => { focus(selected.value?.id || null) }))
@@ -225,17 +232,53 @@ function bindEvents(g) {
     if (node.shape === 'kg-note') editNote(node.id.slice(5))
     else if (node.shape === 'kg-group') exitGroup()   // 双击域的空白处退回全景
   }))
-  // 点聚合边展开这对分组之间的明细，再点收起
+  g.on('node:resized', safe(({ node }) => {
+    if (!ready.value || node.shape !== 'kg-image') return
+    const { width, height } = node.size()
+    const pos = node.position()
+    saveList('img', (item) => (item.id === node.id.slice(4)
+      ? { ...item, x: Math.round(pos.x), y: Math.round(pos.y), w: Math.round(width), h: Math.round(height) }
+      : item))
+  }))
+  // 点聚合边展开这对分组之间的明细，再点收起；点普通边则挂上拐点手柄
   g.on('edge:click', safe(({ edge }) => {
     const data = edge.getData() || {}
-    if (data.kind !== 'agg') return
-    const next = new Set(expanded.value)
-    next.has(data.pair) ? next.delete(data.pair) : next.add(data.pair)
-    expanded.value = next
-    render()
+    if (data.kind === 'agg') {
+      const next = new Set(expanded.value)
+      next.has(data.pair) ? next.delete(data.pair) : next.add(data.pair)
+      expanded.value = next
+      render()
+      return
+    }
+    editVertices(edge)
+  }))
+  g.on('edge:dblclick', safe(({ edge }) => {
+    if ((edge.getData() || {}).kind !== 'edge') return
+    edge.setVertices([])
+    edge.removeTools()
+    patcher.value.queueEdge(edge.id, null)       // 删掉这条记录，边回到默认走线
+    const edges = { ...(layoutDoc.value.edges || {}) }
+    delete edges[edge.id]
+    layoutDoc.value = { ...layoutDoc.value, edges }
+    setBanner('已清掉这条边的手工拐点')
+  }))
+  g.on('edge:change:vertices', safe(({ edge }) => {
+    if (!ready.value || (edge.getData() || {}).kind !== 'edge') return
+    const vertices = edge.getVertices().map((v) => ({ x: Math.round(v.x), y: Math.round(v.y) }))
+    const style = { vertices, router: layoutDoc.value.edges?.[edge.id]?.router || null }
+    layoutDoc.value = { ...layoutDoc.value, edges: { ...(layoutDoc.value.edges || {}), [edge.id]: style } }
+    patcher.value.queueEdge(edge.id, style)
   }))
   g.on('scale', safe(onZoom))
   g.on('translate', safe(() => saveViewport()))
+}
+
+/** 给边挂上拐点手柄：拖圆点造拐点，双击边清空。别的边先摘掉手柄，画面才不乱。 */
+function editVertices(edge) {
+  const g = graph.value
+  g.getEdges().forEach((e) => e.id !== edge.id && e.removeTools())
+  edge.addTools([{ name: 'vertices', args: { attrs: { r: 5, fill: '#fff', stroke: '#2d6cdf', strokeWidth: 2 } } }])
+  setBanner('拖动边上的圆点调拐点，双击这条边清掉拐点')
 }
 
 function saveViewport() {
@@ -544,8 +587,10 @@ function addRef() {
 }
 
 /** 便签 / 引用卡被拖动或编辑后，整表写回（它们是带 id 的小集合）。 */
+const LIST_KEY = { note: 'notes', ref: 'refs', img: 'images' }
+
 function saveList(kind, updater) {
-  const key = kind === 'note' ? 'notes' : 'refs'
+  const key = LIST_KEY[kind]
   const items = (layoutDoc.value[key] || []).map(updater).filter(Boolean)
   layoutDoc.value = { ...layoutDoc.value, [key]: items }
   patcher.value.queueList(key, items)
@@ -554,6 +599,17 @@ function saveList(kind, updater) {
 function moveDecoration(cellId, x, y) {
   const [kind, id] = cellId.split(':')
   saveList(kind, (item) => (item.id === id ? { ...item, x, y } : item))
+}
+
+/** 贴一张图：落在当前视口中心，大小先给 320×200，之后可以拖角拉伸。 */
+function addImage(file) {
+  const images = [...(layoutDoc.value.images || []),
+                  { id: newId('im'), file, ...viewportCenter(), w: 320, h: 200 }]
+  layoutDoc.value = { ...layoutDoc.value, images }
+  patcher.value.queueList('images', images)
+  showPicker.value = false
+  render()
+  setBanner(`已贴上 ${file}（拖角可以拉伸，只改 layout）`)
 }
 
 function editNote(id) {
@@ -828,6 +884,8 @@ onBeforeUnmount(() => {
         </ul>
       </span>
       <button title="在视口中心加一张便签（只存 layout，不进 md）" @click="addNote">＋便签</button>
+      <button title="贴一张 assets/ 里的图（只存 layout，不进 md）"
+              @click="showPicker = !showPicker">＋图片</button>
       <button :class="{ primary: inboxCount && !showInbox }" title="写好了还没上画布的节点"
               @click="showInbox = !showInbox; showInbox && refreshInbox()">
         Inbox<template v-if="inboxCount"> {{ inboxCount }}</template>
@@ -859,6 +917,8 @@ onBeforeUnmount(() => {
     <div v-if="banner" class="banner" :class="bannerKind">{{ banner }}</div>
 
     <main>
+      <ImagePicker v-if="showPicker" @pick="addImage" @close="showPicker = false"
+                   @error="setBanner($event, 'error')" />
       <InboxTray v-if="showInbox" :items="inboxItems" :busy="placing"
                  @place="placeOne" @place-all="placeAll" @close="showInbox = false" />
       <div ref="canvasEl" class="canvas" @dragover.prevent @drop="onCanvasDrop" />

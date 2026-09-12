@@ -44,3 +44,12 @@ export const postPlace = (body) => request('/api/place', {
 
 /** 记一次复习：只写 review-log.json，不碰 md，也不碰 layout。 */
 export const postReview = (id) => request(`/api/review/${encodeURIComponent(id)}`, { method: 'POST' })
+
+// —— 阶段 5：vault 的 assets/ 图片 ——
+export const fetchAssets = () => request('/api/assets')
+
+/** 原始 body 直传（服务端不依赖 multipart）。name 会成为 assets/ 下的文件名。 */
+export const uploadAsset = (name, file) => request(
+  `/api/asset/${encodeURIComponent(name)}`,
+  { method: 'POST', headers: { 'Content-Type': file.type || 'application/octet-stream' }, body: file },
+)

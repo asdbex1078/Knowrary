@@ -671,6 +671,90 @@ async def case_finalize(page: Page, ck: Check) -> None:
     ck.add("定稿后不再是草稿", ck.layout()["nodes"]["己"]["state"] == "final", str(ck.layout()["nodes"]["己"]))
 
 
+# ---------------------------------------------------------------- 阶段 5：贴图与手工拐点
+
+PNG_1PX = bytes.fromhex("89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4"
+                        "890000000a49444154789c6360000002000100fdff03fa0000000049454e44ae426082")
+
+
+async def case_image(page: Page, ck: Check, vault: Path) -> None:
+    """贴图：选 assets/ 里的图 → 画布上出现 → 位置进 layout.images，md 不动。"""
+    (vault / "assets").mkdir(exist_ok=True)
+    (vault / "assets" / "示意图.png").write_bytes(PNG_1PX)
+    before = await md_size(vault)
+    await click_text(page, "header button", "＋图片")
+    thumbs = await poll(page, "document.querySelectorAll('aside.picker ul.thumbs li').length",
+                        lambda v: (v or 0) > 0, timeout=12)
+    ck.add("贴图面板列出 assets/ 里的图", (thumbs or 0) == 1, f"{thumbs} 张")
+    await page.ev("document.querySelector('aside.picker ul.thumbs li').click()")
+    await poll(page, "'x'", lambda _: bool(ck.layout()["images"]), timeout=12)
+    img = ck.layout()["images"][0]
+    ck.add("图片位置落进 layout.images", img["file"] == "示意图.png" and img["w"] == 320, str(img))
+    ck.add("贴图不碰 md", await md_size(vault) == before, "md 总长度未变")
+    drawn = await poll(page, "document.querySelectorAll('[data-shape=\"kg-image\"]').length",
+                       lambda v: (v or 0) > 0)
+    ck.add("图片画在画布上", (drawn or 0) > 0, f"{drawn} 个")
+    href = await page.ev("""document.querySelector('[data-shape="kg-image"] image')
+      ?.getAttribute('xlink:href') || document.querySelector('[data-shape="kg-image"] image')?.getAttribute('href') || ''""")
+    ck.add("图片指向服务的 assets 接口", "/api/asset/" in (href or ""), href or "没取到 href")
+
+
+async def case_edge_vertices(page: Page, ck: Check) -> None:
+    """手工拐点：点边挂手柄 → 拖出拐点存进 layout.edges → 双击清掉。"""
+    picked = await page.ev("""(() => {
+      const e = [...document.querySelectorAll('.x6-edge')]
+        .find((x) => !x.getAttribute('data-cell-id')?.startsWith('agg:'));
+      if (!e) return '';
+      return e.getAttribute('data-cell-id');
+    })()""")
+    ck.add("画布上有可编辑的普通边", bool(picked), picked or "只剩聚合束")
+    if not picked:
+        return
+
+    # X6 的 click 是 mousedown + mouseup 合成的，直接派发 click 事件它不认
+    await page.ev("""(() => {
+      const el = document.querySelector('[data-cell-id="%s"] path');
+      const r = el.getBoundingClientRect();
+      const x = Math.round(r.x + r.width / 2), y = Math.round(r.y + r.height / 2);
+      for (const t of ['mousedown', 'mouseup']) {
+        el.dispatchEvent(new MouseEvent(t, { bubbles: true, cancelable: true, clientX: x, clientY: y,
+          view: window, button: 0, buttons: t === 'mouseup' ? 0 : 1 }));
+      }
+      return 'clicked';
+    })()""" % picked)
+    tool = await poll(page, "document.querySelectorAll('.x6-edge-tool-vertex-path').length", lambda v: (v or 0) > 0)
+    ck.add("点边挂上拐点手柄", (tool or 0) > 0, f"{tool} 条工具轨迹")
+
+    # 拐点是在工具自己画的那条 path 上按下才生成的（x6-edge-tool-vertex-path），不是边本身的 path
+    moved = await page.ev("""(() => {
+      const tool = document.querySelector('.x6-edge-tool-vertex-path');
+      if (!tool) return 'no-tool';
+      const r = tool.getBoundingClientRect();
+      const x = Math.round(r.x + r.width / 2), y = Math.round(r.y + r.height / 2);
+      const fire = (t, px, py, node) => (node || document.elementFromPoint(px, py) || document.body)
+        .dispatchEvent(new MouseEvent(t, { bubbles: true, cancelable: true, clientX: px, clientY: py,
+          view: window, button: 0, buttons: t === 'mouseup' ? 0 : 1 }));
+      fire('mousedown', x, y, tool);                 // 在工具的 path 上按下 → 新建一个拐点
+      for (let i = 1; i <= 6; i++) fire('mousemove', x, y - i * 8, null);
+      fire('mouseup', x, y - 48, null);
+      return JSON.stringify({ x, y });
+    })()""")
+    ck.add("在边上拖出拐点", (moved or "").startswith("{"), str(moved))
+    await poll(page, "'x'", lambda _: bool(ck.layout()["edges"].get(picked, {}).get("vertices")), timeout=12)
+    style = ck.layout()["edges"].get(picked, {})
+    ck.add("拐点存进 layout.edges", bool(style.get("vertices")), str(style))
+
+    await page.ev("""(() => {
+      const el = document.querySelector('[data-cell-id="%s"] path');
+      const r = el.getBoundingClientRect();
+      el.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, cancelable: true, view: window,
+        clientX: Math.round(r.x + r.width / 2), clientY: Math.round(r.y + r.height / 2) }));
+      return 'ok';
+    })()""" % picked)
+    await poll(page, "'x'", lambda _: picked not in ck.layout()["edges"], timeout=12)
+    ck.add("双击清掉手工拐点", picked not in ck.layout()["edges"], str(ck.layout()["edges"]))
+
+
 async def scenarios(page: Page, api: str, results: list) -> None:
     ck = Check(api)
     await case_initial(page, ck)
@@ -690,6 +774,8 @@ async def scenarios(page: Page, api: str, results: list) -> None:
     await case_due_badge(page, ck)
     await case_drag_from_inbox(page, ck, VAULT_HOLDER[0])
     await case_finalize(page, ck)
+    await case_image(page, ck, VAULT_HOLDER[0])
+    await case_edge_vertices(page, ck)
     results.extend(ck.items)
 
 

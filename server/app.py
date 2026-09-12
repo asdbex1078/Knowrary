@@ -8,12 +8,12 @@ import difflib
 from pathlib import Path
 from urllib.parse import quote
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import curation
+from . import assets, curation
 from .contracts import (ChangeResult, ChangeSet, FileDiff, InboxRead, LayoutPatch, LayoutRead, LayoutSaved,
                         NodeDetail, PlaceRequest, PlaceResult, ReviewDone)
 from .index_service import current_index, invalidate
@@ -137,6 +137,32 @@ def post_review(node_id: str) -> ReviewDone:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
+@app.get("/api/assets")
+def get_assets() -> dict:
+    """vault 的 assets/ 里有哪些图片。位置记在 layout.images，文件本身是用户的东西。"""
+    return {"items": assets.listing(vault_path())}
+
+
+@app.get("/api/asset/{name}")
+def get_asset(name: str) -> FileResponse:
+    try:
+        path = assets.resolve(vault_path(), name)
+    except assets.AssetRejected as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail=f"assets/{name} 不存在")
+    return FileResponse(str(path), media_type=assets.MIME.get(path.suffix.lower()))
+
+
+@app.post("/api/asset/{name}")
+async def post_asset(name: str, request: Request, overwrite: bool = False) -> dict:
+    """上传一张图片到 assets/。原始 body 直传，不引入 multipart 依赖。"""
+    try:
+        return assets.save(vault_path(), name, await request.body(), overwrite=overwrite)
+    except assets.AssetRejected as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
 @app.post("/api/changes", response_model=ChangeResult)
 def post_changes(changeset: ChangeSet) -> ChangeResult:
     """Markdown 写回的唯一入口：默认只预览，dry_run=false 才落盘（落盘前自动备份）。"""
@@ -188,5 +214,3 @@ def _mount_web() -> None:
 _mount_web()
 
 
-def vault_assets_dir() -> Path:
-    return vault_path() / "assets"

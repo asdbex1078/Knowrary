@@ -107,3 +107,15 @@ aside.digest a { color: #2d6cdf; cursor: pointer; text-decoration: none; }
 aside.digest a:hover { text-decoration: underline; }
 .warn { color: #a1650b; }
 :root[data-theme='dark'] .warn { color: #e0b45f; }
+
+/* 贴图面板（阶段 5） */
+aside.picker { width: 260px; border-left: none; border-right: 1px solid var(--line); }
+aside.picker h3 { display: flex; align-items: center; gap: 8px; }
+aside.picker h3 .mini { margin-left: auto; }
+aside.picker input[type='file'] { font: inherit; max-width: 100%; }
+ul.thumbs { list-style: none; padding: 0; margin: 10px 0; }
+ul.thumbs li { border: 1px solid var(--line); border-radius: 6px; padding: 6px; margin-bottom: 8px;
+  cursor: pointer; background: var(--btn); }
+ul.thumbs li:hover { background: var(--btn-hover); }
+ul.thumbs img { width: 100%; height: 96px; object-fit: contain; display: block; background: var(--chip);
+  border-radius: 4px; }

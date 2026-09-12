@@ -6,12 +6,12 @@ const DELAY = 300
 const VIEWPORT_DELAY = 1000
 
 export function createPatcher({ getRevision, setRevision, onStatus, onConflict }) {
-  let pending = { nodes: {}, groups: {}, viewport: null, lists: {} }
+  let pending = { nodes: {}, groups: {}, edges: {}, viewport: null, lists: {} }
   let timer = null
   let inflight = false
 
   const empty = (p) => !p.viewport && !Object.keys(p.nodes).length && !Object.keys(p.groups).length
-    && !Object.keys(p.lists || {}).length
+    && !Object.keys(p.edges || {}).length && !Object.keys(p.lists || {}).length
 
   function schedule(delay) {
     if (timer) clearTimeout(timer)
@@ -26,6 +26,13 @@ export function createPatcher({ getRevision, setRevision, onStatus, onConflict }
 
   function queueGroup(id, patch) {
     pending.groups[id] = { ...(pending.groups[id] || {}), ...patch }
+    onStatus?.('dirty')
+    schedule(DELAY)
+  }
+
+  /** 手工调过的边（拐点 / 路由）。传 null 表示删掉这条记录，边回到默认走线。 */
+  function queueEdge(id, style) {
+    pending.edges[id] = style
     onStatus?.('dirty')
     schedule(DELAY)
   }
@@ -46,6 +53,7 @@ export function createPatcher({ getRevision, setRevision, onStatus, onConflict }
     pending = {
       nodes: { ...snapshot.nodes, ...pending.nodes },
       groups: { ...snapshot.groups, ...pending.groups },
+      edges: { ...snapshot.edges, ...pending.edges },
       viewport: pending.viewport || snapshot.viewport,
       lists: { ...snapshot.lists, ...pending.lists },
     }
@@ -55,11 +63,12 @@ export function createPatcher({ getRevision, setRevision, onStatus, onConflict }
     if (inflight || empty(pending)) return
     inflight = true
     const snapshot = pending
-    pending = { nodes: {}, groups: {}, viewport: null, lists: {} }
+    pending = { nodes: {}, groups: {}, edges: {}, viewport: null, lists: {} }
     const body = { base_revision: getRevision() }
     Object.assign(body, snapshot.lists || {})
     if (Object.keys(snapshot.nodes).length) body.nodes = snapshot.nodes
     if (Object.keys(snapshot.groups).length) body.groups = snapshot.groups
+    if (Object.keys(snapshot.edges).length) body.edges = snapshot.edges
     if (snapshot.viewport) body.viewport = snapshot.viewport
     onStatus?.('saving')
     try {
@@ -84,5 +93,6 @@ export function createPatcher({ getRevision, setRevision, onStatus, onConflict }
     }
   }
 
-  return { queueNode, queueGroup, queueViewport, queueList, flush, pendingCount: () => Object.keys(pending.nodes).length + Object.keys(pending.groups).length }
+  return { queueNode, queueGroup, queueEdge, queueViewport, queueList, flush,
+    pendingCount: () => Object.keys(pending.nodes).length + Object.keys(pending.groups).length }
 }

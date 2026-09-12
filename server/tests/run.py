@@ -22,6 +22,7 @@ from fastapi.testclient import TestClient  # noqa: E402
 
 from server import index_service  # noqa: E402
 from server.app import app  # noqa: E402
+from server import assets as server_assets  # noqa: E402
 from server.paths import core  # noqa: E402
 
 CASES: list = []
@@ -469,6 +470,74 @@ def review_复习一次后到期日按间隔推进():
 def review_未知节点404():
     c, _, _ = with_inbox_node()
     assert c.post("/api/review/查无此人").status_code == 404
+
+
+# ---------------------------------------------------------------- 阶段 5：图片资源
+
+PNG_1PX = bytes.fromhex("89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4"
+                        "890000000a49444154789c6360000002000100fdff03fa0000000049454e44ae426082")
+
+
+@case
+def 图片上传后可列出可读取():
+    c, vault = client()
+    assert c.get("/api/assets").json()["items"] == []
+    r = c.post("/api/asset/图-1.png", content=PNG_1PX)
+    assert r.status_code == 200, r.text
+    assert r.json()["file"] == "图-1.png" and r.json()["size"] == len(PNG_1PX), r.json()
+    assert (vault / "assets" / "图-1.png").read_bytes() == PNG_1PX
+
+    items = c.get("/api/assets").json()["items"]
+    assert [i["file"] for i in items] == ["图-1.png"], items
+    got = c.get(items[0]["url"])
+    assert got.status_code == 200 and got.content == PNG_1PX
+    assert got.headers["content-type"] == "image/png", got.headers
+
+
+@case
+def 图片重名与非图片与越界一律拒绝():
+    c, vault = client()
+    c.post("/api/asset/图-1.png", content=PNG_1PX)
+    assert c.post("/api/asset/图-1.png", content=PNG_1PX).status_code == 422, "重名应被拒"
+    assert c.post("/api/asset/图-1.png?overwrite=true", content=PNG_1PX).status_code == 200
+    assert c.post("/api/asset/坏.txt", content=b"x").status_code == 422, "非图片应被拒"
+    assert c.post("/api/asset/空.png", content=b"").status_code == 422, "空文件应被拒"
+    for bad in ("../逃逸.png", "子目录/图.png", ".hidden.png"):
+        try:
+            server_assets.resolve(vault, bad)
+            raise AssertionError(f"`{bad}` 应该被拒绝")
+        except server_assets.AssetRejected:
+            pass
+    assert not list((vault / "assets").glob("*.txt")), "被拒的上传落了盘"
+
+
+@case
+def 图片位置进layout不碰md():
+    c, vault = client()
+    c.post("/api/asset/图-1.png", content=PNG_1PX)
+    digest = md_digest(vault)
+    layout = get_layout(c)["layout"]
+    r = patch(c, {"base_revision": layout["revision"],
+                  "images": [{"id": "im1", "file": "图-1.png", "x": 10, "y": 20, "w": 320, "h": 200}]})
+    assert r.status_code == 200, r.text
+    saved = get_layout(c)["layout"]["images"]
+    assert saved[0]["file"] == "图-1.png" and saved[0]["w"] == 320, saved
+    assert md_digest(vault) == digest, "贴图改了 md"
+
+
+@case
+def 边拐点存进layout并可删除():
+    c, _ = client()
+    layout = get_layout(c)["layout"]
+    key = "a->b#部件"
+    r = patch(c, {"base_revision": layout["revision"],
+                  "edges": {key: {"vertices": [{"x": 100, "y": 200}], "router": "orth"}}})
+    assert r.status_code == 200, r.text
+    saved = get_layout(c)["layout"]["edges"]
+    assert saved[key]["vertices"] == [{"x": 100.0, "y": 200.0}] and saved[key]["router"] == "orth", saved
+    r = patch(c, {"base_revision": saved and get_layout(c)["layout"]["revision"], "edges": {key: None}})
+    assert r.status_code == 200, r.text
+    assert key not in get_layout(c)["layout"]["edges"], "删不掉手工拐点"
 
 
 @case

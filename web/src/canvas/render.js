@@ -2,9 +2,10 @@
 // 投影层只放当前应该可见的元素；阶段 5 的 LOD 会在这里按缩放级别裁剪。
 import { Graph } from '@antv/x6'
 import { Selection } from '@antv/x6-plugin-selection'
+import { Transform } from '@antv/x6-plugin-transform'
 import { clusterSummary, containerOf } from './lod'
 import { CLUSTER_H, CLUSTER_W, FAMILY_STYLE, clusterBox, NODE_H, NODE_W, aggregateAttrs, aggregateLabel, clusterAttrs,
-         edgeAttrs, groupAttrs, nodeAttrs, noteAttrs, paletteFor, refAttrs, registerShapes,
+         edgeAttrs, groupAttrs, imageAttrs, nodeAttrs, noteAttrs, paletteFor, refAttrs, registerShapes,
          sizeFor, tokens } from './shapes'
 
 export const LABEL_ZOOM = 0.8 // 边标签只在放大到这个比例以上才画（性能守则 4）
@@ -43,6 +44,9 @@ export function createGraph(container) {
   // 拖空白 = 平移；shift + 拖空白 = 框选
   graph.use(new Selection({ enabled: true, multiple: true, rubberband: true, modifiers: 'shift',
     showNodeSelectionBox: true, filter: (cell) => cell.shape === 'kg-node' }))
+  // 只有图片可以拉伸：知识点卡片的大小是按 pageRank 定的，手动改会让"大小=重要性"这条读图规则失效
+  graph.use(new Transform({ resizing: { enabled: (node) => node.shape === 'kg-image', minWidth: 80,
+    minHeight: 60, preserveAspectRatio: true }, rotating: false }))
   return graph
 }
 
@@ -116,6 +120,14 @@ export function buildCells(index, layout, options = {}) {
       id: `note:${note.id}`, shape: 'kg-note', x: note.x, y: note.y,
       width: note.w || 190, height: note.h || 74, zIndex: 11,
       attrs: noteAttrs(note), data: { kind: 'note', raw: note },
+    })
+  }
+  for (const img of layout.images || []) {
+    if (img.group && collapsed.has(img.group)) continue
+    nodes.push({
+      id: `img:${img.id}`, shape: 'kg-image', x: img.x, y: img.y,
+      width: img.w || 320, height: img.h || 200, zIndex: 2,     // 压在节点下面，当背景板用
+      attrs: imageAttrs(img), data: { kind: 'image', raw: img },
     })
   }
   for (const ref of layout.refs || []) {

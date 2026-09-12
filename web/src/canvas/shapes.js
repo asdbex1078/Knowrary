@@ -160,6 +160,20 @@ export function registerShapes() {
     },
   }, true)
 
+  // 图片：白板上贴的一张图（架构图、手绘稿）。文件在 vault 的 assets/ 里，位置存 layout.images
+  Graph.registerNode('kg-image', {
+    inherit: 'rect',
+    width: 320, height: 200,
+    markup: [{ tagName: 'rect', selector: 'body' }, { tagName: 'image', selector: 'img' },
+             { tagName: 'text', selector: 'caption' }],
+    attrs: {
+      body: { rx: 8, ry: 8, fill: 'transparent', stroke: '#c6d0da', strokeWidth: 1, class: 'kg-card' },
+      img: { refWidth: '100%', refHeight: '100%', preserveAspectRatio: 'xMidYMid meet' },
+      caption: { refX: 8, refY2: -8, fontSize: 10.5, textAnchor: 'start', opacity: 0.75,
+                 textWrap: { width: -16, ellipsis: true } },
+    },
+  }, true)
+
   Graph.registerNode('kg-cluster', {
     inherit: 'rect',
     width: CLUSTER_W,
@@ -234,6 +248,15 @@ export function clusterAttrs(name, summary, color = NEUTRAL, box = { w: CLUSTER_
 }
 
 /** 节点视觉：按所属分组配色，按度数定档，draft 虚线、stub 灰调。 */
+/** 图片元素的属性：图源走服务的 /api/asset/，标题就是文件名。 */
+export function imageAttrs(image) {
+  return {
+    img: { 'xlink:href': `/api/asset/${encodeURIComponent(image.file)}` },
+    body: { stroke: tokens().groupStroke },
+    caption: { text: image.file, fill: tokens().edgeLabel },
+  }
+}
+
 export function nodeAttrs(indexNode, layoutNode, color = NEUTRAL, due = false) {
   const draft = layoutNode?.state === 'draft'
   const stub = !!indexNode?.stub
