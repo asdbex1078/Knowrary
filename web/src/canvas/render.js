@@ -59,9 +59,14 @@ export function createGraph(container) {
     container,
     autoResize: true,
     // 异步渲染关掉：切布局时若上一次 fromJSON 还没渲染完，X6 会丢掉这批 cell（模型里有、DOM 里没有）。
-    // 这个规模（几百到几千）用不上它，virtual 的视口裁剪才是性能大头（设计文档附录 A 压测结论）。
+    // 这个规模（几百到几千）用不上它。
     async: false,
-    virtual: true, // 只渲染视口内元素
+    // 虚拟渲染（只画视口内的 cell）关掉：它按"当前可视区"决定一个 cell 建好后要不要摆位，
+    // 而补画链路只认 WAITING 状态的 view——实测有 view 卡在"已挂载但更新没消费"，
+    // 于是平移 / 缩小之后新进视野的节点再也不出现（看得见边、看不见节点）。
+    // 这个规模（72 节点 + LOD 折叠，一屏几百个 cell）全量渲染毫无压力，
+    // 真正的降维手段是 LOD 折叠成簇卡片，不是 virtual。等真上几千节点再回头评估（阶段 8）。
+    virtual: false,
     background: { color: tokens().bg },
     grid: { visible: true, size: 24, type: 'dot', args: { color: tokens().grid, thickness: 1 } },
     panning: { enabled: true, eventTypes: ['leftMouseDown', 'rightMouseDown'] },
@@ -245,16 +250,27 @@ function splitEdges(visibleEdges, layout, options) {
   const detail = []
   const groups = new Map()
   for (const e of visibleEdges) {
+    const clustered = insideCluster(e.source) || insideCluster(e.target)   // 有一端被折进簇里
     const a = endpointOf(e.source)
     const b = endpointOf(e.target)
     const pair = `${a}->${b}`
-    const bothVisible = a === layout.nodes[e.source]?.group && b === layout.nodes[e.target]?.group
-    const forced = insideCluster(e.source) || insideCluster(e.target)   // 簇一定走聚合
-    if (a === b) continue                                              // 同一个容器内部，不画跨组边
-    if (!forced && (!aggregate || !bothVisible || expanded.has(pair))) {
+    // 两端落进同一个簇：那是簇的内部关系，簇卡片已经代表了它，不画
+    if (clustered && a === b) continue
+    const gs = layout.nodes[e.source]?.group
+    const gt = layout.nodes[e.target]?.group
+    // 两端都摆在画布上、又同属一个分组：画节点到节点的真实连线。
+    // 聚合只针对跨分组的边——早先这里用 endpointOf（未折叠时返回所属分组）算出的
+    // a === b 一并 continue 掉了，等于把所有组内连线都丢了（实测 21 条一条不剩）。
+    if (!clustered && gs && gs === gt) {
       detail.push(e)
       continue
     }
+    const bothGrouped = a === gs && b === gt
+    if (!clustered && (!aggregate || !bothGrouped || expanded.has(pair))) {
+      detail.push(e)
+      continue
+    }
+    if (a === b) continue                     // 端点重合就画不出边（裸节点落在同一个容器上）
     if (!groups.has(pair)) groups.set(pair, [])
     groups.get(pair).push(e)
   }
@@ -297,18 +313,6 @@ function edgeLabel(edge) {
   }
 }
 
-/**
- * 程序化改完视口后，立刻把虚拟渲染的可视区同步一次。
- *
- * X6 的虚拟渲染只在 translate / scale / resize 事件上按 200ms 节流刷新可视区，
- * 而 mount() 之后紧接着 zoomToFit 落在同一个节流窗口里：视口外的 cell 建了 DOM
- * 却没拿到 transform，看上去就是"一堆节点挤在左上角不见了"。历史视图又宽又扁，
- * 首屏之外的部分几乎全中招。
- */
-export function syncRenderArea(graph) {
-  graph.renderer?.setRenderArea?.(graph.getGraphArea())
-}
-
 export function mount(graph, cells) {
   graph.fromJSON(cells)
   // fromJSON 之后再建父子关系：分组移动时 X6 自动带着子元素走
@@ -319,6 +323,23 @@ export function mount(graph, cells) {
     const child = graph.getCellById(cell.id)
     if (parent && child) parent.addChild(child)
   }
+}
+
+/** layout 里所有元素占的框（不建 cell 也能算，用来判断存的视口还值不值得恢复）。 */
+export function contentBBox(layout) {
+  let x0 = Infinity; let y0 = Infinity; let x1 = -Infinity; let y1 = -Infinity
+  const eat = (b, dw = NODE_W, dh = NODE_H) => {
+    if (typeof b?.x !== 'number' || typeof b?.y !== 'number') return
+    x0 = Math.min(x0, b.x)
+    y0 = Math.min(y0, b.y)
+    x1 = Math.max(x1, b.x + (b.w || dw))
+    y1 = Math.max(y1, b.y + (b.h || dh))
+  }
+  Object.values(layout?.groups || {}).forEach((g) => eat(g))
+  Object.values(layout?.nodes || {}).forEach((n) => eat(n))
+  for (const key of ['notes', 'refs', 'images']) (layout?.[key] || []).forEach((i) => eat(i))
+  if (!Number.isFinite(x0)) return null
+  return { x: x0, y: y0, width: Math.max(x1 - x0, 1), height: Math.max(y1 - y0, 1) }
 }
 
 export function applyViewport(graph, viewport) {

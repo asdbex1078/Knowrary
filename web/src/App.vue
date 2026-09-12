@@ -11,8 +11,8 @@ import { clone, createHistory, diffPatch, isEmptyPatch } from './canvas/history'
 import { createPatcher } from './canvas/patcher'
 import { computeCollapsed } from './canvas/lod'
 import {
-  LABEL_ZOOM, applyEdgeLabels, applyViewport, buildCells, buildHistoryCells, createGraph, currentViewport,
-  highlightEdges, mount, movedPositions, syncRenderArea,
+  LABEL_ZOOM, applyEdgeLabels, applyViewport, buildCells, buildHistoryCells, contentBBox, createGraph,
+  currentViewport, highlightEdges, mount, movedPositions,
 } from './canvas/render'
 import { timelineOptions } from './canvas/timeline'
 import { communityLayout, compareWithGroups } from './canvas/communities'
@@ -82,6 +82,15 @@ const statusText = computed(() => ({
 }[status.value] || status.value))
 
 const visibleFamilies = () => new Set(FAMILIES.filter((f) => visible[f]))
+const shownFamilies = computed(() => FAMILIES.filter((f) => visible[f]).length)
+
+/** 工具条上的下拉互斥：开一个就把别的关上（原生 details 不会自己关）。 */
+function closeOthers(ev) {
+  if (!ev.target.open) return
+  document.querySelectorAll('header details.menu[open]').forEach((d) => {
+    if (d !== ev.target) d.open = false
+  })
+}
 
 function setBanner(text, kind = '') {
   banner.value = text
@@ -100,8 +109,14 @@ async function load() {
   refreshInbox()
   refreshDue()
   ready.value = false
-  render({ view: 'stored' })
-  reportProblems(index, layout)
+  const refit = !storedViewportUsable()
+  render({ view: refit ? 'fit' : 'stored' })
+  if (refit) {
+    applyingViewport = true      // 自动贴合不算用户操作，别把视口写回去
+    fitStable()
+    applyingViewport = false
+  }
+  reportProblems(index, layout, refit)
 }
 
 // view: 'stored' 用 layout 里存的视口（首次加载）/ 'fit' 适应内容（换布局后）/ 'keep' 保持当前（切族、展开聚合束）
@@ -119,9 +134,6 @@ function render({ view = 'keep' } = {}) {
   aggShown.value = cells.edges.length - edgesShown.value
   const keep = view === 'keep' ? { zoom: g.zoom(), translate: g.translate() } : null
   applyingViewport = true
-  // 这里保持"先 mount 再定视口"：结构视图指望 virtual 裁掉视口外的元素（几千 cell 的性能大头），
-  // 视口外的 cell 不渲染是它该有的样子，平移过去自然会补上。
-  // 历史视图不同——它一屏就是全部，所以那边反过来先定视口再建 cell（见 renderHistory）。
   mount(g, cells)
   if (keep) {
     g.zoomTo(keep.zoom)
@@ -131,8 +143,32 @@ function render({ view = 'keep' } = {}) {
   } else {
     applyViewport(g, layoutDoc.value.viewport)
   }
-  syncRenderArea(g)
   applyingViewport = false
+}
+
+/**
+ * 存下来的视口还值得恢复吗。
+ *
+ * 视口是跟着操作实时保存的，所以很容易存成"缩到底"或者"平移跑飞了"的状态
+ * （X6 的缩放下限是 0.05，那时一个节点在屏幕上只有几个像素）——下次打开就是
+ * 一小坨或者一片空白，看上去像画布坏了。这种情况直接改用适应窗口。
+ */
+function storedViewportUsable() {
+  const box = contentBBox(layoutDoc.value)
+  if (!box) return true
+  const vp = layoutDoc.value.viewport || {}
+  const zoom = vp.zoom || 0.8
+  const el = graph.value.container
+  const w = el.clientWidth || 1200
+  const h = el.clientHeight || 800
+  // 比"整张图刚好铺满窗口"还小一半以上 → 一个节点只剩几个像素，什么都看不清
+  const fitZoom = Math.min((w - 100) / box.width, (h - 100) / box.height)
+  if (zoom < fitZoom * 0.5) return false
+  // 视口中心离内容框还有一屏以上 → 打开是一片空白
+  const cx = vp.cx ?? 0
+  const cy = vp.cy ?? 0
+  return cx > box.x - w / zoom && cx < box.x + box.width + w / zoom
+    && cy > box.y - h / zoom && cy < box.y + box.height + h / zoom
 }
 
 const staleDays = (n) => (n.placedAt ? Math.floor((Date.now() - Date.parse(n.placedAt)) / 86400000) : 0)
@@ -154,14 +190,11 @@ function renderHistory({ view = 'fit' } = {}) {
   })
   histPlan.value = cells.plan
   applyingViewport = true
-  // 先定视口再建 cell：X6 的调度器按"当前可视区"决定一个 cell 建好之后要不要摆位，
-  // 先 mount 再改视口的话，落在旧视口之外的 cell 会建出 DOM 却没有 transform——
-  // 时间轴又宽又扁，首屏之外的节点几乎全中招，看上去就是"全堆在左上角"。
+  // 先定视口再建 cell：时间轴的宽高比极端，先按算好的框定缩放，mount 出来就是完整一屏
   if (view !== 'keep') {
     g.zoomToRect({ x: -80, y: 0, width: cells.plan.width + 160, height: cells.plan.height + 60 },
                  { maxScale: 1, minScale: 0.35 })
   }
-  syncRenderArea(g)
   mount(g, cells)
   applyingViewport = false
   const d = cells.plan.diagnostics
@@ -220,8 +253,9 @@ function toggleTimeline(id) {
   renderHistory({ view: 'fit' })
 }
 
-function reportProblems(index, layout) {
+function reportProblems(index, layout, refit = false) {
   const parts = []
+  if (refit) parts.push('上次关掉时画面缩得太小（或平移出了图外），已自动适应窗口')
   if (index.errors.length) parts.push(`索引有 ${index.errors.length} 个错误（knowrary check 看详情）`)
   if (layout.orphans.length) parts.push(`${layout.orphans.length} 条孤立布局记录（红色虚线节点，不会自动删除）`)
   if (layout.generated) parts.push('已按 field / 目录生成初始布局，拖动即保存')
@@ -388,6 +422,9 @@ function saveViewport() {
 function onZoom() {
   const g = graph.value
   saveViewport()
+  // 历史视图没有 LOD 折叠：缩放就只是看大看小，走结构视图那套会每滚一格就整图重建，
+  // 还会把结构视图的折叠集合改掉（切回去时折叠状态就错了）
+  if (mode.value === 'history') return
   const next = computeCollapsed(layoutDoc.value, g.zoom(),
     { auto: autoLod.value, focus: focusGroup.value })
   const changed = next.size !== collapsedIds.value.size
@@ -886,10 +923,36 @@ function toggleTheme() {
 
 function fit() {
   ready.value = true   // 点按钮属于用户操作，之后的视口值该落盘
-  graph.value.zoomToFit(mode.value === 'history'
-    ? { padding: 40, maxScale: 1, minScale: 0.35 }
-    : { padding: 60, maxScale: 1 })
-  syncRenderArea(graph.value)
+  fitStable()
+}
+
+/**
+ * 贴合到全部内容。
+ *
+ * 按 layout 里所有元素的框来贴，而不是按画布上当前画出来的东西：缩放会改变 LOD 折叠、
+ * 折叠又会改变画布上的内容大小，跟着当前内容贴会来回打架（实测会停在放大后的局部）。
+ * layout 的框跟折叠无关，一步到位。
+ */
+function fitStable() {
+  const g = graph.value
+  if (mode.value === 'history') {
+    g.zoomToFit({ padding: 40, maxScale: 1, minScale: 0.35 })
+    return
+  }
+  const box = contentBBox(layoutDoc.value)
+  if (!box) {
+    g.zoomToFit({ padding: 60, maxScale: 1 })
+    return
+  }
+  // 自己算缩放而不是用 zoomToFit / zoomToRect：这两个都跟着画布上"当前画出来的东西"走，
+  // 而 LOD 折叠会让那个东西忽大忽小（簇卡片还会按 1/zoom 放大），贴合结果不可预测。
+  g.resize()      // 刚打开时工具条 / 横幅还没排完，容器量出来会偏矮，先重新量一次
+  const el = g.container
+  const w = Math.max((el.clientWidth || 1200) - 100, 200)
+  const h = Math.max((el.clientHeight || 800) - 100, 200)
+  const zoom = Math.max(0.05, Math.min(1, Math.min(w / box.width, h / box.height)))
+  g.zoomTo(zoom)
+  g.centerPoint(box.x + box.width / 2, box.y + box.height / 2)
 }
 
 async function reload() {
@@ -962,29 +1025,29 @@ onBeforeUnmount(() => {
                 @click="switchMode('history')">历史视图</button>
       </span>
       <span v-if="focusGroup && mode === 'structure'" class="muted">聚焦：{{ layoutDoc?.groups?.[focusGroup]?.name }}</span>
-      <span v-if="mode === 'structure'" class="muted">节点 {{ stats.nodes }} · 组内边 {{ edgesShown }}<template v-if="aggShown"> · 跨组 {{ aggShown }} 束</template>
-        / 共 {{ stats.edges }} · stub {{ stats.stubs }}
-        <template v-if="inboxCount"> · Inbox {{ inboxCount }}</template>
+      <span v-if="mode === 'structure'" class="muted"
+            :title="`组内边 ${edgesShown} · 跨组 ${aggShown} 束 · 共 ${stats.edges} 条`">
+        {{ stats.nodes }} 节点 · {{ edgesShown + aggShown }} 连线 · stub {{ stats.stubs }}
       </span>
       <span v-else class="muted">有 year 的节点 {{ histPlan?.placed.size ?? 0 }} · 泳道 {{ histPlan?.lanes.length ?? 0 }}
         · {{ yearRange[0] }}–{{ yearRange[1] }}</span>
-      <span v-if="mode === 'structure'" class="families">
-        <label v-for="f in FAMILIES" :key="f">
-          <input type="checkbox" v-model="visible[f]" @change="render()" />
-          <i class="swatch" :style="{ borderTopColor: FAMILY_STYLE[f].stroke,
-                                      borderTopStyle: FAMILY_STYLE[f].strokeDasharray ? 'dashed' : 'solid' }" />
-          {{ f }}
-        </label>
-      </span>
-      <label v-if="mode === 'structure'" class="families">
-        <input type="checkbox" v-model="aggregate" @change="expanded = new Set(); render()" />
-        聚合跨组边
-      </label>
-      <label v-if="mode === 'structure'" class="families" title="缩小时把分组折叠成簇卡片（点卡片展开）">
-        <input type="checkbox" v-model="autoLod" @change="render()" />
-        自动折叠
-        <span v-if="collapsedIds.size" class="muted">（{{ collapsedIds.size }} 簇）</span>
-      </label>
+      <details v-if="mode === 'structure'" class="menu" @toggle="closeOthers($event)">
+        <summary title="关系族过滤 / 跨组边聚合 / 自动折叠">显示 · {{ shownFamilies }} 族<template
+          v-if="collapsedIds.size"> · {{ collapsedIds.size }} 簇</template></summary>
+        <div class="pop">
+          <label v-for="f in FAMILIES" :key="f">
+            <input type="checkbox" v-model="visible[f]" @change="render()" />
+            <i class="swatch" :style="{ borderTopColor: FAMILY_STYLE[f].stroke,
+                                        borderTopStyle: FAMILY_STYLE[f].strokeDasharray ? 'dashed' : 'solid' }" />
+            {{ f }}
+          </label>
+          <hr />
+          <label><input type="checkbox" v-model="aggregate" @change="expanded = new Set(); render()" />聚合跨组边</label>
+          <label title="缩小时把分组折叠成簇卡片（点卡片展开）">
+            <input type="checkbox" v-model="autoLod" @change="render()" />自动折叠
+          </label>
+        </div>
+      </details>
       <span class="search">
         <input v-model="search" placeholder="搜索知识点…" @keydown.enter="searchHits[0] && gotoNode(searchHits[0].id)" />
         <ul v-if="searchHits.length" class="hits">
@@ -993,9 +1056,13 @@ onBeforeUnmount(() => {
           </li>
         </ul>
       </span>
-      <button v-if="mode === 'structure'" title="在视口中心加一张便签（只存 layout，不进 md）" @click="addNote">＋便签</button>
-      <button v-if="mode === 'structure'" title="贴一张 assets/ 里的图（只存 layout，不进 md）"
-              @click="showPicker = !showPicker">＋图片</button>
+      <details v-if="mode === 'structure'" class="menu" @toggle="closeOthers($event)">
+        <summary title="往画布上加东西（只存 layout，不进 md）">＋ 添加</summary>
+        <div class="pop">
+          <button @click="addNote">＋便签</button>
+          <button @click="showPicker = !showPicker">＋图片</button>
+        </div>
+      </details>
       <button :class="{ primary: inboxCount && !showInbox }" title="写好了还没上画布的节点"
               @click="showInbox = !showInbox; showInbox && refreshInbox()">
         Inbox<template v-if="inboxCount"> {{ inboxCount }}</template>
@@ -1019,10 +1086,15 @@ onBeforeUnmount(() => {
         <button :disabled="!canRedo || !!preview" title="重做（⇧⌘Z / Ctrl+Y）" @click="redo">↷ 重做</button>
       </template>
       <button @click="fit">适应窗口</button>
-      <button title="画布没反应时点这里重建（不影响已保存的布局）" @click="rebuildGraph('手动重建')">恢复画布</button>
-      <button :title="theme === 'dark' ? '切到浅色' : '切到深色'" @click="toggleTheme">{{ theme === 'dark' ? '☀︎' : '☾' }}</button>
-      <button :disabled="!!preview" @click="reload">重新加载</button>
-      <span class="rev">index r{{ indexRevision }} · layout r{{ revision }}</span>
+      <details class="menu" @toggle="closeOthers($event)">
+        <summary title="更多">⋯</summary>
+        <div class="pop">
+          <button title="画布没反应时点这里重建（不影响已保存的布局）" @click="rebuildGraph('手动重建')">恢复画布</button>
+          <button @click="toggleTheme">{{ theme === 'dark' ? '☀︎ 切到浅色' : '☾ 切到深色' }}</button>
+          <button :disabled="!!preview" @click="reload">重新加载</button>
+        </div>
+      </details>
+      <span class="rev" :title="`索引 revision ${indexRevision} · 布局 revision ${revision}`">r{{ indexRevision }}/{{ revision }}</span>
       <span class="status" :class="status">{{ statusText }}</span>
     </header>
 

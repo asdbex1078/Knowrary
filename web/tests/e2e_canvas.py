@@ -467,8 +467,7 @@ async def case_note_and_ref(page: Page, ck: Check, vault: Path) -> None:
     """便签与引用卡：只写 layout.json，不碰 md。"""
     md_before = sum(len(p.read_text("utf-8")) for p in sorted(vault.rglob("*.md")))
     await page.ev("window.prompt = () => '实验便签'")     # 避开原生弹窗
-    await page.ev("""[...document.querySelectorAll('header button')]
-      .find((b) => b.textContent.includes('便签')).click()""")
+    await click_text(page, "header button", "便签")
     await asyncio.sleep(1.6)
     layout = get(page.api + "/api/layout")["layout"] if hasattr(page, "api") else None
     ck.add("便签已落盘", bool(layout and layout["notes"] and layout["notes"][0]["text"] == "实验便签"),
@@ -556,7 +555,10 @@ NEW_MD = ("---\nname: {n}\nfield: 测试\ndesc: {n} 的摘要\nlearned: 2020-01-
 
 
 async def click_text(page: Page, sel: str, text: str) -> str:
+    """点一个按钮。工具条上的下拉先展开——隐藏元素的 click() 也能触发，
+    但那样测的就不是"用户点得到"，展开一下才算真链路。"""
     out = await page.ev(f"""(() => {{
+      document.querySelectorAll('header details.menu').forEach((d) => {{ d.open = true; }});
       const b = [...document.querySelectorAll({sel!r})].find((x) => x.textContent.includes({text!r}));
       if (!b) return 'missing';
       b.click(); return 'ok';
