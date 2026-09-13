@@ -22,6 +22,7 @@
 
 - `pool/` 每日收集池（JSON 供机器读，MD 供人读）
 - `digests/` 每周周报；`digests/raw/` 周报合并材料
+- `cron/` 定时任务配置归档（完整配置 + 提示词，可迁移复用）
 - `scripts/collect.py` 收集器（零依赖，可手动跑）
 - `scripts/weekly.py` 周材料合并（周报前处理）
 - `scripts/daily.sh` 每日收集 + 提交（定时任务调用）
