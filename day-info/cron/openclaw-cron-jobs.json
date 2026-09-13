@@ -1,0 +1,46 @@
+[
+  {
+    "id": "9d3486c9-02e1-4210-99d1-a3c5b003e528",
+    "name": "Day-Info 每日收集（静默入池）",
+    "description": "每天 09:00 静默收集 AI 技术信息入池并分级打标，提交到 day-info-for-autoclaw 分支；不推送内容，critical 即时提示",
+    "enabled": true,
+    "schedule": {
+      "kind": "cron",
+      "expr": "0 9 * * *",
+      "tz": "Asia/Shanghai"
+    },
+    "sessionTarget": "isolated",
+    "wakeMode": "now",
+    "delivery": {
+      "mode": "none",
+      "channel": "none"
+    },
+    "payload": {
+      "kind": "agentTurn",
+      "message": "Day-Info 每日静默收集任务：把今天的技术信息收集入池并提交仓库，不向用户推送内容；只输出简短状态（含 critical 即时提醒）。\n\n步骤：\n1. 用 exec 运行（超时给 240 秒）：bash /root/.openclaw-autoclaw/workspace/Knowrary-dayinfo/day-info/scripts/daily.sh\n2. 依据脚本输出汇报（全中文，不超过 8 行）：\n   - 若出现以「CRITICAL:」开头的行：整理为「⚡【即时提醒】」列表放在最前（每条：标题 + 链接 + 一句为什么重要）；\n   - 一行统计：本次新增 N 条、池内累计（必须看 X / 值得看 Y / 仅存档 Z）；\n   - 若脚本尾部有「源告警」：附一行告警概要（最多 3 条）；\n   - 若脚本执行失败：重试一次；仍失败则输出「网络波动，本次收集跳过，明天自动重试」并结束。\n3. 不要输出速览正文；不要联网补充内容；不要修改 day-info 以外的工作区文件。",
+      "timeoutSeconds": 300
+    }
+  },
+  {
+    "id": "8b035b84-d047-4b28-a2dc-c4ba7a4c9178",
+    "name": "Day-Info 周报（周日 20:00）",
+    "description": "每周日 20:00 汇总本周收集池，生成精炼周报（必须看+值得看+学习雷达+入库草稿）并推送",
+    "enabled": true,
+    "schedule": {
+      "kind": "cron",
+      "expr": "0 20 * * 0",
+      "tz": "Asia/Shanghai"
+    },
+    "sessionTarget": "isolated",
+    "wakeMode": "now",
+    "delivery": {
+      "mode": "none",
+      "channel": "none"
+    },
+    "payload": {
+      "kind": "agentTurn",
+      "message": "Day-Info 周报任务（每周日 20:00；这是每周一次的阅读推送，务必精炼，目标 15 分钟内可扫完；全程中文）。\n\n步骤：\n1. exec 运行：python3 /root/.openclaw-autoclaw/workspace/Knowrary-dayinfo/day-info/scripts/weekly.py\n2. 读取最新周材料：/root/.openclaw-autoclaw/workspace/Knowrary-dayinfo/day-info/digests/raw/ 下最新的 .md 文件（先 ls 找最新，再 cat 阅读）。\n3. 精编周报（不要全量罗列，必须精选）：\n   ① 标题「Day-Info 周报（YYYY-Www · 起止日期）」+ 一句本周概览；\n   ②「⚡ 必须看」：通常 5-15 条，逐条「发生了什么 + 一句意义」，合并重复主题，按重要性排序；\n   ③「🔖 值得看」：精选 20-40 条，按主题分组（论文 / 工具 / 工程 / 行业），每条一行：标题 + 链接 + 极短说明；\n   ④「【学习雷达】」：结合用户个人知识库（Knowrary：计算机体系结构自底向上链 + AI-Agent 工程；如目录 /root/.openclaw-autoclaw/workspace/Knowrary/nodes/ 可访问，只读浏览节点名核对衔接点）分三档、每档 2-3 条、每条 ≤30 字最多两句话：🟢 值得学习（注明衔接的现有节点）/ 🟡 值得扩展眼界 / 🔴 从未涉及；结尾一句优先级建议；\n   ⑤「📝 入库草稿」：3-5 个可入库节点草稿「- 域｜节点名：一句话描述」（域：硬件/软件/社区/安全/智能体/资本），与现有图谱互补不重复；\n   ⑥「一句话总结」。\n4. 成稿写入 /root/.openclaw-autoclaw/workspace/Knowrary-dayinfo/day-info/digests/<周标签>.md（周标签用 exec 运行 date +%G-W%V 获取），然后 exec 运行：bash /root/.openclaw-autoclaw/workspace/Knowrary-dayinfo/day-info/scripts/publish.sh \"day-info: 周报 <周标签>\"。\n5. 最后把周报全文作为回复输出（这就是给用户看的周报）。只写材料中有信源的内容，不编造；不确定的标「待确认」。",
+      "timeoutSeconds": 300
+    }
+  }
+]
