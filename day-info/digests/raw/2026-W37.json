@@ -1,31 +1,32 @@
 {
   "week": "2026-W37",
-  "generated_at": "2026-09-12T18:08:40",
+  "generated_at": "2026-09-13T20:21:33",
   "range": [
-    "2026-09-06",
-    "2026-09-12"
+    "2026-09-07",
+    "2026-09-13"
   ],
   "counts": {
-    "total": 80,
-    "must": 5,
-    "worth": 75,
-    "archived_skipped": 4,
-    "days_covered": 1
+    "total": 104,
+    "must": 6,
+    "worth": 98,
+    "archived_skipped": 9,
+    "days_covered": 2
   },
   "sources": {
+    "MarkTechPost": 6,
+    "HF 新模型": 14,
+    "Hacker News": 2,
+    "IT之家": 3,
+    "Latent Space": 5,
+    "Simon Willison": 7,
     "AWS ML": 4,
     "DeepMind": 5,
     "HF 每日论文": 15,
-    "IT之家": 2,
     "OpenAI": 8,
     "Anthropic": 6,
     "GitHub 新项目": 10,
-    "HF 新模型": 8,
-    "Hacker News": 1,
-    "Latent Space": 4,
-    "MarkTechPost": 4,
+    "GitHub 热门": 10,
     "Raschka": 1,
-    "Simon Willison": 4,
     "arXiv cs.AI": 8
   },
   "items": [
@@ -80,6 +81,19 @@
         "发布信号:openai,anthropic,发布,模型"
       ],
       "pool_date": "2026-09-12"
+    },
+    {
+      "url": "https://www.marktechpost.com/2026/09/12/cognition-releases-swe-2-a-kimi-k3-post-trained-coding-model-that-matches-fable-5-1-on-frontiercode-at-64-lower-cost/",
+      "title": "Cognition Releases SWE-2: A Kimi K3 Post-Trained Coding Model That Matches Fable 5.1 on FrontierCode at 64% Lower Cost",
+      "source": "MarkTechPost",
+      "published": "2026-09-12",
+      "summary": "Cognition, the company behind the Devin coding agent, has released SWE-2, its most capable coding model to date. SWE-2 is post-trained with reinforcement learning from Kimi K3, Moonshot AI&#8217;s 2.8T-parameter open mod",
+      "tier": "必须看",
+      "critical": false,
+      "reasons": [
+        "发布信号:kimi,release,model"
+      ],
+      "pool_date": "2026-09-13"
     },
     {
       "url": "https://openai.com/index/introducing-chatgpt-financial-services",
@@ -394,6 +408,136 @@
       "pool_date": "2026-09-12"
     },
     {
+      "url": "https://github.com/NousResearch/hermes-agent",
+      "title": "NousResearch/hermes-agent · ⭐244742",
+      "source": "GitHub 热门",
+      "published": "2026-09-12",
+      "summary": "The agent that grows with you",
+      "tier": "值得看",
+      "critical": false,
+      "reasons": [
+        "论文/工具类"
+      ],
+      "pool_date": "2026-09-12"
+    },
+    {
+      "url": "https://github.com/Significant-Gravitas/AutoGPT",
+      "title": "Significant-Gravitas/AutoGPT · ⭐187277",
+      "source": "GitHub 热门",
+      "published": "2026-09-12",
+      "summary": "AutoGPT is the vision of accessible AI for everyone, to use and to build on. Our mission is to provide the tools, so that you can focus on what matters.",
+      "tier": "值得看",
+      "critical": false,
+      "reasons": [
+        "命中:tool"
+      ],
+      "pool_date": "2026-09-12"
+    },
+    {
+      "url": "https://github.com/affaan-m/ECC",
+      "title": "affaan-m/ECC · ⭐256752",
+      "source": "GitHub 热门",
+      "published": "2026-09-12",
+      "summary": "The agent harness performance optimization system. Skills, instincts, memory, security, and research-first development for Claude Code, Codex, Opencode, Cursor and beyond.",
+      "tier": "值得看",
+      "critical": false,
+      "reasons": [
+        "论文/工具类"
+      ],
+      "pool_date": "2026-09-12"
+    },
+    {
+      "url": "https://github.com/f/prompts.chat",
+      "title": "f/prompts.chat · ⭐170062",
+      "source": "GitHub 热门",
+      "published": "2026-09-09",
+      "summary": "f.k.a. Awesome ChatGPT Prompts. Share, discover, and collect prompts from the community. Free and open source — self-host for your organization with complete privacy.",
+      "tier": "值得看",
+      "critical": false,
+      "reasons": [
+        "命中:open source"
+      ],
+      "pool_date": "2026-09-12"
+    },
+    {
+      "url": "https://github.com/firecrawl/firecrawl",
+      "title": "firecrawl/firecrawl · ⭐179362",
+      "source": "GitHub 热门",
+      "published": "2026-09-12",
+      "summary": "The context API to search, scrape, and interact with the web at scale. 🔥",
+      "tier": "值得看",
+      "critical": false,
+      "reasons": [
+        "论文/工具类"
+      ],
+      "pool_date": "2026-09-12"
+    },
+    {
+      "url": "https://github.com/huggingface/transformers",
+      "title": "huggingface/transformers · ⭐165155",
+      "source": "GitHub 热门",
+      "published": "2026-09-12",
+      "summary": "🤗 Transformers: the model-definition framework for state-of-the-art machine learning models in text, vision, audio, and multimodal models, for both inference and training.",
+      "tier": "值得看",
+      "critical": false,
+      "reasons": [
+        "命中:framework"
+      ],
+      "pool_date": "2026-09-12"
+    },
+    {
+      "url": "https://github.com/langchain-ai/langchain",
+      "title": "langchain-ai/langchain · ⭐146180",
+      "source": "GitHub 热门",
+      "published": "2026-09-12",
+      "summary": "The agent engineering platform.",
+      "tier": "值得看",
+      "critical": false,
+      "reasons": [
+        "论文/工具类"
+      ],
+      "pool_date": "2026-09-12"
+    },
+    {
+      "url": "https://github.com/langgenius/dify",
+      "title": "langgenius/dify · ⭐155494",
+      "source": "GitHub 热门",
+      "published": "2026-09-12",
+      "summary": "Build Agentic workflows, RAG pipelines, with rich AI model and tool support on one collaborative workspace. Deploy on cloud, VPC, or self-hosted, so teams move from prototype to production without reb",
+      "tier": "值得看",
+      "critical": false,
+      "reasons": [
+        "命中:tool"
+      ],
+      "pool_date": "2026-09-12"
+    },
+    {
+      "url": "https://github.com/ollama/ollama",
+      "title": "ollama/ollama · ⭐180718",
+      "source": "GitHub 热门",
+      "published": "2026-09-11",
+      "summary": "Get up and running with Kimi-K2.6, GLM-5.2, MiniMax, DeepSeek, gpt-oss, Qwen, Gemma and other models.",
+      "tier": "值得看",
+      "critical": false,
+      "reasons": [
+        "论文/工具类"
+      ],
+      "pool_date": "2026-09-12"
+    },
+    {
+      "url": "https://github.com/open-webui/open-webui",
+      "title": "open-webui/open-webui · ⭐151722",
+      "source": "GitHub 热门",
+      "published": "2026-09-10",
+      "summary": "User-friendly AI Interface (Supports Ollama, OpenAI API, ...)",
+      "tier": "值得看",
+      "critical": false,
+      "reasons": [
+        "论文/工具类"
+      ],
+      "pool_date": "2026-09-12"
+    },
+    {
       "url": "https://huggingface.co/AdithyanAI/Mythos_translation",
       "title": "AdithyanAI/Mythos_translation",
       "source": "HF 新模型",
@@ -433,6 +577,19 @@
       "pool_date": "2026-09-12"
     },
     {
+      "url": "https://huggingface.co/Justvugg/GLM-5.3-colibri-int4-g64",
+      "title": "Justvugg/GLM-5.3-colibri-int4-g64",
+      "source": "HF 新模型",
+      "published": "2026-09-13",
+      "summary": "likes 1 · downloads 57",
+      "tier": "值得看",
+      "critical": false,
+      "reasons": [
+        "论文/工具类"
+      ],
+      "pool_date": "2026-09-13"
+    },
+    {
       "url": "https://huggingface.co/NN-Dataset/tflite",
       "title": "NN-Dataset/tflite",
       "source": "HF 新模型",
@@ -459,6 +616,19 @@
       "pool_date": "2026-09-12"
     },
     {
+      "url": "https://huggingface.co/Vxtzq/Crowd-v1",
+      "title": "Vxtzq/Crowd-v1",
+      "source": "HF 新模型",
+      "published": "2026-09-13",
+      "summary": "likes 3 · downloads 9488",
+      "tier": "值得看",
+      "critical": false,
+      "reasons": [
+        "论文/工具类"
+      ],
+      "pool_date": "2026-09-13"
+    },
+    {
       "url": "https://huggingface.co/meshllm/GLM-5.3-Flash-UD-Q4_K_XL-layers",
       "title": "meshllm/GLM-5.3-Flash-UD-Q4_K_XL-layers",
       "source": "HF 新模型",
@@ -470,6 +640,32 @@
         "论文/工具类"
       ],
       "pool_date": "2026-09-12"
+    },
+    {
+      "url": "https://huggingface.co/outminer/co-1",
+      "title": "outminer/co-1",
+      "source": "HF 新模型",
+      "published": "2026-09-13",
+      "summary": "likes 2 · downloads 0",
+      "tier": "值得看",
+      "critical": false,
+      "reasons": [
+        "论文/工具类"
+      ],
+      "pool_date": "2026-09-13"
+    },
+    {
+      "url": "https://huggingface.co/outminer/co-2",
+      "title": "outminer/co-2",
+      "source": "HF 新模型",
+      "published": "2026-09-13",
+      "summary": "likes 1 · downloads 0",
+      "tier": "值得看",
+      "critical": false,
+      "reasons": [
+        "论文/工具类"
+      ],
+      "pool_date": "2026-09-13"
     },
     {
       "url": "https://huggingface.co/rier/randomized-runs-results",
@@ -485,6 +681,19 @@
       "pool_date": "2026-09-12"
     },
     {
+      "url": "https://huggingface.co/sundaycoil/note-taking-app",
+      "title": "sundaycoil/note-taking-app",
+      "source": "HF 新模型",
+      "published": "2026-09-13",
+      "summary": "likes 3 · downloads 0",
+      "tier": "值得看",
+      "critical": false,
+      "reasons": [
+        "论文/工具类"
+      ],
+      "pool_date": "2026-09-13"
+    },
+    {
       "url": "https://huggingface.co/sundaycoil/process-monitor",
       "title": "sundaycoil/process-monitor",
       "source": "HF 新模型",
@@ -496,6 +705,19 @@
         "论文/工具类"
       ],
       "pool_date": "2026-09-12"
+    },
+    {
+      "url": "https://huggingface.co/sundaycoil/pubsub-consumer",
+      "title": "sundaycoil/pubsub-consumer",
+      "source": "HF 新模型",
+      "published": "2026-09-13",
+      "summary": "likes 4 · downloads 0",
+      "tier": "值得看",
+      "critical": false,
+      "reasons": [
+        "论文/工具类"
+      ],
+      "pool_date": "2026-09-13"
     },
     {
       "url": "https://huggingface.co/papers/2609.09076",
@@ -693,6 +915,32 @@
       "pool_date": "2026-09-12"
     },
     {
+      "url": "https://withspecific.com/benchmarks/real-swe",
+      "title": "Real-SWE: Benchmarking AI models on private, real-world, enterprise codebases",
+      "source": "Hacker News",
+      "published": "2026-09-12",
+      "summary": "Article URL: https://withspecific.com/benchmarks/real-swe Comments URL: https://news.ycombinator.com/item?id=49676820 Points: 95 # Comments: 59",
+      "tier": "值得看",
+      "critical": false,
+      "reasons": [
+        "命中:benchmark"
+      ],
+      "pool_date": "2026-09-13"
+    },
+    {
+      "url": "https://www.ithome.com/1/001/675.htm",
+      "title": "A20 Pro 芯片 AI 跑分曝光：苹果 iPhone 18 Pro NPU 较前代最高增幅 51.53%",
+      "source": "IT之家",
+      "published": "2026-09-12",
+      "summary": "IT之家 9 月 13 日消息，在 CPU / GPU 跑分曝光之后，苹果 iPhone 18 Pro（对应机型 iPhone19,2）的 GeekBench AI 跑分昨日（9 月 12 日）现身， 相比较 iPhone 17 Pro 最高增幅为 51.53%。 IT之家发稿前查询 GeekBench AI 跑分平台，目前共收录了 2 条记录，分别是 Core ML 调用 GPU（通用图形计算单元）和 NPU / ANE（专用神经网络",
+      "tier": "值得看",
+      "critical": false,
+      "reasons": [
+        "命中:框架,benchmark"
+      ],
+      "pool_date": "2026-09-13"
+    },
+    {
       "url": "https://www.ithome.com/1/001/590.htm",
       "title": "开源 AI 移动自动化项目 Minitap 指控谷歌盗用自家代码，且起初未注明出处",
       "source": "IT之家",
@@ -717,6 +965,19 @@
         "论文/工具类"
       ],
       "pool_date": "2026-09-12"
+    },
+    {
+      "url": "https://www.latent.space/p/forward-deployed-engineer-best-practices",
+      "title": "The Rise of the Forward Deployed Engineer — and How To Do the Job Right",
+      "source": "Latent Space",
+      "published": "2026-09-12",
+      "summary": "Before co-founding Kepler, Vinoo Ganesh led Spark at Palantir and built Project Frontline &#8212; a pioneering program for Forward Deployed Engineers. He takes us through the best practices of FDEs.",
+      "tier": "值得看",
+      "critical": false,
+      "reasons": [
+        "论文/工具类"
+      ],
+      "pool_date": "2026-09-13"
     },
     {
       "url": "https://www.latent.space/p/ainews-deepseek-v41-flash-763b-p8b",
@@ -795,6 +1056,19 @@
         "论文/工具类"
       ],
       "pool_date": "2026-09-12"
+    },
+    {
+      "url": "https://www.marktechpost.com/2026/09/12/fly-language-model-flm-wires-the-full-fruit-fly-connectome-into-a-frozen-1-2b-llm-and-its-own-controls-show-the-wiring-does-not-help/",
+      "title": "Fly Language Model (FLM) Wires the Full Fruit Fly Connectome Into a Frozen 1.2B LLM, and Its Own Controls Show the Wiring Does Not Help",
+      "source": "MarkTechPost",
+      "published": "2026-09-12",
+      "summary": "The Fly Language Model (FLM) drives all 166,700 retained neurons and 25.6 million edges of the MaleCNS fruit fly connectome with token embeddings, then adds a small learned correction to a frozen LFM2.5-1.2B-Instruct bac",
+      "tier": "值得看",
+      "critical": false,
+      "reasons": [
+        "论文/工具类"
+      ],
+      "pool_date": "2026-09-13"
     },
     {
       "url": "https://www.marktechpost.com/2026/09/10/sakana-ai-launches-fugu-max-and-fugu-ultra-v2-for-cheaper-stronger-multi-agent-orchestration/",
@@ -914,6 +1188,19 @@
       "pool_date": "2026-09-12"
     },
     {
+      "url": "https://simonwillison.net/2026/Sep/12/sighting-399708714/",
+      "title": "California Brown Pelican",
+      "source": "Simon Willison",
+      "published": "2026-09-12",
+      "summary": "California Brown Pelican, in San Mateo County, CA, US The Pacifica Pier shut down at the start of June after a crack in the concrete walkway made access to the pier unsafe. It has since been entirely taken over by pelica",
+      "tier": "值得看",
+      "critical": false,
+      "reasons": [
+        "论文/工具类"
+      ],
+      "pool_date": "2026-09-13"
+    },
+    {
       "url": "https://simonwillison.net/2026/Sep/11/feeling-sad-about-ai/",
       "title": "Feeling sad about AI",
       "source": "Simon Willison",
@@ -925,6 +1212,19 @@
         "命中:tool"
       ],
       "pool_date": "2026-09-12"
+    },
+    {
+      "url": "https://simonwillison.net/2026/Sep/12/astra-running-routes/",
+      "title": "Generating running routes with GPT-6 Astra and ChatGPT Work",
+      "source": "Simon Willison",
+      "published": "2026-09-12",
+      "summary": "Here's a neat thing I had ChatGPT Work with GPT-6 Astra (Max) do this morning: I live at &lt;my address&gt;. Figure out 5K and 10K running routes from me that loop from my house. Use OSM data. It worked for 27 minutes an",
+      "tier": "值得看",
+      "critical": false,
+      "reasons": [
+        "命中:tool,visualization,render"
+      ],
+      "pool_date": "2026-09-13"
     },
     {
       "url": "https://simonwillison.net/2026/Sep/12/openai-agents-rubygems/",
@@ -951,6 +1251,19 @@
         "论文/工具类"
       ],
       "pool_date": "2026-09-12"
+    },
+    {
+      "url": "https://simonwillison.net/2026/Sep/12/paul-ford/",
+      "title": "Quoting Paul Ford",
+      "source": "Simon Willison",
+      "published": "2026-09-12",
+      "summary": "For a while, I must admit, it looked as if software developer roles like mine were done for. How could we fight against tireless robots? But our industry is slowly realizing that making truly cutting-edge software still ",
+      "tier": "值得看",
+      "critical": false,
+      "reasons": [
+        "论文/工具类"
+      ],
+      "pool_date": "2026-09-13"
     },
     {
       "url": "https://simonwillison.net/2026/Sep/11/so-you-want-to-use-openrouter/",
