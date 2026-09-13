@@ -1,11 +1,11 @@
 {
   "schema_version": 2,
-  "revision": 419,
-  "updated_at": "2026-09-12T14:42:27Z",
+  "revision": 425,
+  "updated_at": "2026-09-12T15:03:18Z",
   "viewport": {
-    "zoom": 0.08,
-    "cx": 1849.0,
-    "cy": -1897.0
+    "zoom": 0.8,
+    "cx": 197.0,
+    "cy": 2069.0
   },
   "groups": {
     "g-脑图-冯诺依曼体系": {
