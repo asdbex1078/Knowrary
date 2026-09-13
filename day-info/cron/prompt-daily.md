@@ -1,7 +1,7 @@
 # 提示词 · Day-Info 每日收集（静默入池）
 
-> 任务调度：`0 9 * * *`（Asia/Shanghai），隔离会话（isolated），timeoutSeconds=300。
-> 设计原则：收集频率高、推送频率低；本任务只静默入池 + 提交仓库，不向用户推送内容。
+> 调度：`0 9 * * *`（Asia/Shanghai）· 隔离会话 · timeoutSeconds=300
+> 原则：收集频率高、推送频率低；本任务只静默入池 + 提交仓库，不向用户推送内容。
 
 ```text
 Day-Info 每日静默收集任务：把今天的技术信息收集入池并提交仓库，不向用户推送内容；只输出简短状态（含 critical 即时提醒）。
@@ -19,5 +19,5 @@ Day-Info 每日静默收集任务：把今天的技术信息收集入池并提�
 ## 说明
 
 - 实际采集逻辑在 `day-info/scripts/collect.py`（零依赖），本提示词只负责调用 `day-info/scripts/daily.sh` 并按输出汇报。
-- `CRITICAL:` 行会被整理成「⚡【即时提醒】」放在汇报最前（只有项目强相关更新才会出现）。
-- critical 的判定规则见 `collect.py` 的 `classify()`：项目强相关（知识图谱 / Agent / X6 / G6 / AntV / MCP / Obsidian 等）或头部实验室重大发布。
+- `CRITICAL:` 行会被整理成「⚡【即时提醒】」放在汇报最前。
+- critical 判定规则见 `collect.py` 的 `classify()`：项目强相关（知识图谱 / Agent / X6 / G6 / AntV / MCP / Obsidian 等）或头部实验室重大发布。
