@@ -2,7 +2,8 @@
 # Day-Info 提交助手：git add day-info + 提交 + 推送（HTTPS → SSH 双通道自动切换）。
 # 用法：bash day-info/scripts/publish.sh "提交信息"
 set -euo pipefail
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+# 重新执行的副本位于临时目录，推不出仓库根，故允许用 DAYINFO_ROOT 覆盖（见下方自我复制说明）
+ROOT="${DAYINFO_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
 cd "$ROOT"
 MSG="${1:-day-info: 更新 $(date +%F)}"
 BRANCH="${DAYINFO_BRANCH:-day-info}"
@@ -36,14 +37,49 @@ abort_if_non_ff() {
   fi
 }
 
-# 分支护栏：本脚本只在目标分支上执行。
-# 原先直接 git commit 打在「当前分支」上，再 push HEAD:$BRANCH——
-# 一旦在别的分支上跑，提交就落错分支，还会把那条分支的内容推到 $BRANCH 上去。
+# ---------------- 分支护栏 ----------------
+# 只在目标分支上提交。切换逻辑与安全检查统一放在 ensure-branch.sh，这里只负责调用与收尾切回。
+# 正常链路里 daily.sh 已在采集之前切好分支，这段通常是空操作。
+# 原分支由 ensure-branch.sh 记在 .git/dayinfo-orig-ref，无论谁切的，都由本脚本（流程最后一步）切回。
+
+ORIG_FILE="$(git rev-parse --git-path dayinfo-orig-ref)"
+
+restore_orig_branch() {
+  [ -s "$ORIG_FILE" ] || return 0
+  local orig; orig="$(cat "$ORIG_FILE")"; rm -f "$ORIG_FILE"
+  if printf '%s' "$orig" | grep -qE '^[0-9a-f]{40}$'; then
+    git checkout -q --detach "$orig" 2>/dev/null \
+      && echo "== 已切回原位置（游离 HEAD ${orig:0:7}） ==" \
+      || echo "!! 未能切回 ${orig:0:7}，当前仍在 ${BRANCH} 上，请手动切换。"
+  else
+    git checkout -q "$orig" 2>/dev/null \
+      && echo "== 已切回原分支 ${orig} ==" \
+      || echo "!! 未能切回 ${orig}，当前仍在 ${BRANCH} 上，请手动切换。"
+  fi
+}
+
+cleanup() {
+  local code=$?
+  [ -n "${PUSH_ERRLOG:-}" ] && rm -f "${PUSH_ERRLOG}"
+  [ -n "${DAYINFO_SELF_COPY:-}" ] && rm -f "${DAYINFO_SELF_COPY}"
+  restore_orig_branch
+  return $code
+}
+trap cleanup EXIT
+
 CUR_BRANCH="$(git symbolic-ref -q --short HEAD || echo "")"
 if [ "$CUR_BRANCH" != "$BRANCH" ]; then
-  echo "!! 当前分支是「${CUR_BRANCH:-游离 HEAD}」，本脚本只在「${BRANCH}」上执行。"
-  echo "!! 未做任何提交与推送。请先 git checkout ${BRANCH} 再重跑。"
-  exit 1
+  # ⚠️ 切分支会把「正在执行的这个脚本文件」换成目标分支上的版本。bash 按字节偏移惰性读取脚本
+  # （实测 >8KB 的脚本会读进替换后的内容并报语法错误，本脚本已近 10KB），所以先把自己复制到
+  # 临时文件并从副本重新执行——副本不在仓库里，checkout 动不到它。
+  if [ "${DAYINFO_REEXEC:-0}" != "1" ]; then
+    self_copy="$(mktemp -t dayinfo-publish)"
+    cat "${BASH_SOURCE[0]}" > "$self_copy"
+    echo "== 需要切分支，先从脚本副本重新执行（避免切换时把自己换掉） =="
+    DAYINFO_REEXEC=1 DAYINFO_ROOT="$ROOT" DAYINFO_SELF_COPY="$self_copy" \
+      exec bash "$self_copy" "$@"
+  fi
+  bash "$ROOT/day-info/scripts/ensure-branch.sh" "$BRANCH" || exit 1
 fi
 
 # 只提交 day-info 路径：用 --only 形式，避免把用户此前 git add 的其它文件一起卷进这次提交
@@ -70,8 +106,9 @@ done
 
 # 推送重试次数（SSH 通道经代理转发时抖动明显，见下方注释）
 PUSH_RETRIES="${DAYINFO_PUSH_RETRIES:-6}"
+# 注意：trap 已在上面的分支护栏里统一设成 cleanup（同时负责删临时文件与切回原分支）。
+# 这里若再 trap 一次会把还原分支的逻辑覆盖掉。
 PUSH_ERRLOG="$(mktemp -t dayinfo-push)"
-trap 'rm -f "$PUSH_ERRLOG"' EXIT
 
 # 重试包装：$1 = 最多尝试次数，其余参数为要执行的命令
 retry() {

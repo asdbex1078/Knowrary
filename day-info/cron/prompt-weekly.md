@@ -19,6 +19,10 @@ Day-Info 周报·生成。维护对象是 Knowrary 仓库的 day-info 系统，�
 
 步骤：
 
+0. 先切到 day-info 分支：bash /Users/moka/IdeaProjects/Knowrary/day-info/scripts/ensure-branch.sh
+   （weekly.py 读的是 day-info/digests/raw/，在落后的分支上跑会读到过期材料。此时工作区干净，切换最稳；
+   流程最后一步 publish.sh 会自动切回原分支。若该脚本报错退出，停止本次任务并如实汇报原因，不要绕过它。）
+
 1. 运行（超时给 300 秒）：python3 /Users/moka/IdeaProjects/Knowrary/day-info/scripts/weekly.py
    它把最近 7 天收集池中「必须看 + 值得看」的条目合并成周材料，输出到 day-info/digests/raw/YYYY-Www.json 和 .md，并打印「周材料已生成：…」与「统计：必须看 X · 值得看 Y（覆盖 N 天池数据）」两行。
 
@@ -42,7 +46,8 @@ Day-Info 周报·生成。维护对象是 Knowrary 仓库的 day-info 系统，�
 约束：
 - 判定推送结果不能看退出码：publish.sh 推送失败时仍返回 0（设计如此，用于保留本地提交、下次补推）。必须检查输出里有没有「推送未成功」。若出现，如实汇报「已生成本地提交但未推送成功」，并附上脚本打印的最后一条错误，绝对不要谎报推送成功。
 - publish.sh 的 SSH 通道内置了 6 次重试，输出里出现「第 N/6 次失败，Ns 后重试…」属正常抖动，最终成功即算成功。
-- 但有两类硬失败会返回 1 且不推送：不在 day-info 分支上运行（护栏拦截）、远端已领先本地（非快进）。这两种重试无用，如实汇报脚本给出的原因，不要自行切分支、merge 或 force push。
+- 步骤 0 的切分支与 publish.sh 结尾的切回是正常流程，输出里的「已从…切到…」「已切回原分支」不必当异常汇报。
+- 但有两类硬失败会返回 1 且不推送：无法安全切分支（有进行中的 git 操作，或工作区有会被覆盖的改动——脚本绝不 -f 强切）、远端已领先本地（非快进）。这两种重试无用，如实汇报脚本给出的原因，不要自行切分支、merge 或 force push。
 - 不要输出周报全文；不要联网补充材料以外的内容；不要修改 day-info 目录以外的任何文件；不要手动执行 git push（推送由脚本负责）。
 ```
 
