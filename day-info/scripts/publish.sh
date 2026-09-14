@@ -44,29 +44,56 @@ for candidate in "${KNOWRARY_DAYINFO_SSH_KEY:-}" \
   if [ -n "$candidate" ] && [ -f "$candidate" ]; then SSH_KEY="$candidate"; break; fi
 done
 
-# 通道 1：HTTPS。有凭证文件就用它，否则交给系统凭据助手（macOS 钥匙串）
+# 推送重试次数（SSH 通道经代理转发时抖动明显，见下方注释）
+PUSH_RETRIES="${DAYINFO_PUSH_RETRIES:-4}"
+PUSH_ERRLOG="$(mktemp -t dayinfo-push)"
+trap 'rm -f "$PUSH_ERRLOG"' EXIT
+
+# 重试包装：$1 = 最多尝试次数，其余参数为要执行的命令
+retry() {
+  local max="$1"; shift
+  local attempt=1
+  while [ "${attempt}" -le "${max}" ]; do
+    if "$@" 2>>"${PUSH_ERRLOG}"; then return 0; fi
+    if [ "${attempt}" -lt "${max}" ]; then
+      local wait_s=$(( attempt * 5 ))
+      echo "== 第 ${attempt}/${max} 次失败，${wait_s}s 后重试… =="
+      sleep "${wait_s}"
+    fi
+    attempt=$(( attempt + 1 ))
+  done
+  return 1
+}
+
+# 通道 1：HTTPS。有凭证文件就用它，否则交给系统凭据助手（macOS 钥匙串）。
+# 不做重试：本机到 github.com:443 的 TLS 握手本身失败，重试无法改善。
 if [ -n "$CREDS" ]; then
   git config credential.helper "store --file=$CREDS"
-  echo "== 使用凭证文件：$CREDS =="
+  echo "== 使用凭证文件：${CREDS} =="
 else
-  echo "== 未找到凭证文件，改用系统凭据助手 =="
+  echo "== 未找到凭证文件，改试系统凭据助手 / SSH =="
 fi
-if GIT_TERMINAL_PROMPT=0 push_with_timeout "$HTTPS_URL" "HEAD:$BRANCH" 2>/dev/null; then
+if GIT_TERMINAL_PROMPT=0 push_with_timeout "$HTTPS_URL" "HEAD:$BRANCH" 2>>"${PUSH_ERRLOG}"; then
   echo "== 已推送 ${BRANCH}（HTTPS） =="
   exit 0
 fi
 echo "== HTTPS 推送未成功，改试 SSH… =="
 
 # 通道 2：SSH。有专用 deploy key 就用它，否则用系统默认密钥
+# （本机 ~/.ssh/config 已把 github.com 指向 ssh.github.com:443，并用 id_ed25519_github）。
+# 该链路经代理时会间歇性「TCP 已建立但立即被对端关闭」，实测连续 3 次会失败 1~2 次，
+# 属于链路抖动而非凭证失效，因此必须重试，单次失败不能判定为推送失败。
 if [ -n "$SSH_KEY" ]; then
-  SSH_CMD="ssh -i $SSH_KEY -o IdentitiesOnly=yes -o BatchMode=yes -o ConnectTimeout=20"
+  SSH_CMD="ssh -i ${SSH_KEY} -o IdentitiesOnly=yes -o BatchMode=yes -o ConnectTimeout=20"
 else
   SSH_CMD="ssh -o BatchMode=yes -o ConnectTimeout=20"
 fi
-if GIT_SSH_COMMAND="$SSH_CMD" push_with_timeout "$SSH_URL" "HEAD:$BRANCH" 2>/dev/null; then
+export GIT_SSH_COMMAND="${SSH_CMD}"
+if retry "${PUSH_RETRIES}" push_with_timeout "$SSH_URL" "HEAD:$BRANCH"; then
   echo "== 已推送 ${BRANCH}（SSH） =="
   exit 0
 fi
 
-echo "== 推送未成功（已保留本地提交，下次自动重试）。检查：A) PAT 写入 .secrets/git-credentials；或 B) Deploy Key 已添加到 GitHub 并启用写权限 =="
+echo "== 推送未成功（已保留本地提交，下次自动重试）。已重试 ${PUSH_RETRIES} 次 =="
+echo "== 最后一条错误：$(tail -n 1 "${PUSH_ERRLOG}" 2>/dev/null) =="
 exit 0

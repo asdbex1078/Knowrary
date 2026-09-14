@@ -40,11 +40,35 @@ bash day-info/scripts/publish.sh "提交信息"    # 只提交/推送（周报�
 
 数据来源：arXiv（cs.AI/CL/LG/SE）、HuggingFace（hf-mirror 镜像）、GitHub（新项目搜索 + 热门活跃仓库 + antvis 版本发布）、OpenAI / DeepMind / Anthropic 博客、Hacker News、IT之家、精选技术博客 RSS。
 
-## 推送凭证（一次性配置，二选一）
+## 推送凭证（本机已配好，无需操作）
 
 推送目标：本仓库 `day-info-for-autoclaw` 分支。两个通道任选其一即可，`publish.sh` 会自动依次尝试。
 
-**通道 A：HTTPS + Personal Access Token（推荐）**
+> **本机（macOS）现状**：通道 A 已可用，**无需任何额外配置，也不需要申请 PAT**。通道 B 在本机当前网络下不可用，仅作其他环境的备选保留。
+
+**通道 A：SSH（本机已配好，推荐）**
+
+本机已满足全部条件，不需要再做任何事：
+
+- `~/.ssh/config` 已把 `github.com` 指向 `ssh.github.com:443`（本机 22 端口被代理接管，直连不通）
+- 私钥：`~/.ssh/id_ed25519_github`
+- 公钥已添加到 GitHub 且**具备写权限**。验证命令：
+
+```bash
+ssh -T git@github.com
+# 期望输出：Hi asdbex1078! You've successfully authenticated, but GitHub does not provide shell access.
+```
+
+> ⚠️ **该链路经代理时会间歇性抖动**：TCP 建立后立即被对端关闭（报 `Connection closed by 198.18.0.x port 443`）。实测连续 3 次会失败 1~2 次。**这是链路问题，不是凭证问题**，所以 `publish.sh` 内置了 4 次重试（可用环境变量 `DAYINFO_PUSH_RETRIES` 调整）。单次 SSH 失败不代表推送失败，不要据此去重新配凭证。
+
+如需改用本仓库专用的 Deploy Key（而不是个人密钥）：
+
+- 私钥路径：`.secrets/github_deploy_key`（同样不入库）
+- 公钥添加到 https://github.com/asdbex1078/Knowrary/settings/keys ，勾选 **Allow write access**
+
+**通道 B：HTTPS + Personal Access Token（本机当前不可用）**
+
+保留此通道仅为兼顾其他网络环境。**在本机当前网络下，到 `github.com:443` 的 TLS 握手直接失败**（`OpenSSL SSL_connect: SSL_ERROR_SYSCALL`），因此 PAT 在此机器上无法使用——申请了也推不上去。若将来换到其他网络环境，可按以下步骤配置：
 
 1. GitHub → 头像 → Settings → Developer settings → Personal access tokens → **Fine-grained tokens** → Generate new token
 2. Repository access 选 **Only select repositories**，只勾 `Knowrary`
@@ -60,12 +84,6 @@ chmod 600 .secrets/git-credentials
 - 凭证文件路径：`.secrets/git-credentials`（`.gitignore` 已忽略 `.secrets/`，不会入库）
 - 内容格式：`https://x-access-token:<TOKEN>@github.com`
 - 也可用环境变量 `KNOWRARY_DAYINFO_CREDS` 指向其他凭证文件路径
-
-**通道 B：SSH + Deploy Key**
-
-- 私钥路径：`.secrets/github_deploy_key`（同样不入库）
-- 公钥需自行生成，并添加到 https://github.com/asdbex1078/Knowrary/settings/keys ，勾选 **Allow write access**
-- 本机 22 端口被代理接管时，需在 `~/.ssh/config` 把 github.com 指向 `ssh.github.com:443`
 
 > 未配置凭证时：一切照常收集并本地提交，只是不推送；配置任一通道后自动开始推送。
 
