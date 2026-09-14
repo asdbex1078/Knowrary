@@ -59,7 +59,9 @@ ssh -T git@github.com
 # 期望输出：Hi asdbex1078! You've successfully authenticated, but GitHub does not provide shell access.
 ```
 
-> ⚠️ **该链路经代理时会间歇性抖动**：TCP 建立后立即被对端关闭（报 `Connection closed by 198.18.0.x port 443`）。实测连续 3 次会失败 1~2 次。**这是链路问题，不是凭证问题**，所以 `publish.sh` 内置了 4 次重试（可用环境变量 `DAYINFO_PUSH_RETRIES` 调整）。单次 SSH 失败不代表推送失败，不要据此去重新配凭证。
+> ⚠️ **该链路经代理时会间歇性抖动**：TCP 建立后立即被对端关闭（报 `Connection closed by 198.18.0.x port 443`）。2026-09-14 实测连续 8 次探测失败 3 次（约 37%）。**这是代理链路问题，不是凭证问题**——所以 `publish.sh` 内置了 6 次重试（可用环境变量 `DAYINFO_PUSH_RETRIES` 调整），失败率可压到 0.3% 以下。单次 SSH 失败不代表推送失败，不要据此去重新配凭证。
+>
+> 若抖动持续影响使用，根因应在代理软件侧处理：检查其路由规则里 `ssh.github.com` / `github.com` 是否被 fake-IP 接管并走了不稳定的节点/规则。
 
 如需改用本仓库专用的 Deploy Key（而不是个人密钥）：
 
@@ -87,7 +89,7 @@ chmod 600 .secrets/git-credentials
 
 > 未配置凭证时：一切照常收集并本地提交，只是不推送；配置任一通道后自动开始推送。
 
-**历史备注**：原 AutoClaw 环境的凭证与 Deploy Key 位于其沙箱内（`/root/.openclaw-autoclaw/workspace/.secrets/`），**本机不可用**，需按上述步骤重新配置。
+**历史备注**：原 AutoClaw 环境的凭证与 Deploy Key 位于其沙箱内（`/root/.openclaw-autoclaw/workspace/.secrets/`），在本机不存在；`publish.sh` 对它们的引用仅作为向后兼容的回退路径，本机走通道 A 即可，无需重建。
 
 ---
 

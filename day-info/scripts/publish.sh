@@ -45,7 +45,7 @@ for candidate in "${KNOWRARY_DAYINFO_SSH_KEY:-}" \
 done
 
 # 推送重试次数（SSH 通道经代理转发时抖动明显，见下方注释）
-PUSH_RETRIES="${DAYINFO_PUSH_RETRIES:-4}"
+PUSH_RETRIES="${DAYINFO_PUSH_RETRIES:-6}"
 PUSH_ERRLOG="$(mktemp -t dayinfo-push)"
 trap 'rm -f "$PUSH_ERRLOG"' EXIT
 
@@ -56,7 +56,8 @@ retry() {
   while [ "${attempt}" -le "${max}" ]; do
     if "$@" 2>>"${PUSH_ERRLOG}"; then return 0; fi
     if [ "${attempt}" -lt "${max}" ]; then
-      local wait_s=$(( attempt * 5 ))
+      local wait_s=$(( attempt * 3 ))
+      [ "${wait_s}" -gt 15 ] && wait_s=15
       echo "== 第 ${attempt}/${max} 次失败，${wait_s}s 后重试… =="
       sleep "${wait_s}"
     fi
@@ -81,8 +82,10 @@ echo "== HTTPS 推送未成功，改试 SSH… =="
 
 # 通道 2：SSH。有专用 deploy key 就用它，否则用系统默认密钥
 # （本机 ~/.ssh/config 已把 github.com 指向 ssh.github.com:443，并用 id_ed25519_github）。
-# 该链路经代理时会间歇性「TCP 已建立但立即被对端关闭」，实测连续 3 次会失败 1~2 次，
-# 属于链路抖动而非凭证失效，因此必须重试，单次失败不能判定为推送失败。
+# 该链路经代理时会间歇性「TCP 已建立后被对端立即关闭」。2026-09-14 实测连续 8 次探测
+# 失败 3 次（约 37%，特征均为 Connection closed by 198.18.0.x port 443），
+# 属于链路抖动而非凭证失效。默认重试 6 次，可将失败率压到 0.3% 以下；
+# 单次失败不能判定为推送失败。
 if [ -n "$SSH_KEY" ]; then
   SSH_CMD="ssh -i ${SSH_KEY} -o IdentitiesOnly=yes -o BatchMode=yes -o ConnectTimeout=20"
 else
