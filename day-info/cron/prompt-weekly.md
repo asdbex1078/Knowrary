@@ -3,6 +3,9 @@
 > 早期版本是一个任务做"生成 + 输出全文"，实测连续 4 次因超过 5 分钟上限而超时（生成阶段过长），
 > 因此拆成两段：**19:45 生成并推送文件（不输出全文）** + **20:15 读取文件并输出（阅读版）**。
 > 两段都在隔离会话运行，timeoutSeconds=300。
+>
+> **当前状态**：周报两个任务仍跑在原 AutoClaw 环境，**尚未迁到 WorkBuddy**。
+> 下面的路径已更新为 Knowrary 本机仓库路径，迁过来时直接可用，只需重建调度。
 
 ## ① 生成任务（周日 19:45）
 
@@ -12,8 +15,8 @@
 Day-Info 周报·生成（每周日 19:45；生成全文写入文件并推送分支；本任务不输出周报全文，为 20:15 的「阅读版」任务留出时间余量）。
 
 步骤：
-1. exec 运行：python3 /root/.openclaw-autoclaw/workspace/Knowrary-dayinfo/day-info/scripts/weekly.py
-2. 读取最新周材料：exec 运行 ls -t /root/.openclaw-autoclaw/workspace/Knowrary-dayinfo/day-info/digests/raw/*.md | head -1，然后 cat 该文件全文。
+1. 运行：python3 /Users/moka/IdeaProjects/Knowrary/day-info/scripts/weekly.py
+2. 读取最新周材料：运行 ls -t /Users/moka/IdeaProjects/Knowrary/day-info/digests/raw/*.md | head -1，然后 cat 该文件全文。
 3. 精编周报（一次写成，全文控制在 120 行以内）：
    ① 标题「Day-Info 周报（YYYY-Www · 起止日期）」+ 一句本周概览；
    ②「⚡ 必须看」5-15 条：逐条「发生了什么 + 一句意义」，合并重复主题，按重要性排序；
@@ -22,8 +25,8 @@ Day-Info 周报·生成（每周日 19:45；生成全文写入文件并推送分
    ⑤「📝 入库草稿」3-5 个「- 域｜节点名：一句话描述」；
    ⑥「一句话总结」。
    要求：只写材料中有信源的内容，不编造；不确定的标「待确认」。
-4. 把成稿一次性写入（用 exec 的 heredoc 一次完成，避免多次修改）：/root/.openclaw-autoclaw/workspace/Knowrary-dayinfo/day-info/digests/<周标签>.md（周标签用 exec 运行 date +%G-W%V 获取，如 2026-W38）。
-5. exec 运行：bash /root/.openclaw-autoclaw/workspace/Knowrary-dayinfo/day-info/scripts/publish.sh "day-info: 周报 <周标签>"
+4. 把成稿一次性写入（用 heredoc 一次完成，避免多次修改）：/Users/moka/IdeaProjects/Knowrary/day-info/digests/<周标签>.md（周标签用 date +%G-W%V 获取，如 2026-W38）。
+5. 运行：bash /Users/moka/IdeaProjects/Knowrary/day-info/scripts/publish.sh "day-info: 周报 <周标签>"
 6. 输出最多 5 行状态：① 文件路径；② 必须看/值得看条数；③ 推送结果。不要输出周报全文。
 ```
 
@@ -35,7 +38,7 @@ Day-Info 周报·生成（每周日 19:45；生成全文写入文件并推送分
 Day-Info 周报·阅读版（每周日 20:15）：把 19:45「生成任务」写好的周报全文读取并输出。
 
 步骤：
-1. exec 运行：ls -t /root/.openclaw-autoclaw/workspace/Knowrary-dayinfo/day-info/digests/*.md | head -1 找到最新周报文件，确认其文件名包含本周周标签（date +%G-W%V）。
+1. 运行：ls -t /Users/moka/IdeaProjects/Knowrary/day-info/digests/*.md | head -1 找到最新周报文件，确认其文件名包含本周周标签（date +%G-W%V）。
 2. cat 该文件全文。
 3. 把文件内容作为回复直接输出（不重写、不摘要、不加前言）；若文件不存在或周标签不符，输出一行「⚠ 本周周报未生成，请检查 19:45 生成任务」并结束。
 4. 不联网、不写文件、不提交。

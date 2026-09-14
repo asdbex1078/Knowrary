@@ -6,7 +6,7 @@
 
 | 环节 | 频率 | 产物 |
 | --- | --- | --- |
-| 收集（静默） | 每天 09:00（自动） | `pool/YYYY-MM-DD.json`（机器读）+ `.md`（人读），三档打标 |
+| 收集（静默） | 每天 19:00（自动） | `pool/YYYY-MM-DD.json`（机器读）+ `.md`（人读），三档打标 |
 | 周报 | 每周日 20:00（自动） | `digests/YYYY-Www.md`（必须看 + 值得看精选，15 分钟可扫完） |
 | 即时提醒 | 触发式 | 只有「必须看且项目强相关」（如 X6/G6/AntV 新版本）才即时提醒，置顶在当天收集结果里 |
 
@@ -44,26 +44,33 @@ bash day-info/scripts/publish.sh "提交信息"    # 只提交/推送（周报�
 
 推送目标：本仓库 `day-info-for-autoclaw` 分支。两个通道任选其一即可，`publish.sh` 会自动依次尝试。
 
-**通道 A：HTTPS + Personal Access Token（推荐，最简单）**
+**通道 A：HTTPS + Personal Access Token（推荐）**
 
-- 凭证文件：`/root/.openclaw-autoclaw/workspace/.secrets/git-credentials`
+1. GitHub → 头像 → Settings → Developer settings → Personal access tokens → **Fine-grained tokens** → Generate new token
+2. Repository access 选 **Only select repositories**，只勾 `Knowrary`
+3. Permissions → Repository permissions → **Contents → Read and write**（push 所需的最小权限）
+4. 写入凭证文件：
+
+```bash
+mkdir -p .secrets
+printf 'https://x-access-token:<TOKEN>@github.com\n' > .secrets/git-credentials
+chmod 600 .secrets/git-credentials
+```
+
+- 凭证文件路径：`.secrets/git-credentials`（`.gitignore` 已忽略 `.secrets/`，不会入库）
 - 内容格式：`https://x-access-token:<TOKEN>@github.com`
-- Token：GitHub 细粒度 PAT，仅勾选 `Knowrary` 仓库、权限 `Contents: Read and write`
-- 也可用环境变量 `KNOWRARY_DAYINFO_CREDS` 指向其他凭证文件路径。
+- 也可用环境变量 `KNOWRARY_DAYINFO_CREDS` 指向其他凭证文件路径
 
-**通道 B：SSH + Deploy Key（密钥已生成，待添加到仓库）**
+**通道 B：SSH + Deploy Key**
 
-- 私钥：`/root/.openclaw-autoclaw/workspace/.secrets/github_deploy_key`
-- 公钥（添加到 https://github.com/asdbex1078/Knowrary/settings/keys ，勾选 Allow write access）：
-
-```
-ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKzB3vICRYKUQH79Td3U1S26i263ezk/099OQhi9hmpG autoclaw-dayinfo@Knowrary
-```
-
-- `~/.ssh/config` 已把 github.com 指向 `ssh.github.com:443`（本沙箱网络对 22 端口可能受限）。
+- 私钥路径：`.secrets/github_deploy_key`（同样不入库）
+- 公钥需自行生成，并添加到 https://github.com/asdbex1078/Knowrary/settings/keys ，勾选 **Allow write access**
+- 本机 22 端口被代理接管时，需在 `~/.ssh/config` 把 github.com 指向 `ssh.github.com:443`
 
 > 未配置凭证时：一切照常收集并本地提交，只是不推送；配置任一通道后自动开始推送。
 
+**历史备注**：原 AutoClaw 环境的凭证与 Deploy Key 位于其沙箱内（`/root/.openclaw-autoclaw/workspace/.secrets/`），**本机不可用**，需按上述步骤重新配置。
+
 ---
 
-*本目录由 AutoClaw 自动化任务维护：`pool/` 与 `digests/` 以自动生成为准；手动修改请只动说明文档。*
+*本目录由 WorkBuddy 自动化任务维护（原为 AutoClaw，已迁移）：`pool/` 与 `digests/` 以自动生成为准；手动修改请只动说明文档。*
