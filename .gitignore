@@ -31,3 +31,6 @@ node_modules/
 
 # Knowrary：index.json 是可重建的派生缓存（knowrary index 随时重建）
 .knowrary/index.json
+
+# Day-Info：推送凭证（PAT / Deploy Key），绝不入库
+.secrets/
