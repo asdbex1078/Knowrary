@@ -1,0 +1,225 @@
+{
+  "date": "2026-09-13",
+  "generated_at": "2026-09-13T09:00:50",
+  "counts": {
+    "total": 18,
+    "must": 1,
+    "worth": 13,
+    "archive": 4,
+    "critical": 0
+  },
+  "errors": [
+    "GitHub search: HTTP Error 403: rate limit exceeded",
+    "GitHub 热门: HTTP Error 403: rate limit exceeded"
+  ],
+  "items": [
+    {
+      "url": "https://www.marktechpost.com/2026/09/12/cognition-releases-swe-2-a-kimi-k3-post-trained-coding-model-that-matches-fable-5-1-on-frontiercode-at-64-lower-cost/",
+      "title": "Cognition Releases SWE-2: A Kimi K3 Post-Trained Coding Model That Matches Fable 5.1 on FrontierCode at 64% Lower Cost",
+      "source": "MarkTechPost",
+      "published": "2026-09-12",
+      "summary": "Cognition, the company behind the Devin coding agent, has released SWE-2, its most capable coding model to date. SWE-2 is post-trained with reinforcement learning from Kimi K3, Moonshot AI&#8217;s 2.8T-parameter open mod",
+      "tier": "必须看",
+      "critical": false,
+      "reasons": [
+        "发布信号:kimi,release,model"
+      ]
+    },
+    {
+      "url": "https://huggingface.co/Justvugg/GLM-5.3-colibri-int4-g64",
+      "title": "Justvugg/GLM-5.3-colibri-int4-g64",
+      "source": "HF 新模型",
+      "published": "2026-09-13",
+      "summary": "likes 1 · downloads 57",
+      "tier": "值得看",
+      "critical": false,
+      "reasons": [
+        "论文/工具类"
+      ]
+    },
+    {
+      "url": "https://huggingface.co/Vxtzq/Crowd-v1",
+      "title": "Vxtzq/Crowd-v1",
+      "source": "HF 新模型",
+      "published": "2026-09-13",
+      "summary": "likes 3 · downloads 9488",
+      "tier": "值得看",
+      "critical": false,
+      "reasons": [
+        "论文/工具类"
+      ]
+    },
+    {
+      "url": "https://huggingface.co/outminer/co-1",
+      "title": "outminer/co-1",
+      "source": "HF 新模型",
+      "published": "2026-09-13",
+      "summary": "likes 2 · downloads 0",
+      "tier": "值得看",
+      "critical": false,
+      "reasons": [
+        "论文/工具类"
+      ]
+    },
+    {
+      "url": "https://huggingface.co/outminer/co-2",
+      "title": "outminer/co-2",
+      "source": "HF 新模型",
+      "published": "2026-09-13",
+      "summary": "likes 1 · downloads 0",
+      "tier": "值得看",
+      "critical": false,
+      "reasons": [
+        "论文/工具类"
+      ]
+    },
+    {
+      "url": "https://huggingface.co/sundaycoil/note-taking-app",
+      "title": "sundaycoil/note-taking-app",
+      "source": "HF 新模型",
+      "published": "2026-09-13",
+      "summary": "likes 3 · downloads 0",
+      "tier": "值得看",
+      "critical": false,
+      "reasons": [
+        "论文/工具类"
+      ]
+    },
+    {
+      "url": "https://huggingface.co/sundaycoil/pubsub-consumer",
+      "title": "sundaycoil/pubsub-consumer",
+      "source": "HF 新模型",
+      "published": "2026-09-13",
+      "summary": "likes 4 · downloads 0",
+      "tier": "值得看",
+      "critical": false,
+      "reasons": [
+        "论文/工具类"
+      ]
+    },
+    {
+      "url": "https://withspecific.com/benchmarks/real-swe",
+      "title": "Real-SWE: Benchmarking AI models on private, real-world, enterprise codebases",
+      "source": "Hacker News",
+      "published": "2026-09-12",
+      "summary": "Article URL: https://withspecific.com/benchmarks/real-swe Comments URL: https://news.ycombinator.com/item?id=49676820 Points: 95 # Comments: 59",
+      "tier": "值得看",
+      "critical": false,
+      "reasons": [
+        "命中:benchmark"
+      ]
+    },
+    {
+      "url": "https://www.ithome.com/1/001/675.htm",
+      "title": "A20 Pro 芯片 AI 跑分曝光：苹果 iPhone 18 Pro NPU 较前代最高增幅 51.53%",
+      "source": "IT之家",
+      "published": "2026-09-12",
+      "summary": "IT之家 9 月 13 日消息，在 CPU / GPU 跑分曝光之后，苹果 iPhone 18 Pro（对应机型 iPhone19,2）的 GeekBench AI 跑分昨日（9 月 12 日）现身， 相比较 iPhone 17 Pro 最高增幅为 51.53%。 IT之家发稿前查询 GeekBench AI 跑分平台，目前共收录了 2 条记录，分别是 Core ML 调用 GPU（通用图形计算单元）和 NPU / ANE（专用神经网络",
+      "tier": "值得看",
+      "critical": false,
+      "reasons": [
+        "命中:框架,benchmark"
+      ]
+    },
+    {
+      "url": "https://www.latent.space/p/forward-deployed-engineer-best-practices",
+      "title": "The Rise of the Forward Deployed Engineer — and How To Do the Job Right",
+      "source": "Latent Space",
+      "published": "2026-09-12",
+      "summary": "Before co-founding Kepler, Vinoo Ganesh led Spark at Palantir and built Project Frontline &#8212; a pioneering program for Forward Deployed Engineers. He takes us through the best practices of FDEs.",
+      "tier": "值得看",
+      "critical": false,
+      "reasons": [
+        "论文/工具类"
+      ]
+    },
+    {
+      "url": "https://www.marktechpost.com/2026/09/12/fly-language-model-flm-wires-the-full-fruit-fly-connectome-into-a-frozen-1-2b-llm-and-its-own-controls-show-the-wiring-does-not-help/",
+      "title": "Fly Language Model (FLM) Wires the Full Fruit Fly Connectome Into a Frozen 1.2B LLM, and Its Own Controls Show the Wiring Does Not Help",
+      "source": "MarkTechPost",
+      "published": "2026-09-12",
+      "summary": "The Fly Language Model (FLM) drives all 166,700 retained neurons and 25.6 million edges of the MaleCNS fruit fly connectome with token embeddings, then adds a small learned correction to a frozen LFM2.5-1.2B-Instruct bac",
+      "tier": "值得看",
+      "critical": false,
+      "reasons": [
+        "论文/工具类"
+      ]
+    },
+    {
+      "url": "https://simonwillison.net/2026/Sep/12/sighting-399708714/",
+      "title": "California Brown Pelican",
+      "source": "Simon Willison",
+      "published": "2026-09-12",
+      "summary": "California Brown Pelican, in San Mateo County, CA, US The Pacifica Pier shut down at the start of June after a crack in the concrete walkway made access to the pier unsafe. It has since been entirely taken over by pelica",
+      "tier": "值得看",
+      "critical": false,
+      "reasons": [
+        "论文/工具类"
+      ]
+    },
+    {
+      "url": "https://simonwillison.net/2026/Sep/12/astra-running-routes/",
+      "title": "Generating running routes with GPT-6 Astra and ChatGPT Work",
+      "source": "Simon Willison",
+      "published": "2026-09-12",
+      "summary": "Here's a neat thing I had ChatGPT Work with GPT-6 Astra (Max) do this morning: I live at &lt;my address&gt;. Figure out 5K and 10K running routes from me that loop from my house. Use OSM data. It worked for 27 minutes an",
+      "tier": "值得看",
+      "critical": false,
+      "reasons": [
+        "命中:tool,visualization,render"
+      ]
+    },
+    {
+      "url": "https://simonwillison.net/2026/Sep/12/paul-ford/",
+      "title": "Quoting Paul Ford",
+      "source": "Simon Willison",
+      "published": "2026-09-12",
+      "summary": "For a while, I must admit, it looked as if software developer roles like mine were done for. How could we fight against tireless robots? But our industry is slowly realizing that making truly cutting-edge software still ",
+      "tier": "值得看",
+      "critical": false,
+      "reasons": [
+        "论文/工具类"
+      ]
+    },
+    {
+      "url": "https://www.economist.com/interactive/briefing/2026/09/03/nvidia-is-the-central-bank-of-ai",
+      "title": "Nvidia is the central bank of AI",
+      "source": "Hacker News",
+      "published": "2026-09-12",
+      "summary": "https://archive.ph/kt50V Comments URL: https://news.ycombinator.com/item?id=49673098 Points: 380 # Comments: 261",
+      "tier": "仅存档",
+      "critical": false,
+      "reasons": []
+    },
+    {
+      "url": "https://tedium.co/2026/09/11/ilands-agents-email-spam-kaixin-tang/",
+      "title": "The worst spam emails: iLands AI agent hustle",
+      "source": "Hacker News",
+      "published": "2026-09-12",
+      "summary": "Article URL: https://tedium.co/2026/09/11/ilands-agents-email-spam-kaixin-tang/ Comments URL: https://news.ycombinator.com/item?id=49671159 Points: 101 # Comments: 49",
+      "tier": "仅存档",
+      "critical": false,
+      "reasons": []
+    },
+    {
+      "url": "https://www.ithome.com/1/001/688.htm",
+      "title": "IT早报 0913：央视探访无堂食外卖后厨看到店员徒手抓烤鸡；全国多所高校买商品房当学生宿舍；DeepSeek 灰度测试 AI 语音对话；“支付宝假 App”上热搜...",
+      "source": "IT之家",
+      "published": "2026-09-12",
+      "summary": "“IT早报”时间，大家好，现在是 2026 年 9 月 13 日星期日，今天的重要科技资讯有： 1. 外卖新规实施三个月，央视探访看到店员徒手抓烤鸡、明厨亮灶摄像头对着天花板 今年 6 月 1 日起，《网络餐饮服务经营者落实食品安全主体责任监督管理规定》已施行，倡导推行“互联网 + 明厨亮灶”，让消费者可以实时观看商家后厨直播。&gt;&gt; 查看详情 2. 全国多所高校买商品房当学生宿舍：空调洗衣机齐全，双人间一年 1320 元 湖",
+      "tier": "仅存档",
+      "critical": false,
+      "reasons": []
+    },
+    {
+      "url": "https://www.ithome.com/1/001/685.htm",
+      "title": "育儿博主曝光 Meta AI 可抓取日常数据“汇总生成隐私家庭信息”，官方紧急修复",
+      "source": "IT之家",
+      "published": "2026-09-12",
+      "summary": "IT之家 9 月 13 日消息，据外媒 CNET 报道，Meta 确认现已修复 Meta AI 的一项功能缺陷。此前有媒体爆出相应功能可能主动向用户推荐涉及个人隐私的问题，并从用户可访问的信息中整理出包括儿童在内的个人资料。 IT之家注意到，这场争议源于海外育儿博主 Kalie Robins 9 月 2 日发布的一段 Instagram 视频。Robins 此前发布过一段自己在车内唱歌、女儿坐在后排的视频，而在视频下方，Meta AI ",
+      "tier": "仅存档",
+      "critical": false,
+      "reasons": []
+    }
+  ]
+}
