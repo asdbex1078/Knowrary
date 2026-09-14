@@ -42,7 +42,11 @@ bash day-info/scripts/publish.sh "提交信息"    # 只提交/推送（周报�
 
 ## 推送凭证（本机已配好，无需操作）
 
-推送目标：本仓库 `day-info-for-autoclaw` 分支。两个通道任选其一即可，`publish.sh` 会自动依次尝试。
+推送目标：本仓库 `day-info` 分支。两个通道任选其一即可，`publish.sh` 会自动依次尝试。
+
+> **分支护栏**：`publish.sh` 只在 `day-info` 分支上执行。当前在别的分支（或游离 HEAD）时，
+> 脚本直接拒绝并返回 1，不做任何提交与推送——旧版本会把提交打在当时所在的分支上再推到 `day-info`，
+> 这是错的。另外它只提交 `day-info/` 路径，暂存区里的其它文件不会被卷进这次提交。
 
 > **本机（macOS）现状**：通道 A 已可用，**无需任何额外配置，也不需要申请 PAT**。通道 B 在本机当前网络下不可用，仅作其他环境的备选保留。
 
@@ -89,7 +93,7 @@ chmod 600 .secrets/git-credentials
 
 > 未配置凭证时：一切照常收集并本地提交，只是不推送；配置任一通道后自动开始推送。
 
-**历史备注**：原 AutoClaw 环境的凭证与 Deploy Key 位于其沙箱内（`/root/.openclaw-autoclaw/workspace/.secrets/`），在本机不存在；`publish.sh` 对它们的引用仅作为向后兼容的回退路径，本机走通道 A 即可，无需重建。
+**历史备注**：原 AutoClaw 环境的凭证与 Deploy Key 存放在其沙箱内，该环境已停用、Deploy Key 也已从 GitHub 删除。`publish.sh` 里对应的回退路径已一并移除（2026-09-14），现在只认环境变量与仓库本地 `.secrets/`。
 
 ---
 

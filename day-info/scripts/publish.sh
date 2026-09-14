@@ -5,7 +5,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$ROOT"
 MSG="${1:-day-info: 更新 $(date +%F)}"
-BRANCH="${DAYINFO_BRANCH:-day-info-for-autoclaw}"
+BRANCH="${DAYINFO_BRANCH:-day-info}"
 
 HTTPS_URL="https://github.com/asdbex1078/Knowrary.git"
 SSH_URL="git@github.com:asdbex1078/Knowrary.git"
@@ -17,30 +17,54 @@ if command -v timeout >/dev/null 2>&1; then
 elif command -v gtimeout >/dev/null 2>&1; then
   TIMEOUT_BIN="gtimeout"
 fi
+# LC_ALL=C：强制 git 用英文报错，下面 is_non_ff 的识别才稳（中文环境里英文正则会漏判）
 push_with_timeout() {
-  if [ -n "$TIMEOUT_BIN" ]; then "$TIMEOUT_BIN" 90 git push -q "$@"; else git push -q "$@"; fi
+  if [ -n "$TIMEOUT_BIN" ]; then LC_ALL=C "$TIMEOUT_BIN" 90 git push -q "$@"; else LC_ALL=C git push -q "$@"; fi
 }
 
+# 非快进 = 远端分支已被另一份克隆 / 另一台机器推进过，本地落后。
+# 这类失败重试多少次都一样，必须立刻停手让人来处理，不能混在「链路抖动」里空转。
+is_non_ff() {
+  tail -n 8 "${PUSH_ERRLOG}" 2>/dev/null \
+    | grep -qiE 'non-fast-forward|fetch first|\[rejected\]|updates were rejected'
+}
+abort_if_non_ff() {
+  if is_non_ff; then
+    echo "!! 推送被拒：远端 ${BRANCH} 已领先本地（不是链路抖动，重试无用）。"
+    echo "!! 本地提交已保留。请先 git pull --rebase origin ${BRANCH} 核对后再重跑。"
+    exit 1
+  fi
+}
+
+# 分支护栏：本脚本只在目标分支上执行。
+# 原先直接 git commit 打在「当前分支」上，再 push HEAD:$BRANCH——
+# 一旦在别的分支上跑，提交就落错分支，还会把那条分支的内容推到 $BRANCH 上去。
+CUR_BRANCH="$(git symbolic-ref -q --short HEAD || echo "")"
+if [ "$CUR_BRANCH" != "$BRANCH" ]; then
+  echo "!! 当前分支是「${CUR_BRANCH:-游离 HEAD}」，本脚本只在「${BRANCH}」上执行。"
+  echo "!! 未做任何提交与推送。请先 git checkout ${BRANCH} 再重跑。"
+  exit 1
+fi
+
+# 只提交 day-info 路径：用 --only 形式，避免把用户此前 git add 的其它文件一起卷进这次提交
 git add day-info
-if git diff --cached --quiet; then
+if git diff --cached --quiet -- day-info; then
   echo "== 无变更需要提交 =="
 else
-  git commit -q -m "$MSG"
+  git commit -q -m "$MSG" -- day-info
   echo "== 已本地提交：$(git log -1 --format='%h %s') =="
 fi
 
-# 凭证文件优先级：环境变量 → 仓库本地 .secrets/ → AutoClaw 旧路径（兼容）
+# 凭证文件优先级：环境变量 → 仓库本地 .secrets/
 CREDS=""
 for candidate in "${KNOWRARY_DAYINFO_CREDS:-}" \
-                 "$ROOT/.secrets/git-credentials" \
-                 "/root/.openclaw-autoclaw/workspace/.secrets/git-credentials"; do
+                 "$ROOT/.secrets/git-credentials"; do
   if [ -n "$candidate" ] && [ -s "$candidate" ]; then CREDS="$candidate"; break; fi
 done
 
 SSH_KEY=""
 for candidate in "${KNOWRARY_DAYINFO_SSH_KEY:-}" \
-                 "$ROOT/.secrets/github_deploy_key" \
-                 "/root/.openclaw-autoclaw/workspace/.secrets/github_deploy_key"; do
+                 "$ROOT/.secrets/github_deploy_key"; do
   if [ -n "$candidate" ] && [ -f "$candidate" ]; then SSH_KEY="$candidate"; break; fi
 done
 
@@ -55,6 +79,7 @@ retry() {
   local attempt=1
   while [ "${attempt}" -le "${max}" ]; do
     if "$@" 2>>"${PUSH_ERRLOG}"; then return 0; fi
+    abort_if_non_ff
     if [ "${attempt}" -lt "${max}" ]; then
       local wait_s=$(( attempt * 3 ))
       [ "${wait_s}" -gt 15 ] && wait_s=15
@@ -90,6 +115,7 @@ if GIT_TERMINAL_PROMPT=0 push_with_timeout "$HTTPS_URL" "HEAD:$BRANCH" 2>>"${PUS
   echo "== 已推送 ${BRANCH}（HTTPS） =="
   exit 0
 fi
+abort_if_non_ff
 echo "== HTTPS 推送未成功，改试 SSH… =="
 
 # 通道 2：SSH。有专用 deploy key 就用它，否则用系统默认密钥

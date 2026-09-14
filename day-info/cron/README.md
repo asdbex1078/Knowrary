@@ -2,8 +2,8 @@
 
 > 这里保存 day-info 定时任务的完整配置与提示词，便于查看、复用或迁移到其他环境。
 >
-> **当前运行平台：WorkBuddy（本机）**。原 AutoClaw 环境已停用，其在 GitHub 上的 Deploy Key 也已删除；
-> `openclaw-cron-jobs.json` 仅作迁移参考保留。
+> **当前运行平台：WorkBuddy（本机）**。原 AutoClaw 环境已停用，其在 GitHub 上的 Deploy Key 也已删除。
+> 那套配置已抽象成通用模板 `agent-cron-jobs.baseline.json`，供以后起新的 agent 项目时作基准照抄。
 
 ## 任务一览
 
@@ -23,7 +23,7 @@
 
 | 文件 | 内容 |
 | --- | --- |
-| `openclaw-cron-jobs.json` | 原 AutoClaw 环境的三个任务完整配置（调度、会话目标、delivery、payload 含完整提示词），仅作迁移参考 |
+| `agent-cron-jobs.baseline.json` | **Agent 定时任务配置基准模板**：三个任务的完整配置（调度、会话目标、delivery、payload 含完整提示词），绝对路径已参数化为 `<REPO_ROOT>` / `<BRANCH>`。起新 agent 项目时可直接照抄这套结构；`_meta` 里记了结构要点与踩坑原因。原始未参数化版本见 `git show b09b5be:day-info/cron/openclaw-cron-jobs.json` |
 | `prompt-daily.md` | 每日收集任务提示词（可读版，含设计说明） |
 | `prompt-weekly.md` | 周报两个任务提示词（生成 + 阅读版，含设计说明） |
 
@@ -33,7 +33,7 @@
 当前环境的值为 `/Users/moka/IdeaProjects/Knowrary`。
 
 - **在 WorkBuddy 里**：新建定时任务，把工作目录设为仓库根目录，提示词复制 `prompt-*.md` 中代码块的内容，并把绝对路径换成该环境的实际路径。
-- **在 AutoClaw 里**（该环境已停用，仅留档）：参照 `openclaw-cron-jobs.json`，用其定时任务面板重建，提示词复制 `payload.message`。
+- **迁到别的 agent 平台**：以 `agent-cron-jobs.baseline.json` 为基准，替换 `<REPO_ROOT>` / `<BRANCH>`，提示词复制 `payload.message`，再按目标平台的字段名映射 schedule / timeout / delivery。
 
 推送凭证按 `day-info/README.md` 的「推送凭证」一节配置（本机已配好，无需额外操作）。
 
@@ -42,7 +42,11 @@
 - **收集与推送分离**：收集任务每天跑但不打扰；周报任务每周一次只做精选输出——「收集频率高，推送频率低，形成漏斗」。
 - **critical 即时提醒**：每日收集的输出里若有 `CRITICAL:` 行（项目强相关或头部实验室重大发布），会被整理为「⚡【即时提醒】」。
 - **跨任务共享脚本**：采集逻辑在 `scripts/collect.py`（零依赖），提示词只做“调用 + 汇报”，降低模型自由发挥的空间。
-- **推送结果必须查输出、不能看退出码**：`publish.sh` 推送失败时仍返回 0（设计如此，用于保留本地提交、下次补推），
+- **推送结果必须查输出、不能看退出码**：`publish.sh` 遇到链路抖动导致的推送失败时仍返回 0（设计如此，用于保留本地提交、下次补推），
   所以三个任务都要求检查输出里有没有「推送未成功」。否则会把推送静默失败汇报成成功。
+- **两类硬失败返回 1，且不会推送**（此时退出码是可信的）：
+  ① 不在 `day-info` 分支上运行（护栏拦截，连提交都不做）；
+  ② 远端分支已领先本地（非快进，多份克隆同时推同一分支时会遇到）。
+  这两种情况重试无用，如实汇报脚本给出的原因即可，不要自行 merge 或 force push。
 - **推送需容忍链路抖动**：本机经代理走 `ssh.github.com:443`，连接会被间歇性掐断（实测约 37%），
   `publish.sh` 内置 6 次重试；提示词输出里出现「第 N/6 次失败…」属正常现象，最终成功即算成功。
