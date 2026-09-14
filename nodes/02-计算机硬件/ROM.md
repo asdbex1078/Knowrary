@@ -14,7 +14,5 @@ source: 知识图谱zhis.jpg
 注：BIOS 芯片使用的就是 ROM。嵌入式微处理器用的就是 ROM，只用一点 RAM 对数据进行 CRUD。
 
 ## 关系
-- 扩展为:: [[EPROM]]
-
 ## 待办
 - [ ] 核实 ROM 的 `year`：掩膜 ROM 的"首次实现"说法不一（1940s 末的二极管矩阵 / 1956 年 Wen Tsing Chow 的 PROM / 1960s 商用掩膜 ROM），按规范暂留空，不填猜测值。下游 EPROM 已填 1971，`ROM → EPROM` 的演化边已能进入历史视图。

@@ -13,5 +13,3 @@ source: 知识图谱zhis.jpg
 - 后端：将复杂指令拆成类似 RISC 的 μops（微操作）
 
 ## 关系
-- 实现:: [[RISC]]
-- 实现:: [[CISC]]

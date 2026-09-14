@@ -14,4 +14,3 @@ source: 知识图谱zhis.jpg
 LLVM 的 C 语言家族前端（C Lang 前端）。
 
 ## 关系
-- 使用:: [[C语言]]

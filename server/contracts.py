@@ -45,6 +45,7 @@ class GroupBox(Strict):
     collapsed: bool = False
     pinned: Literal["expanded", "collapsed"] | None = None
     color: str | None = None
+    doc: str | None = None    # 这个域的总览文档（一个普通节点 id）；知识仍然只住在 md 里
 
 
 class NodeBox(Strict):
@@ -123,6 +124,7 @@ class GroupPatch(Strict):
     collapsed: bool | None = None
     pinned: Literal["expanded", "collapsed"] | None = None
     color: str | None = None
+    doc: str | None = None
 
 
 class NodePatch(Strict):
@@ -214,14 +216,17 @@ class IndexDoc(BaseModel):
 # ---------------------------------------------------------------- ChangeSet（阶段 3）
 
 class Change(Strict):
-    type: Literal["add_edge", "remove_edge", "update_edge", "update_frontmatter"]
-    source: str
+    type: Literal["add_edge", "remove_edge", "update_edge", "update_frontmatter", "create_node",
+                  "update_body"]
+    source: str                        # create_node 时是新节点的 id（= 文件名）
+    path: str | None = None            # create_node 时的落点，vault 相对路径，必须在 nodes/ 下
     target: str | None = None
     relation: str | None = None
     from_relation: str | None = None   # update_edge 时用来定位原来那条边
     year: int | None = None
     note: str | None = None
     fields: dict[str, Any] | None = None
+    body: str | None = None            # update_body：frontmatter 与 `## 关系` 之间那一段的新原文
     evidence: list[str] = Field(default_factory=list)
     confidence: float = 1.0
 

@@ -12,5 +12,3 @@ source: 知识图谱zhis.jpg
 CPU 的具体厂商实例，资料入口 [[Intel手册]]。现代 Intel 的 CISC/RISC 混合设计见 [[现代Intel微架构]]。
 
 ## 关系
-- 参考:: [[Intel手册]]
-- 实例:: [[现代Intel微架构]]

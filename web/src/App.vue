@@ -1,15 +1,31 @@
 <script setup>
-import { computed, onBeforeUnmount, onMounted, reactive, ref, shallowRef } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref, shallowRef, watch } from 'vue'
 import {
   fetchDigest, fetchDue, fetchHealth, fetchIndex, fetchInbox, fetchLayout, fetchNode,
   patchLayout, postChanges, postPlace, postReview,
 } from './api'
+import AppHeader from './components/AppHeader.vue'
+import ActivityBar from './components/ActivityBar.vue'
+import CanvasTools from './components/CanvasTools.vue'
+import ZoomBar from './components/ZoomBar.vue'
+import HistoryPlayer from './components/HistoryPlayer.vue'
+import StatusBar from './components/StatusBar.vue'
+import Inspector from './components/Inspector.vue'
+import HelpDialog from './components/HelpDialog.vue'
+import ContextMenu from './components/ContextMenu.vue'
+import RelationDialog from './components/RelationDialog.vue'
+import NodeDialog from './components/NodeDialog.vue'
+import GroupBar from './components/GroupBar.vue'
+import MiniMap from './components/MiniMap.vue'
+import ToastHost from './ui/ToastHost.vue'
+import Icon from './ui/Icon.vue'
 import InboxTray from './panels/InboxTray.vue'
 import DigestPanel from './panels/DigestPanel.vue'
 import ImagePicker from './panels/ImagePicker.vue'
+import TimelinePanel from './panels/TimelinePanel.vue'
 import { clone, createHistory, diffPatch, isEmptyPatch } from './canvas/history'
 import { createPatcher } from './canvas/patcher'
-import { computeCollapsed } from './canvas/lod'
+import { ancestors as groupAncestors, computeCollapsed } from './canvas/lod'
 import {
   LABEL_ZOOM, applyEdgeLabels, applyViewport, buildCells, buildHistoryCells, contentBBox, createGraph,
   currentViewport, highlightEdges, mount, movedPositions,
@@ -17,9 +33,10 @@ import {
 import { timelineOptions } from './canvas/timeline'
 import { communityLayout, compareWithGroups } from './canvas/communities'
 import { mindmapLayout, toPatch } from './canvas/layouts'
-import { FAMILIES, FAMILY_STYLE, setTheme } from './canvas/shapes'
+import { FAMILIES, setTheme } from './canvas/shapes'
 
 const canvasEl = ref(null)
+const headerEl = ref(null)
 const graph = shallowRef(null)
 const patcher = shallowRef(null)
 const indexDoc = shallowRef(null)
@@ -28,38 +45,48 @@ const layoutDoc = shallowRef(null)
 const revision = ref(0)
 const indexRevision = ref(0)
 const status = ref('saved')
-const banner = ref('')
-const bannerKind = ref('')
 const selected = ref(null)
 const detail = shallowRef(null)          // GET /api/node/:id 的结果（md 原文 + 出入边）
-const showRaw = ref(false)
 const pending = ref([])                  // 待提交的 ChangeSet（本地攒着，未确认不碰 md）
 const changePreview = shallowRef(null)   // 预览结果（每个文件的 diff）
-const draft = reactive({ relation: '', target: '', year: '', note: '' })
 const stats = reactive({ nodes: 0, edges: 0, stubs: 0 })
-// 结构族默认不画线：嵌套（分组框）已经表达了归属，86 条结构边里有 74 条两端同框，
-// 画出来纯属重复噪音（设计文档 3.6）。需要看的时候在工具条勾上。
-const visible = reactive(Object.fromEntries(FAMILIES.map((f) => [f, f !== '结构'])))
+/**
+ * 哪些关系族画出来。
+ *
+ * 原来结构族默认关着：那时 86 条结构边里 74 条两端同框，和分组框重复（设计文档 3.6）。
+ * 2026-09-14 全图关系清空、改由人手工重连之后这个前提没了——手工连的第一批多半就是
+ * 「部件 / 包含」这种层次骨架，默认藏起来会让人以为没连上。
+ * 勾选状态记在 localStorage：它是"这台机器上怎么看图"的偏好，和主题同级，不进 layout.json。
+ */
+const FAMILY_KEY = 'knowrary-families'
+const visible = reactive(loadFamilies())
+
+function loadFamilies() {
+  const def = Object.fromEntries(FAMILIES.map((f) => [f, true]))
+  try {
+    return { ...def, ...(JSON.parse(localStorage.getItem(FAMILY_KEY) || '{}') || {}) }
+  } catch {
+    return def
+  }
+}
 const edgesShown = ref(0)
 const aggShown = ref(0)
 const has3d = ref(false)          // 服务端有 web3d 构建产物时才显示 3D 入口
 const inboxCount = ref(0)
 const inboxItems = shallowRef([])        // GET /api/inbox：索引里有、画布上还没有的节点
-const showInbox = ref(false)
-const showDigest = ref(false)
 const digest = shallowRef(null)          // GET /api/digest：欠账清单
 const dueIds = shallowRef(new Set())     // 今天该复习的节点，画布上点一个金色小圆点
 const placing = ref(false)
-const showPicker = ref(false)   // 贴图面板
 // 历史视图（阶段 6）：X 轴锁在年份上，坐标不持久化，进来一次算一次
 const mode = ref('structure')
 const hist = reactive({ compact: false, validity: false, upto: null, 演化: true, 依赖: false, 对照: false })
 const histPlan = shallowRef(null)
 const timelines = ref([])          // 选中的 layout 分组 id（空 = 全部）
 let playing = null
+const isPlaying = ref(false)
 const autoLod = ref(true)                // 缩小自动折叠成簇卡片（设计文档 3.7）
 const focusGroup = ref(null)             // 聚焦的域：点簇卡片进入，只展开它
-const search = ref('')                   // 工具条搜索框
+const search = ref('')                   // 顶栏搜索词
 let panorama = null                      // 进入聚焦前的视口，退出时还原
 const collapsedIds = shallowRef(new Set())
 const theme = ref(localStorage.getItem('knowrary-theme') || 'light')
@@ -72,29 +99,79 @@ let dirtyBefore = null                   // 当前这批未保存改动之前的
 const canUndo = computed(() => histVer.value >= 0 && history.depth()[0] > 0)
 const canRedo = computed(() => histVer.value >= 0 && history.depth()[1] > 0)
 const labelsOn = ref(false)
+const zoom = ref(1)                      // 给右下角缩放条读数用，随 scale 事件更新
 // 只有用户真的操作过画布才允许落盘：既避免"打开页面就涨 revision"，
 // 也不依赖 requestAnimationFrame（后台标签页 / 无头浏览器里 rAF 不触发）
 const ready = ref(false)
 let applyingViewport = false   // 程序化设置视口期间不落盘，否则切族/展开都白涨一个 revision
 
+// —— 右键菜单 / 建立关系 / 小地图 / 只看邻居 ——
+const ctx = ref(null)          // 菜单浮层的 props：{ x, y, title, subtitle, items }
+let ctxTarget = null           // 菜单指着谁：{ kind, id, at }，不进 props（会漏成 DOM 属性）
+const relating = shallowRef(null)        // 建立关系对话框的源节点
+const creating = shallowRef(null)        // 新建知识点对话框：{ at, group }
+const activeGroup = ref(null)            // 工具条正指着哪个域
+const groupBarAt = ref(null)             // 工具条的屏幕坐标，跟着缩放平移重算
+const writeNonce = ref(0)                // ++ 一次 = 让检查器展开正文编辑框
+const neighbor = ref(null)               // 只看这个节点和它的直接邻居
+const showMap = ref(localStorage.getItem('knowrary-map') !== '0')
+const viewBox = ref({ cx: 0, cy: 0, w: 0, h: 0 })   // 当前视口（图坐标），小地图用
+
+// —— 界面状态：左侧工具窗口、右侧检查器、浮层提示、帮助 ——
+const panel = ref('')                    // '' | inbox | digest | assets | timeline
+const inspectorHidden = ref(false)
+const showHelp = ref(false)
+const problems = ref([])                 // 加载时发现的待处理项，挂在状态栏上
+
+const inspectorOpen = computed(() =>
+  !inspectorHidden.value && (!!selected.value || pending.value.length > 0))
+
+function openPanel(id) {
+  panel.value = panel.value === id ? '' : id
+  if (panel.value === 'digest' && !digest.value) refreshDigest()
+  if (panel.value === 'inbox') refreshInbox()
+}
+
 const statusText = computed(() => ({
-  saved: '已保存', saving: '保存中…', dirty: '待保存', retry: '有冲突，已重试', error: '保存失败',
+  saved: '已保存', saving: '保存中…', dirty: '待保存', retry: '已重试', error: '保存失败',
 }[status.value] || status.value))
 
 const visibleFamilies = () => new Set(FAMILIES.filter((f) => visible[f]))
 const shownFamilies = computed(() => FAMILIES.filter((f) => visible[f]).length)
+const focusName = computed(() =>
+  (focusGroup.value && mode.value === 'structure' ? layoutDoc.value?.groups?.[focusGroup.value]?.name || '' : ''))
 
-/** 工具条上的下拉互斥：开一个就把别的关上（原生 details 不会自己关）。 */
-function closeOthers(ev) {
-  if (!ev.target.open) return
-  document.querySelectorAll('header details.menu[open]').forEach((d) => {
-    if (d !== ev.target) d.open = false
-  })
+// —— 浮层提示（toast）：原来是顶在画布上方的一条 banner，会把画布压矮 ——
+const toasts = ref([])
+let toastSeq = 0
+const toastTimers = new Map()
+let statusToast = null
+let lastKind = ''
+
+function dismissToast(id) {
+  const t = toastTimers.get(id)
+  if (t) clearTimeout(t)
+  toastTimers.delete(id)
+  toasts.value = toasts.value.filter((x) => x.id !== id)
+  if (statusToast === id) statusToast = null
 }
 
+function pushToast(text, kind = 'info') {
+  const id = ++toastSeq
+  toasts.value = [...toasts.value, { id, text, kind }]
+  // 错误多留一会儿：这类提示往往要照着做下一步操作
+  toastTimers.set(id, setTimeout(() => dismissToast(id), kind === 'error' ? 10000 : 5200))
+  return id
+}
+
+/**
+ * 单条状态提示，语义沿用原来的 banner：新的顶掉旧的，传空串就是清掉。
+ * 其他地方（比如批量报告问题）要并排显示多条时直接用 pushToast。
+ */
 function setBanner(text, kind = '') {
-  banner.value = text
-  bannerKind.value = kind
+  if (statusToast) dismissToast(statusToast)
+  lastKind = kind
+  statusToast = text ? pushToast(text, kind || 'info') : null
 }
 
 async function load() {
@@ -128,7 +205,7 @@ function render({ view = 'keep' } = {}) {
   const cells = buildCells(indexDoc.value, layoutDoc.value, {
     families: visibleFamilies(), showLabels: labelsOn.value,
     aggregate: aggregate.value, expanded: expanded.value, collapsed: collapsedIds.value, zoom: g.zoom(),
-    due: dueIds.value,
+    due: dueIds.value, only: neighborSet.value,
   })
   edgesShown.value = cells.edges.filter((e) => e.data.kind === 'edge').length
   aggShown.value = cells.edges.length - edgesShown.value
@@ -144,6 +221,44 @@ function render({ view = 'keep' } = {}) {
     applyViewport(g, layoutDoc.value.viewport)
   }
   applyingViewport = false
+  zoom.value = g.zoom()
+  syncView()
+}
+
+/** 只看某个节点的邻居时，画布上留哪些节点（它自己 + 一跳邻居）。 */
+const neighborSet = computed(() => {
+  if (!neighbor.value || !indexDoc.value) return null
+  const keep = new Set([neighbor.value])
+  for (const e of indexDoc.value.edges) {
+    if (e.source === neighbor.value) keep.add(e.target)
+    else if (e.target === neighbor.value) keep.add(e.source)
+  }
+  return keep
+})
+
+const neighborName = computed(() => (neighbor.value
+  ? indexDoc.value?.nodes.find((n) => n.id === neighbor.value)?.name || neighbor.value : ''))
+
+function toggleNeighbor(id) {
+  neighbor.value = neighbor.value === id ? null : id
+  render()
+  // 进邻居模式要飞到这一小撮节点上；用它们自己的框，不能用 fitStable（那是全图的框）
+  const box = neighbor.value && boxOf([...neighborSet.value])
+  if (!box) return
+  const el = graph.value.container
+  const z = Math.min(1.2, (el.clientWidth || 1200) / box.w, (el.clientHeight || 800) / box.h)
+  flyTo({ cx: box.x + box.w / 2, cy: box.y + box.h / 2, zoom: z })
+}
+
+/** 一组节点在 layout 里占的框（带一点留白）。 */
+function boxOf(ids, pad = 120) {
+  const boxes = ids.map((id) => layoutDoc.value?.nodes?.[id]).filter(Boolean)
+  if (!boxes.length) return null
+  const x0 = Math.min(...boxes.map((b) => b.x)) - pad
+  const y0 = Math.min(...boxes.map((b) => b.y)) - pad
+  const x1 = Math.max(...boxes.map((b) => b.x + (b.w || 160))) + pad
+  const y1 = Math.max(...boxes.map((b) => b.y + (b.h || 60))) + pad
+  return { x: x0, y: y0, w: Math.max(x1 - x0, 1), h: Math.max(y1 - y0, 1) }
 }
 
 /**
@@ -157,18 +272,18 @@ function storedViewportUsable() {
   const box = contentBBox(layoutDoc.value)
   if (!box) return true
   const vp = layoutDoc.value.viewport || {}
-  const zoom = vp.zoom || 0.8
+  const z = vp.zoom || 0.8
   const el = graph.value.container
   const w = el.clientWidth || 1200
   const h = el.clientHeight || 800
   // 比"整张图刚好铺满窗口"还小一半以上 → 一个节点只剩几个像素，什么都看不清
   const fitZoom = Math.min((w - 100) / box.width, (h - 100) / box.height)
-  if (zoom < fitZoom * 0.5) return false
+  if (z < fitZoom * 0.5) return false
   // 视口中心离内容框还有一屏以上 → 打开是一片空白
   const cx = vp.cx ?? 0
   const cy = vp.cy ?? 0
-  return cx > box.x - w / zoom && cx < box.x + box.width + w / zoom
-    && cy > box.y - h / zoom && cy < box.y + box.height + h / zoom
+  return cx > box.x - w / z && cx < box.x + box.width + w / z
+    && cy > box.y - h / z && cy < box.y + box.height + h / z
 }
 
 const staleDays = (n) => (n.placedAt ? Math.floor((Date.now() - Date.parse(n.placedAt)) / 86400000) : 0)
@@ -197,6 +312,7 @@ function renderHistory({ view = 'fit' } = {}) {
   }
   mount(g, cells)
   applyingViewport = false
+  zoom.value = g.zoom()
   const d = cells.plan.diagnostics
   const parts = [`${cells.plan.placed.size} 个有 year 的节点 · ${cells.edges.length} 条边`]
   if (d.noYear) parts.push(`${d.noYear} 个节点没有 year，不进历史图`)
@@ -210,6 +326,10 @@ async function switchMode(next) {
   await patcher.value.flush()           // 离开结构视图前先把手上的改动落盘
   mode.value = next
   markHistoryContainer(next)
+  // 左侧工具窗口是分模式的：切过去之后原来开着的那个可能不适用了
+  if ((next === 'history' && panel.value !== 'digest') || (next === 'structure' && panel.value === 'timeline')) {
+    panel.value = ''
+  }
   if (next === 'structure') {
     expanded.value = new Set()
     render({ view: 'stored' })
@@ -233,6 +353,7 @@ function togglePlay() {
   if (playing) return stopPlay()
   const [min, max] = yearRange.value
   if (hist.upto === null || hist.upto >= max) hist.upto = min
+  isPlaying.value = true
   playing = setInterval(() => {
     if (hist.upto === null || hist.upto >= max) return stopPlay()
     hist.upto += 1
@@ -243,14 +364,19 @@ function togglePlay() {
 function stopPlay() {
   if (playing) clearInterval(playing)
   playing = null
+  isPlaying.value = false
 }
 
 function toggleTimeline(id) {
-  const next = timelines.value.includes(id)
+  timelines.value = timelines.value.includes(id)
     ? timelines.value.filter((x) => x !== id)
     : [...timelines.value, id]
-  timelines.value = next
   renderHistory({ view: 'fit' })
+}
+
+function toggleHistFamily(f) {
+  hist[f] = !hist[f]
+  renderHistory({ view: 'keep' })
 }
 
 function reportProblems(index, layout, refit = false) {
@@ -261,7 +387,14 @@ function reportProblems(index, layout, refit = false) {
   if (layout.generated) parts.push('已按 field / 目录生成初始布局，拖动即保存')
   const stale = Object.entries(layout.layout.nodes).filter(([, n]) => n.state === 'draft' && staleDays(n) >= 7)
   if (stale.length) parts.push(`${stale.length} 个草稿放了一周以上（「欠账」里可以逐个定稿）`)
+  problems.value = parts
   setBanner(parts.join('；'), index.errors.length ? 'error' : '')
+}
+
+/** 状态栏那个"n 项待处理"：把加载时报过的问题再摆一遍。 */
+function showProblems() {
+  if (!problems.value.length) return
+  problems.value.forEach((p) => pushToast(p, 'info'))
 }
 
 // 与本地镜像（= 服务端最新状态）比对，值没变就不发；mount() 建父子关系触发的事件天然被过滤掉
@@ -333,6 +466,7 @@ function bindEvents(g) {
       moveDecoration(node.id, Math.round(pos.x), Math.round(pos.y))
       return
     }
+    if (node.shape === 'kg-cluster') return moveCluster(node)
     for (const p of movedPositions(node)) queueIfChanged(p.kind, p.id, { x: p.x, y: p.y })
   }))
   g.on('node:change:parent', safe(({ node, current }) => {
@@ -342,6 +476,7 @@ function bindEvents(g) {
   }))
   g.on('node:selected', safe(({ node }) => {
     selected.value = describe(node.id)
+    inspectorHidden.value = false
     focus(node.id)
     loadDetail(node.id)
   }))
@@ -349,6 +484,8 @@ function bindEvents(g) {
   g.on('blank:click', safe(() => {
     selected.value = null
     detail.value = null
+    activeGroup.value = null
+    groupBarAt.value = null
     focus(null)
     g.getEdges().forEach((e) => e.removeTools())   // 顺手摘掉拐点手柄
   }))
@@ -358,6 +495,7 @@ function bindEvents(g) {
   // 点簇卡片 → 放大进这个域（只展开它）；再点「返回全景」或按 Esc 缩回去
   g.on('node:click', safe(({ node }) => {
     if (node.shape === 'kg-cluster') enterGroup(node.id)
+    else if (node.shape === 'kg-group') setActiveGroup(node.id)
     if (node.shape === 'kg-ref') gotoNode(node.getData()?.target)
   }))
   g.on('node:dblclick', safe(({ node }) => {
@@ -402,7 +540,44 @@ function bindEvents(g) {
     patcher.value.queueEdge(edge.id, style)
   }))
   g.on('scale', safe(onZoom))
-  g.on('translate', safe(() => saveViewport()))
+  g.on('translate', safe(() => { saveViewport(); syncView() }))
+  // 右键菜单：浏览器自带的菜单让位，画布自己弹
+  g.container.addEventListener('contextmenu', (ev) => ev.preventDefault())
+  g.on('node:contextmenu', safe(({ node, e }) => {
+    const kind = { 'kg-node': 'node', 'kg-group': 'group', 'kg-cluster': 'cluster' }[node.shape]
+      || (['kg-note', 'kg-image', 'kg-ref'].includes(node.shape) ? 'deco' : null)
+    if (kind) openMenu(kind, node.id, e)
+  }))
+  g.on('edge:contextmenu', safe(({ edge, e }) => {
+    if ((edge.getData() || {}).kind === 'edge') openMenu('edge', edge.id, e)
+  }))
+  g.on('blank:contextmenu', safe(({ e }) => openMenu('blank', null, e)))
+}
+
+/**
+ * 拖动簇卡片 = 拖动它代表的那个分组。
+ *
+ * 簇里的节点和子分组没有建 cell（那正是折叠的意义），X6 不会替我们移动它们，
+ * 所以这里按位移量把它们在 layout 里整体平移——否则展开之后节点还留在原地。
+ */
+function moveCluster(node) {
+  const gid = node.id
+  const box = layoutDoc.value.groups[gid]
+  if (!box) return
+  const [moved] = movedPositions(node)
+  const dx = moved.x - Math.round(box.x)
+  const dy = moved.y - Math.round(box.y)
+  if (!dx && !dy) return
+  queueIfChanged('group', gid, { x: moved.x, y: moved.y })
+  for (const [id, sub] of Object.entries(layoutDoc.value.groups)) {
+    if (id !== gid && groupAncestors(layoutDoc.value.groups, id).includes(gid)) {
+      queueIfChanged('group', id, { x: Math.round(sub.x + dx), y: Math.round(sub.y + dy) })
+    }
+  }
+  for (const [id, n] of Object.entries(layoutDoc.value.nodes)) {
+    const chain = n.group ? [n.group, ...groupAncestors(layoutDoc.value.groups, n.group)] : []
+    if (chain.includes(gid)) queueIfChanged('node', id, { x: Math.round(n.x + dx), y: Math.round(n.y + dy) })
+  }
 }
 
 /** 给边挂上拐点手柄：拖圆点造拐点，双击边清空。别的边先摘掉手柄，画面才不乱。 */
@@ -410,7 +585,7 @@ function editVertices(edge) {
   if (!writable()) return
   const g = graph.value
   g.getEdges().forEach((e) => e.id !== edge.id && e.removeTools())
-  edge.addTools([{ name: 'vertices', args: { attrs: { r: 5, fill: '#fff', stroke: '#2d6cdf', strokeWidth: 2 } } }])
+  edge.addTools([{ name: 'vertices', args: { attrs: { r: 5, fill: '#fff', stroke: '#3b6fe0', strokeWidth: 2 } } }])
   setBanner('拖动边上的圆点调拐点，双击这条边清掉拐点')
 }
 
@@ -419,9 +594,60 @@ function saveViewport() {
   patcher.value.queueViewport(currentViewport(graph.value))
 }
 
+// ---- 域工具条：浮在当前这个域的上沿 ----
+
+const activeGroupBox = computed(() => (activeGroup.value
+  ? layoutDoc.value?.groups?.[activeGroup.value] || null : null))
+
+const activeGroupCount = computed(() => (activeGroup.value
+  ? Object.values(layoutDoc.value?.nodes || {}).filter((n) => n.group === activeGroup.value).length : 0))
+
+const activeFolded = computed(() => !!activeGroup.value && collapsedIds.value.has(activeGroup.value))
+
+function setActiveGroup(gid) {
+  activeGroup.value = layoutDoc.value?.groups?.[gid] ? gid : null
+  placeGroupBar()
+}
+
+/**
+ * 把工具条摆到域的上沿。
+ *
+ * 按"域与可视区的交集"算而不是只看左上角：放大之后域往往比屏幕还大，左上角早就在
+ * 视口外，但你明明正看着它——那时也得给工具条。整块都挪出屏幕了才收起来。
+ */
+function placeGroupBar() {
+  const g = graph.value
+  const box = activeGroupBox.value
+  if (!g || !box) { groupBarAt.value = null; return }
+  const cell = g.getCellById(activeGroup.value)
+  const at = cell ? cell.position() : box          // 折叠时簇卡片的位置才是它现在的样子
+  const size = cell ? cell.size() : { width: box.w, height: box.h }
+  const tl = g.localToClient(at.x, at.y)
+  const br = g.localToClient(at.x + size.width, at.y + size.height)
+  const view = g.container.getBoundingClientRect()
+  const x0 = Math.max(tl.x, view.left + 8)
+  const x1 = Math.min(br.x, view.right - 8)
+  const y0 = Math.max(tl.y, view.top + 52)         // 至少给工具条自己留出一条的高度
+  const y1 = Math.min(br.y, view.bottom - 8)
+  groupBarAt.value = x1 > x0 && y1 > y0 ? { x: x0, y: y0 - 44 } : null
+}
+
+/** 当前视口换算成图坐标，小地图靠它画那个白框。 */
+function syncView() {
+  const g = graph.value
+  if (!g) return
+  const z = g.zoom() || 1
+  const el = g.container
+  const c = currentViewport(g)
+  viewBox.value = { cx: c.cx, cy: c.cy, w: (el.clientWidth || 1200) / z, h: (el.clientHeight || 800) / z }
+  placeGroupBar()
+}
+
 function onZoom() {
   const g = graph.value
+  zoom.value = g.zoom()
   saveViewport()
+  syncView()
   // 历史视图没有 LOD 折叠：缩放就只是看大看小，走结构视图那套会每滚一格就整图重建，
   // 还会把结构视图的折叠集合改掉（切回去时折叠状态就错了）
   if (mode.value === 'history') return
@@ -441,6 +667,19 @@ function onZoom() {
     labelsOn.value = shouldShow
     applyEdgeLabels(g, indexDoc.value, shouldShow)
   }
+}
+
+/** 右下角缩放条：按固定倍率缩放，落点夹在 X6 的上下限内。 */
+function stepZoom(factor) {
+  const g = graph.value
+  if (!g) return
+  ready.value = true
+  g.zoomTo(Math.min(3, Math.max(0.05, g.zoom() * factor)))
+}
+
+function resetZoom() {
+  ready.value = true
+  graph.value?.zoomTo(1)
 }
 
 // 某个节点的边在画布上的 cell id：组内边是本身，跨组边是它所属的那一束聚合边
@@ -465,6 +704,503 @@ function focus(nodeId) {
   highlightEdges(graph.value, nodeId ? relatedEdgeIds(nodeId) : null)
 }
 
+// ---- 右键菜单：画布上每类元素一套动作 ----
+
+function openMenu(kind, id, ev) {
+  if (mode.value !== 'structure') return        // 历史视图是只读浏览视图
+  ctxTarget = { kind, id, at: graph.value.clientToLocal(ev.clientX, ev.clientY) }
+  const build = { node: nodeMenu, group: groupMenu, cluster: groupMenu, edge: edgeMenu,
+                  deco: decoMenu, blank: blankMenu }[kind]
+  ctx.value = { x: ev.clientX, y: ev.clientY, ...build(id, kind === 'cluster') }
+}
+
+function nodeMenu(id) {
+  const meta = indexDoc.value?.nodes.find((n) => n.id === id)
+  const place = layoutDoc.value?.nodes?.[id]
+  const items = [{ id: 'relate', label: '建立关系…', icon: 'link', hint: '⌘L' },
+                 { id: 'ref', label: '放引用卡', icon: 'bookmark' }]
+  if (place?.state === 'draft') items.push({ id: 'finalize', label: '定稿', icon: 'check' })
+  else if (place) items.push({ id: 'draft', label: '标记为草稿（待关联）', icon: 'pencil' })
+  if (dueIds.value.has(id)) items.push({ id: 'review', label: '复习过了', icon: 'rotate' })
+  items.push(
+    { sep: true },
+    { id: 'detail', label: '查看详情', icon: 'file' },
+    { id: 'neighbor', label: neighbor.value === id ? '退出只看邻居' : '只看它的邻居',
+      icon: 'eye', on: neighbor.value === id },
+    { id: 'obsidian', label: '在 Obsidian 打开', icon: 'external' },
+    { id: 'copy', label: `复制 [[${meta?.name || id}]]`, icon: 'copy' },
+    ...(place?.group ? [{ id: 'as-doc', label: `设为「${layoutDoc.value.groups[place.group]?.name}」的总览`,
+                          icon: 'bookmark', on: layoutDoc.value.groups[place.group]?.doc === id }] : []),
+    { sep: true },
+    { id: 'unplace', label: '移出画布（不删 md）', icon: 'trash', danger: true },
+  )
+  const deg = meta?.degree || 0
+  return { title: meta?.name || id, subtitle: `${meta?.field || '未归类'} · ${deg} 条关系`, items }
+}
+
+function groupMenu(gid, folded) {
+  const g = layoutDoc.value?.groups?.[gid]
+  const count = Object.values(layoutDoc.value?.nodes || {}).filter((n) => n.group === gid).length
+  const items = folded
+    ? [{ id: 'enter', label: '展开这个域（放大进去）', icon: 'unfold' }]
+    : [{ id: 'collapse', label: '折叠成簇卡片', icon: 'fold' },
+       { id: 'enter', label: '放大到这个域', icon: 'target' }]
+  const doc = g?.doc || null
+  items.push(
+    { sep: true },
+    doc ? { id: 'open-doc', label: `打开总览「${doc}」`, icon: 'file' }
+        : { id: 'new-doc', label: '给这个域加总览文档…', icon: 'file', hint: '写 md' },
+    ...(doc ? [{ id: 'unbind-doc', label: '解除总览文档绑定', icon: 'x' }] : []),
+    { sep: true },
+    { id: 'pin-expanded', label: '一直展开（缩小也不折叠）', icon: 'pin', on: g?.pinned === 'expanded' },
+    { id: 'pin-auto', label: '恢复自动折叠', icon: 'rotate', disabled: !g?.pinned },
+    { sep: true },
+    { id: 'new-node', label: '在这里新建知识点…', icon: 'plus', hint: '写 md' },
+    { id: 'new-subgroup', label: '在这里新建子簇', icon: 'grid' },
+    { id: 'rename', label: '重命名这个域', icon: 'pencil' },
+  )
+  if (focusGroup.value) items.push({ id: 'exit-focus', label: '返回全景', icon: 'arrowLeft', hint: 'Esc' })
+  const pinned = g?.pinned === 'expanded' ? '已钉住展开' : g?.pinned === 'collapsed' ? '已钉住折叠' : '自动折叠'
+  return { title: g?.name || gid,
+           subtitle: `${count} 个知识点 · ${doc ? '有总览文档' : '没有总览文档'} · ${pinned}`, items }
+}
+
+function edgeMenu(id) {
+  const e = indexDoc.value?.edges.find((x) => x.id === id)
+  return {
+    title: e ? `${e.source} → ${e.target}` : id,
+    subtitle: e ? `${e.type}（${e.family}族）` : '',
+    items: [
+      { id: 'edge-delete', label: '删除这条关系（写回 md）', icon: 'trash', danger: true },
+      { id: 'edge-clear', label: '清掉手工拐点', icon: 'rotate', disabled: !layoutDoc.value?.edges?.[id] },
+      { sep: true },
+      { id: 'edge-source', label: `打开 ${e?.source || ''}`, icon: 'file' },
+      { id: 'edge-target', label: `打开 ${e?.target || ''}`, icon: 'file' },
+    ],
+  }
+}
+
+function decoMenu(cellId) {
+  const [kind] = cellId.split(':')
+  const label = { note: '便签', img: '贴图', ref: '引用卡' }[kind] || '元素'
+  return { title: label, subtitle: '只存在 layout 里，不碰 md',
+           items: [...(kind === 'note' ? [{ id: 'deco-edit', label: '编辑便签', icon: 'pencil' }] : []),
+                   { id: 'deco-delete', label: `删除这张${label}`, icon: 'trash', danger: true }] }
+}
+
+function blankMenu() {
+  return { title: '画布', subtitle: '右键落点就是新元素的位置', items: [
+    { id: 'new-node', label: '新建知识点…', icon: 'plus', hint: '写 md' },
+    { id: 'new-group', label: '新建簇（分组框）', icon: 'grid' },
+    { id: 'note', label: '贴便签', icon: 'note' },
+    { id: 'image', label: '贴图…', icon: 'image' },
+    { sep: true },
+    { id: 'fit', label: '适应窗口', icon: 'fit', hint: 'F' },
+    { id: 'map', label: showMap.value ? '隐藏小地图' : '显示小地图', icon: 'map', on: showMap.value },
+    { id: 'inbox', label: '打开 Inbox', icon: 'inbox', hint: 'I' },
+  ] }
+}
+
+const MENU_ACTIONS = {
+  relate: (id) => { relating.value = describe(id) },
+  ref: (id) => { selected.value = describe(id); addRef() },
+  finalize: (id) => finalize(id),
+  draft: (id) => { queueIfChanged('node', id, { state: 'draft' }); render(); setBanner(`「${id}」已标记为草稿`) },
+  review: (id) => markReviewed(id),
+  detail: (id) => gotoNode(id),
+  neighbor: (id) => toggleNeighbor(id),
+  obsidian: (id) => openInObsidian(id),
+  copy: (id) => copyWikiLink(id),
+  unplace: (id) => unplace(id),
+
+  'open-doc': (gid) => gotoNode(layoutDoc.value.groups[gid]?.doc),
+  'new-doc': (gid, at) => openDocDialog(gid, at),
+  'unbind-doc': (gid) => bindDoc(gid, null),
+  'as-doc': (id) => bindDoc(layoutDoc.value.nodes[id]?.group, id),
+  collapse: (gid) => setPinned(gid, 'collapsed'),
+  enter: (gid) => enterGroup(gid),
+  'pin-expanded': (gid) => setPinned(gid, layoutDoc.value.groups[gid]?.pinned === 'expanded' ? null : 'expanded'),
+  'pin-auto': (gid) => setPinned(gid, null),
+  rename: (gid) => renameGroup(gid),
+  'exit-focus': () => exitGroup(),
+
+  'edge-delete': (id) => deleteEdge(id),
+  'edge-clear': (id) => clearEdgeVertices(id),
+  'edge-source': (id) => gotoNode(indexDoc.value?.edges.find((e) => e.id === id)?.source),
+  'edge-target': (id) => gotoNode(indexDoc.value?.edges.find((e) => e.id === id)?.target),
+
+  'deco-edit': (cellId) => editNote(cellId.slice(cellId.indexOf(':') + 1)),
+  'deco-delete': (cellId) => deleteDecoration(cellId),
+
+  'new-group': (_id, at) => newGroup(at),
+  'new-subgroup': (gid, at) => newGroup(at, gid),
+  'new-node': (id, at) => openNodeDialog(at, layoutDoc.value?.groups?.[id] ? id : innermostGroupAt(at.x, at.y)),
+  note: (_id, at) => addNote(at),
+  image: () => { panel.value = 'assets' },
+  fit: () => fit(),
+  map: () => toggleMap(),
+  inbox: () => openPanel('inbox'),
+}
+
+function onMenuPick(action) {
+  const target = ctxTarget
+  ctx.value = null
+  if (!target) return
+  MENU_ACTIONS[action]?.(target.id, target.at)
+}
+
+// ---- 菜单背后的动作 ----
+
+/** 折叠状态：pinned 是唯一的"用户意志"，null 表示交回给缩放自动判定。 */
+function setPinned(gid, value) {
+  if (!layoutDoc.value.groups[gid]) return
+  if (focusGroup.value === gid && value === 'collapsed') exitGroup()
+  queueIfChanged('group', gid, { pinned: value })
+  render()
+  setBanner(value === 'collapsed' ? '已折叠；再次展开用右键菜单或放大'
+    : value === 'expanded' ? '已钉住展开：缩小也不会收成簇卡片'
+      : '已恢复自动折叠：缩小到看不清字时自动收起', 'success')
+}
+
+function renameGroup(gid) {
+  const cur = layoutDoc.value.groups[gid]
+  if (!cur) return
+  const name = window.prompt('这个域叫什么', cur.name || '')
+  if (name === null || !name.trim()) return
+  queueIfChanged('group', gid, { name: name.trim() })
+  render()
+}
+
+/**
+ * 新建簇：落点就是左上角，给一个能装下两行卡片的初始大小，拖进去的节点自动归它。
+ * 传 parent 就是在某个域里开子域——层次化的"看得见"那一半（另一半是结构族关系边）。
+ */
+function newGroup(at, parent = null) {
+  const name = window.prompt(parent ? `在「${layoutDoc.value.groups[parent]?.name}」里新建子簇` : '新簇的名称', '')
+  if (!name || !name.trim()) return
+  const gid = `g-${Date.now().toString(36)}`
+  const host = parent ? layoutDoc.value.groups[parent] : null
+  // 子簇要落在父框里面，否则 X6 的父子关系和 layout 的 parent 对不上
+  const x = host ? Math.max(Math.round(at.x), Math.round(host.x) + 16) : Math.round(at.x)
+  const y = host ? Math.max(Math.round(at.y), Math.round(host.y) + 40) : Math.round(at.y)
+  const w = host ? Math.min(640, Math.round(host.x + host.w) - x - 16) : 640
+  const h = host ? Math.min(320, Math.round(host.y + host.h) - y - 16) : 320
+  const box = { name: name.trim(), x, y, w: Math.max(w, 200), h: Math.max(h, 120),
+                parent, collapsed: false, pinned: null, color: null }
+  layoutDoc.value = { ...layoutDoc.value, groups: { ...layoutDoc.value.groups, [gid]: box } }
+  patcher.value.queueGroup(gid, box)
+  render()
+  setBanner(parent ? `已在「${layoutDoc.value.groups[parent]?.name}」里建出「${box.name}」子簇`
+    : `已建「${box.name}」：把知识点拖进框里就归它`, 'success')
+}
+
+function openInObsidian(id) {
+  fetchNode(id).then((d) => { window.location.href = d.obsidian_uri })
+    .catch((err) => setBanner(`打不开：${err.message}`, 'error'))
+}
+
+async function copyWikiLink(id) {
+  const meta = indexDoc.value?.nodes.find((n) => n.id === id)
+  const text = `[[${meta?.name || id}]]`
+  try {
+    await navigator.clipboard.writeText(text)
+    setBanner(`已复制 ${text}`, 'success')
+  } catch {
+    setBanner(`复制失败，手动抄一下：${text}`, 'error')
+  }
+}
+
+/** 移出画布：只删 layout 记录，md 原封不动，节点回到 Inbox。 */
+function unplace(id) {
+  if (!layoutDoc.value.nodes[id]) return
+  if (!dirtyBefore) dirtyBefore = clone(layoutDoc.value)
+  const nodes = { ...layoutDoc.value.nodes }
+  delete nodes[id]
+  layoutDoc.value = { ...layoutDoc.value, nodes }
+  patcher.value.queueNode(id, null)
+  if (selected.value?.id === id) { selected.value = null; detail.value = null }
+  if (neighbor.value === id) neighbor.value = null
+  render()
+  refreshInbox()
+  setBanner(`「${id}」已移出画布，md 没动，在 Inbox 里可以再放回来`, 'success')
+}
+
+function deleteDecoration(cellId) {
+  const [kind, id] = cellId.split(':')
+  saveList(kind, (item) => (item.id === id ? null : item))
+  render()
+}
+
+function clearEdgeVertices(id) {
+  const edge = graph.value.getCellById(id)
+  if (edge) { edge.setVertices([]); edge.removeTools() }
+  patcher.value.queueEdge(id, null)
+  const edges = { ...(layoutDoc.value.edges || {}) }
+  delete edges[id]
+  layoutDoc.value = { ...layoutDoc.value, edges }
+}
+
+// ---- 域的总览文档：簇终于有了"知识"那一半 ----
+
+/**
+ * 给一个域绑总览文档。
+ *
+ * 文档本身是一个再普通不过的知识点（md 在 fields/ 或 nodes/ 下），只是在 layout 里记一笔
+ * "这个域的总览是它"。所以它天然能写正文、连关系、在 Obsidian 打开——不用为簇再造一套。
+ */
+function bindDoc(gid, nodeId) {
+  if (!gid || !layoutDoc.value.groups[gid]) return
+  queueIfChanged('group', gid, { doc: nodeId })
+  render()
+  const name = layoutDoc.value.groups[gid].name
+  setBanner(nodeId ? `「${nodeId}」成了「${name}」的总览文档` : `「${name}」的总览文档已解绑（md 没动）`,
+            'success')
+}
+
+/** 新建总览文档：名字默认跟域同名，默认落在 fields/（规范 2：领域总览住这儿）。 */
+function openDocDialog(gid, at) {
+  const g = layoutDoc.value?.groups?.[gid]
+  if (!g) return
+  creating.value = {
+    at: at || { x: g.x + 40, y: g.y + 60 }, group: gid, groupName: g.name, asDoc: gid,
+    name: g.name.replace(/（\d+）$/, ''),
+    field: majority(gid, (n) => n?.field) || '',
+    dir: nodeDirs.value.includes('fields') ? 'fields' : (majority(gid, (n) => dirOf(n)) || 'nodes'),
+  }
+}
+
+// ---- 新建知识点：画布右键 → 写一个新 md → 立刻放上画布 ----
+
+/** nodes/ 下已有的目录，新节点默认跟着"同一个域里其他节点"走。 */
+const dirOf = (n) => (n?.path ? n.path.split('/').slice(0, -1).join('/') : null)
+
+const nodeDirs = computed(() => {
+  const dirs = new Set(['nodes'])
+  for (const n of indexDoc.value?.nodes || []) {
+    const d = dirOf(n)
+    if (d) dirs.add(d)
+  }
+  return [...dirs].filter(Boolean).sort()
+})
+
+const fieldNames = computed(() =>
+  [...new Set((indexDoc.value?.nodes || []).map((n) => n.field).filter(Boolean))].sort())
+
+const takenIds = computed(() => new Set((indexDoc.value?.nodes || []).map((n) => n.id)))
+
+/** 这个域里的节点大多存在哪个目录 / 属于哪个领域——新建时拿它当默认值。 */
+function majority(gid, pick) {
+  const tally = new Map()
+  const byId = new Map((indexDoc.value?.nodes || []).map((n) => [n.id, n]))
+  for (const [nid, n] of Object.entries(layoutDoc.value?.nodes || {})) {
+    if (gid && n.group !== gid) continue
+    const v = pick(byId.get(nid))
+    if (v) tally.set(v, (tally.get(v) || 0) + 1)
+  }
+  return [...tally.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] || null
+}
+
+function openNodeDialog(at, gid) {
+  creating.value = {
+    at, group: gid || null,
+    groupName: gid ? layoutDoc.value?.groups?.[gid]?.name : '',
+    field: majority(gid, (n) => n?.field) || majority(null, (n) => n?.field) || '',
+    dir: majority(gid, (n) => dirOf(n)) || nodeDirs.value[nodeDirs.value.length - 1] || 'nodes',
+  }
+}
+
+async function createNode(form) {
+  const spot = creating.value
+  creating.value = null
+  status.value = 'saving'
+  try {
+    const res = await postChanges({ base_revision: indexRevision.value, dry_run: false, changes: [{
+      type: 'create_node', source: form.id, path: `${form.dir}/${form.id}.md`,
+      fields: { name: form.name, field: form.field, desc: form.desc,
+                ...(form.year ? { year: form.year } : {}),
+                learned: new Date().toISOString().slice(0, 10) },
+    }] })
+    await placeNew(form.id, spot)
+    await reloadIndex()
+    if (spot?.asDoc) bindDoc(spot.asDoc, form.id)
+    status.value = 'saved'
+    setBanner(`已新建 ${res.files[0]?.path || form.id}`, 'success')
+    gotoNode(form.id)
+    if (form.thenRelate) relating.value = describe(form.id)
+  } catch (err) {
+    status.value = 'error'
+    setBanner(`新建失败：${err.body?.detail?.message || err.body?.detail || err.message}`, 'error')
+  }
+}
+
+/** 新节点落到右键的那个点上；不在任何域里就交给服务端按领域找位置。 */
+async function placeNew(id, spot) {
+  await patcher.value.flush()
+  const body = { base_revision: revision.value, ids: [id], state: 'draft' }
+  if (spot?.group) {
+    body.group = spot.group
+    body.at = { x: Math.round(spot.at.x - 80), y: Math.round(spot.at.y - 26) }
+  }
+  try {
+    await postPlace(body)
+  } catch { /* 放不下也无所谓：md 已经写出来了，它会出现在 Inbox 里 */ }
+  const fresh = await fetchLayout()
+  layoutDoc.value = fresh.layout
+  revision.value = fresh.layout.revision
+}
+
+// ---- 建立 / 删除关系：直接写回 md（服务端写前自动备份） ----
+
+const familyOfType = (type) => (indexDoc.value?.families || []).find((f) => f.types.includes(type))?.name || null
+
+const placedIds = computed(() => new Set(Object.keys(layoutDoc.value?.nodes || {})))
+
+/** 建立关系对话框里给每个候选标上"已经连过哪些"，避免重复连（服务端也会拒）。 */
+const linkedOf = computed(() => {
+  const out = {}
+  const id = relating.value?.id
+  if (!id || !indexDoc.value) return out
+  for (const e of indexDoc.value.edges) {
+    const other = e.source === id ? e.target : e.target === id ? e.source : null
+    if (!other) continue
+    if (!out[other]) out[other] = []
+    out[other].push(e.type)
+  }
+  return out
+})
+
+async function createRelation({ relation, target, swap }) {
+  const src = relating.value
+  if (!src) return
+  const from = swap ? target : src.id
+  const to = swap ? src.id : target
+  relating.value = null
+  status.value = 'saving'
+  try {
+    const res = await postChanges({ base_revision: indexRevision.value, dry_run: false,
+                                    changes: [{ type: 'add_edge', source: from, relation, target: to }] })
+    await ensurePlaced(to)
+    await ensurePlaced(from)
+    const family = familyOfType(relation)
+    if (family && !visible[family]) visible[family] = true   // 刚连的线必须看得见
+    await reloadIndex()
+    status.value = 'saved'
+    setBanner(`已写入「${from} ${relation} → ${to}」，原文备份在 ${res.backup}`, 'success')
+    flyToPair(from, to)
+  } catch (err) {
+    status.value = 'error'
+    setBanner(`建立关系失败：${err.body?.detail?.message || err.body?.detail || err.message}`, 'error')
+  }
+}
+
+/** 保存正文：只换 frontmatter 与 `## 关系` 之间那一段，其余逐字保留（服务端也是这么切的）。 */
+async function saveBody(text) {
+  const id = selected.value?.id
+  if (!id) return
+  status.value = 'saving'
+  try {
+    const res = await postChanges({ base_revision: indexRevision.value, dry_run: false,
+                                    changes: [{ type: 'update_body', source: id, body: text }] })
+    await reloadIndex()
+    status.value = 'saved'
+    setBanner(`已保存「${id}」的正文，原文备份在 ${res.backup}`, 'success')
+  } catch (err) {
+    status.value = 'error'
+    setBanner(`保存正文失败：${err.body?.detail?.message || err.body?.detail || err.message}`, 'error')
+  }
+}
+
+/** 工具条上的「写内容」：先定位到总览文档，再让检查器把编辑框打开。 */
+function writeDoc(docId) {
+  if (!docId) return
+  gotoNode(docId)
+  writeNonce.value++
+}
+
+async function deleteEdge(edgeId) {
+  const e = indexDoc.value?.edges.find((x) => x.id === edgeId)
+  if (!e) return
+  status.value = 'saving'
+  try {
+    await postChanges({ base_revision: indexRevision.value, dry_run: false,
+                        changes: [{ type: 'remove_edge', source: e.source, relation: e.type, target: e.target }] })
+    await reloadIndex()
+    status.value = 'saved'
+    setBanner(`已删除「${e.source} ${e.type} → ${e.target}」`, 'success')
+  } catch (err) {
+    status.value = 'error'
+    setBanner(`删除失败：${err.body?.detail?.message || err.body?.detail || err.message}`, 'error')
+  }
+}
+
+/** 目标还在 Inbox 里就先放上画布，不然刚建的关系没有线可看。 */
+async function ensurePlaced(id) {
+  if (layoutDoc.value.nodes[id]) return
+  await patcher.value.flush()
+  try {
+    await postPlace({ base_revision: revision.value, ids: [id] })
+    const fresh = await fetchLayout()
+    layoutDoc.value = fresh.layout
+    revision.value = fresh.layout.revision
+  } catch { /* 放不下不影响 md 里那条关系 */ }
+}
+
+/** md 变了之后只重读索引重画，不动视口（写回一条关系不该把画面弹回去）。 */
+async function reloadIndex() {
+  const index = await fetchIndex()
+  indexDoc.value = index
+  indexRevision.value = index.revision
+  Object.assign(stats, { nodes: index.stats.nodes, edges: index.stats.edges, stubs: index.stats.stubs })
+  render()
+  refreshInbox()
+  if (selected.value) await loadDetail(selected.value.id)
+}
+
+// ---- 把目标"拉到眼前"：连完线自动飞过去，两端一起框进视口 ----
+
+function flyToPair(a, b) {
+  const box = boxOf([a, b], 140)
+  if (!box) return
+  const el = graph.value.container
+  const z = Math.min(1.2, (el.clientWidth || 1200) / box.w, (el.clientHeight || 800) / box.h)
+  flyTo({ cx: box.x + box.w / 2, cy: box.y + box.h / 2, zoom: z })
+}
+
+/**
+ * 平滑飞过去。用 setTimeout 而不是 requestAnimationFrame：
+ * 后台标签页和无头浏览器里 rAF 不触发，动画会卡在半路，视口再也存不回去（阶段 2 踩过）。
+ */
+function flyTo({ cx, cy, zoom: to }, ms = 420) {
+  const g = graph.value
+  const from = currentViewport(g)
+  const end = Math.max(0.05, Math.min(3, to))
+  const t0 = Date.now()
+  const step = () => {
+    const p = Math.min(1, (Date.now() - t0) / ms)
+    const e = 1 - (1 - p) ** 3                    // easeOutCubic
+    g.zoomTo(from.zoom + (end - from.zoom) * e)
+    g.centerPoint(from.cx + (cx - from.cx) * e, from.cy + (cy - from.cy) * e)
+    if (p < 1) { setTimeout(step, 16); return }
+    zoom.value = g.zoom()
+    syncView()
+    saveViewport()
+  }
+  step()
+}
+
+/** 小地图上点一下 / 拖一把：视口中心跟着走。 */
+function jumpTo({ x, y }) {
+  ready.value = true
+  graph.value?.centerPoint(x, y)
+  syncView()
+}
+
+function toggleMap() {
+  showMap.value = !showMap.value
+  localStorage.setItem('knowrary-map', showMap.value ? '1' : '0')
+  if (showMap.value) syncView()      // 关着的时候视口框没跟着算，开回来先对一次
+}
+
 // ---- 阶段 3：节点详情 + Markdown 写回（所有写回都走 ChangeSet，确认前不碰文件）----
 
 async function loadDetail(id) {
@@ -477,25 +1213,23 @@ async function loadDetail(id) {
 }
 
 const relationTypes = computed(() =>
-  (indexDoc.value?.families || []).map((f) => ({ family: f.name, types: f.types })))
+  (indexDoc.value?.families || []).map((f) => ({ family: f.name, types: f.types, meta: f.meta || {} })))
 
 const allNodeIds = computed(() => (indexDoc.value?.nodes || []).map((n) => n.id))
 
 function queueChange(change) {
   pending.value = [...pending.value, change]
   changePreview.value = null
+  inspectorHidden.value = false
 }
 
-function addEdgeDraft() {
+function addEdgeDraft(draft) {
   if (!detail.value || !draft.relation || !draft.target) return
   queueChange({
     type: 'add_edge', source: detail.value.id, relation: draft.relation, target: draft.target,
     ...(draft.year ? { year: Number(draft.year) } : {}),
     ...(draft.note ? { note: draft.note } : {}),
   })
-  draft.target = ''
-  draft.year = ''
-  draft.note = ''
 }
 
 function removeEdge(edge) {
@@ -537,7 +1271,7 @@ async function applyChanges() {
     const id = detail.value?.id
     await load()
     if (id) await loadDetail(id)
-    setBanner(`已写回 ${res.files.length} 个文件，原文备份在 ${res.backup}`)
+    setBanner(`已写回 ${res.files.length} 个文件，原文备份在 ${res.backup}`, 'success')
   } catch (err) {
     setBanner(`写回失败：${err.body?.detail?.message || err.body?.detail || err.message}`, 'error')
   }
@@ -546,13 +1280,6 @@ async function applyChanges() {
 function dropChange(i) {
   pending.value = pending.value.filter((_, idx) => idx !== i)
   changePreview.value = null
-}
-
-function describeChange(c) {
-  if (c.type === 'add_edge') return `新增　${c.relation} → ${c.target}`
-  if (c.type === 'remove_edge') return `删除　${c.relation} → ${c.target}`
-  if (c.type === 'update_edge') return `改类型　${c.from_relation} → ${c.relation}（${c.target}）`
-  return `改 frontmatter　${Object.entries(c.fields).map(([k, v]) => `${k} = ${v}`).join('、')}`
 }
 
 /** 搜索命中 / 3D 跳回来：展开它所在的域、居中并选中。 */
@@ -572,12 +1299,14 @@ function gotoNode(id) {
   g.zoomTo(Math.max(g.zoom(), 0.8))
   g.centerPoint(place.x + 90, place.y + 30)
   applyingViewport = false
+  zoom.value = g.zoom()
   const cell = g.getCellById(id)
   if (cell) {
     g.cleanSelection?.()
     g.select?.(cell)
   }
   selected.value = describe(id)
+  inspectorHidden.value = false
   loadDetail(id)
   focus(id)
   search.value = ''
@@ -601,10 +1330,11 @@ function viewportCenter() {
   return { x: Math.round(p.x - 90), y: Math.round(p.y - 30) }
 }
 
-function addNote() {
+function addNote(at) {
   const text = window.prompt('便签内容', '')
   if (!text) return
-  const notes = [...(layoutDoc.value.notes || []), { id: newId('nt'), text, ...viewportCenter(), w: 190, h: 74 }]
+  const spot = at ? { x: Math.round(at.x), y: Math.round(at.y) } : viewportCenter()
+  const notes = [...(layoutDoc.value.notes || []), { id: newId('nt'), text, ...spot, w: 190, h: 74 }]
   layoutDoc.value = { ...layoutDoc.value, notes }
   patcher.value.queueList('notes', notes)
   render()
@@ -645,7 +1375,8 @@ async function place(body, label) {
     await load()
     const skipped = res.skipped.length ? `，${res.skipped.length} 个没放下（${res.skipped[0].reason}）` : ''
     const grown = res.grown_groups.length ? `，${res.grown_groups.length} 个分组框往下长了一行` : ''
-    setBanner(`${label}：放上 ${res.placed.length} 个草稿${grown}${skipped}`, res.placed.length ? '' : 'error')
+    setBanner(`${label}：放上 ${res.placed.length} 个草稿${grown}${skipped}`,
+              res.placed.length ? 'success' : 'error')
     if (res.placed.length === 1) gotoNode(res.placed[0].id)
   } catch (err) {
     const detailMsg = err.body?.detail?.message || err.body?.detail || err.message
@@ -668,7 +1399,7 @@ function onCanvasDrop(ev) {
   const p = g.clientToLocal(ev.clientX, ev.clientY)
   const gid = innermostGroupAt(p.x, p.y)
   if (!gid) {
-    setBanner('松手的位置不在任何分组框里——拖到某个分组框内，或用「放进去」按钮', 'error')
+    setBanner('松手的位置不在任何分组框里——拖到某个分组框内，或用条目上的按钮放置', 'error')
     return
   }
   place({ ids: [id], group: gid, at: { x: Math.round(p.x - 90), y: Math.round(p.y - 30) } }, `放置「${id}」`)
@@ -692,8 +1423,8 @@ async function markReviewed(id) {
     next.delete(id)
     dueIds.value = next
     render()
-    if (showDigest.value) refreshDigest()
-    setBanner(`已记录第 ${res.reviews} 次复习，下次 ${res.next_due} 再来`)
+    if (panel.value === 'digest') refreshDigest()
+    setBanner(`已记录第 ${res.reviews} 次复习，下次 ${res.next_due} 再来`, 'success')
   } catch (err) {
     setBanner(`记录复习失败：${err.message}`, 'error')
   }
@@ -705,12 +1436,7 @@ function finalize(id) {
   queueIfChanged('node', id, { state: 'final' })
   selected.value = describe(id)
   render()
-  setBanner(`「${id}」已定稿`)
-}
-
-function toggleDigest() {
-  showDigest.value = !showDigest.value
-  if (showDigest.value) refreshDigest()
+  setBanner(`「${id}」已定稿`, 'success')
 }
 
 function addRef() {
@@ -744,9 +1470,8 @@ function addImage(file) {
                   { id: newId('im'), file, ...viewportCenter(), w: 320, h: 200 }]
   layoutDoc.value = { ...layoutDoc.value, images }
   patcher.value.queueList('images', images)
-  showPicker.value = false
   render()
-  setBanner(`已贴上 ${file}（拖角可以拉伸，只改 layout）`)
+  setBanner(`已贴上 ${file}（拖角可以拉伸，只改 layout）`, 'success')
 }
 
 function editNote(id) {
@@ -773,18 +1498,9 @@ const LAYOUTS = {
                run: () => communityLayout(indexDoc.value, layoutDoc.value) },
 }
 
-/** 下拉里既有"换布局"也有"换视图"：3D 是另一个页面，直接跳过去。 */
-function onPick(kind) {
-  if (!kind) return
-  if (kind === '3d') {
-    window.location.href = './3d/'
-    return
-  }
-  runLayout(kind)
-}
-
 function runLayout(kind) {
   const spec = LAYOUTS[kind]
+  if (!spec) return
   const serverBefore = layoutDoc.value
   const result = spec.run()
   preview.value = { serverLayout: layoutDoc.value, result, kind }
@@ -800,7 +1516,7 @@ function runLayout(kind) {
     : kind === 'community'
       ? `louvain 发现 ${result.communities.length} 个社区，${compareWithGroups(result.communities, serverBefore).length} 个节点建议换组`
       : `${Object.keys(result.groups).length} 个分组重排`
-  setBanner(`预览「${spec.label}」：${extra}。确认后才写盘，旧布局会自动备份。`)
+  setBanner(`预览「${spec.label}」：${extra}`)
   render({ view: 'fit' })
 }
 
@@ -813,7 +1529,7 @@ async function applyPreview() {
     await load()
     if (history.record(clone(serverLayout), clone(layoutDoc.value), '换布局')) histVer.value++
     status.value = 'saved'
-    setBanner(saved.backup ? `已应用新布局，旧布局备份在 ${saved.backup}` : '已应用新布局')
+    setBanner(saved.backup ? `已应用新布局，旧布局备份在 ${saved.backup}` : '已应用新布局', 'success')
   } catch (err) {
     status.value = 'error'
     setBanner(`应用失败：${err.body?.detail || err.message}`, 'error')
@@ -835,10 +1551,11 @@ function enterGroup(gid) {
   if (!focusGroup.value) panorama = { zoom: g.zoom(), translate: g.translate() }
   focusGroup.value = gid
   render()
+  setActiveGroup(gid)
   applyingViewport = true
   g.zoomToRect({ x: box.x - 60, y: box.y - 60, width: box.w + 120, height: box.h + 120 }, { maxScale: 1.4 })
   applyingViewport = false
-  setBanner(`已放大到「${box.name}」，点「返回全景」或按 Esc 退回`)
+  zoom.value = g.zoom()
 }
 
 /** 退回全景：还原进入前的视口。 */
@@ -846,6 +1563,8 @@ function exitGroup() {
   if (!focusGroup.value) return
   const g = graph.value
   focusGroup.value = null
+  activeGroup.value = null
+  groupBarAt.value = null
   render()
   applyingViewport = true
   if (panorama) {
@@ -856,7 +1575,7 @@ function exitGroup() {
   }
   applyingViewport = false
   panorama = null
-  setBanner('')
+  zoom.value = g.zoom()
 }
 
 async function restore(target, what) {
@@ -888,23 +1607,44 @@ async function redo() {
   if (target) await restore(target, '已重做')
 }
 
+/** Esc 的收起顺序：弹窗 → 左侧工具窗口 → 右侧检查器 → 退出聚焦。 */
+function onEscape() {
+  if (ctx.value) { ctx.value = null; return }
+  if (relating.value) { relating.value = null; return }
+  if (creating.value) { creating.value = null; return }
+  if (showHelp.value) { showHelp.value = false; return }
+  if (neighbor.value) { toggleNeighbor(neighbor.value); return }
+  if (panel.value) { panel.value = ''; return }
+  if (inspectorOpen.value) { inspectorHidden.value = true; return }
+  // 聚焦时 Esc 是"退回全景"（工具条跟着一起收）；没聚焦才轮到单独收工具条
+  if (focusGroup.value) { exitGroup(); return }
+  activeGroup.value = null
+  groupBarAt.value = null
+}
+
 function onKeydown(e) {
-  const tag = (e.target?.tagName || '').toLowerCase()
-  if (tag === 'input' || tag === 'textarea') return
-  if (e.key === 'Escape') {
-    exitGroup()
+  const el = e.target
+  const tag = (el?.tagName || '').toLowerCase()
+  const typing = tag === 'input' || tag === 'textarea' || tag === 'select' || el?.isContentEditable
+  if (e.key === 'Escape' && !typing) { onEscape(); return }
+
+  if (e.metaKey || e.ctrlKey) {
+    const key = e.key.toLowerCase()
+    if (key === 'z') { e.preventDefault(); e.shiftKey ? redo() : undo() }
+    else if (key === 'y') { e.preventDefault(); redo() }
+    else if (key === 'l' && selected.value) { e.preventDefault(); relating.value = selected.value }
     return
   }
-  if (!(e.metaKey || e.ctrlKey)) return
-  const key = e.key.toLowerCase()
-  if (key === 'escape') return
-  if (key === 'z') {
-    e.preventDefault()
-    e.shiftKey ? redo() : undo()
-  } else if (key === 'y') {
-    e.preventDefault()
-    redo()
-  }
+  if (typing || e.altKey) return
+
+  // 单键快捷键：只在焦点不在输入框时生效
+  if (e.key === '/') { e.preventDefault(); headerEl.value?.focus() }
+  else if (e.key === '?') { e.preventDefault(); showHelp.value = !showHelp.value }
+  else if (e.key === '1') switchMode('structure')
+  else if (e.key === '2') switchMode('history')
+  else if (e.key.toLowerCase() === 'f') fit()
+  else if (e.key.toLowerCase() === 'i' && mode.value === 'structure') openPanel('inbox')
+  else if (e.key.toLowerCase() === 'd') openPanel('digest')
 }
 
 function applyThemeNow() {
@@ -937,28 +1677,46 @@ function fitStable() {
   const g = graph.value
   if (mode.value === 'history') {
     g.zoomToFit({ padding: 40, maxScale: 1, minScale: 0.35 })
+    zoom.value = g.zoom()
     return
   }
   const box = contentBBox(layoutDoc.value)
   if (!box) {
     g.zoomToFit({ padding: 60, maxScale: 1 })
+    zoom.value = g.zoom()
     return
   }
   // 自己算缩放而不是用 zoomToFit / zoomToRect：这两个都跟着画布上"当前画出来的东西"走，
   // 而 LOD 折叠会让那个东西忽大忽小（簇卡片还会按 1/zoom 放大），贴合结果不可预测。
-  g.resize()      // 刚打开时工具条 / 横幅还没排完，容器量出来会偏矮，先重新量一次
+  g.resize()      // 刚打开时工具条 / 抽屉还没排完，容器量出来会偏矮，先重新量一次
   const el = g.container
   const w = Math.max((el.clientWidth || 1200) - 100, 200)
   const h = Math.max((el.clientHeight || 800) - 100, 200)
-  const zoom = Math.max(0.05, Math.min(1, Math.min(w / box.width, h / box.height)))
-  g.zoomTo(zoom)
+  const z = Math.max(0.05, Math.min(1, Math.min(w / box.width, h / box.height)))
+  g.zoomTo(z)
   g.centerPoint(box.x + box.width / 2, box.y + box.height / 2)
+  zoom.value = g.zoom()
 }
 
 async function reload() {
   await patcher.value.flush()
   await load()
 }
+
+function open3d() {
+  window.location.href = './3d/'
+}
+
+watch(visible, () => {
+  try {
+    localStorage.setItem(FAMILY_KEY, JSON.stringify({ ...visible }))
+  } catch { /* 隐私模式存不了就只在本次会话生效 */ }
+}, { deep: true })
+
+// 抽屉开合会改变画布可用宽度，X6 的 autoResize 靠 ResizeObserver，这里再补一次
+watch([panel, inspectorOpen], () => {
+  requestAnimationFrame(() => graph.value?.resize())
+})
 
 onMounted(async () => {
   setTheme(theme.value)
@@ -975,7 +1733,7 @@ onMounted(async () => {
         dirtyBefore = null
       }
       if (s === 'error') setBanner(`保存失败：${payload?.body?.detail || payload?.message || '未知错误'}`, 'error')
-      if (s === 'saved' && bannerKind.value === 'error') setBanner('')
+      if (s === 'saved' && lastKind === 'error') setBanner('')
     },
     onConflict: (fresh) => {
       layoutDoc.value = fresh.layout
@@ -1008,6 +1766,7 @@ function onGlobalError(e) {
 
 onBeforeUnmount(() => {
   stopPlay()
+  toastTimers.forEach((t) => clearTimeout(t))
   window.removeEventListener('keydown', onKeydown)
   window.removeEventListener('error', onGlobalError)
   window.removeEventListener('unhandledrejection', onGlobalError)
@@ -1017,216 +1776,114 @@ onBeforeUnmount(() => {
 
 <template>
   <div class="app">
-    <header>
-      <span class="brand">Knowrary</span>
-      <span class="tabs">
-        <button :class="{ primary: mode === 'structure' }" @click="switchMode('structure')">结构视图</button>
-        <button :class="{ primary: mode === 'history' }" title="只看有 year 的节点，X 轴是年份"
-                @click="switchMode('history')">历史视图</button>
-      </span>
-      <span v-if="focusGroup && mode === 'structure'" class="muted">聚焦：{{ layoutDoc?.groups?.[focusGroup]?.name }}</span>
-      <span v-if="mode === 'structure'" class="muted"
-            :title="`组内边 ${edgesShown} · 跨组 ${aggShown} 束 · 共 ${stats.edges} 条`">
-        {{ stats.nodes }} 节点 · {{ edgesShown + aggShown }} 连线 · stub {{ stats.stubs }}
-      </span>
-      <span v-else class="muted">有 year 的节点 {{ histPlan?.placed.size ?? 0 }} · 泳道 {{ histPlan?.lanes.length ?? 0 }}
-        · {{ yearRange[0] }}–{{ yearRange[1] }}</span>
-      <details v-if="mode === 'structure'" class="menu" @toggle="closeOthers($event)">
-        <summary title="关系族过滤 / 跨组边聚合 / 自动折叠">显示 · {{ shownFamilies }} 族<template
-          v-if="collapsedIds.size"> · {{ collapsedIds.size }} 簇</template></summary>
-        <div class="pop">
-          <label v-for="f in FAMILIES" :key="f">
-            <input type="checkbox" v-model="visible[f]" @change="render()" />
-            <i class="swatch" :style="{ borderTopColor: FAMILY_STYLE[f].stroke,
-                                        borderTopStyle: FAMILY_STYLE[f].strokeDasharray ? 'dashed' : 'solid' }" />
-            {{ f }}
-          </label>
-          <hr />
-          <label><input type="checkbox" v-model="aggregate" @change="expanded = new Set(); render()" />聚合跨组边</label>
-          <label title="缩小时把分组折叠成簇卡片（点卡片展开）">
-            <input type="checkbox" v-model="autoLod" @change="render()" />自动折叠
-          </label>
-        </div>
-      </details>
-      <span class="search">
-        <input v-model="search" placeholder="搜索知识点…" @keydown.enter="searchHits[0] && gotoNode(searchHits[0].id)" />
-        <ul v-if="searchHits.length" class="hits">
-          <li v-for="h in searchHits" :key="h.id" @click="gotoNode(h.id)">
-            {{ h.name || h.id }}<span class="muted"> · {{ h.field || '' }}</span>
-          </li>
-        </ul>
-      </span>
-      <details v-if="mode === 'structure'" class="menu" @toggle="closeOthers($event)">
-        <summary title="往画布上加东西（只存 layout，不进 md）">＋ 添加</summary>
-        <div class="pop">
-          <button @click="addNote">＋便签</button>
-          <button @click="showPicker = !showPicker">＋图片</button>
-        </div>
-      </details>
-      <button :class="{ primary: inboxCount && !showInbox }" title="写好了还没上画布的节点"
-              @click="showInbox = !showInbox; showInbox && refreshInbox()">
-        Inbox<template v-if="inboxCount"> {{ inboxCount }}</template>
-      </button>
-      <button title="草稿 / 待复习 / 跨分组桥 / 重复候选" @click="toggleDigest">
-        欠账<template v-if="dueIds.size"> · 待复习 {{ dueIds.size }}</template>
-      </button>
-      <span class="spacer" />
-      <template v-if="preview">
-        <button class="primary" @click="applyPreview">应用布局</button>
-        <button @click="cancelPreview">取消</button>
-      </template>
-      <select v-else-if="mode === 'structure'" class="layout-menu" @change="onPick($event.target.value); $event.target.value = ''">
-        <option value="">视图 / 布局…</option>
-        <option v-for="(spec, kind) in LAYOUTS" :key="kind" :value="kind">{{ spec.label }}</option>
-        <option v-if="has3d" value="3d">3D 总览（新页面）</option>
-      </select>
-      <button v-if="focusGroup && mode === 'structure'" class="primary" @click="exitGroup">← 返回全景</button>
-      <template v-if="mode === 'structure'">
-        <button :disabled="!canUndo || !!preview" title="撤销（⌘Z / Ctrl+Z）" @click="undo">↶ 撤销</button>
-        <button :disabled="!canRedo || !!preview" title="重做（⇧⌘Z / Ctrl+Y）" @click="redo">↷ 重做</button>
-      </template>
-      <button @click="fit">适应窗口</button>
-      <details class="menu" @toggle="closeOthers($event)">
-        <summary title="更多">⋯</summary>
-        <div class="pop">
-          <button title="画布没反应时点这里重建（不影响已保存的布局）" @click="rebuildGraph('手动重建')">恢复画布</button>
-          <button @click="toggleTheme">{{ theme === 'dark' ? '☀︎ 切到浅色' : '☾ 切到深色' }}</button>
-          <button :disabled="!!preview" @click="reload">重新加载</button>
-        </div>
-      </details>
-      <span class="rev" :title="`索引 revision ${indexRevision} · 布局 revision ${revision}`">r{{ indexRevision }}/{{ revision }}</span>
-      <span class="status" :class="status">{{ statusText }}</span>
-    </header>
+    <AppHeader ref="headerEl" :mode="mode" :hits="searchHits" :status="status" :status-text="statusText"
+               :theme="theme" :has3d="has3d" :busy="placing"
+               @switch-mode="switchMode" @search="search = $event" @goto="gotoNode"
+               @toggle-theme="toggleTheme" @reload="reload" @rebuild="rebuildGraph('手动重建')"
+               @open-3d="open3d" @help="showHelp = true" />
 
-    <div v-if="mode === 'history'" class="timeline-bar">
-      <span class="muted">时间线</span>
-      <span class="chips">
-        <button :class="{ primary: !timelines.length }" @click="timelines = []; renderHistory({ view: 'fit' })">全部</button>
-        <button v-for="opt in timelineChoices" :key="opt.id" :class="{ primary: timelines.includes(opt.id) }"
-                :title="`按「${opt.name}」切一条独立时间线（可多选叠加）`" @click="toggleTimeline(opt.id)">
-          {{ '· '.repeat(opt.depth) }}{{ opt.name }}
-        </button>
-      </span>
-      <span class="families">
-        <label v-for="f in ['演化', '依赖', '对照']" :key="f">
-          <input type="checkbox" v-model="hist[f]" @change="renderHistory({ view: 'keep' })" />{{ f }}
-        </label>
-        <label title="空白超过 20 年的区段压缩成固定宽度">
-          <input type="checkbox" v-model="hist.compact" @change="renderHistory({ view: 'fit' })" />紧凑
-        </label>
-        <label title="按 start_year ≤ 当前年 &lt; end_year 过滤：只看那一年仍然有效的东西（法律 / 标准场景）">
-          <input type="checkbox" v-model="hist.validity" @change="renderHistory({ view: 'keep' })" />有效期
-        </label>
-      </span>
-      <span class="slider">
-        <button :title="playing ? '暂停' : '按年回放'" @click="togglePlay">{{ playing ? '❙❙' : '▶' }}</button>
-        <input type="range" :min="yearRange[0]" :max="yearRange[1]" :value="hist.upto ?? yearRange[1]"
-               @input="setUpto($event.target.value)" />
-        <span class="muted">{{ hist.upto === null ? '全部年份' : `≤ ${hist.upto}` }}</span>
-        <button v-if="hist.upto !== null" class="mini" title="放开年份限制" @click="setUpto(null)">✕</button>
-      </span>
+    <div class="workbench">
+      <ActivityBar :active="panel" :mode="mode" :inbox="inboxCount" :due="dueIds.size" :theme="theme"
+                   @select="openPanel" @toggle-theme="toggleTheme" />
+
+      <InboxTray v-if="panel === 'inbox'" class="inbox" :items="inboxItems" :busy="placing"
+                 @place="placeOne" @place-all="placeAll" @close="panel = ''" />
+      <DigestPanel v-else-if="panel === 'digest'" class="digest" :digest="digest"
+                   @goto="gotoNode" @refresh="refreshDigest" @review="markReviewed" @close="panel = ''" />
+      <ImagePicker v-else-if="panel === 'assets'" class="picker" @pick="addImage" @add-note="addNote"
+                   @error="setBanner($event, 'error')" @close="panel = ''" />
+      <TimelinePanel v-else-if="panel === 'timeline'" class="timeline" :options="timelineChoices" :selected="timelines"
+                     :families="hist" @toggle="toggleTimeline" @toggle-family="toggleHistFamily"
+                     @select-all="timelines = []; renderHistory({ view: 'fit' })" @close="panel = ''" />
+
+      <div class="stage">
+        <div ref="canvasEl" class="canvas" @dragover.prevent @drop="onCanvasDrop" />
+
+        <CanvasTools v-if="mode === 'structure'" :visible="visible" :shown-families="shownFamilies"
+                     :collapsed="collapsedIds.size" :aggregate="aggregate" :auto-lod="autoLod"
+                     :layouts="LAYOUTS" :can-undo="canUndo" :can-redo="canRedo" :locked="!!preview"
+                     @toggle-family="visible[$event] = !visible[$event]; render()"
+                     @toggle-aggregate="aggregate = !aggregate; expanded = new Set(); render()"
+                     @toggle-lod="autoLod = !autoLod; render()"
+                     @pick-layout="runLayout" @add-note="addNote" @add-image="panel = 'assets'"
+                     @undo="undo" @redo="redo" />
+
+        <ZoomBar :zoom="zoom" :map="showMap && mode === 'structure'" @zoom-in="stepZoom(1.25)"
+                 @zoom-out="stepZoom(0.8)" @reset="resetZoom" @fit="fit" @toggle-map="toggleMap" />
+
+        <HistoryPlayer v-if="mode === 'history'" :playing="isPlaying" :upto="hist.upto" :range="yearRange"
+                       :compact="hist.compact" :validity="hist.validity"
+                       @toggle-play="togglePlay" @set-upto="setUpto"
+                       @toggle-compact="hist.compact = !hist.compact; renderHistory({ view: 'fit' })"
+                       @toggle-validity="hist.validity = !hist.validity; renderHistory({ view: 'keep' })" />
+
+        <!-- 换布局是"未落盘的草稿态"，用一条醒目的浮条把去留摆在画布正上方 -->
+        <div v-if="preview" class="float banner-bar">
+          <Icon name="grid" :size="15" />
+          <span>预览中的布局还没写盘</span>
+          <button class="btn primary" @click="applyPreview"><Icon name="check" :size="14" />应用</button>
+          <button class="btn" @click="cancelPreview">取消</button>
+        </div>
+        <div v-else-if="neighbor" class="float context">
+          <div class="crumbs">
+            <Icon name="eye" :size="13" />
+            <span class="cur">只看「{{ neighborName }}」的邻居</span>
+          </div>
+          <button class="icon-btn" title="退出（Esc）" @click="toggleNeighbor(neighbor)">
+            <Icon name="x" :size="15" />
+          </button>
+        </div>
+        <div v-else-if="focusName" class="float context">
+          <div class="crumbs">
+            <span class="link" @click="exitGroup">全景</span>
+            <Icon name="chevronRight" :size="12" class="sep-icon" />
+            <span class="cur">{{ focusName }}</span>
+          </div>
+          <button class="icon-btn" title="返回全景（Esc）" @click="exitGroup"><Icon name="x" :size="15" /></button>
+        </div>
+
+        <GroupBar v-if="groupBarAt && activeGroupBox && mode === 'structure'"
+                  :name="activeGroupBox.name" :at="groupBarAt" :doc="activeGroupBox.doc || null"
+                  :count="activeGroupCount" :folded="activeFolded"
+                  @open-doc="gotoNode(activeGroupBox.doc)" @write="writeDoc(activeGroupBox.doc)"
+                  @relate="relating = describe(activeGroupBox.doc)"
+                  @new-doc="openDocDialog(activeGroup, null)"
+                  @new-node="openNodeDialog({ x: activeGroupBox.x + 40, y: activeGroupBox.y + 64 }, activeGroup)"
+                  @fold="setPinned(activeGroup, 'collapsed')"
+                  @unfold="setPinned(activeGroup, 'expanded')"
+                  @close="activeGroup = null; groupBarAt = null" />
+
+        <MiniMap v-if="showMap && mode === 'structure' && layoutDoc" :layout="layoutDoc" :view="viewBox"
+                 :focus="focusGroup" :collapsed="collapsedIds" @jump="jumpTo" @close="toggleMap" />
+
+        <ToastHost :items="toasts" @dismiss="dismissToast" />
+      </div>
+
+      <Inspector v-if="inspectorOpen" :selected="selected" :detail="detail" :relation-types="relationTypes"
+                 :all-node-ids="allNodeIds" :pending="pending" :change-preview="changePreview"
+                 :is-due="!!selected && dueIds.has(selected.id)"
+                 @close="inspectorHidden = true" @goto="gotoNode" @edit-desc="editDesc" @add-ref="addRef"
+                 @review="markReviewed" @finalize="finalize" @retype-edge="retypeEdge"
+                 @remove-edge="removeEdge" @add-edge="addEdgeDraft" @drop-change="dropChange"
+                 @preview-changes="previewChanges" @apply-changes="applyChanges"
+                 @clear-changes="pending = []; changePreview = null"
+                 :write-nonce="writeNonce" @save-body="saveBody" />
     </div>
 
-    <div v-if="banner" class="banner" :class="bannerKind">{{ banner }}</div>
+    <StatusBar :mode="mode" :stats="stats" :edges-shown="edgesShown" :agg-shown="aggShown"
+               :hist-plan="histPlan" :range="yearRange" :index-revision="indexRevision" :revision="revision"
+               :focus-name="focusName" :problems="problems"
+               @exit-focus="exitGroup" @show-problems="showProblems" @help="showHelp = true" />
 
-    <main>
-      <ImagePicker v-if="showPicker && mode === 'structure'" @pick="addImage" @close="showPicker = false"
-                   @error="setBanner($event, 'error')" />
-      <InboxTray v-if="showInbox && mode === 'structure'" :items="inboxItems" :busy="placing"
-                 @place="placeOne" @place-all="placeAll" @close="showInbox = false" />
-      <div ref="canvasEl" class="canvas" @dragover.prevent @drop="onCanvasDrop" />
-      <aside v-if="selected">
-        <h3>{{ selected.name || selected.id }}</h3>
-        <div class="desc">{{ selected.desc || '（无摘要）' }}</div>
-        <dl>
-          <dt>id</dt><dd>{{ selected.id }}</dd>
-          <template v-if="selected.field"><dt>领域</dt><dd>{{ selected.field }}</dd></template>
-          <template v-if="selected.type"><dt>类型</dt><dd>{{ selected.type }}</dd></template>
-          <template v-if="selected.year"><dt>年份</dt><dd>{{ selected.year }}</dd></template>
-          <template v-if="selected.weight"><dt>权重</dt><dd>{{ (selected.weight * 100).toFixed(0) }}%（pageRank）</dd></template>
-          <template v-if="detail"><dt>文件</dt><dd>{{ detail.path }}</dd></template>
-        </dl>
+    <ContextMenu v-if="ctx" v-bind="ctx" @pick="onMenuPick" @close="ctx = null" />
 
-        <div class="row" v-if="detail">
-          <a class="btn" :href="detail.obsidian_uri">在 Obsidian 打开</a>
-          <button @click="editDesc">改摘要</button>
-          <button @click="showRaw = !showRaw">{{ showRaw ? '收起原文' : '看 md 原文' }}</button>
-          <button title="在当前视口放一张指向它的引用卡" @click="addRef">放引用卡</button>
-          <button v-if="dueIds.has(selected.id)" class="primary" title="记一次复习（只写 review-log.json）"
-                  @click="markReviewed(selected.id)">✓ 复习过了</button>
-          <button v-if="selected.placed?.state === 'draft'" class="primary"
-                  title="位置确认下来，不再是草稿（只改 layout）" @click="finalize(selected.id)">定稿</button>
-        </div>
-        <pre v-if="showRaw && detail" class="raw">{{ detail.raw }}</pre>
+    <NodeDialog v-if="creating" :fields="fieldNames" :dirs="nodeDirs" :defaults="creating"
+                :taken="takenIds" @create="createNode" @close="creating = null" />
 
-        <template v-if="detail">
-          <strong>出边 {{ detail.out.length }}<span class="muted">（可改，写回本文件）</span></strong>
-          <ul class="edges">
-            <li v-for="e in detail.out" :key="e.id">
-              <select :value="e.type" @change="retypeEdge(e, $event.target.value)">
-                <optgroup v-for="g in relationTypes" :key="g.family" :label="g.family">
-                  <option v-for="t in g.types" :key="t" :value="t">{{ t }}</option>
-                </optgroup>
-              </select>
-              → {{ e.target }}<span class="fam" v-if="e.year">（{{ e.year }}）</span>
-              <button class="mini" title="删除这条关系" @click="removeEdge(e)">✕</button>
-            </li>
-          </ul>
+    <RelationDialog v-if="relating" :source="relating" :families="relationTypes"
+                    :nodes="indexDoc?.nodes || []" :placed="placedIds" :linked="linkedOf"
+                    @create="createRelation" @close="relating = null" />
 
-          <strong>新增关系</strong>
-          <div class="add-edge">
-            <select v-model="draft.relation">
-              <option value="">类型…</option>
-              <optgroup v-for="g in relationTypes" :key="g.family" :label="g.family">
-                <option v-for="t in g.types" :key="t" :value="t">{{ t }}</option>
-              </optgroup>
-            </select>
-            <input v-model="draft.target" list="kg-nodes" placeholder="目标节点 id" />
-            <datalist id="kg-nodes"><option v-for="id in allNodeIds" :key="id" :value="id" /></datalist>
-            <input v-model="draft.year" class="year" placeholder="年份" />
-            <input v-model="draft.note" placeholder="说明（可选）" />
-            <button :disabled="!draft.relation || !draft.target" @click="addEdgeDraft">加入变更</button>
-          </div>
-
-          <template v-if="detail.in_edges.length">
-            <strong>入边 {{ detail.in_edges.length }}<span class="muted">（写在对方文件里）</span></strong>
-            <ul class="edges">
-              <li v-for="e in detail.in_edges" :key="e.id">{{ e.source }} {{ e.type }} →</li>
-            </ul>
-          </template>
-        </template>
-        <p class="muted" v-if="selected.orphan">这个节点在索引里不存在，只剩布局记录。</p>
-      </aside>
-
-      <aside v-if="pending.length" class="changes">
-        <h3>待写回的变更 {{ pending.length }}</h3>
-        <p class="muted">未确认前不会碰任何 md 文件。</p>
-        <ul class="edges">
-          <li v-for="(c, i) in pending" :key="i">
-            {{ describeChange(c) }}
-            <button class="mini" @click="dropChange(i)">✕</button>
-          </li>
-        </ul>
-        <div class="row">
-          <button @click="previewChanges">预览变更</button>
-          <button class="primary" :disabled="!changePreview" @click="applyChanges">确认写入</button>
-          <button @click="pending = []; changePreview = null">全部放弃</button>
-        </div>
-        <template v-if="changePreview">
-          <strong>将改动 {{ changePreview.files.length }} 个文件</strong>
-          <div v-for="f in changePreview.files" :key="f.path">
-            <div class="muted">{{ f.path }}</div>
-            <pre class="diff">{{ f.diff }}</pre>
-          </div>
-        </template>
-      </aside>
-
-      <DigestPanel v-if="showDigest" :digest="digest" @goto="gotoNode" @refresh="refreshDigest"
-                   @review="markReviewed" @close="showDigest = false" />
-    </main>
-    <div v-if="mode === 'history'" class="hint">X 轴是年份，Y 轴是泳道（选了时间线就按它的直接子分组分）·
-      金色流动虚线是「被激活」的跨代关系 · 拖滑块按年回放 · 历史视图只是浏览，不会改结构布局</div>
-    <div v-else class="hint">拖空白平移 · 滚轮缩放 · shift+拖空白框选 · 拖节点到别的分组框内即改归属（松手 300ms 后自动保存，⌘Z 可撤销）·
-      悬停/选中节点高亮它的边 · 点簇卡片放大进那个域（Esc 或「返回全景」退回）· 点「跨组 n 束」展开明细</div>
+    <HelpDialog v-if="showHelp" :mode="mode" @close="showHelp = false" />
   </div>
 </template>

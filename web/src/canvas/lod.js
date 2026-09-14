@@ -18,7 +18,7 @@ export function groupDepth(groups, id, seen = new Set()) {
   return 1 + groupDepth(groups, g.parent, seen)
 }
 
-function ancestors(groups, id) {
+export function ancestors(groups, id) {
   const out = []
   let cur = groups[id]?.parent
   const seen = new Set()

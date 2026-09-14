@@ -10,7 +10,7 @@
 
     "依赖":   { "family": "依赖", "inverse": "支撑" },
     "支撑":   { "family": "依赖", "inverse": "依赖", "canonical": "依赖" },
-    "基于":   { "family": "依赖" },
+    "基于":   { "family": "依赖", "inverse": "支撑" },
     "实现":   { "family": "依赖" },
     "前提":   { "family": "依赖" },
     "控制":   { "family": "依赖", "inverse": "被控制" },

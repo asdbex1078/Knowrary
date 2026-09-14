@@ -13,14 +13,19 @@ import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .mdio import RE_NEXT_H2, RE_REL_HEADER, dump_frontmatter, read, split_frontmatter, write
+from .mdio import (RE_ID_OK, RE_NEXT_H2, RE_REL_HEADER, dump_frontmatter, read, split_frontmatter,
+                    write)
 from .parser import LAYOUT_KEYS, STATUS_VALUES, digest_of
 from .relations import Edge, parse_relations
 
 # 允许通过 ChangeSet 修改的 frontmatter 字段；布局字段和 id 永远不许改
 EDITABLE_FIELDS = ("name", "field", "type", "status", "year", "start_year", "end_year",
                    "aliases", "tags", "desc", "learned", "source")
-CHANGE_TYPES = ("add_edge", "remove_edge", "update_edge", "update_frontmatter")
+CHANGE_TYPES = ("add_edge", "remove_edge", "update_edge", "update_frontmatter", "create_node",
+                "update_body")
+# 新建的知识点只允许落在这两棵树下（规范 2：nodes/ 是知识点，fields/ 是领域总览）
+NODE_ROOTS = ("nodes", "fields")
+MAX_BODY = 40000      # 正文写回的上限：编辑框写崩了也不至于把一个文件撑爆
 
 
 class ChangeRejected(Exception):
@@ -114,6 +119,16 @@ def apply_to_text(text: str, node_id: str, changes: list[dict]) -> tuple[str, li
                 if "note" in change:
                     e.note = (change["note"] or "").strip()
                 notes.append(f"~ {old}  →  {e.line()}")
+        elif kind == "update_body":
+            new_body = str(change.get("body") or "")
+            if len(new_body) > MAX_BODY:
+                raise ChangeRejected(f"正文太长（{len(new_body)} 字，上限 {MAX_BODY}）")
+            if RE_REL_HEADER.search(new_body):
+                raise ChangeRejected("正文里不能再出现 `## 关系`：关系区块由关系解析器独占，只能改关系行")
+            # 只换 frontmatter 与 `## 关系` 之间这一段；关系区块和它后面的
+            # `## 参考资料` / `## 待办` 由下面的 rebuilt 原样接回去。
+            body = new_body.strip("\n") + "\n"
+            notes.append(f"改写正文（{len(new_body)} 字）")
         elif kind == "update_frontmatter":
             for key, value in (change.get("fields") or {}).items():
                 if key in LAYOUT_KEYS or key == "id":
@@ -130,20 +145,77 @@ def apply_to_text(text: str, node_id: str, changes: list[dict]) -> tuple[str, li
 
     head = dump_frontmatter(fm) if fm_changed else fm_text
     new_section = _render_section(edges, extras)
-    rebuilt = head + body.rstrip("\n") + "\n\n## 关系" + new_section + tail
+    # tail（`## 参考资料` / `## 待办`）前面补一个空行：_render_section 会把关系段尾部的
+    # 空行归一掉，直接拼会变成 `- 部件:: [[x]]` 紧贴着下一个 `## 标题`。
+    rebuilt = head + body.rstrip("\n") + "\n\n## 关系" + new_section + ("\n" + tail if tail else "")
     return rebuilt, notes
+
+
+def _render_new_node(fields: dict) -> str:
+    """新知识点的初始原文：规范 3 的必填 frontmatter + 规范 4 推荐的正文骨架。"""
+    fm = {k: v for k, v in fields.items() if v not in (None, "", [])}
+    body = f"# {fm['name']}\n\n## 描述\n{fm['desc']}\n\n## 关系\n"
+    return dump_frontmatter(fm) + body
+
+
+def _create_node_edit(vault: Path, change: dict, taken: set[str]) -> FileEdit:
+    """把一条 create_node 变成"新建这个文件"。
+
+    路径由客户端给（它知道你在画布哪个域上右键），但必须落在 nodes/ 下、目录已存在、
+    文件还不存在——否则一个笔误就能往仓库任意位置写文件。
+    """
+    node_id = str(change.get("source") or "").strip()
+    if not node_id or not RE_ID_OK.match(node_id):
+        raise ChangeRejected(f"节点 id `{node_id}` 不合法（不能为空，也不能含 / \\ : * ? \" < > | 和空白）")
+    if node_id in taken:
+        raise ChangeRejected(f"节点 `{node_id}` 已经存在")
+    fields = dict(change.get("fields") or {})
+    for key in fields:
+        if key not in EDITABLE_FIELDS:
+            raise ChangeRejected(f"未知 frontmatter 字段 `{key}`")
+    for key in ("name", "field", "desc"):
+        if not str(fields.get(key) or "").strip():
+            raise ChangeRejected(f"`{key}` 是必填字段（规范 3）")
+    if fields.get("status") and fields["status"] not in STATUS_VALUES:
+        raise ChangeRejected(f"status `{fields['status']}` 不合法")
+
+    rel = str(change.get("path") or f"{NODE_ROOTS[0]}/{node_id}.md").strip().lstrip("/")
+    if not rel.endswith(".md"):
+        raise ChangeRejected(f"路径必须以 .md 结尾：{rel}")
+    path = vault / rel
+    # 用 resolve 比对而不是拿相对路径字符串比：`nodes/../跑出去.md` 这种要在这里现形。
+    # 但 rel 本身不能从 resolve 的结果反推——macOS 上 /var 是 /private/var 的软链，
+    # vault 没 resolve 过，两边算相对路径会直接抛异常。
+    if not any(path.resolve().is_relative_to((vault / root).resolve()) for root in NODE_ROOTS):
+        raise ChangeRejected(f"新知识点只能建在 {' / '.join(r + '/' for r in NODE_ROOTS)} 下：{rel}")
+    if path.exists():
+        raise ChangeRejected(f"文件已存在：{rel}")
+    if not path.parent.is_dir():
+        raise ChangeRejected(f"目录不存在：{rel.rsplit('/', 1)[0]}")
+    if path.stem != node_id:
+        raise ChangeRejected(f"文件名要和 id 一致（id 默认取文件名）：{path.name} ≠ {node_id}.md")
+    return FileEdit(path=path, rel=rel, before="",
+                    after=_render_new_node(fields), notes=[f"新建知识点 {node_id}"])
 
 
 def plan(vault: Path, changes: list[dict], index: dict) -> list[FileEdit]:
     """把 ChangeSet 变成"每个文件改成什么样"，不写盘。外部改过的文件直接报冲突。"""
     by_node: dict[str, list[dict]] = {}
+    creates: list[dict] = []
     for change in changes:
         if change["type"] not in CHANGE_TYPES:
             raise ChangeRejected(f"未知变更类型 `{change['type']}`")
+        if change["type"] == "create_node":
+            creates.append(change)          # 还不在索引里，不能按"改已有文件"走
+            continue
         by_node.setdefault(change["source"], []).append(change)
 
     nodes = {n["id"]: n for n in index["nodes"]}
     edits: list[FileEdit] = []
+    taken = set(nodes)
+    for change in creates:
+        edits.append(_create_node_edit(vault, change, taken))
+        taken.add(change["source"])
     for node_id, group in sorted(by_node.items()):
         meta = nodes.get(node_id)
         if not meta or not meta.get("path"):
@@ -164,6 +236,8 @@ def backup(vault: Path, edits: list[FileEdit]) -> str:
     stamp = dt.datetime.now().strftime("%Y%m%d-%H%M%S")
     root = vault / ".knowrary" / "backup" / stamp
     for edit in edits:
+        if not edit.path.exists():
+            continue                        # 新建的文件没有"原文"可备份
         target = root / edit.rel
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(edit.path, target)
