@@ -14,6 +14,3 @@ source: 知识图谱zhis.jpg
 实例：LLVM IR；JVM 字节码（[[字节码]]）；eBPF 中的 BPF 字节码。
 
 ## 关系
-- 实例:: [[字节码]]
-- 实例:: [[LLVM]]
-- 实例:: [[eBPF]]

@@ -17,8 +17,5 @@ source: 知识图谱zhis.jpg
 执行：一条复杂指令 → MicroCode（微程序） → 多条简单指令 → CPU → 输出。
 
 ## 关系
-- 对比:: [[RISC]]
-- 实例:: [[现代Intel微架构]]
-
 ## 待办
 - [ ] 核实 `year`：CISC 是 RISC 出现后的回溯命名，没有单一起点（可选锚点：IBM System/360 1964 / Intel 8086 1978），按规范暂留空。

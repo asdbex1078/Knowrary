@@ -69,8 +69,12 @@ export function createGraph(container) {
     virtual: false,
     background: { color: tokens().bg },
     grid: { visible: true, size: 24, type: 'dot', args: { color: tokens().grid, thickness: 1 } },
-    panning: { enabled: true, eventTypes: ['leftMouseDown', 'rightMouseDown'] },
-    mousewheel: { enabled: true, modifiers: null, minScale: 0.05, maxScale: 3 },
+    // 右键留给上下文菜单，平移只认左键拖空白
+    panning: { enabled: true, eventTypes: ['leftMouseDown'] },
+    // 滚轮只在按住 ⌘/Ctrl 时缩放。触控板两指滑动在 Mac 上就是普通 wheel 事件，
+    // 之前 modifiers: null 把它当成缩放，于是"上下滑 = 整张图忽大忽小"。
+    // 捏合缩放浏览器会带 ctrlKey（即使没按键盘），所以捏合仍然缩放。
+    mousewheel: { enabled: true, modifiers: ['ctrl', 'meta'], minScale: 0.05, maxScale: 3 },
     embedding: {
       enabled: true,
       frontOnly: false, // 默认只认最前面的元素，会被落点上的其他节点挡住，导致拖进分组反而丢了归属
@@ -95,7 +99,37 @@ export function createGraph(container) {
   // 只有图片可以拉伸：知识点卡片的大小是按 pageRank 定的，手动改会让"大小=重要性"这条读图规则失效
   graph.use(new Transform({ resizing: { enabled: (node) => node.shape === 'kg-image', minWidth: 80,
     minHeight: 60, preserveAspectRatio: true }, rotating: false }))
+  bindWheelPan(graph)
   return graph
+}
+
+/**
+ * 两指滑动 / 滚轮 = 平移画布（Figma、Miro 都是这个手势）。
+ *
+ * 缩放交给 ⌘/Ctrl + 滚轮和触控板捏合（捏合的 wheel 事件带 ctrlKey），
+ * 那两种在上面的 mousewheel.modifiers 里由 X6 自己处理，这里直接放行。
+ */
+function bindWheelPan(graph) {
+  graph.container.addEventListener('wheel', (ev) => {
+    if (ev.ctrlKey || ev.metaKey) return
+    ev.preventDefault()
+    // shift + 滚轮横向滚：鼠标只有一个滚轮时也能左右移动
+    const [dx, dy] = ev.shiftKey && !ev.deltaX ? [ev.deltaY, 0] : [ev.deltaX, ev.deltaY]
+    graph.translateBy(-dx, -dy)
+  }, { passive: false })
+}
+
+/** 分组的祖先链（不含自己）。邻居模式下要连父框一起留住，否则子框会悬空。 */
+function groupChain(groups, id) {
+  const out = []
+  const seen = new Set([id])
+  let cur = groups[id]?.parent
+  while (cur && !seen.has(cur)) {
+    out.push(cur)
+    seen.add(cur)
+    cur = groups[cur]?.parent
+  }
+  return out
 }
 
 function groupDepth(groups, id, seen = new Set()) {
@@ -106,7 +140,14 @@ function groupDepth(groups, id, seen = new Set()) {
 }
 
 export function buildCells(index, layout, options = {}) {
-  const { families = null, showLabels = false, collapsed = new Set(), zoom = 1, due = new Set() } = options
+  const { families = null, showLabels = false, collapsed = new Set(), zoom = 1, due = new Set(),
+          only = null } = options
+  // only：「只看某个节点的邻居」模式，画布上只留这一小撮节点与它们之间的边。
+  // 做成投影层的过滤而不是把别的元素调暗——网状图里"调暗"照样挡视线。
+  const keepGroup = only
+    ? new Set(Object.entries(layout.nodes).filter(([nid]) => only.has(nid))
+        .flatMap(([, n]) => (n.group ? [n.group, ...groupChain(layout.groups, n.group)] : [])))
+    : null
   // 折叠后节点"显示成谁"：最外层被折叠的祖先分组，或它自己
   const visibleOf = (nid) => containerOf(layout, nid, collapsed)
   const hasCollapsedAncestor = (gid) => {
@@ -129,27 +170,32 @@ export function buildCells(index, layout, options = {}) {
   const colorOf = (gid, field) => paletteFor(gid || (field ? `field:${field}` : null), colorKeys)
   const nodes = []
   for (const [gid, g] of Object.entries(layout.groups)) {
+    if (keepGroup && !keepGroup.has(gid)) continue   // 邻居模式：空分组框只是噪音
     if (hasCollapsedAncestor(gid)) continue          // 祖先已折叠，里面的东西都不画
     const color = colorOf(gid)
     if (collapsed.has(gid)) {
       const summary = clusterSummary(layout, index, gid)
       const box = clusterBox(g, zoom)
+      // 卡片缩在分组框正中间，落盘时要减掉这个偏移才是分组框自己的坐标
+      const dx = (g.w - box.w) / 2
+      const dy = (g.h - box.h) / 2
       nodes.push({
         id: gid, shape: 'kg-cluster',
-        x: g.x + (g.w - box.w) / 2, y: g.y + (g.h - box.h) / 2, width: box.w, height: box.h, zIndex: 12,
-        attrs: clusterAttrs(g.name, summary, color, box),
-        data: { kind: 'cluster', group: gid, count: summary.count },
+        x: g.x + dx, y: g.y + dy, width: box.w, height: box.h, zIndex: 12,
+        attrs: clusterAttrs(g.name, summary, color, box, g.doc || null),
+        data: { kind: 'cluster', group: gid, count: summary.count, dx, dy },
       })
       continue
     }
     nodes.push({
       id: gid, shape: 'kg-group', x: g.x, y: g.y, width: g.w, height: g.h,
       zIndex: 1 + groupDepth(layout.groups, gid),
-      attrs: groupAttrs(g.name, color),
-      data: { kind: 'group', parent: g.parent || null },
+      attrs: groupAttrs(g.name, color, g.doc || null),
+      data: { kind: 'group', parent: g.parent || null, doc: g.doc || null },
     })
   }
   for (const [nid, n] of Object.entries(layout.nodes)) {
+    if (only && !only.has(nid)) continue
     if (visibleOf(nid) !== nid) continue              // 被折进某个簇里了
     const meta = byId.get(nid)
     const size = sizeFor(meta)
@@ -162,7 +208,7 @@ export function buildCells(index, layout, options = {}) {
     })
   }
   // 便签与引用卡：只存在 layout.json 里，不参与关系与索引
-  for (const note of layout.notes || []) {
+  for (const note of (only ? [] : layout.notes || [])) {
     if (note.group && collapsed.has(note.group)) continue
     nodes.push({
       id: `note:${note.id}`, shape: 'kg-note', x: note.x, y: note.y,
@@ -170,7 +216,7 @@ export function buildCells(index, layout, options = {}) {
       attrs: noteAttrs(note), data: { kind: 'note', raw: note },
     })
   }
-  for (const img of layout.images || []) {
+  for (const img of (only ? [] : layout.images || [])) {
     if (img.group && collapsed.has(img.group)) continue
     nodes.push({
       id: `img:${img.id}`, shape: 'kg-image', x: img.x, y: img.y,
@@ -178,7 +224,7 @@ export function buildCells(index, layout, options = {}) {
       attrs: imageAttrs(img), data: { kind: 'image', raw: img },
     })
   }
-  for (const ref of layout.refs || []) {
+  for (const ref of (only ? [] : layout.refs || [])) {
     if (ref.group && collapsed.has(ref.group)) continue
     const meta = byId.get(ref.target)
     nodes.push({
@@ -192,6 +238,7 @@ export function buildCells(index, layout, options = {}) {
   const placed = new Set(Object.keys(layout.nodes))
   const visibleEdges = index.edges.filter(
     (e) => placed.has(e.source) && placed.has(e.target) && (!families || families.has(e.family))
+      && (!only || (only.has(e.source) && only.has(e.target)))
       && visibleOf(e.source) !== visibleOf(e.target),   // 两端折进同一簇 → 内部关系，不画
   )
   const { detail, groups: aggregated } = splitEdges(visibleEdges, layout, { ...options, collapsed })
@@ -380,11 +427,19 @@ export function highlightEdges(graph, relatedIds) {
 }
 
 
-// 分组被拖动时，X6 已经把子元素一起移了；这里收集所有需要落盘的新坐标
+// 分组被拖动时，X6 已经把子元素一起移了；这里收集所有需要落盘的新坐标。
+// 簇卡片（折叠起来的分组）是分组的另一种形态，落盘时必须写回 groups 而不是 nodes——
+// 早先按 shape !== 'kg-group' 一律当节点写，结果拖过的每个簇都在 layout.nodes 里
+// 留下一条同名幽灵记录（画布上是红色虚线孤儿），分组框自己一次都没移动过。
 export function movedPositions(cell) {
   const out = []
   const walk = (c) => {
     const pos = c.position()
+    const data = c.getData() || {}
+    if (data.kind === 'cluster') {
+      out.push({ id: c.id, kind: 'group', x: Math.round(pos.x - (data.dx || 0)), y: Math.round(pos.y - (data.dy || 0)) })
+      return   // 簇里的节点没建 cell，由调用方按位移量整体平移
+    }
     out.push({ id: c.id, kind: c.shape === 'kg-group' ? 'group' : 'node', x: Math.round(pos.x), y: Math.round(pos.y) })
     for (const child of c.getChildren() || []) walk(child)
   }

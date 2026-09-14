@@ -208,6 +208,22 @@ def _warn_cycles(payload: dict, ctx: BuildContext) -> None:
     payload["stats"]["cycles"] = len(find_cycles(payload["edges"]))
 
 
+def _type_meta(rt: RelationTypes, t: str) -> dict:
+    """一个关系类型的方向信息：反向类型 / 归一到的正向类型 / 是否对称。
+
+    前端建立关系时要当场告诉用户"反过来怎么读"（A 基于 B ⇒ B 支撑 A）——
+    方向是这套类型表里最容易写反的东西，写反了图就从知识网退化成乱指的箭头。
+    """
+    meta = {}
+    if rt.inverse(t):
+        meta["inverse"] = rt.inverse(t)
+    if rt.canonical(t):
+        meta["canonical"] = rt.canonical(t)
+    if rt.symmetric(t):
+        meta["symmetric"] = True
+    return meta
+
+
 def _families_payload(rt: RelationTypes, edge_list: list[dict]) -> list[dict]:
     per_family: dict[str, Counter] = defaultdict(Counter)
     for e in edge_list:
@@ -216,10 +232,15 @@ def _families_payload(rt: RelationTypes, edge_list: list[dict]) -> list[dict]:
     for t, meta in rt.types.items():
         known[meta["family"]].append(t)
     families = list(dict.fromkeys(list(rt.families) + sorted(per_family)))
-    return [{"name": fam,
-             "default": fam == rt.default_family,
-             "types": sorted(set(known.get(fam, [])) | set(per_family[fam])),
-             "edge_count": sum(per_family[fam].values())} for fam in families]
+    out = []
+    for fam in families:
+        types = sorted(set(known.get(fam, [])) | set(per_family[fam]))
+        out.append({"name": fam,
+                    "default": fam == rt.default_family,
+                    "types": types,
+                    "meta": {t: _type_meta(rt, t) for t in types},
+                    "edge_count": sum(per_family[fam].values())})
+    return out
 
 
 def _stats(payloads: list[dict], edge_list: list[dict], virtual: dict, diags: Diagnostics) -> dict:

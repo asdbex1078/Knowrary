@@ -223,11 +223,13 @@ export function registerShapes() {
       { tagName: 'rect', selector: 'body' },
       { tagName: 'rect', selector: 'head' },
       { tagName: 'text', selector: 'label' },
+      { tagName: 'text', selector: 'doc' },     // 绑了总览文档时在标题条右端标一下
     ],
     attrs: {
       body: { rx: 16, ry: 16, fill: '#fbfcfd', stroke: '#d8e0e8', strokeWidth: 1.2, class: 'kg-group-box' },
       head: { rx: 14, ry: 14, refWidth: '100%', height: 34, fill: '#eef2f6' },
       label: { refX: 16, refY: 22, fontSize: 13, fontWeight: 600, fill: '#4a5b6d', textAnchor: 'start' },
+      doc: { refX: '100%', refX2: -14, refY: 22, fontSize: 11.5, textAnchor: 'end', fill: '#4a5b6d', text: '' },
     },
   }, true)
 }
@@ -252,15 +254,16 @@ export function clusterBox(group, zoom = 1) {
   return { w, h }
 }
 
-export function clusterAttrs(name, summary, color = NEUTRAL, box = { w: CLUSTER_W, h: CLUSTER_H }) {
+export function clusterAttrs(name, summary, color = NEUTRAL, box = { w: CLUSTER_W, h: CLUSTER_H },
+                             doc = null) {
   const s = Math.max(1, Math.min(box.h / CLUSTER_H, 3.2))   // 字号随卡片变大，但设上限
   return {
     body: { fill: color.fill, stroke: color.line, strokeWidth: 1.6 * s, rx: 16 * s, ry: 16 * s, class: 'kg-card' },
     accent: { width: 6 * s, height: box.h, rx: 3 * s, ry: 3 * s, fill: color.line },
     title: { text: truncate(name, 16), fill: color.text, fontSize: 17 * s, fontWeight: 700,
              refX: 20 * s, refY: 30 * s },
-    count: { text: `${summary.count} 个知识点`, fill: color.text, fontSize: 12 * s, refX: 20 * s, refY: 54 * s,
-             opacity: 0.85 },
+    count: { text: `${summary.count} 个知识点${doc ? ' · 📄 有总览' : ''}`, fill: color.text,
+             fontSize: 12 * s, refX: 20 * s, refY: 54 * s, opacity: 0.85 },
     list: { text: truncate(summary.top.join(' · '), 30), fill: tokens().title, fontSize: 12 * s,
             refX: 20 * s, refY: 80 * s, opacity: 0.75 },
     hint: { text: '点开展开这一簇', fill: color.text, fontSize: 11 * s, refX: 20 * s, refY: box.h - 18 * s,
@@ -337,12 +340,13 @@ export function nodeAttrs(indexNode, layoutNode, color = NEUTRAL, due = false) {
   }
 }
 
-export function groupAttrs(name, color = NEUTRAL) {
+export function groupAttrs(name, color = NEUTRAL, doc = null) {
   return {
     body: { fill: tokens().groupFill, stroke: color.line, strokeWidth: 1.1, strokeOpacity: 0.4, rx: 16, ry: 16,
             class: 'kg-group-box' },
     head: { fill: color.head, rx: 16, ry: 16, height: 34, refWidth: '100%' },
     label: { text: name, fill: color.text, fontSize: 13, fontWeight: 600 },
+    doc: { text: doc ? '📄 总览' : '', fill: color.text, opacity: 0.75 },
   }
 }
 

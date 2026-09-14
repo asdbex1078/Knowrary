@@ -18,14 +18,16 @@ export function createPatcher({ getRevision, setRevision, onStatus, onConflict }
     timer = setTimeout(flush, delay)
   }
 
+  // patch 传 null = 删掉这条记录（服务端按 JSON Merge Patch 语义处理），
+  // 所以不能无脑展开：{...null} 会变成 {}，等于"什么都不改"。
   function queueNode(id, patch) {
-    pending.nodes[id] = { ...(pending.nodes[id] || {}), ...patch }
+    pending.nodes[id] = patch === null ? null : { ...(pending.nodes[id] || {}), ...patch }
     onStatus?.('dirty')
     schedule(DELAY)
   }
 
   function queueGroup(id, patch) {
-    pending.groups[id] = { ...(pending.groups[id] || {}), ...patch }
+    pending.groups[id] = patch === null ? null : { ...(pending.groups[id] || {}), ...patch }
     onStatus?.('dirty')
     schedule(DELAY)
   }

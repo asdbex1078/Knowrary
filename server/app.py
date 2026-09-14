@@ -5,7 +5,6 @@
 from __future__ import annotations
 
 import difflib
-from pathlib import Path
 from urllib.parse import quote
 
 from fastapi import FastAPI, HTTPException, Request

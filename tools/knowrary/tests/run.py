@@ -579,7 +579,9 @@ def 真实_vault_无错误():
     r = core.build_index(REPO)
     assert not core.validate_index(r.data), core.validate_index(r.data)
     assert r.stats["errors"] == 0, [d.render() for d in r.diags.errors]
-    assert r.stats["nodes"] > 50 and r.stats["edges"] > 100, r.stats
+    # 边数不做下限断言：2026-09-14 清空了全部关系，由人重新连一遍，
+    # 这期间真实 vault 的边数会从 0 慢慢长回去。这里只守"节点没丢、契约没破"。
+    assert r.stats["nodes"] > 50, r.stats
 
 
 # ---------------------------------------------------------------- 执行

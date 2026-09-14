@@ -198,7 +198,7 @@ async def wait_render(page: Page, expect_nodes: int, timeout: float = 20.0) -> i
         if seen >= expect_nodes:
             return seen
         await asyncio.sleep(0.5)
-    detail = await page.ev("JSON.stringify({ banner: document.querySelector('.banner')?.textContent,"
+    detail = await page.ev("JSON.stringify({ banner: document.querySelector('.toast .toast-text')?.textContent,"
                            " err: window.__lastError || null, body: document.body.innerText.slice(0, 200) })")
     raise AssertionError(f"画布迟迟没渲染出 {expect_nodes} 个节点（当前 {seen}）；页面状态：{detail}")
 
@@ -252,8 +252,15 @@ async def edge_counts(page: Page) -> dict:
 async def case_aggregate(page: Page, ck: Check) -> None:
     """跨分组边默认聚合成一束；点它展开明细，再点收起。"""
     start = await edge_counts(page)
-    ck.add("跨分组边默认聚合成束", start["agg"] >= 1 and start["total"] == start["agg"],
-           f"画布 {start['total']} 条，其中聚合 {start['agg']} 束")
+    # 规则是"跨分组的边一条都不单独画"，而不是"画布上只有聚合束"：
+    # 2026-09-14 起结构族默认可见，组内的 甲 部件 乙 是正常的明细边。
+    cross = await page.ev("""JSON.stringify(__kg.graph.getEdges()
+      .filter((e) => (e.getData() || {}).kind === 'edge')
+      .filter((e) => (__kg.layout.nodes[e.getSourceCellId()] || {}).group
+                  !== (__kg.layout.nodes[e.getTargetCellId()] || {}).group)
+      .map((e) => e.id))""")
+    ck.add("跨分组边默认聚合成束", start["agg"] >= 1 and cross == "[]",
+           f"画布 {start['total']} 条、聚合 {start['agg']} 束，漏网的跨组明细边 {cross}")
     click = """(() => {
       const agg = [...document.querySelectorAll('.x6-edge')].find(
         (e) => e.getAttribute('data-cell-id')?.startsWith('agg:'));
@@ -407,39 +414,39 @@ async def case_edit_relation(page: Page, ck: Check, vault: Path) -> None:
       fire('mousedown', x, y); fire('mouseup', x, y);
       return 'clicked';
     })()""")
-    got_panel = await poll(page, "!!document.querySelector('aside pre.raw, aside .add-edge')", lambda v: v)
-    ck.add("点节点出详情面板（含 md 原文入口）", bool(got_panel),
-           await page.ev("document.querySelector('aside h3')?.textContent || '无面板'"))
+    got_panel = await poll(page, "!!document.querySelector('.insp .node-title')", lambda v: v)
+    ck.add("点节点出检查器（详情页）", bool(got_panel),
+           await page.ev("document.querySelector('.insp .node-title')?.textContent || '无面板'"))
+    await insp_tab(page, "关系")
 
     # 填新增关系表单 → 加入变更
     await page.ev("""(() => {
       const set = (el, v) => { el.value = v;
         el.dispatchEvent(new Event('input', { bubbles: true }));
         el.dispatchEvent(new Event('change', { bubbles: true })); };
-      const box = document.querySelector('.add-edge');
+      const box = document.querySelector('.insp .form-grid');
       set(box.querySelector('select'), '相关');
       set(box.querySelector('input'), '丙');
       return 'filled';
     })()""")
     # Vue 要一个 tick 才会把「加入变更」从 disabled 解除，不能在同一段脚本里立刻点
-    await poll(page, "!document.querySelector('.add-edge button').disabled", lambda v: v)
-    await page.ev("document.querySelector('.add-edge button').click()")
+    await poll(page, "!document.querySelector('.insp .form-grid button').disabled", lambda v: v)
+    await page.ev("document.querySelector('.insp .form-grid button').click()")
     await asyncio.sleep(0.6)
-    queued = await page.ev("document.querySelectorAll('aside.changes ul.edges li').length")
+    await insp_tab(page, "变更")
+    queued = await page.ev("document.querySelectorAll('.insp .edge-row').length")
     ck.add("变更进入待写回列表", queued == 1, f"{queued} 条")
 
     # 预览：必须不碰 md
-    await page.ev("""[...document.querySelectorAll('aside.changes button')]
-      .find((b) => b.textContent.includes('预览变更')).click()""")
-    await poll(page, "!!document.querySelector('aside pre.diff')", lambda v: v)
-    diff = await page.ev("document.querySelector('aside pre.diff')?.textContent || ''")
+    await click_text(page, ".insp .act-row button", "预览 diff")
+    await poll(page, "!!document.querySelector('.insp pre.diff')", lambda v: v)
+    diff = await page.ev("document.querySelector('.insp pre.diff')?.textContent || ''")
     ck.add("预览出 diff 且不写盘", "相关" in (diff or "") and md.read_text("utf-8") == before,
            f"diff {len(diff or '')} 字，md 未变 {md.read_text('utf-8') == before}")
 
     # 确认写入
-    await page.ev("""[...document.querySelectorAll('aside.changes button')]
-      .find((b) => b.textContent.includes('确认写入')).click()""")
-    await poll(page, "document.querySelector('.banner')?.textContent || ''", lambda v: "已写回" in (v or ""))
+    await click_text(page, ".insp .act-row button", "确认写入")
+    await poll(page, "document.querySelector('.toast .toast-text')?.textContent || ''", lambda v: "已写回" in (v or ""))
     after = md.read_text("utf-8")
     backups = list((vault / ".knowrary" / "backup").glob("*/nodes/组A/甲.md"))
     ck.add("确认后写回 md 并备份原文",
@@ -456,10 +463,11 @@ async def case_search(page: Page, ck: Check) -> None:
       input.dispatchEvent(new Event('input', { bubbles: true }));
       return 'typed';
     })()""")
-    hits = await poll(page, "document.querySelectorAll('.search ul.hits li').length", lambda v: (v or 0) > 0)
-    await page.ev("document.querySelector('.search ul.hits li').click()")
+    hits = await poll(page, "document.querySelectorAll('.search .hits li').length", lambda v: (v or 0) > 0)
+    await page.ev("""(() => { const li = document.querySelector('.search .hits li');
+      li.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true })); })()""")
     await asyncio.sleep(1.2)
-    title = await page.ev("document.querySelector('aside h3')?.textContent || ''")
+    title = await page.ev("document.querySelector('.insp .node-title')?.textContent || ''")
     ck.add("搜索命中并定位", (hits or 0) > 0 and "丙" in (title or ""), f"{hits} 条结果，面板标题「{title}」")
 
 
@@ -467,7 +475,7 @@ async def case_note_and_ref(page: Page, ck: Check, vault: Path) -> None:
     """便签与引用卡：只写 layout.json，不碰 md。"""
     md_before = sum(len(p.read_text("utf-8")) for p in sorted(vault.rglob("*.md")))
     await page.ev("window.prompt = () => '实验便签'")     # 避开原生弹窗
-    await click_text(page, "header button", "便签")
+    await canvas_add(page, "便签")
     await asyncio.sleep(1.6)
     layout = get(page.api + "/api/layout")["layout"] if hasattr(page, "api") else None
     ck.add("便签已落盘", bool(layout and layout["notes"] and layout["notes"][0]["text"] == "实验便签"),
@@ -477,7 +485,7 @@ async def case_note_and_ref(page: Page, ck: Check, vault: Path) -> None:
 
     # 引用卡：详情面板上的按钮（此时已选中某个节点）
     await page.ev("""(() => {
-      const btn = [...document.querySelectorAll('aside button')].find((b) => b.textContent.includes('放引用卡'));
+      const btn = [...document.querySelectorAll('.insp button')].find((b) => b.textContent.includes('放引用卡'));
       if (!btn) return 'no-btn';
       btn.click(); return 'ok';
     })()""")
@@ -497,7 +505,7 @@ async def case_focus_cluster(page: Page, ck: Check) -> None:
     if not clusters:
         diag = await page.ev("""JSON.stringify({ zoom: +__kg.graph.zoom().toFixed(2),
           lastError: window.__lastError || null,
-          banner: (document.querySelector('.banner')?.textContent || '').slice(0, 60),
+          banner: (document.querySelector('.toast .toast-text')?.textContent || '').slice(0, 60),
           groups: Object.keys(__kg.layout.groups) })""")
         ck.add("缩小后折叠成簇卡片", False, f"一张都没有；现场：{diag}")
         return
@@ -516,13 +524,17 @@ async def case_focus_cluster(page: Page, ck: Check) -> None:
     inside = await page.ev("""JSON.stringify({
       nodes: document.querySelectorAll('[data-shape="kg-node"]').length,
       clusters: document.querySelectorAll('[data-shape="kg-cluster"]').length,
-      banner: (document.querySelector('.banner')?.textContent || '').slice(0, 20) })""")
+      crumb: document.querySelector('.float.context .crumbs .cur')?.textContent || '',
+      statusbar: document.querySelector('.statusbar .sb-btn')?.textContent || '' })""")
     state = json.loads(inside)
-    ck.add("点簇卡片放大进那个域", state["nodes"] > 0 and "已放大到" in state["banner"], inside)
+    ck.add("点簇卡片放大进那个域", state["nodes"] > 0 and bool(state["crumb"])
+           and state["crumb"] in state["statusbar"], inside)
     await page.ev("window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))")
     await asyncio.sleep(1.5)
     back = await page.ev("document.querySelectorAll('[data-shape=\"kg-cluster\"]').length")
-    ck.add("Esc 回到全景（重新折叠）", (back or 0) >= (clusters or 0), f"{back} 张簇卡片")
+    crumb_gone = await page.ev("!document.querySelector('.float.context')")
+    ck.add("Esc 回到全景（重新折叠、面包屑消失）", (back or 0) >= (clusters or 0) and bool(crumb_gone),
+           f"{back} 张簇卡片，面包屑已消失 {bool(crumb_gone)}")
 
 
 async def case_render_complete(page: Page, ck: Check) -> None:
@@ -542,7 +554,7 @@ async def case_rendered(page: Page, ck: Check) -> None:
       groups: document.querySelectorAll('[data-shape="kg-group"]').length,
       nodes: document.querySelectorAll('[data-shape="kg-node"]').length,
       edges: document.querySelectorAll('.x6-edge').length,
-      status: document.querySelector('.status')?.textContent })"""))
+      status: document.querySelector('.save-state')?.textContent })"""))
     ck.add("画布渲染出分组/节点/边",
            counts["groups"] >= 3 and counts["nodes"] == 4 and counts["edges"] >= 1,
            f"分组 {counts['groups']}，节点 {counts['nodes']}，边 {counts['edges']}，状态 {counts['status']}")
@@ -558,13 +570,69 @@ async def click_text(page: Page, sel: str, text: str) -> str:
     """点一个按钮。工具条上的下拉先展开——隐藏元素的 click() 也能触发，
     但那样测的就不是"用户点得到"，展开一下才算真链路。"""
     out = await page.ev(f"""(() => {{
-      document.querySelectorAll('header details.menu').forEach((d) => {{ d.open = true; }});
       const b = [...document.querySelectorAll({sel!r})].find((x) => x.textContent.includes({text!r}));
       if (!b) return 'missing';
       b.click(); return 'ok';
     }})()""")
     assert out == "ok", f"点不到「{text}」（{sel}）：{out}"
     return out
+
+
+async def open_rail(page: Page, tip: str) -> str:
+    """点左侧活动栏上的工具窗口图标（按 data-tip 里的名字找）。"""
+    out = await page.ev(f"""(() => {{
+      const b = [...document.querySelectorAll('.rail .rail-btn')]
+        .find((x) => (x.dataset.tip || '').includes({tip!r}));
+      if (!b) return 'missing';
+      b.click(); return 'ok';
+    }})()""")
+    assert out == "ok", f"活动栏上点不到「{tip}」：{out}"
+    await asyncio.sleep(0.4)
+    return out
+
+
+async def open_popover(page: Page, trigger_sel: str) -> None:
+    """展开一个 Popover（顶栏 ⋯ / 画布工具条上的下拉）。"""
+    out = await page.ev(f"""(() => {{
+      const b = document.querySelector({trigger_sel!r});
+      if (!b) return 'missing';
+      b.click(); return 'ok';
+    }})()""")
+    assert out == "ok", f"点不到弹层触发器 {trigger_sel}：{out}"
+    await asyncio.sleep(0.35)
+
+
+async def menu_click(page: Page, text: str) -> None:
+    """顶栏 ⋯ 菜单里的一项。"""
+    await open_popover(page, '.topbar .pop-root:last-of-type .icon-btn')
+    await click_text(page, ".pop-panel .pop-item", text)
+    await asyncio.sleep(0.3)
+
+
+async def canvas_add(page: Page, text: str) -> None:
+    """画布工具条「＋」菜单里的一项（便签 / 图片）。"""
+    out = await page.ev("""(() => {
+      const b = [...document.querySelectorAll('.float.tools .icon-btn')]
+        .find((x) => (x.title || '').includes('往画布上加东西'));
+      if (!b) return 'missing';
+      b.click(); return 'ok';
+    })()""")
+    assert out == "ok", f"点不到画布工具条的「＋」：{out}"
+    await asyncio.sleep(0.35)
+    await click_text(page, ".pop-panel .pop-item", text)
+    await asyncio.sleep(0.3)
+
+
+async def switch_mode(page: Page, text: str) -> None:
+    """顶栏分段控件：结构 / 历史。"""
+    await click_text(page, ".topbar .seg button", text)
+    await asyncio.sleep(0.6)
+
+
+async def insp_tab(page: Page, text: str) -> None:
+    """右侧检查器的分页：详情 / 关系 / 变更。"""
+    await click_text(page, ".insp .tabs button", text)
+    await asyncio.sleep(0.35)
 
 
 async def md_size(vault: Path) -> int:
@@ -575,15 +643,15 @@ async def case_inbox_place(page: Page, ck: Check, vault: Path) -> None:
     """新写的 md 进 Inbox → 「放进去」落成草稿；全程不碰 md。"""
     (vault / "nodes/组A/戊.md").write_text(NEW_MD.format(n="戊", to="甲"), "utf-8")
     before = await md_size(vault)
-    await click_text(page, "header button", "重新加载")
-    label = await poll(page, """[...document.querySelectorAll('header button')]
-      .find((b) => b.textContent.trim().startsWith('Inbox'))?.textContent || ''""",
+    await menu_click(page, "重新加载")
+    label = await poll(page, """[...document.querySelectorAll('.rail .rail-btn')]
+      .find((b) => (b.dataset.tip || '').includes('Inbox'))?.querySelector('.badge')?.textContent || ''""",
                        lambda v: "1" in (v or ""))
-    ck.add("新写的节点进 Inbox", "1" in (label or ""), f"按钮上写着「{(label or '').strip()}」")
+    ck.add("新写的节点进 Inbox", "1" in (label or ""), f"活动栏角标「{(label or '').strip()}」")
 
-    await click_text(page, "header button", "Inbox")
+    await open_rail(page, "Inbox")
     item = await poll(page, """(() => {
-      const li = document.querySelector('aside.inbox ul.inbox-list li');
+      const li = document.querySelector('aside.inbox .inbox-item');
       return li ? li.textContent.replace(/\s+/g, ' ') : '';
     })()""", lambda v: bool(v))
     host = ck.layout()["nodes"]["甲"]["group"]                 # 前面的拖拽用例可能把「甲」挪过组
@@ -592,7 +660,8 @@ async def case_inbox_place(page: Page, ck: Check, vault: Path) -> None:
            "戊" in (item or "") and host_name in (item or ""),
            f"{(item or '')[:70]}（「甲」在{host_name}）")
 
-    await click_text(page, "aside.inbox ul.inbox-list li button", "放进去")
+    await page.ev("""(() => { const b = document.querySelector('aside.inbox .inbox-item [data-act="place"]');
+      if (!b) return 'missing'; b.click(); return 'ok'; })()""")
     await poll(page, "'x'", lambda _: "戊" in ck.layout()["nodes"], timeout=12)
     node = ck.layout()["nodes"].get("戊")
     same_group = bool(node) and node["group"] == host
@@ -609,15 +678,16 @@ async def case_due_badge(page: Page, ck: Check) -> None:
                       lambda v: v and v != "transparent")
     ck.add("到期节点亮出复习圆点", (fill or "").lower() == "#e0891f", f"circle fill = {fill}")
 
-    await click_text(page, "header button", "欠账")
+    await open_rail(page, "欠账")
     text = await poll(page, """(() => {
       const a = document.querySelector('aside.digest');
       return a ? a.textContent.replace(/\s+/g, ' ') : '';
     })()""", lambda v: v and "待复习" in v, timeout=12)
     ck.add("欠账清单列出草稿与待复习", "草稿" in (text or "") and "戊" in (text or ""), (text or "")[:110])
 
-    await click_text(page, "aside.digest ul.edges li button", "✓")
-    banner = await poll(page, "document.querySelector('.banner')?.textContent || ''",
+    await page.ev("""(() => { const b = document.querySelector('aside.digest [data-act="review"]');
+      if (!b) return 'missing'; b.click(); return 'ok'; })()""")
+    banner = await poll(page, "document.querySelector('.toast .toast-text')?.textContent || ''",
                         lambda v: "复习" in (v or ""), timeout=12)
     ck.add("记一次复习后到期列表少一个", "第 1 次复习" in (banner or ""), (banner or "").strip()[:60])
     gone = await poll(page, """document.querySelector('[data-cell-id="戊"] circle')?.getAttribute('fill') || ''""",
@@ -628,8 +698,8 @@ async def case_due_badge(page: Page, ck: Check) -> None:
 async def case_drag_from_inbox(page: Page, ck: Check, vault: Path) -> None:
     """从 Inbox 拖到画布：落在哪个分组框里就归哪个组，坐标就是松手的位置。"""
     (vault / "nodes/组B/己.md").write_text(NEW_MD.format(n="己", to="丙"), "utf-8")
-    await click_text(page, "header button", "重新加载")
-    await poll(page, "document.querySelectorAll('aside.inbox ul.inbox-list li').length", lambda v: (v or 0) >= 1)
+    await menu_click(page, "重新加载")
+    await poll(page, "document.querySelectorAll('aside.inbox .inbox-item').length", lambda v: (v or 0) >= 1)
 
     # 落点直接由分组框算：前面的用例会把节点拖来拖去，拿节点当参照物不可靠
     dropped = await page.ev("""(() => {
@@ -666,8 +736,8 @@ async def case_finalize(page: Page, ck: Check) -> None:
         clientX: r.x + r.width / 2, clientY: r.y + r.height / 2, view: window, button: 0, buttons: 0 }));
       return 'clicked';
     })()""")
-    await poll(page, "document.querySelector('aside h3')?.textContent || ''", lambda v: "己" in (v or ""))
-    await click_text(page, "aside button", "定稿")
+    await poll(page, "document.querySelector('.insp .node-title')?.textContent || ''", lambda v: "己" in (v or ""))
+    await click_text(page, ".insp .act-row button", "定稿")
     state = await poll(page, "'x'", lambda _: ck.layout()["nodes"].get("己", {}).get("state") == "final", timeout=12)
     del state
     ck.add("定稿后不再是草稿", ck.layout()["nodes"]["己"]["state"] == "final", str(ck.layout()["nodes"]["己"]))
@@ -684,11 +754,11 @@ async def case_image(page: Page, ck: Check, vault: Path) -> None:
     (vault / "assets").mkdir(exist_ok=True)
     (vault / "assets" / "示意图.png").write_bytes(PNG_1PX)
     before = await md_size(vault)
-    await click_text(page, "header button", "＋图片")
-    thumbs = await poll(page, "document.querySelectorAll('aside.picker ul.thumbs li').length",
+    await open_rail(page, "素材")
+    thumbs = await poll(page, "document.querySelectorAll('aside.picker .thumbs li').length",
                         lambda v: (v or 0) > 0, timeout=12)
     ck.add("贴图面板列出 assets/ 里的图", (thumbs or 0) == 1, f"{thumbs} 张")
-    await page.ev("document.querySelector('aside.picker ul.thumbs li').click()")
+    await page.ev("document.querySelector('aside.picker .thumbs li').click()")
     await poll(page, "'x'", lambda _: bool(ck.layout()["images"]), timeout=12)
     img = ck.layout()["images"][0]
     ck.add("图片位置落进 layout.images", img["file"] == "示意图.png" and img["w"] == 320, str(img))
@@ -772,11 +842,11 @@ async def case_history(page: Page, ck: Check, vault: Path) -> None:
     (vault / "nodes/组B/辛.md").write_text(
         "---\nname: 辛\nfield: 另一域\ndesc: 辛\nyear: 2000\nstart_year: 2000\nend_year: 2010\n---\n"
         "# 辛\n\n正文\n", "utf-8")
-    await click_text(page, "header button", "重新加载")
+    await menu_click(page, "重新加载")
     await wait_render(page, 4)
     before = ck.layout()["revision"]
 
-    await click_text(page, "header button", "历史视图")
+    await switch_mode(page, "历史")
     lanes = await poll(page, "document.querySelectorAll('[data-shape=\"kg-lane\"]').length",
                        lambda v: (v or 0) >= 2, timeout=15)
     ck.add("按 field 分出泳道", (lanes or 0) == 2, f"{lanes} 条泳道（测试 / 另一域）")
@@ -801,7 +871,7 @@ async def case_history(page: Page, ck: Check, vault: Path) -> None:
 
     # 滑块拖到 1990：只剩当年之前的节点
     await page.ev("""(() => {
-      const el = document.querySelector('.timeline-bar input[type="range"]');
+      const el = document.querySelector('.float.player .range');
       el.value = '1990';
       el.dispatchEvent(new Event('input', { bubbles: true }));
       return 'moved';
@@ -812,20 +882,21 @@ async def case_history(page: Page, ck: Check, vault: Path) -> None:
 
     # 有效期过滤：辛 2000 年起、2010 年废止，看 2015 年时它不该还在图上
     await page.ev("""(() => {
-      const el = document.querySelector('.timeline-bar input[type="range"]');
+      const el = document.querySelector('.float.player .range');
       el.value = '2015';
       el.dispatchEvent(new Event('input', { bubbles: true }));
       return 'moved';
     })()""")
     await poll(page, "document.querySelectorAll('[data-shape=\"kg-node\"]').length", lambda v: v == 4, timeout=12)
-    await click_text(page, ".timeline-bar label", "有效期")
+    await click_text(page, ".float.player button", "有效期")
     ids = await poll(page, """JSON.stringify([...document.querySelectorAll('[data-shape="kg-node"]')]
       .map((e) => e.getAttribute('data-cell-id')).sort())""", lambda v: v and "辛" not in v, timeout=12)
     ck.add("有效期过滤掉当年已废止的节点", "辛" not in (ids or "x"), f"2015 年还在图上的是 {ids}")
-    await click_text(page, ".timeline-bar label", "有效期")     # 关掉，别影响后面的用例
+    await click_text(page, ".float.player button", "有效期")     # 关掉，别影响后面的用例
 
     # 切一条时间线：泳道换成所选分组的直接子分组
-    await click_text(page, ".timeline-bar .chips button", "组B")
+    await open_rail(page, "时间线")
+    await click_text(page, "aside.timeline .tl-btn", "组B")
     lane_names = await poll(page, """JSON.stringify([...document.querySelectorAll('[data-shape="kg-lane"] text')]
       .map((t) => t.textContent))""", lambda v: v and v != "[]", timeout=12)
     ck.add("选中分组后泳道跟着换", "组B" in (lane_names or ""), lane_names or "没取到泳道名")
@@ -833,10 +904,375 @@ async def case_history(page: Page, ck: Check, vault: Path) -> None:
     ck.add("历史视图不修改结构布局", ck.layout()["revision"] == before,
            f"revision 仍是 {before}")
 
-    await click_text(page, "header button", "结构视图")
+    await switch_mode(page, "结构")
     back = await poll(page, "document.querySelectorAll('[data-shape=\"kg-node\"]').length",
                       lambda v: (v or 0) >= 4, timeout=15)
     ck.add("切回结构视图恢复原图", (back or 0) >= 4, f"{back} 个节点")
+
+
+async def right_click(page: Page, cell: str, grab: str = "center") -> str:
+    """在某个 cell 上按右键。分组要点标题条，点中间会命中里面的节点。"""
+    origin = ("{ x: r.x + 40, y: r.y + 12 }" if grab == "title"
+              else "{ x: r.x + r.width / 2, y: r.y + r.height / 2 }")
+    out = await page.ev(f"""(() => {{
+      const el = document.querySelector('[data-cell-id="{cell}"]');
+      if (!el) return 'missing';
+      const r = el.getBoundingClientRect();
+      const p = {origin};
+      const t = document.elementFromPoint(p.x, p.y) || el;
+      t.dispatchEvent(new MouseEvent('contextmenu', {{ bubbles: true, cancelable: true,
+        clientX: p.x, clientY: p.y, view: window, button: 2 }}));
+      return 'ok';
+    }})()""")
+    assert out == "ok", f"右键点不到 {cell}：{out}"
+    await asyncio.sleep(0.4)
+    return out
+
+
+async def menu_pick(page: Page, text: str) -> None:
+    await click_text(page, ".ctx-menu .pop-item", text)
+    await asyncio.sleep(0.5)
+
+
+async def case_wheel_pan(page: Page, ck: Check) -> None:
+    """Mac 触控板两指上下滑就是普通 wheel 事件：必须平移画布，不能缩放。"""
+    before = json.loads(await page.ev(
+        "JSON.stringify({ z: +__kg.graph.zoom().toFixed(3), ty: Math.round(__kg.graph.translate().ty) })"))
+    await page.ev("""(() => {
+      const el = document.querySelector('.canvas');
+      el.dispatchEvent(new WheelEvent('wheel', { deltaY: 200, bubbles: true, cancelable: true }));
+      return 'ok';
+    })()""")
+    await asyncio.sleep(0.4)
+    after = json.loads(await page.ev(
+        "JSON.stringify({ z: +__kg.graph.zoom().toFixed(3), ty: Math.round(__kg.graph.translate().ty) })"))
+    ck.add("两指上下滑 = 平移画布（不是缩放）",
+           after["z"] == before["z"] and after["ty"] == before["ty"] - 200,
+           f"缩放 {before['z']} → {after['z']}，ty {before['ty']} → {after['ty']}")
+
+    await page.ev("""(() => {
+      const el = document.querySelector('.canvas');
+      const r = el.getBoundingClientRect();
+      el.dispatchEvent(new WheelEvent('wheel', { deltaY: -200, metaKey: true, bubbles: true, cancelable: true,
+        clientX: r.x + r.width / 2, clientY: r.y + r.height / 2 }));
+      return 'ok';
+    })()""")
+    zoomed = await poll(page, "+__kg.graph.zoom().toFixed(3)", lambda v: v and v != after["z"], timeout=4)
+    ck.add("⌘ + 滚轮仍然缩放", zoomed != after["z"], f"{after['z']} → {zoomed}")
+    await page.ev(f"__kg.graph.zoomTo({before['z']}); __kg.graph.translate(0, {before['ty']})")
+    await asyncio.sleep(0.4)
+
+
+async def case_cluster_drag(page: Page, ck: Check) -> None:
+    """拖簇卡片 = 拖它代表的分组：分组框要真的动，且不能在 nodes 里留下同名幽灵记录。"""
+    await page.ev("__kg.graph.zoomTo(0.3)")
+    gid = await poll(page, """document.querySelector('[data-shape="kg-cluster"]')
+      ?.getAttribute('data-cell-id') || ''""", lambda v: bool(v))
+    if not gid:
+        ck.add("拖簇卡片保存分组位置", False, "没折叠出簇卡片")
+        return
+    before = ck.layout()
+    inside = [nid for nid, n in before["nodes"].items() if n.get("group") == gid]
+    await drag(page, gid, dx=160, dy=90)
+    await asyncio.sleep(1.4)
+    after = ck.layout()
+    moved = round(after["groups"][gid]["x"] - before["groups"][gid]["x"])
+    ghost = gid in after["nodes"]
+    ck.add("拖簇卡片写回分组坐标（不是当成节点写）", moved != 0 and not ghost,
+           f"分组 x 位移 {moved}，nodes 里有幽灵记录 {ghost}")
+    if inside:
+        nid = inside[0]
+        kid = round(after["nodes"][nid]["x"] - before["nodes"][nid]["x"])
+        ck.add("簇里的节点跟着簇一起移动", kid == moved, f"节点位移 {kid}，分组位移 {moved}")
+    await page.ev("__kg.graph.zoomTo(1)")
+    await asyncio.sleep(0.8)
+
+
+async def case_group_menu(page: Page, ck: Check) -> None:
+    """右键分组：折叠 / 钉住展开 / 恢复自动——pinned 以前没有任何界面能改。"""
+    gid = await poll(page, """document.querySelector('[data-shape="kg-group"]')
+      ?.getAttribute('data-cell-id') || ''""", lambda v: bool(v))
+    await right_click(page, gid, grab="title")
+    opened = await page.ev("!!document.querySelector('.ctx-menu')")
+    ck.add("右键分组弹出菜单", bool(opened), "" if opened else "没弹出来")
+    if not opened:
+        return
+    await menu_pick(page, "折叠成簇卡片")
+    folded = await poll(page, f"""!!document.querySelector('[data-shape="kg-cluster"][data-cell-id="{gid}"]')""",
+                        lambda v: bool(v), timeout=6)
+    ck.add("菜单里能把一个域折叠起来", bool(folded),
+           f"pinned = {ck.layout()['groups'][gid].get('pinned')}")
+
+    await right_click(page, gid)
+    await menu_pick(page, "恢复自动折叠")
+    back = await poll(page, f"""!!document.querySelector('[data-shape="kg-group"][data-cell-id="{gid}"]')""",
+                      lambda v: bool(v), timeout=6)
+    ck.add("恢复自动折叠后 pinned 清空", bool(back) and ck.layout()["groups"][gid].get("pinned") is None,
+           f"pinned = {ck.layout()['groups'][gid].get('pinned')}")
+
+
+async def case_relate_menu(page: Page, ck: Check, vault: Path) -> None:
+    """右键节点 → 建立关系 → 选类型 → 搜目标 → 回车：直接写回 md。"""
+    await right_click(page, "乙")
+    title = await page.ev("document.querySelector('.ctx-menu .ctx-head .t')?.textContent || ''")
+    ck.add("右键知识点弹出菜单", title == "乙", f"菜单标题「{title}」")
+    await menu_pick(page, "建立关系")
+    ck.add("菜单能打开建立关系对话框", bool(await page.ev("!!document.querySelector('.rel-dialog')")))
+
+    await click_text(page, ".rel-dialog .type-chip", "基于")
+    await asyncio.sleep(0.4)
+    hint = await page.ev("document.querySelector('.rel-dialog .inv-hint')?.textContent || ''")
+    ck.add("选完类型当场给出反向读法", "支撑" in hint, hint.strip()[:60])
+
+    await page.ev("""(() => {
+      const el = document.querySelector('.rel-dialog .search-row input');
+      el.value = '丁';
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+      return 'ok';
+    })()""")
+    await asyncio.sleep(0.4)
+    hit = await page.ev("document.querySelector('.rel-dialog .hits li .nm')?.textContent || ''")
+    ck.add("搜索框搜得到目标知识点", hit == "丁", f"第一条命中「{hit}」")
+    await click_text(page, ".rel-dialog .hits li", "丁")
+
+    text = await poll_file(vault / "nodes" / "组A" / "乙.md", "基于:: [[丁]]")
+    ck.add("确认后直接写回 md（一步到位）", "- 基于:: [[丁]]" in text,
+           repr(text.split("## 关系")[-1].strip()[:40]))
+    drawn = await poll(page, """document.querySelectorAll('.x6-edge').length""", lambda v: (v or 0) > 0, timeout=10)
+    ck.add("新建的关系立刻画在画布上", (drawn or 0) > 0, f"{drawn} 条边")
+    closed = await page.ev("!document.querySelector('.rel-dialog')")
+    ck.add("写完自动关掉对话框", bool(closed))
+
+
+async def poll_glob(vault: Path, pattern: str, needle: str, timeout: float = 12.0) -> str:
+    """等某个还不知道确切路径的新文件出现（新建知识点的落点由对话框决定）。"""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        for p in sorted(vault.glob(pattern)):
+            text = p.read_text("utf-8")
+            if needle in text:
+                return text
+        await asyncio.sleep(0.4)
+    return ""
+
+
+async def poll_file(path: Path, needle: str, timeout: float = 12.0) -> str:
+    """等服务端把 md 写下来（写回是异步的一次 POST）。"""
+    deadline = time.time() + timeout
+    text = ""
+    while time.time() < deadline:
+        text = path.read_text("utf-8") if path.exists() else ""
+        if needle in text:
+            return text
+        await asyncio.sleep(0.4)
+    return text
+
+
+async def case_minimap(page: Page, ck: Check) -> None:
+    """小地图：关得掉、还得开得回来（只能靠空白右键就太难找了）。"""
+    ck.add("小地图默认显示", bool(await page.ev("!!document.querySelector('.float.map svg')")))
+    hidden = await page.ev("""(() => {
+      const b = [...document.querySelectorAll('.float.zoom .icon-btn')]
+        .find((x) => (x.getAttribute('title') || '').includes('小地图'));
+      if (!b) return 'missing';
+      b.click(); return 'ok';
+    })()""")
+    ck.add("缩放条上有小地图开关", hidden == "ok", str(hidden))
+    await asyncio.sleep(0.4)
+    ck.add("能关掉小地图", not await page.ev("!!document.querySelector('.float.map')"))
+    await page.ev("""(() => {
+      const b = [...document.querySelectorAll('.float.zoom .icon-btn')]
+        .find((x) => (x.getAttribute('title') || '').includes('小地图'));
+      b.click(); return 'ok';
+    })()""")
+    await asyncio.sleep(0.4)
+    ck.add("关掉之后还能开回来", bool(await page.ev("!!document.querySelector('.float.map svg')")))
+
+    # 拖动标题条把它搬走，位置要记住
+    before = await page.ev("JSON.stringify(document.querySelector('.float.map').getBoundingClientRect())")
+    await page.ev("""(() => {
+      const h = document.querySelector('.float.map .mm-grip');
+      const r = h.getBoundingClientRect();
+      const x = r.x + r.width / 2, y = r.y + r.height / 2;
+      const fire = (t, cx, cy) => h.dispatchEvent(new MouseEvent(t, { bubbles: true, cancelable: true,
+        clientX: cx, clientY: cy, view: window, button: 0, buttons: t === 'mouseup' ? 0 : 1 }));
+      fire('mousedown', x, y);
+      for (let i = 1; i <= 6; i++) {
+        window.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, clientX: x + i * 20, clientY: y - i * 10,
+          buttons: 1 }));
+      }
+      window.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, clientX: x + 120, clientY: y - 60 }));
+      return 'ok';
+    })()""")
+    await asyncio.sleep(0.5)
+    after = await page.ev("JSON.stringify(document.querySelector('.float.map').getBoundingClientRect())")
+    moved = json.loads(after)["x"] - json.loads(before)["x"]
+    ck.add("小地图可以拖到别处", round(moved) == 120, f"横向移动 {round(moved)}px")
+    saved = await page.ev("localStorage.getItem('knowrary-map-box')")
+    ck.add("拖过的位置记在本地", bool(saved) and '"x"' in (saved or ""), saved or "没存")
+
+
+async def case_blank_menu(page: Page, ck: Check) -> None:
+    """空白处右键：新建簇 / 贴便签 / 小地图开关都挂在这儿，它不弹别的都白搭。"""
+    out = await page.ev("""(() => {
+      const el = document.querySelector('.canvas');
+      const r = el.getBoundingClientRect();
+      // 找一块真空白：从右下角往里试，避开所有 cell
+      for (let i = 0; i < 40; i++) {
+        const x = r.right - 60 - i * 12;
+        const y = r.bottom - 60 - i * 6;
+        const hit = document.elementFromPoint(x, y);
+        if (hit && !hit.closest('[data-cell-id]') && !hit.closest('.float')) {
+          hit.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true,
+            clientX: x, clientY: y, view: window, button: 2 }));
+          return 'ok';
+        }
+      }
+      return 'no-blank-spot';
+    })()""")
+    await asyncio.sleep(0.4)
+    items = await page.ev("""JSON.stringify([...document.querySelectorAll('.ctx-menu .pop-item')]
+      .map((b) => b.textContent.trim()))""")
+    ck.add("空白处右键弹出菜单", out == "ok" and "新建簇（分组框）" in (items or ""), f"{out} · {items}")
+    await page.ev("window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))")
+    await asyncio.sleep(0.3)
+
+
+async def case_create_node(page: Page, ck: Check, vault: Path) -> None:
+    """空白右键 → 新建知识点：写出一个合规的 md，并立刻放到画布上。"""
+    out = await page.ev("""(() => {
+      const el = document.querySelector('.canvas');
+      const r = el.getBoundingClientRect();
+      for (let i = 0; i < 40; i++) {
+        const x = r.right - 60 - i * 12;
+        const y = r.bottom - 60 - i * 6;
+        const hit = document.elementFromPoint(x, y);
+        if (hit && !hit.closest('[data-cell-id]') && !hit.closest('.float')) {
+          hit.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true,
+            clientX: x, clientY: y, view: window, button: 2 }));
+          return 'ok';
+        }
+      }
+      return 'no-blank-spot';
+    })()""")
+    assert out == "ok", out
+    await menu_pick(page, "新建知识点")
+    ck.add("菜单能打开新建知识点对话框", bool(await page.ev("!!document.querySelector('.node-dialog')")))
+
+    await page.ev("""(() => {
+      const set = (sel, v) => {
+        const el = document.querySelector(sel);
+        el.value = v;
+        el.dispatchEvent(new Event('input', { bubbles: true }));
+      };
+      const inputs = document.querySelectorAll('.node-dialog input[type="text"], .node-dialog input:not([type])');
+      inputs[0].value = '控制器';
+      inputs[0].dispatchEvent(new Event('input', { bubbles: true }));
+      inputs[1].value = '取指、译码、发控制信号';
+      inputs[1].dispatchEvent(new Event('input', { bubbles: true }));
+      return 'ok';
+    })()""")
+    await asyncio.sleep(0.3)
+    hint = await page.ev("document.querySelector('.node-dialog .hint code')?.textContent || ''")
+    ck.add("对话框显示落盘路径", hint.endswith("控制器.md"), hint)
+    await click_text(page, ".node-dialog .btn", "创建并放到画布")
+
+    # 落在哪个子目录由对话框的"存到"决定，所以按通配找，别写死路径
+    text = await poll_glob(vault, "nodes/**/控制器.md", "name: 控制器", timeout=15)
+    ck.add("写出合规的新 md（name/field/desc + 关系段）",
+           all(k in text for k in ("name: 控制器", "field:", "desc:", "## 关系")), repr(text[:80]))
+    placed = await poll(page, """JSON.stringify(Object.keys(__kg.layout.nodes))""",
+                        lambda v: v and "控制器" in v, timeout=12)
+    ck.add("新知识点立刻落到画布上", "控制器" in (placed or ""), placed or "没进 layout")
+    ck.add("创建后自动接上建立关系对话框",
+           bool(await page.ev("!!document.querySelector('.rel-dialog:not(.node-dialog)')")))
+    await page.ev("window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))")
+    await asyncio.sleep(0.4)
+
+
+async def case_subgroup(page: Page, ck: Check) -> None:
+    """右键一个域 → 在里面新建子簇：层次靠嵌套分组表达。"""
+    gid = await poll(page, """document.querySelector('[data-shape="kg-group"]')
+      ?.getAttribute('data-cell-id') || ''""", lambda v: bool(v))
+    await page.ev("window.prompt = () => '子域'")
+    await right_click(page, gid, grab="title")
+    await menu_pick(page, "在这里新建子簇")
+    await asyncio.sleep(0.8)
+    subs = json.loads(await page.ev("""JSON.stringify(Object.entries(__kg.layout.groups)
+      .filter(([, g]) => g.parent).map(([id, g]) => [id, g.name, g.parent]))"""))
+    ck.add("能在域里建出子簇（parent 指向它）",
+           any(x[1] == "子域" and x[2] == gid for x in subs), json.dumps(subs, ensure_ascii=False))
+    nested = await poll(page, f"""(() => {{
+      const kid = Object.entries(__kg.layout.groups).find(([, g]) => g.parent === '{gid}')?.[0];
+      const cell = kid && __kg.graph.getCellById(kid);
+      return cell ? (cell.getParent()?.id || '') : '';
+    }})()""", lambda v: v == gid, timeout=6)
+    ck.add("子簇在画布上真的挂在父簇下", nested == gid, f"父 cell = {nested}")
+
+
+async def case_group_doc(page: Page, ck: Check, vault: Path) -> None:
+    """域的总览文档：点域弹工具条 → 加总览 → 写正文，关系区块不能被碰掉。"""
+    await page.ev("window.dispatchEvent(new KeyboardEvent('keydown', { key: 'f', bubbles: true }))")
+    await asyncio.sleep(0.8)
+    expr = ("[...document.querySelectorAll('[data-shape=\"kg-group\"]')]"
+            ".map((e) => e.getAttribute('data-cell-id')).find((id) => id.endsWith('组A')) || ''")
+    gid = await poll(page, expr, lambda v: bool(v))
+    await page.ev(f"""(() => {{
+      const el = document.querySelector('[data-cell-id="{gid}"]');
+      const r = el.getBoundingClientRect();
+      const x = r.x + 40, y = r.y + 12;
+      const t = document.elementFromPoint(x, y) || el;
+      for (const type of ['mousedown', 'mouseup', 'click']) {{
+        t.dispatchEvent(new MouseEvent(type, {{ bubbles: true, cancelable: true,
+          clientX: x, clientY: y, view: window, button: 0 }}));
+      }}
+      return 'ok';
+    }})()""")
+    bar = await poll(page, "document.querySelector('.float.groupbar .gb-name')?.textContent || ''",
+                     lambda v: bool(v), timeout=6)
+    ck.add("点一个域浮出工具条", bool(bar), f"工具条标题「{bar}」")
+
+    await click_text(page, ".float.groupbar .btn", "加总览文档")
+    await asyncio.sleep(0.5)
+    ck.add("工具条能开新建总览文档", bool(await page.ev("!!document.querySelector('.node-dialog')")))
+    await page.ev("""(() => {
+      const ins = document.querySelectorAll('.node-dialog input:not([type=checkbox])');
+      ins[1].value = '这个域讲什么';
+      ins[1].dispatchEvent(new Event('input', { bubbles: true }));
+      const cb = document.querySelector('.node-dialog input[type=checkbox]');
+      if (cb.checked) cb.click();          // 别让它接着弹建立关系，挡住后面的断言
+      return 'ok';
+    })()""")
+    await asyncio.sleep(0.3)
+    await click_text(page, ".node-dialog .btn", "创建并放到画布")
+    doc = await poll(page, f"__kg.layout.groups['{gid}'].doc || ''", lambda v: bool(v), timeout=15)
+    ck.add("新建的总览文档自动绑到这个域", bool(doc), f"doc = {doc}")
+    # 落点规则：有 fields/ 就放那儿（规范 2 的领域总览），没有就跟着这个域里其他节点走。
+    # 测试 vault 没有 fields/，所以这里应该落在 nodes/组A/ 下。
+    hit = [p.relative_to(vault).as_posix() for p in vault.glob(f"**/{doc}.md")] if doc else []
+    ck.add("总览文档写在约定目录下（fields/ 或域所在目录）",
+           any(h.startswith(("fields/", "nodes/")) for h in hit), str(hit))
+
+    # 建完会自动选中并定位到总览文档，检查器就停在它的详情页上
+    await poll(page, "document.querySelector('.insp .node-title')?.textContent || ''",
+               lambda v: bool(v), timeout=8)
+    await click_text(page, ".insp .tabs button", "详情")
+    await asyncio.sleep(0.3)
+    await click_text(page, ".insp .act-row .btn", "写内容")
+    await asyncio.sleep(0.4)
+    ck.add("检查器能展开正文编辑框", bool(await page.ev("!!document.querySelector('.write-box textarea')")))
+    await page.ev("""(() => {
+      const t = document.querySelector('.write-box textarea');
+      const NL = String.fromCharCode(10);
+      t.value = '# 总览' + NL + NL + '## 描述' + NL + '这个域讲计算机怎么搭起来的。';
+      t.dispatchEvent(new Event('input', { bubbles: true }));
+      return 'ok';
+    })()""")
+    await click_text(page, ".write-box .btn", "保存正文")
+    saved = await poll_glob(vault, f"**/{doc}.md", "这个域讲计算机怎么搭起来的", timeout=15)
+    ck.add("正文写回 md", "## 描述" in saved, repr(saved[-80:]))
+    ck.add("写正文不碰关系区块（甲的边还在）",
+           "## 关系" in (list(vault.glob("nodes/**/甲.md"))[0].read_text("utf-8")), "")
 
 
 async def scenarios(page: Page, api: str, results: list) -> None:
@@ -860,6 +1296,15 @@ async def scenarios(page: Page, api: str, results: list) -> None:
     await case_finalize(page, ck)
     await case_image(page, ck, VAULT_HOLDER[0])
     await case_edge_vertices(page, ck)
+    await case_wheel_pan(page, ck)
+    await case_cluster_drag(page, ck)
+    await case_group_menu(page, ck)
+    await case_relate_menu(page, ck, VAULT_HOLDER[0])
+    await case_minimap(page, ck)
+    await case_blank_menu(page, ck)
+    await case_create_node(page, ck, VAULT_HOLDER[0])
+    await case_subgroup(page, ck)
+    await case_group_doc(page, ck, VAULT_HOLDER[0])
     await case_history(page, ck, VAULT_HOLDER[0])
     results.extend(ck.items)
 
