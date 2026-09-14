@@ -66,6 +66,17 @@ retry() {
   return 1
 }
 
+# 推送成功后手动刷新远端跟踪引用。
+# 用 URL（而非 remote 名）推送时 git 不会更新 refs/remotes/<remote>，后果是：
+#   1) 编辑器（IDEA 等）会一直显示「领先 origin 若干提交」，与实际不符；
+#   2) 之后任何基于跟踪引用的 --force-with-lease 都会拿到过期值而被拒。
+# 这里补上 git 对具名 remote 本应做的事。
+mark_pushed() {
+  if git remote | grep -qx origin; then
+    git update-ref "refs/remotes/origin/${BRANCH}" "$(git rev-parse HEAD)" 2>/dev/null || true
+  fi
+}
+
 # 通道 1：HTTPS。有凭证文件就用它，否则交给系统凭据助手（macOS 钥匙串）。
 # 不做重试：本机到 github.com:443 的 TLS 握手本身失败，重试无法改善。
 if [ -n "$CREDS" ]; then
@@ -75,6 +86,7 @@ else
   echo "== 未找到凭证文件，改试系统凭据助手 / SSH =="
 fi
 if GIT_TERMINAL_PROMPT=0 push_with_timeout "$HTTPS_URL" "HEAD:$BRANCH" 2>>"${PUSH_ERRLOG}"; then
+  mark_pushed
   echo "== 已推送 ${BRANCH}（HTTPS） =="
   exit 0
 fi
@@ -93,6 +105,7 @@ else
 fi
 export GIT_SSH_COMMAND="${SSH_CMD}"
 if retry "${PUSH_RETRIES}" push_with_timeout "$SSH_URL" "HEAD:$BRANCH"; then
+  mark_pushed
   echo "== 已推送 ${BRANCH}（SSH） =="
   exit 0
 fi
