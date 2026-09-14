@@ -52,7 +52,7 @@ else
   echo "== 未找到凭证文件，改用系统凭据助手 =="
 fi
 if GIT_TERMINAL_PROMPT=0 push_with_timeout "$HTTPS_URL" "HEAD:$BRANCH" 2>/dev/null; then
-  echo "== 已推送 ${BRANCH}（HTTPS） =="
+  echo "== 已推送 $BRANCH（HTTPS） =="
   exit 0
 fi
 echo "== HTTPS 推送未成功，改试 SSH… =="
@@ -64,7 +64,7 @@ else
   SSH_CMD="ssh -o BatchMode=yes -o ConnectTimeout=20"
 fi
 if GIT_SSH_COMMAND="$SSH_CMD" push_with_timeout "$SSH_URL" "HEAD:$BRANCH" 2>/dev/null; then
-  echo "== 已推送 ${BRANCH}（SSH） =="
+  echo "== 已推送 $BRANCH（SSH） =="
   exit 0
 fi
 
