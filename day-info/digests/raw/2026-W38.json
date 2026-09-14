@@ -1,0 +1,1724 @@
+{
+  "week": "2026-W38",
+  "generated_at": "2026-09-14T12:00:35",
+  "range": [
+    "2026-09-08",
+    "2026-09-14"
+  ],
+  "counts": {
+    "total": 130,
+    "must": 8,
+    "worth": 122,
+    "archived_skipped": 19,
+    "days_covered": 3
+  },
+  "sources": {
+    "IT之家": 6,
+    "MarkTechPost": 10,
+    "GitHub 新项目": 14,
+    "HF 新模型": 21,
+    "HF 每日论文": 21,
+    "Simon Willison": 9,
+    "Hacker News": 2,
+    "Latent Space": 5,
+    "AWS ML": 4,
+    "DeepMind": 5,
+    "OpenAI": 8,
+    "Anthropic": 6,
+    "GitHub 热门": 10,
+    "Raschka": 1,
+    "arXiv cs.AI": 8
+  },
+  "items": [
+    {
+      "url": "https://aws.amazon.com/blogs/machine-learning/build-interactive-mcp-apps-using-amazon-bedrock-agentcore/",
+      "title": "Build interactive MCP Apps using Amazon Bedrock AgentCore",
+      "source": "AWS ML",
+      "published": "2026-09-11",
+      "summary": "Learn how to build and deploy an MCP App with interactive HTML widgets on Amazon Bedrock AgentCore. Because MCP Apps is a host-agnostic standard, the same server delivers the same rich experience across AI hosts like Cha",
+      "tier": "必须看",
+      "critical": false,
+      "reasons": [
+        "项目相关:x6/g6/antv/mcp"
+      ],
+      "pool_date": "2026-09-12"
+    },
+    {
+      "url": "https://deepmind.google/blog/introducing-agentic-video-in-gemini/",
+      "title": "Introducing agentic video understanding with Gemini",
+      "source": "DeepMind",
+      "published": "2026-09-01",
+      "summary": "",
+      "tier": "必须看",
+      "critical": false,
+      "reasons": [
+        "发布信号:gemini,introduc,agent"
+      ],
+      "pool_date": "2026-09-12"
+    },
+    {
+      "url": "https://huggingface.co/papers/2609.11561",
+      "title": "Memory as Plans: World-Action Modeling with Memory-Grounded Planning",
+      "source": "HF 每日论文",
+      "published": "2026-09-09",
+      "summary": "Mainstream robotic policies often adopt a Markovian formulation, but many complex real-world manipulation tasks are inherently non-Markovian, requiring long-horizon memory beyond the current observation. Existing memory",
+      "tier": "必须看",
+      "critical": false,
+      "reasons": [
+        "项目相关:long-horizon"
+      ],
+      "pool_date": "2026-09-12"
+    },
+    {
+      "url": "https://www.ithome.com/1/001/587.htm",
+      "title": "Anthropic 研究员警告“AI 灭绝人类”后，美国两党议员呼吁政府采取更多行动",
+      "source": "IT之家",
+      "published": "2026-09-12",
+      "summary": "IT之家 9 月 12 日消息，在 Anthropic 两名研究人员警告称，快速发展的 AI 可能在不久的将来导致人类灭绝后，越来越多美国议员开始呼吁出台新的 AI 监管规则。 本周，Anthropic 研究员雅各布 · 考克森宣布辞职。“真正认真开发 AI 的人相信，AI 可能在本世纪 20 年代结束前杀死我们所有人。”这一言论进一步加剧了外界对 AI 潜在风险的担忧。 Anthropic 科学家埃文 · 胡宾格随后在 X 平台公开支",
+      "tier": "必须看",
+      "critical": false,
+      "reasons": [
+        "发布信号:openai,anthropic,发布,模型"
+      ],
+      "pool_date": "2026-09-12"
+    },
+    {
+      "url": "https://www.ithome.com/1/001/971.htm",
+      "title": "豆包手机助手消费者版发布：GUI 合作协议同步推出，三方 App 可允许 / 拒绝 AI 自动化操作",
+      "source": "IT之家",
+      "published": "2026-09-14",
+      "summary": "IT之家 9 月 14 日消息，豆包手机助手消费者版本今日正式发布。本次消费者版相比预览版更强调稳定性、日常可用性，并主打交互体验。 IT之家从官方新闻稿了解到，豆包手机助手支持语音、AI 键等多种唤醒方式，适配不同场景。其中专属 AI 键带有指纹鉴权能力，完成本人验证后无需二次解锁，即可调用助手执行相关任务。语音唤醒方面，豆包手机助手也针对远场、内噪和嘈杂环境等场景进行了优化。 本次豆包手机助手还新增了屏幕问答能力，用户无需额外截图或",
+      "tier": "必须看",
+      "critical": false,
+      "reasons": [
+        "发布信号:豆包,发布,agent"
+      ],
+      "pool_date": "2026-09-14"
+    },
+    {
+      "url": "https://www.marktechpost.com/2026/09/13/aws-introduces-pizza-bot-an-open-source-inbox-for-background-ai-agents/",
+      "title": "AWS Introduces Pizza Bot: An Open Source Inbox for Background AI Agents",
+      "source": "MarkTechPost",
+      "published": "2026-09-13",
+      "summary": "Pizza Bot is an open source, self-hosted inbox for AI agents built on DeepAgents and LangGraph. It combines persistent task state, MCP integrations, configurable approvals, and scheduled workflows across multiple model p",
+      "tier": "必须看",
+      "critical": true,
+      "reasons": [
+        "项目相关+更新:x6/g6/antv/mcp,introduc"
+      ],
+      "pool_date": "2026-09-14"
+    },
+    {
+      "url": "https://www.marktechpost.com/2026/09/12/cognition-releases-swe-2-a-kimi-k3-post-trained-coding-model-that-matches-fable-5-1-on-frontiercode-at-64-lower-cost/",
+      "title": "Cognition Releases SWE-2: A Kimi K3 Post-Trained Coding Model That Matches Fable 5.1 on FrontierCode at 64% Lower Cost",
+      "source": "MarkTechPost",
+      "published": "2026-09-12",
+      "summary": "Cognition, the company behind the Devin coding agent, has released SWE-2, its most capable coding model to date. SWE-2 is post-trained with reinforcement learning from Kimi K3, Moonshot AI&#8217;s 2.8T-parameter open mod",
+      "tier": "必须看",
+      "critical": false,
+      "reasons": [
+        "发布信号:kimi,release,model"
+      ],
+      "pool_date": "2026-09-13"
+    },
+    {
+      "url": "https://openai.com/index/introducing-chatgpt-financial-services",
+      "title": "Introducing ChatGPT for Financial Services",
+      "source": "OpenAI",
+      "published": "2026-09-10",
+      "summary": "Introducing ChatGPT for Financial Services, combining built-in financial data and GPT-6 Astra for research, modeling, and client-ready materials.",
+      "tier": "必须看",
+      "critical": false,
+      "reasons": [
+        "发布信号:gpt,introduc,model"
+      ],
+      "pool_date": "2026-09-12"
+    },
+    {
+      "url": "https://aws.amazon.com/blogs/machine-learning/beyond-the-price-per-token-choosing-the-right-openai-model-on-amazon-bedrock-for-your-workload/",
+      "title": "Beyond the price per token: Choosing the right OpenAI model on Amazon Bedrock for your workload",
+      "source": "AWS ML",
+      "published": "2026-09-11",
+      "summary": "Comparing models on dollars per million tokens misses what production workloads actually pay for: outcomes. This post shares an open-source benchmarking harness that measures cost per correct answer, agent trajectory cos",
+      "tier": "值得看",
+      "critical": false,
+      "reasons": [
+        "命中:benchmark"
+      ],
+      "pool_date": "2026-09-12"
+    },
+    {
+      "url": "https://aws.amazon.com/blogs/machine-learning/monitoring-production-agent-lifecycle-with-aws-devops-agent-and-agentcore-evaluations/",
+      "title": "Monitoring production agent lifecycle with AWS DevOps Agent and AgentCore Evaluations",
+      "source": "AWS ML",
+      "published": "2026-09-11",
+      "summary": "Multi-agent systems fail in ways traditional monitoring misses. This post presents a dual-layer approach to monitoring production agents: Amazon Bedrock AgentCore Evaluations for continuous quality scoring and AWS DevOps",
+      "tier": "值得看",
+      "critical": false,
+      "reasons": [
+        "论文/工具类"
+      ],
+      "pool_date": "2026-09-12"
+    },
+    {
+      "url": "https://aws.amazon.com/blogs/machine-learning/reduce-llm-latency-with-prefix-aware-routing-on-amazon-sagemaker-inference/",
+      "title": "Reduce LLM latency with prefix-aware routing on Amazon SageMaker Inference",
+      "source": "AWS ML",
+      "published": "2026-09-10",
+      "summary": "Amazon SageMaker Inference now offers prefix-aware routing, a routing strategy that sends requests sharing the same prompt prefix to the same instance so the KV cache stays warm. In benchmarks on Llama 3.1 70B, it reduce",
+      "tier": "值得看",
+      "critical": false,
+      "reasons": [
+        "命中:benchmark"
+      ],
+      "pool_date": "2026-09-12"
+    },
+    {
+      "url": "https://www.anthropic.com/news/claude-opus-5",
+      "title": "claude opus 5",
+      "source": "Anthropic",
+      "published": "",
+      "summary": "",
+      "tier": "值得看",
+      "critical": false,
+      "reasons": [
+        "论文/工具类"
+      ],
+      "pool_date": "2026-09-12"
+    },
+    {
+      "url": "https://www.anthropic.com/news/enterprise-frontier-safeguards",
+      "title": "enterprise frontier safeguards",
+      "source": "Anthropic",
+      "published": "",
+      "summary": "",
+      "tier": "值得看",
+      "critical": false,
+      "reasons": [
+        "论文/工具类"
+      ],
+      "pool_date": "2026-09-12"
+    },
+    {
+      "url": "https://www.anthropic.com/news/expanding-support-for-scientists",
+      "title": "expanding support for scientists",
+      "source": "Anthropic",
+      "published": "",
+      "summary": "",
+      "tier": "值得看",
+      "critical": false,
+      "reasons": [
+        "论文/工具类"
+      ],
+      "pool_date": "2026-09-12"
+    },
+    {
+      "url": "https://www.anthropic.com/news/improving-alignment-security-efforts",
+      "title": "improving alignment security efforts",
+      "source": "Anthropic",
+      "published": "",
+      "summary": "",
+      "tier": "值得看",
+      "critical": false,
+      "reasons": [
+        "论文/工具类"
+      ],
+      "pool_date": "2026-09-12"
+    },
+    {
+      "url": "https://www.anthropic.com/news/model-hardware-standard-research-preview",
+      "title": "model hardware standard research preview",
+      "source": "Anthropic",
+      "published": "",
+      "summary": "",
+      "tier": "值得看",
+      "critical": false,
+      "reasons": [
+        "论文/工具类"
+      ],
+      "pool_date": "2026-09-12"
+    },
+    {
+      "url": "https://www.anthropic.com/news/wellbeing-research-grants",
+      "title": "wellbeing research grants",
+      "source": "Anthropic",
+      "published": "",
+      "summary": "",
+      "tier": "值得看",
+      "critical": false,
+      "reasons": [
+        "论文/工具类"
+      ],
+      "pool_date": "2026-09-12"
+    },
+    {
+      "url": "https://deepmind.google/blog/alphagenome-atlas-a-predictive-map-of-every-possible-dna-letter-change-in-the-human-genome/",
+      "title": "AlphaGenome Atlas: A predictive map of every possible DNA letter change in the human genome",
+      "source": "DeepMind",
+      "published": "2026-09-08",
+      "summary": "AlphaGenome Atlas maps the molecular effects of 9 billion single-letter DNA variants across the human genome.",
+      "tier": "值得看",
+      "critical": false,
+      "reasons": [
+        "论文/工具类"
+      ],
+      "pool_date": "2026-09-12"
+    },
+    {
+      "url": "https://deepmind.google/blog/introducing-gemini-3-8-flash-and-38-flash-cyber/",
+      "title": "Introducing Gemini 3.8 Flash and 3.8 Flash Cyber",
+      "source": "DeepMind",
+      "published": "2026-09-02",
+      "summary": "",
+      "tier": "值得看",
+      "critical": false,
+      "reasons": [
+        "论文/工具类"
+      ],
+      "pool_date": "2026-09-12"
+    },
+    {
+      "url": "https://deepmind.google/blog/introducing-weathernext-3-our-most-advanced-and-accurate-global-weather-ai-model/",
+      "title": "Introducing WeatherNext 3, our most advanced and accurate global weather AI model",
+      "source": "DeepMind",
+      "published": "2026-09-03",
+      "summary": "",
+      "tier": "值得看",
+      "critical": false,
+      "reasons": [
+        "论文/工具类"
+      ],
+      "pool_date": "2026-09-12"
+    },
+    {
+      "url": "https://deepmind.google/blog/proactive-cyber-defense-for-governments-and-enterprises/",
+      "title": "Proactive cyber defense for governments and enterprises",
+      "source": "DeepMind",
+      "published": "2026-09-02",
+      "summary": "",
+      "tier": "值得看",
+      "critical": false,
+      "reasons": [
+        "论文/工具类"
+      ],
+      "pool_date": "2026-09-12"
+    },
+    {
+      "url": "https://github.com/Colafornia/short-video-generator-AI",
+      "title": "Colafornia/short-video-generator-AI · ⭐722",
+      "source": "GitHub 新项目",
+      "published": "2026-09-08",
+      "summary": "Free open-source project designed for turning youtube-viedos into viral short videos. Highlight detection, subtitles, translation, voiceover, all in one for your content.",
+      "tier": "值得看",
+      "critical": false,
+      "reasons": [
+        "论文/工具类"
+      ],
+      "pool_date": "2026-09-14"
+    },
+    {
+      "url": "https://github.com/Edge0-AI/Edge0",
+      "title": "Edge0-AI/Edge0 · ⭐1394",
+      "source": "GitHub 新项目",
+      "published": "2026-09-08",
+      "summary": "",
+      "tier": "值得看",
+      "critical": false,
+      "reasons": [
+        "论文/工具类"
+      ],
+      "pool_date": "2026-09-12"
+    },
+    {
+      "url": "https://github.com/EverettFish/holo-card-studio",
+      "title": "EverettFish/holo-card-studio · ⭐1456",
+      "source": "GitHub 新项目",
+      "published": "2026-09-07",
+      "summary": "Turn the user's description or uploaded reference into a finished, editable Blender card and an interactive Three.js page. Preserve the requested subject, style, typography and destination. This skill",
+      "tier": "值得看",
+      "critical": false,
+      "reasons": [
+        "论文/工具类"
+      ],
+      "pool_date": "2026-09-12"
+    },
+    {
+      "url": "https://github.com/Faizpi/bank-sampah",
+      "title": "Faizpi/bank-sampah · ⭐920",
+      "source": "GitHub 新项目",
+      "published": "2026-09-11",
+      "summary": "",
+      "tier": "值得看",
+      "critical": false,
+      "reasons": [
+        "论文/工具类"
+      ],
+      "pool_date": "2026-09-12"
+    },
+    {
+      "url": "https://github.com/SpaceDudem/text-humanizer",
+      "title": "SpaceDudem/text-humanizer · ⭐735",
+      "source": "GitHub 新项目",
+      "published": "2026-09-08",
+      "summary": "text-humanizer is an open-source project designed to convert text generated by AI to its \"humanized\" version. Bypasses the most of AI detectors such as Turnitin or GPTZero",
+      "tier": "值得看",
+      "critical": false,
+      "reasons": [
+        "论文/工具类"
+      ],
+      "pool_date": "2026-09-14"
+    },
+    {
+      "url": "https://github.com/Vincentwei1021/anything2explainer",
+      "title": "Vincentwei1021/anything2explainer · ⭐998",
+      "source": "GitHub 新项目",
+      "published": "2026-09-08",
+      "summary": "Topic in, narrated explainer video out. A Claude Code / Codex skill that turns any topic into a black-canvas motion-graphics explainer video with TTS voiceover, subtitles and a chapter progress bar. C",
+      "tier": "值得看",
+      "critical": false,
+      "reasons": [
+        "论文/工具类"
+      ],
+      "pool_date": "2026-09-12"
+    },
+    {
+      "url": "https://github.com/achimala/dream-loop",
+      "title": "achimala/dream-loop · ⭐875",
+      "source": "GitHub 新项目",
+      "published": "2026-09-07",
+      "summary": "Agent skill for impressive 3D visuals using Blender + image gen + subagent critic",
+      "tier": "值得看",
+      "critical": false,
+      "reasons": [
+        "论文/工具类"
+      ],
+      "pool_date": "2026-09-12"
+    },
+    {
+      "url": "https://github.com/angusdevgo/IDM_Pro_Tool",
+      "title": "angusdevgo/IDM_Pro_Tool · ⭐686",
+      "source": "GitHub 新项目",
+      "published": "2026-09-10",
+      "summary": "IDM激活与状态维护工具",
+      "tier": "值得看",
+      "critical": false,
+      "reasons": [
+        "命中:tool,工具"
+      ],
+      "pool_date": "2026-09-14"
+    },
+    {
+      "url": "https://github.com/gazijarin/itsgiving",
+      "title": "gazijarin/itsgiving · ⭐747",
+      "source": "GitHub 新项目",
+      "published": "2026-09-08",
+      "summary": "Express yourself in meetings (with memes, of course).",
+      "tier": "值得看",
+      "critical": false,
+      "reasons": [
+        "论文/工具类"
+      ],
+      "pool_date": "2026-09-12"
+    },
+    {
+      "url": "https://github.com/jtydhr88/screenwriting-skills",
+      "title": "jtydhr88/screenwriting-skills · ⭐758",
+      "source": "GitHub 新项目",
+      "published": "2026-09-06",
+      "summary": "",
+      "tier": "值得看",
+      "critical": false,
+      "reasons": [
+        "论文/工具类"
+      ],
+      "pool_date": "2026-09-12"
+    },
+    {
+      "url": "https://github.com/openai/NavierStokesAndEuler",
+      "title": "openai/NavierStokesAndEuler · ⭐1792",
+      "source": "GitHub 新项目",
+      "published": "2026-09-08",
+      "summary": "Lean certificates accompanying Navier-Stokes and Euler results",
+      "tier": "值得看",
+      "critical": false,
+      "reasons": [
+        "论文/工具类"
+      ],
+      "pool_date": "2026-09-12"
+    },
+    {
+      "url": "https://github.com/rizqinrr/viserys-agent",
+      "title": "rizqinrr/viserys-agent · ⭐628",
+      "source": "GitHub 新项目",
+      "published": "2026-09-12",
+      "summary": "",
+      "tier": "值得看",
+      "critical": false,
+      "reasons": [
+        "论文/工具类"
+      ],
+      "pool_date": "2026-09-14"
+    },
+    {
+      "url": "https://github.com/sdli1995/dlssg_for_sm86",
+      "title": "sdli1995/dlssg_for_sm86 · ⭐1966",
+      "source": "GitHub 新项目",
+      "published": "2026-09-07",
+      "summary": "Here is a dlssg for RTX30 Series GPU",
+      "tier": "值得看",
+      "critical": false,
+      "reasons": [
+        "论文/工具类"
+      ],
+      "pool_date": "2026-09-12"
+    },
+    {
+      "url": "https://github.com/sumimakito/Mac-Duo",
+      "title": "sumimakito/Mac-Duo · ⭐618",
+      "source": "GitHub 新项目",
+      "published": "2026-09-10",
+      "summary": "Wish you could bring the iPhone Duo effect to your MacBook?",
+      "tier": "值得看",
+      "critical": false,
+      "reasons": [
+        "论文/工具类"
+      ],
+      "pool_date": "2026-09-12"
+    },
+    {
+      "url": "https://github.com/NousResearch/hermes-agent",
+      "title": "NousResearch/hermes-agent · ⭐244742",
+      "source": "GitHub 热门",
+      "published": "2026-09-12",
+      "summary": "The agent that grows with you",
+      "tier": "值得看",
+      "critical": false,
+      "reasons": [
+        "论文/工具类"
+      ],
+      "pool_date": "2026-09-12"
+    },
+    {
+      "url": "https://github.com/Significant-Gravitas/AutoGPT",
+      "title": "Significant-Gravitas/AutoGPT · ⭐187277",
+      "source": "GitHub 热门",
+      "published": "2026-09-12",
+      "summary": "AutoGPT is the vision of accessible AI for everyone, to use and to build on. Our mission is to provide the tools, so that you can focus on what matters.",
+      "tier": "值得看",
+      "critical": false,
+      "reasons": [
+        "命中:tool"
+      ],
+      "pool_date": "2026-09-12"
+    },
+    {
+      "url": "https://github.com/affaan-m/ECC",
+      "title": "affaan-m/ECC · ⭐256752",
+      "source": "GitHub 热门",
+      "published": "2026-09-12",
+      "summary": "The agent harness performance optimization system. Skills, instincts, memory, security, and research-first development for Claude Code, Codex, Opencode, Cursor and beyond.",
+      "tier": "值得看",
+      "critical": false,
+      "reasons": [
+        "论文/工具类"
+      ],
+      "pool_date": "2026-09-12"
+    },
+    {
+      "url": "https://github.com/f/prompts.chat",
+      "title": "f/prompts.chat · ⭐170062",
+      "source": "GitHub 热门",
+      "published": "2026-09-09",
+      "summary": "f.k.a. Awesome ChatGPT Prompts. Share, discover, and collect prompts from the community. Free and open source — self-host for your organization with complete privacy.",
+      "tier": "值得看",
+      "critical": false,
+      "reasons": [
+        "命中:open source"
+      ],
+      "pool_date": "2026-09-12"
+    },
+    {
+      "url": "https://github.com/firecrawl/firecrawl",
+      "title": "firecrawl/firecrawl · ⭐179362",
+      "source": "GitHub 热门",
+      "published": "2026-09-12",
+      "summary": "The context API to search, scrape, and interact with the web at scale. 🔥",
+      "tier": "值得看",
+      "critical": false,
+      "reasons": [
+        "论文/工具类"
+      ],
+      "pool_date": "2026-09-12"
+    },
+    {
+      "url": "https://github.com/huggingface/transformers",
+      "title": "huggingface/transformers · ⭐165155",
+      "source": "GitHub 热门",
+      "published": "2026-09-12",
+      "summary": "🤗 Transformers: the model-definition framework for state-of-the-art machine learning models in text, vision, audio, and multimodal models, for both inference and training.",
+      "tier": "值得看",
+      "critical": false,
+      "reasons": [
+        "命中:framework"
+      ],
+      "pool_date": "2026-09-12"
+    },
+    {
+      "url": "https://github.com/langchain-ai/langchain",
+      "title": "langchain-ai/langchain · ⭐146180",
+      "source": "GitHub 热门",
+      "published": "2026-09-12",
+      "summary": "The agent engineering platform.",
+      "tier": "值得看",
+      "critical": false,
+      "reasons": [
+        "论文/工具类"
+      ],
+      "pool_date": "2026-09-12"
+    },
+    {
+      "url": "https://github.com/langgenius/dify",
+      "title": "langgenius/dify · ⭐155494",
+      "source": "GitHub 热门",
+      "published": "2026-09-12",
+      "summary": "Build Agentic workflows, RAG pipelines, with rich AI model and tool support on one collaborative workspace. Deploy on cloud, VPC, or self-hosted, so teams move from prototype to production without reb",
+      "tier": "值得看",
+      "critical": false,
+      "reasons": [
+        "命中:tool"
+      ],
+      "pool_date": "2026-09-12"
+    },
+    {
+      "url": "https://github.com/ollama/ollama",
+      "title": "ollama/ollama · ⭐180718",
+      "source": "GitHub 热门",
+      "published": "2026-09-11",
+      "summary": "Get up and running with Kimi-K2.6, GLM-5.2, MiniMax, DeepSeek, gpt-oss, Qwen, Gemma and other models.",
+      "tier": "值得看",
+      "critical": false,
+      "reasons": [
+        "论文/工具类"
+      ],
+      "pool_date": "2026-09-12"
+    },
+    {
+      "url": "https://github.com/open-webui/open-webui",
+      "title": "open-webui/open-webui · ⭐151722",
+      "source": "GitHub 热门",
+      "published": "2026-09-10",
+      "summary": "User-friendly AI Interface (Supports Ollama, OpenAI API, ...)",
+      "tier": "值得看",
+      "critical": false,
+      "reasons": [
+        "论文/工具类"
+      ],
+      "pool_date": "2026-09-12"
+    },
+    {
+      "url": "https://huggingface.co/AdithyanAI/Mythos_translation",
+      "title": "AdithyanAI/Mythos_translation",
+      "source": "HF 新模型",
+      "published": "2026-09-12",
+      "summary": "likes 4 · downloads 0",
+      "tier": "值得看",
+      "critical": false,
+      "reasons": [
+        "论文/工具类"
+      ],
+      "pool_date": "2026-09-12"
+    },
+    {
+      "url": "https://huggingface.co/DistributedAI/102-v3",
+      "title": "DistributedAI/102-v3",
+      "source": "HF 新模型",
+      "published": "2026-09-12",
+      "summary": "likes 1 · downloads 0",
+      "tier": "值得看",
+      "critical": false,
+      "reasons": [
+        "论文/工具类"
+      ],
+      "pool_date": "2026-09-12"
+    },
+    {
+      "url": "https://huggingface.co/DistributedAI/102-v5",
+      "title": "DistributedAI/102-v5",
+      "source": "HF 新模型",
+      "published": "2026-09-12",
+      "summary": "likes 1 · downloads 0",
+      "tier": "值得看",
+      "critical": false,
+      "reasons": [
+        "论文/工具类"
+      ],
+      "pool_date": "2026-09-12"
+    },
+    {
+      "url": "https://huggingface.co/Justvugg/GLM-5.3-colibri-int4-g64",
+      "title": "Justvugg/GLM-5.3-colibri-int4-g64",
+      "source": "HF 新模型",
+      "published": "2026-09-13",
+      "summary": "likes 1 · downloads 57",
+      "tier": "值得看",
+      "critical": false,
+      "reasons": [
+        "论文/工具类"
+      ],
+      "pool_date": "2026-09-13"
+    },
+    {
+      "url": "https://huggingface.co/Miiche/visualrl-qwen3vl4b-ppo1-4bx-c50-fix",
+      "title": "Miiche/visualrl-qwen3vl4b-ppo1-4bx-c50-fix",
+      "source": "HF 新模型",
+      "published": "2026-09-14",
+      "summary": "likes 4 · downloads 0",
+      "tier": "值得看",
+      "critical": false,
+      "reasons": [
+        "论文/工具类"
+      ],
+      "pool_date": "2026-09-14"
+    },
+    {
+      "url": "https://huggingface.co/NN-Dataset/tflite",
+      "title": "NN-Dataset/tflite",
+      "source": "HF 新模型",
+      "published": "2026-09-12",
+      "summary": "likes 2 · downloads 136253",
+      "tier": "值得看",
+      "critical": false,
+      "reasons": [
+        "论文/工具类"
+      ],
+      "pool_date": "2026-09-12"
+    },
+    {
+      "url": "https://huggingface.co/Syed110-3/karachi-aqi-predictor",
+      "title": "Syed110-3/karachi-aqi-predictor",
+      "source": "HF 新模型",
+      "published": "2026-09-12",
+      "summary": "likes 3 · downloads 0",
+      "tier": "值得看",
+      "critical": false,
+      "reasons": [
+        "论文/工具类"
+      ],
+      "pool_date": "2026-09-12"
+    },
+    {
+      "url": "https://huggingface.co/Vxtzq/Crowd-v1",
+      "title": "Vxtzq/Crowd-v1",
+      "source": "HF 新模型",
+      "published": "2026-09-13",
+      "summary": "likes 3 · downloads 9488",
+      "tier": "值得看",
+      "critical": false,
+      "reasons": [
+        "论文/工具类"
+      ],
+      "pool_date": "2026-09-13"
+    },
+    {
+      "url": "https://huggingface.co/aixk/ab10-130m",
+      "title": "aixk/ab10-130m",
+      "source": "HF 新模型",
+      "published": "2026-09-14",
+      "summary": "likes 4 · downloads 0",
+      "tier": "值得看",
+      "critical": false,
+      "reasons": [
+        "论文/工具类"
+      ],
+      "pool_date": "2026-09-14"
+    },
+    {
+      "url": "https://huggingface.co/danielharkin21/Eddie-CortexEDL",
+      "title": "danielharkin21/Eddie-CortexEDL",
+      "source": "HF 新模型",
+      "published": "2026-09-14",
+      "summary": "likes 4 · downloads 0",
+      "tier": "值得看",
+      "critical": false,
+      "reasons": [
+        "论文/工具类"
+      ],
+      "pool_date": "2026-09-14"
+    },
+    {
+      "url": "https://huggingface.co/fpadovani/jpn-100mb-after-wc-zipf-newlex-eng-ckpt500_seed10_seed10",
+      "title": "fpadovani/jpn-100mb-after-wc-zipf-newlex-eng-ckpt500_seed10_seed10",
+      "source": "HF 新模型",
+      "published": "2026-09-14",
+      "summary": "likes 4 · downloads 0",
+      "tier": "值得看",
+      "critical": false,
+      "reasons": [
+        "论文/工具类"
+      ],
+      "pool_date": "2026-09-14"
+    },
+    {
+      "url": "https://huggingface.co/manjunathshiva/Qwen3.8-Flash-Next-tq4a-tq2e-g64",
+      "title": "manjunathshiva/Qwen3.8-Flash-Next-tq4a-tq2e-g64",
+      "source": "HF 新模型",
+      "published": "2026-09-14",
+      "summary": "likes 4 · downloads 0",
+      "tier": "值得看",
+      "critical": false,
+      "reasons": [
+        "论文/工具类"
+      ],
+      "pool_date": "2026-09-14"
+    },
+    {
+      "url": "https://huggingface.co/meshllm/GLM-5.3-Flash-UD-Q4_K_XL-layers",
+      "title": "meshllm/GLM-5.3-Flash-UD-Q4_K_XL-layers",
+      "source": "HF 新模型",
+      "published": "2026-09-12",
+      "summary": "likes 3 · downloads 4532",
+      "tier": "值得看",
+      "critical": false,
+      "reasons": [
+        "论文/工具类"
+      ],
+      "pool_date": "2026-09-12"
+    },
+    {
+      "url": "https://huggingface.co/outminer/co-1",
+      "title": "outminer/co-1",
+      "source": "HF 新模型",
+      "published": "2026-09-13",
+      "summary": "likes 2 · downloads 0",
+      "tier": "值得看",
+      "critical": false,
+      "reasons": [
+        "论文/工具类"
+      ],
+      "pool_date": "2026-09-13"
+    },
+    {
+      "url": "https://huggingface.co/outminer/co-2",
+      "title": "outminer/co-2",
+      "source": "HF 新模型",
+      "published": "2026-09-13",
+      "summary": "likes 1 · downloads 0",
+      "tier": "值得看",
+      "critical": false,
+      "reasons": [
+        "论文/工具类"
+      ],
+      "pool_date": "2026-09-13"
+    },
+    {
+      "url": "https://huggingface.co/rier/randomized-runs-results",
+      "title": "rier/randomized-runs-results",
+      "source": "HF 新模型",
+      "published": "2026-09-12",
+      "summary": "likes 2 · downloads 0",
+      "tier": "值得看",
+      "critical": false,
+      "reasons": [
+        "论文/工具类"
+      ],
+      "pool_date": "2026-09-12"
+    },
+    {
+      "url": "https://huggingface.co/sundaycoil/linting-orchestrator",
+      "title": "sundaycoil/linting-orchestrator",
+      "source": "HF 新模型",
+      "published": "2026-09-14",
+      "summary": "likes 7 · downloads 0",
+      "tier": "值得看",
+      "critical": false,
+      "reasons": [
+        "论文/工具类"
+      ],
+      "pool_date": "2026-09-14"
+    },
+    {
+      "url": "https://huggingface.co/sundaycoil/note-taking-app",
+      "title": "sundaycoil/note-taking-app",
+      "source": "HF 新模型",
+      "published": "2026-09-13",
+      "summary": "likes 3 · downloads 0",
+      "tier": "值得看",
+      "critical": false,
+      "reasons": [
+        "论文/工具类"
+      ],
+      "pool_date": "2026-09-13"
+    },
+    {
+      "url": "https://huggingface.co/sundaycoil/process-monitor",
+      "title": "sundaycoil/process-monitor",
+      "source": "HF 新模型",
+      "published": "2026-09-12",
+      "summary": "likes 8 · downloads 0",
+      "tier": "值得看",
+      "critical": false,
+      "reasons": [
+        "论文/工具类"
+      ],
+      "pool_date": "2026-09-12"
+    },
+    {
+      "url": "https://huggingface.co/sundaycoil/pubsub-consumer",
+      "title": "sundaycoil/pubsub-consumer",
+      "source": "HF 新模型",
+      "published": "2026-09-13",
+      "summary": "likes 4 · downloads 0",
+      "tier": "值得看",
+      "critical": false,
+      "reasons": [
+        "论文/工具类"
+      ],
+      "pool_date": "2026-09-13"
+    },
+    {
+      "url": "https://huggingface.co/yimn-Aghosh/zegrate-ai",
+      "title": "yimn-Aghosh/zegrate-ai",
+      "source": "HF 新模型",
+      "published": "2026-09-14",
+      "summary": "likes 12 · downloads 571",
+      "tier": "值得看",
+      "critical": false,
+      "reasons": [
+        "论文/工具类"
+      ],
+      "pool_date": "2026-09-14"
+    },
+    {
+      "url": "https://huggingface.co/papers/2609.09076",
+      "title": "ActReview: Rebuttal-Guided Training Data and Rubric Rewards for Actionable Peer Review Generation",
+      "source": "HF 每日论文",
+      "published": "2026-09-07",
+      "summary": "As LLMs are increasingly used for pre-submission self-review, there is growing demand for feedback that not only identifies weaknesses but also guides authors toward concrete revisions. We study this as Actionable Peer-r",
+      "tier": "值得看",
+      "critical": false,
+      "reasons": [
+        "命中:guide"
+      ],
+      "pool_date": "2026-09-12"
+    },
+    {
+      "url": "https://huggingface.co/papers/2608.15380",
+      "title": "Adaptive Bridge: A Proxy-Based Decoupling Layer for Mitigating DDS Backpressure in ROS 2",
+      "source": "HF 每日论文",
+      "published": "2026-09-05",
+      "summary": "In systems built on Robot Operating System 2 (ROS 2) and using Data Distribution Service (DDS), a single network-impaired or throttled subscriber on a RELIABLE topic can cause backpressure that degrades throughput and la",
+      "tier": "值得看",
+      "critical": false,
+      "reasons": [
+        "论文/工具类"
+      ],
+      "pool_date": "2026-09-12"
+    },
+    {
+      "url": "https://huggingface.co/papers/2609.11115",
+      "title": "Benchmark Radar: A Living Database and Search Engine for AI Benchmarks and Evaluation",
+      "source": "HF 每日论文",
+      "published": "2026-09-09",
+      "summary": "Benchmark researchers and developers of large language models (LLMs) and other AI systems need to find relevant evaluations, locate their benchmark datasets and code, and understand the settings behind reported scores. W",
+      "tier": "值得看",
+      "critical": false,
+      "reasons": [
+        "命中:benchmark"
+      ],
+      "pool_date": "2026-09-14"
+    },
+    {
+      "url": "https://huggingface.co/papers/2609.11085",
+      "title": "Beyond Solver Verdicts: Generative Reward Models for Autoformalization",
+      "source": "HF 每日论文",
+      "published": "2026-09-09",
+      "summary": "Neurosymbolic systems rely on mathematical solvers to guarantee reasoning correctness, yet solvers are fundamentally blind to whether a formal translation maintains strict reference-equivalence to a designated formalizat",
+      "tier": "值得看",
+      "critical": false,
+      "reasons": [
+        "论文/工具类"
+      ],
+      "pool_date": "2026-09-12"
+    },
+    {
+      "url": "https://huggingface.co/papers/2609.12641",
+      "title": "Breaking the Vision-Action Shortcut: Latent Interface Training for Generalizable Robotics Foundation Models",
+      "source": "HF 每日论文",
+      "published": "2026-09-10",
+      "summary": "Robot foundation models achieve strong in-distribution performance but often degrade under visual distribution shifts. When learning to generate actions from pretrained visual representations, models may exploit task-irr",
+      "tier": "值得看",
+      "critical": false,
+      "reasons": [
+        "论文/工具类"
+      ],
+      "pool_date": "2026-09-14"
+    },
+    {
+      "url": "https://huggingface.co/papers/2609.10445",
+      "title": "Building Multilingual Bridges: Data Mixing as the Pillar of Generalization for In-Language Reasoning",
+      "source": "HF 每日论文",
+      "published": "2026-09-08",
+      "summary": "Reasoning language models have made substantial advances on a variety of complex tasks, yet their capabilities remain overwhelmingly English-centric: models primarily reason in English regardless of the language they are",
+      "tier": "值得看",
+      "critical": false,
+      "reasons": [
+        "论文/工具类"
+      ],
+      "pool_date": "2026-09-12"
+    },
+    {
+      "url": "https://huggingface.co/papers/2609.11682",
+      "title": "COBRA-Skills: Contextual Bandit-Guided Evolution for Agent Skill Optimization",
+      "source": "HF 每日论文",
+      "published": "2026-09-09",
+      "summary": "Large language model (LLM) agents can benefit from reusable skills distilled from prior task experience, yet existing skill optimization methods often rely on costly execution-based evaluation and substantial task data.",
+      "tier": "值得看",
+      "critical": false,
+      "reasons": [
+        "命中:guide"
+      ],
+      "pool_date": "2026-09-14"
+    },
+    {
+      "url": "https://huggingface.co/papers/2609.11155",
+      "title": "DRG-MAPPO: Hierarchical Dynamic Role-Graph Multi-Agent Reinforcement Learning for Cooperative Air Combat",
+      "source": "HF 每日论文",
+      "published": "2026-09-09",
+      "summary": "Multi-Agent Reinforcement Learning (MARL) has emerged as a pivotal paradigm for complex decision-making in autonomous systems and air combat. While MARL has demonstrated significant potential in air combat, achieving sop",
+      "tier": "值得看",
+      "critical": false,
+      "reasons": [
+        "论文/工具类"
+      ],
+      "pool_date": "2026-09-12"
+    },
+    {
+      "url": "https://huggingface.co/papers/2609.11486",
+      "title": "FreeFlow: A Bias-free Hierarchical Transformer for Optical Flow Estimation",
+      "source": "HF 每日论文",
+      "published": "2026-09-09",
+      "summary": "Optical flow methods typically rely on task-specific inductive biases, such as correlation volumes, feature warping, and iterative refinement, among others, to reach high accuracy. While effective, such biases constrain",
+      "tier": "值得看",
+      "critical": false,
+      "reasons": [
+        "论文/工具类"
+      ],
+      "pool_date": "2026-09-12"
+    },
+    {
+      "url": "https://huggingface.co/papers/2609.10539",
+      "title": "IdeaAMBIG: Benchmarking Implementation-Critical Gaps in Research-Idea Specifications",
+      "source": "HF 每日论文",
+      "published": "2026-09-08",
+      "summary": "A research idea may be novel, coherent, and scientifically plausible, yet its proposed method may remain insufficiently specified for faithful implementation. We study the codification readiness of implementation-facing",
+      "tier": "值得看",
+      "critical": false,
+      "reasons": [
+        "命中:benchmark"
+      ],
+      "pool_date": "2026-09-12"
+    },
+    {
+      "url": "https://huggingface.co/papers/2609.10016",
+      "title": "MetroLLM-Bench: Evaluating Language Models as Transit Kiosk Runtimes",
+      "source": "HF 每日论文",
+      "published": "2026-09-08",
+      "summary": "We introduce MetroLLM-Bench, a 955-case benchmark for testing language models as the policy layer of a transit kiosk. It covers six real metro systems, ranging from 37 to 414 stations, and eleven categories that include",
+      "tier": "值得看",
+      "critical": false,
+      "reasons": [
+        "命中:benchmark"
+      ],
+      "pool_date": "2026-09-12"
+    },
+    {
+      "url": "https://huggingface.co/papers/2609.11317",
+      "title": "Mi-Ripple: Restoring Images Degraded by Iterative AI Editing",
+      "source": "HF 每日论文",
+      "published": "2026-09-09",
+      "summary": "Iterative reference-conditioned image editing can introduce grid-like and granular textures, commonly described as digital ripple. We present Mi-Ripple, a diagnosis-guided restoration workflow that suppresses this digita",
+      "tier": "值得看",
+      "critical": false,
+      "reasons": [
+        "命中:guide"
+      ],
+      "pool_date": "2026-09-12"
+    },
+    {
+      "url": "https://huggingface.co/papers/2609.11699",
+      "title": "Negative Self-Distillation: Learning to Reason by Avoiding Flaws",
+      "source": "HF 每日论文",
+      "published": "2026-09-09",
+      "summary": "On-Policy Self-Distillation (OPSD) has emerged as a popular paradigm for large language model (LLM) self-improvement, allowing models to act as their own teachers by leveraging privileged information such as ground-truth",
+      "tier": "值得看",
+      "critical": false,
+      "reasons": [
+        "论文/工具类"
+      ],
+      "pool_date": "2026-09-12"
+    },
+    {
+      "url": "https://huggingface.co/papers/2608.30597",
+      "title": "PLC-DPO: Posterior Label Correction in Noisy and Ambiguous Preference Optimization",
+      "source": "HF 每日论文",
+      "published": "2026-08-30",
+      "summary": "Direct Preference Optimization (DPO) simplifies alignment through pairwise comparisons but assumes all observed preferences are reliable. Real data often violates this assumption, leading to reversed, weak, or ambiguous",
+      "tier": "值得看",
+      "critical": false,
+      "reasons": [
+        "论文/工具类"
+      ],
+      "pool_date": "2026-09-14"
+    },
+    {
+      "url": "https://huggingface.co/papers/2609.13141",
+      "title": "SAS: Simple Attention Sparsification via End-to-End Optimization of Context Ranking",
+      "source": "HF 每日论文",
+      "published": "2026-09-10",
+      "summary": "Post-training attention sparsification reduces the quadratic cumulative attention cost of pretrained Transformers by selecting a small set of context units (tokens or blocks) for each query. Existing trainable methods us",
+      "tier": "值得看",
+      "critical": false,
+      "reasons": [
+        "论文/工具类"
+      ],
+      "pool_date": "2026-09-14"
+    },
+    {
+      "url": "https://huggingface.co/papers/2609.13146",
+      "title": "SNAP3D: Physically Grounded 3D Parts for Assembly from a Single Image",
+      "source": "HF 每日论文",
+      "published": "2026-09-10",
+      "summary": "Part-aware 3D asset generation enables applications such as editing, articulation, simulation, and fabrication, yet existing methods can generate visually complete individual parts without ensuring that they form a valid",
+      "tier": "值得看",
+      "critical": false,
+      "reasons": [
+        "论文/工具类"
+      ],
+      "pool_date": "2026-09-14"
+    },
+    {
+      "url": "https://huggingface.co/papers/2609.09143",
+      "title": "Studying Image Tokenizers as Visual Languages in Unified Multimodal Models",
+      "source": "HF 每日论文",
+      "published": "2026-09-07",
+      "summary": "Image tokenizers define the ``visual language'' of unified multimodal models, yet are commonly studied through isolated metrics or generation-/understanding-only evaluations. These evaluations do not fully capture how vi",
+      "tier": "值得看",
+      "critical": false,
+      "reasons": [
+        "论文/工具类"
+      ],
+      "pool_date": "2026-09-12"
+    },
+    {
+      "url": "https://huggingface.co/papers/2609.01515",
+      "title": "TempCloze: Can Video-LLMs Identify the Missing Middle?",
+      "source": "HF 每日论文",
+      "published": "2026-08-31",
+      "summary": "Temporal reasoning benchmarks for Video-LLMs are often mediated by language, leaving room for linguistic shortcuts from option wording, answer correlations, or language priors. To reduce such shortcuts, we introduce Temp",
+      "tier": "值得看",
+      "critical": false,
+      "reasons": [
+        "命中:benchmark"
+      ],
+      "pool_date": "2026-09-12"
+    },
+    {
+      "url": "https://huggingface.co/papers/2609.10745",
+      "title": "Think Before You Link: Rarity, Reasoning, and Retrieval in Multilingual Entity Linking",
+      "source": "HF 每日论文",
+      "published": "2026-09-08",
+      "summary": "Multimodal entity linking grounds entity mentions in text and images to knowledge-base entries. These systems degrade on rare entities, but prior work measures rarity primarily through popularity-based metrics such as pa",
+      "tier": "值得看",
+      "critical": false,
+      "reasons": [
+        "论文/工具类"
+      ],
+      "pool_date": "2026-09-12"
+    },
+    {
+      "url": "https://huggingface.co/papers/2609.11156",
+      "title": "UniH^3: Unifying Hierarchical Homogeneity and Heterogeneity for All-in-One Medical Image Restoration",
+      "source": "HF 每日论文",
+      "published": "2026-09-09",
+      "summary": "All-in-One medical image restoration (MedIR) aims to address diverse tasks across modalities and degradation types using a single universal model. Existing methods typically prioritize modeling inter-task heterogeneity (",
+      "tier": "值得看",
+      "critical": false,
+      "reasons": [
+        "论文/工具类"
+      ],
+      "pool_date": "2026-09-12"
+    },
+    {
+      "url": "https://github.com/GrapheneOS/Messaging/releases/tag/13",
+      "title": "GrapheneOS' rewritten Messages app is released",
+      "source": "Hacker News",
+      "published": "2026-09-11",
+      "summary": "Article URL: https://github.com/GrapheneOS/Messaging/releases/tag/13 Comments URL: https://news.ycombinator.com/item?id=49663373 Points: 278 # Comments: 203",
+      "tier": "值得看",
+      "critical": false,
+      "reasons": [
+        "命中:github"
+      ],
+      "pool_date": "2026-09-12"
+    },
+    {
+      "url": "https://withspecific.com/benchmarks/real-swe",
+      "title": "Real-SWE: Benchmarking AI models on private, real-world, enterprise codebases",
+      "source": "Hacker News",
+      "published": "2026-09-12",
+      "summary": "Article URL: https://withspecific.com/benchmarks/real-swe Comments URL: https://news.ycombinator.com/item?id=49676820 Points: 95 # Comments: 59",
+      "tier": "值得看",
+      "critical": false,
+      "reasons": [
+        "命中:benchmark"
+      ],
+      "pool_date": "2026-09-13"
+    },
+    {
+      "url": "https://www.ithome.com/1/001/675.htm",
+      "title": "A20 Pro 芯片 AI 跑分曝光：苹果 iPhone 18 Pro NPU 较前代最高增幅 51.53%",
+      "source": "IT之家",
+      "published": "2026-09-12",
+      "summary": "IT之家 9 月 13 日消息，在 CPU / GPU 跑分曝光之后，苹果 iPhone 18 Pro（对应机型 iPhone19,2）的 GeekBench AI 跑分昨日（9 月 12 日）现身， 相比较 iPhone 17 Pro 最高增幅为 51.53%。 IT之家发稿前查询 GeekBench AI 跑分平台，目前共收录了 2 条记录，分别是 Core ML 调用 GPU（通用图形计算单元）和 NPU / ANE（专用神经网络",
+      "tier": "值得看",
+      "critical": false,
+      "reasons": [
+        "命中:框架,benchmark"
+      ],
+      "pool_date": "2026-09-13"
+    },
+    {
+      "url": "https://www.ithome.com/1/001/590.htm",
+      "title": "开源 AI 移动自动化项目 Minitap 指控谷歌盗用自家代码，且起初未注明出处",
+      "source": "IT之家",
+      "published": "2026-09-12",
+      "summary": "IT之家 9 月 12 日消息，据外媒 Neowin 今天（12 日）报道，Minitap 联合创始人兼 CEO 尼古拉 · 德汉舒韦克公开指控谷歌未经适当署名，使用了 Minitap 的代码、提示词和测试用例。被用于谷歌的 Artemis 移动自动化代码库的相关内容，来自 Minitap 开源的 mobile-use 项目。 IT之家注：mobile-use 是一项允许 AI 通过自然语言控制真实 Android 设备的开源项目。 M",
+      "tier": "值得看",
+      "critical": false,
+      "reasons": [
+        "命中:开源"
+      ],
+      "pool_date": "2026-09-12"
+    },
+    {
+      "url": "https://www.ithome.com/1/001/921.htm",
+      "title": "苹果 iOS 27 正式版前瞻：升级 Siri AI、优化液态玻璃设计、隔空投送提速 80%",
+      "source": "IT之家",
+      "published": "2026-09-14",
+      "summary": "IT之家 9 月 14 日消息，苹果公司官网显示， 将于北京时间 9 月 15 日周二凌晨 1 点推送 iOS 27、iPadOS 27、macOS 27 和 watchOS 27 等正式版 ， 用户届时可在“设置”应用中的“通用” → “软件更新”下查看。 IT之家援引科技媒体 MacRumors 报道，汇总梳理下 iOS 27 将会带来的 8 项主要改进： 一、Siri AI 本次更新的核心是“智能 Siri”（Siri AI），类",
+      "tier": "值得看",
+      "critical": false,
+      "reasons": [
+        "命中:工具"
+      ],
+      "pool_date": "2026-09-14"
+    },
+    {
+      "url": "https://www.ithome.com/1/001/991.htm",
+      "title": "非官方应用 NeuralScreen 延伸英伟达 DLSS 5，增强 Win11 视频 / 图片等体验",
+      "source": "IT之家",
+      "published": "2026-09-14",
+      "summary": "IT之家 9 月 14 日消息，科技媒体 tweaktown 昨日（9 月 13 日）发布博文，报道称开发者 perseval_BLR 发布 NeuralScreen 应用， 可以将英伟达 DLSS 5 神经渲染应用于整个 Windows 11 桌面。 IT之家注：英伟达的 DLSS 5（Deep Learning Super Sampling 5）是该公司在 2026 年 3 月 GTC 大会上正式发布、并于同年 9 月随《NBA 2",
+      "tier": "值得看",
+      "critical": false,
+      "reasons": [
+        "命中:github,工具,render"
+      ],
+      "pool_date": "2026-09-14"
+    },
+    {
+      "url": "https://www.latent.space/p/aeo",
+      "title": "The Frontier AEO Tracker: What Astra Chooses (and every other frontier model, and what you can do about it)",
+      "source": "Latent Space",
+      "published": "2026-09-07",
+      "summary": "Our first Astra project dives into AEO trends, a top asked topic from founders and DX leaders we talk to.",
+      "tier": "值得看",
+      "critical": false,
+      "reasons": [
+        "论文/工具类"
+      ],
+      "pool_date": "2026-09-12"
+    },
+    {
+      "url": "https://www.latent.space/p/forward-deployed-engineer-best-practices",
+      "title": "The Rise of the Forward Deployed Engineer — and How To Do the Job Right",
+      "source": "Latent Space",
+      "published": "2026-09-12",
+      "summary": "Before co-founding Kepler, Vinoo Ganesh led Spark at Palantir and built Project Frontline &#8212; a pioneering program for Forward Deployed Engineers. He takes us through the best practices of FDEs.",
+      "tier": "值得看",
+      "critical": false,
+      "reasons": [
+        "论文/工具类"
+      ],
+      "pool_date": "2026-09-13"
+    },
+    {
+      "url": "https://www.latent.space/p/ainews-deepseek-v41-flash-763b-p8b",
+      "title": "[AINews] DeepSeek v4.1-Flash: 763B-P8B-D16B novel causal Encoder–Decoder architecture with vision marks the Return of the Whale",
+      "source": "Latent Space",
+      "published": "2026-09-12",
+      "summary": "We agree with Sebastian: this should have been DeepSeek v5",
+      "tier": "值得看",
+      "critical": false,
+      "reasons": [
+        "论文/工具类"
+      ],
+      "pool_date": "2026-09-12"
+    },
+    {
+      "url": "https://www.latent.space/p/ainews-openai-reports-navier-stokes",
+      "title": "[AINews] OpenAI reports Navier-Stokes singularity find in 88 hours using Astra-next, roughly 10,000 agents and 130B tokens (>$40M), a contender for second ever Millennium Prize awa",
+      "source": "Latent Space",
+      "published": "2026-09-09",
+      "summary": "Overshadowing Cognition's $48B Series E, Mistral's $24B Series D, Meta's Muse agent, and GPT Image 2.5. The most jam packed, feel the AGI day in the history of AI.",
+      "tier": "值得看",
+      "critical": false,
+      "reasons": [
+        "论文/工具类"
+      ],
+      "pool_date": "2026-09-12"
+    },
+    {
+      "url": "https://www.latent.space/p/ainews-not-much-happened-today-d3b",
+      "title": "[AINews] not much happened today",
+      "source": "Latent Space",
+      "published": "2026-09-10",
+      "summary": "a quiet day",
+      "tier": "值得看",
+      "critical": false,
+      "reasons": [
+        "论文/工具类"
+      ],
+      "pool_date": "2026-09-12"
+    },
+    {
+      "url": "https://www.marktechpost.com/2026/09/13/a-princeton-researcher-proposes-recurrent-looped-transformer-rlt/",
+      "title": "A Princeton Researcher Proposes Recurrent Looped Transformer (RLT) that Carries Decoder State across Every Token, Fixing 96 Blocks per Token with Unbounded Temporal Depth",
+      "source": "MarkTechPost",
+      "published": "2026-09-13",
+      "summary": "Yifan Zhang's Recurrent Looped Transformer (RLT) technical report proposes a causal encoder paired with a recurrent decoder that carries its final hidden state and layerwise sliding-window attention cache across every pr",
+      "tier": "值得看",
+      "critical": false,
+      "reasons": [
+        "论文/工具类"
+      ],
+      "pool_date": "2026-09-14"
+    },
+    {
+      "url": "https://www.marktechpost.com/2026/09/11/anthropic-adds-plugin-evals-to-claude-code-6-grader-types-a-no-plugin-baseline-and-a-ci-gate-for-skills/",
+      "title": "Anthropic Adds Plugin Evals to Claude Code: 6 Grader Types, a No-Plugin Baseline, and a CI Gate for Skills",
+      "source": "MarkTechPost",
+      "published": "2026-09-11",
+      "summary": "Anthropic has published a new plugin evals workflow for Claude Code. The claude plugin eval command runs a plugin against realistic prompts, grades what Claude produced, and compares the result with a run where the plugi",
+      "tier": "值得看",
+      "critical": false,
+      "reasons": [
+        "命中:plugin"
+      ],
+      "pool_date": "2026-09-12"
+    },
+    {
+      "url": "https://www.marktechpost.com/2026/09/13/anthropics-3-step-pace-the-frontier-plan-wins-openai-xai-and-microsoft-support-is-it-too-late-to-slow-ai-down/",
+      "title": "Anthropic’s 3-Step ‘Pace the Frontier’ Plan Wins OpenAI, xAI and Microsoft Support: Is It Too Late to Slow AI Down?",
+      "source": "MarkTechPost",
+      "published": "2026-09-14",
+      "summary": "Dario Amodei published \"We Must Pace the Frontier,\" and Sam Altman, Elon Musk and Satya Nadella endorsed it within a day. The trigger was a July incident in which roughly 1,200 OpenAI agents coordinated on a hidden messa",
+      "tier": "值得看",
+      "critical": false,
+      "reasons": [
+        "论文/工具类"
+      ],
+      "pool_date": "2026-09-14"
+    },
+    {
+      "url": "https://www.marktechpost.com/2026/09/11/can-llms-engineer-their-own-agent-harness-bytedance-seeds-harnessdev-says-only-34-of-64-changes-generalize/",
+      "title": "Can LLMs Engineer Their Own Agent Harness? ByteDance Seed’s HarnessDev Says Only 34 of 64 Changes Generalize",
+      "source": "MarkTechPost",
+      "published": "2026-09-11",
+      "summary": "ByteDance Seed, SUTD, Georgia Tech, M-A-P, and TokenWave.AI introduce HarnessDev, a benchmark that scores the runnable harness a model builds rather than the answer it returns. Starting from a seed that scores 0, 6 creat",
+      "tier": "值得看",
+      "critical": false,
+      "reasons": [
+        "命中:benchmark"
+      ],
+      "pool_date": "2026-09-12"
+    },
+    {
+      "url": "https://www.marktechpost.com/2026/09/10/cohere-releases-north-small-translate-a-218b-moe-translation-model-that-scores-83-6-on-wmt26-across-50-languages/",
+      "title": "Cohere Releases North Small Translate: A 218B MoE Translation Model That Scores 83.6 on WMT26 Across 50 Languages",
+      "source": "MarkTechPost",
+      "published": "2026-09-11",
+      "summary": "Cohere has released North Small Translate, an open-weight Mixture-of-Experts model built for machine translation across 50 languages. It uses 25B of its 218B parameters per token and scores 83.6 on Cohere's WMT26 evaluat",
+      "tier": "值得看",
+      "critical": false,
+      "reasons": [
+        "论文/工具类"
+      ],
+      "pool_date": "2026-09-12"
+    },
+    {
+      "url": "https://www.marktechpost.com/2026/09/12/fly-language-model-flm-wires-the-full-fruit-fly-connectome-into-a-frozen-1-2b-llm-and-its-own-controls-show-the-wiring-does-not-help/",
+      "title": "Fly Language Model (FLM) Wires the Full Fruit Fly Connectome Into a Frozen 1.2B LLM, and Its Own Controls Show the Wiring Does Not Help",
+      "source": "MarkTechPost",
+      "published": "2026-09-12",
+      "summary": "The Fly Language Model (FLM) drives all 166,700 retained neurons and 25.6 million edges of the MaleCNS fruit fly connectome with token embeddings, then adds a small learned correction to a frozen LFM2.5-1.2B-Instruct bac",
+      "tier": "值得看",
+      "critical": false,
+      "reasons": [
+        "论文/工具类"
+      ],
+      "pool_date": "2026-09-13"
+    },
+    {
+      "url": "https://www.marktechpost.com/2026/09/13/hierarchical-nerf-with-jax3d-for-volumetric-rendering-novel-view-synthesis-and-3d-reconstruction/",
+      "title": "Hierarchical NeRF with JAX3D for Volumetric Rendering, Novel-View Synthesis, and 3D Reconstruction",
+      "source": "MarkTechPost",
+      "published": "2026-09-13",
+      "summary": "In this tutorial, we build an end-to-end hierarchical Neural Radiance Field (NeRF) using JAX, Flax, Optax, and the volume-rendering primitives provided by jax3d. We first construct a synthetic multi-view dataset from an ",
+      "tier": "值得看",
+      "critical": false,
+      "reasons": [
+        "命中:tutorial,render"
+      ],
+      "pool_date": "2026-09-14"
+    },
+    {
+      "url": "https://www.marktechpost.com/2026/09/10/sakana-ai-launches-fugu-max-and-fugu-ultra-v2-for-cheaper-stronger-multi-agent-orchestration/",
+      "title": "Sakana AI Launches Fugu Max and Fugu Ultra v2 for Cheaper, Stronger Multi-Agent Orchestration",
+      "source": "MarkTechPost",
+      "published": "2026-09-11",
+      "summary": "Sakana AI has released Fugu Max and Fugu Ultra v2, 2 models built on the same learned orchestration architecture. Fugu Max routes tasks to lean open and specialized models, including NVIDIA Nemotron, at $2/$6 per 1M toke",
+      "tier": "值得看",
+      "critical": false,
+      "reasons": [
+        "论文/工具类"
+      ],
+      "pool_date": "2026-09-12"
+    },
+    {
+      "url": "https://openai.com/index/introducing-gpt-live-1-in-the-api",
+      "title": "Build more natural voice experiences with GPT‑Live‑1 in the API",
+      "source": "OpenAI",
+      "published": "2026-09-10",
+      "summary": "GPT‑Live‑1 brings natural, full-duplex voice conversations to the API, with stronger instruction following, custom voices, and telephony support.",
+      "tier": "值得看",
+      "critical": false,
+      "reasons": [
+        "论文/工具类"
+      ],
+      "pool_date": "2026-09-12"
+    },
+    {
+      "url": "https://openai.com/index/cognition-devin-testing-with-astra",
+      "title": "Cognition helps Devin test its own work with GPT‑6 Astra",
+      "source": "OpenAI",
+      "published": "2026-09-11",
+      "summary": "GPT‑6 Astra improves Devin’s ability to test software and show that it works, with the goal of helping engineers review less code and ship more.",
+      "tier": "值得看",
+      "critical": false,
+      "reasons": [
+        "论文/工具类"
+      ],
+      "pool_date": "2026-09-12"
+    },
+    {
+      "url": "https://openai.com/index/expanding-ai-access-us-government",
+      "title": "Expanding AI access and cyber defense for federal, state, local, and tribal governments",
+      "source": "OpenAI",
+      "published": "2026-09-10",
+      "summary": "OpenAI and GSA will offer eligible federal, state, local, and tribal governments $0 license fees, 50% off usage, and expanded cyber defense support.",
+      "tier": "值得看",
+      "critical": false,
+      "reasons": [
+        "论文/工具类"
+      ],
+      "pool_date": "2026-09-12"
+    },
+    {
+      "url": "https://openai.com/index/using-codex-chatgpt-to-search-for-new-antimicrobials",
+      "title": "How a researcher uses Codex and ChatGPT to search for new antimicrobial molecules",
+      "source": "OpenAI",
+      "published": "2026-09-10",
+      "summary": "César de la Fuente’s lab uses Codex and ChatGPT to search living and extinct genomes for antimicrobial candidates to fight drug-resistant infections.",
+      "tier": "值得看",
+      "critical": false,
+      "reasons": [
+        "论文/工具类"
+      ],
+      "pool_date": "2026-09-12"
+    },
+    {
+      "url": "https://openai.com/index/put-data-to-work",
+      "title": "Now everyone can put data to work",
+      "source": "OpenAI",
+      "published": "2026-09-10",
+      "summary": "Meet the Data agent in ChatGPT Work. Connect company data, uncover insights, and build interactive dashboards with AI using natural language.",
+      "tier": "值得看",
+      "critical": false,
+      "reasons": [
+        "论文/工具类"
+      ],
+      "pool_date": "2026-09-12"
+    },
+    {
+      "url": "https://openai.com/index/perplexity-improving-accuracy-with-astra",
+      "title": "Perplexity trusts GPT-6 Astra with end-to-end systems",
+      "source": "OpenAI",
+      "published": "2026-09-14",
+      "summary": "Perplexity uses Astra to write communications, change software, and monitor production systems, and checks in much less frequently than with earlier models.",
+      "tier": "值得看",
+      "critical": false,
+      "reasons": [
+        "论文/工具类"
+      ],
+      "pool_date": "2026-09-12"
+    },
+    {
+      "url": "https://openai.com/index/scaling-storage-one-billion-users-part-one",
+      "title": "Rapidly scaling online storage to serve over 1 billion ChatGPT users",
+      "source": "OpenAI",
+      "published": "2026-09-11",
+      "summary": "Learn how OpenAI evolved Habitat from a Python library into a globally distributed storage platform serving 1 billion ChatGPT users and 22M requests per second.",
+      "tier": "值得看",
+      "critical": false,
+      "reasons": [
+        "命中:library"
+      ],
+      "pool_date": "2026-09-12"
+    },
+    {
+      "url": "https://magazine.sebastianraschka.com/p/gpt-6-astra-looped-transformers-and",
+      "title": "GPT-6 Astra, Looped Transformers, and Hidden Reasoning",
+      "source": "Raschka",
+      "published": "2026-09-09",
+      "summary": "A Look at Recurrent Depth, Hidden Chains of Thought, and Recent Research on Looping Transformer Blocks",
+      "tier": "值得看",
+      "critical": false,
+      "reasons": [
+        "论文/工具类"
+      ],
+      "pool_date": "2026-09-12"
+    },
+    {
+      "url": "https://simonwillison.net/2026/Sep/12/sighting-399708714/",
+      "title": "California Brown Pelican",
+      "source": "Simon Willison",
+      "published": "2026-09-12",
+      "summary": "California Brown Pelican, in San Mateo County, CA, US The Pacifica Pier shut down at the start of June after a crack in the concrete walkway made access to the pier unsafe. It has since been entirely taken over by pelica",
+      "tier": "值得看",
+      "critical": false,
+      "reasons": [
+        "论文/工具类"
+      ],
+      "pool_date": "2026-09-13"
+    },
+    {
+      "url": "https://simonwillison.net/2026/Sep/11/feeling-sad-about-ai/",
+      "title": "Feeling sad about AI",
+      "source": "Simon Willison",
+      "published": "2026-09-11",
+      "summary": "My comment on Feeling sad about AI &mdash; Hacker News. I'm not sure how useful it is to say this, but I think a lot of people (myself included, a few years ago now) have been through this moment of existential crisis an",
+      "tier": "值得看",
+      "critical": false,
+      "reasons": [
+        "命中:tool"
+      ],
+      "pool_date": "2026-09-12"
+    },
+    {
+      "url": "https://simonwillison.net/2026/Sep/12/astra-running-routes/",
+      "title": "Generating running routes with GPT-6 Astra and ChatGPT Work",
+      "source": "Simon Willison",
+      "published": "2026-09-12",
+      "summary": "Here's a neat thing I had ChatGPT Work with GPT-6 Astra (Max) do this morning: I live at &lt;my address&gt;. Figure out 5K and 10K running routes from me that loop from my house. Use OSM data. It worked for 27 minutes an",
+      "tier": "值得看",
+      "critical": false,
+      "reasons": [
+        "命中:tool,visualization,render"
+      ],
+      "pool_date": "2026-09-13"
+    },
+    {
+      "url": "https://simonwillison.net/2026/Sep/12/openai-agents-rubygems/",
+      "title": "OpenAI agents attacked RubyGems back in May",
+      "source": "Simon Willison",
+      "published": "2026-09-12",
+      "summary": "OpenAI agents carried out an undisclosed attack on RubyGems is a new bombshell report from Spencer Kitts, Thomas Larsen, and Sydney Von Arx - three of the four authors of the report on the agent attack on disused wikis (",
+      "tier": "值得看",
+      "critical": false,
+      "reasons": [
+        "论文/工具类"
+      ],
+      "pool_date": "2026-09-12"
+    },
+    {
+      "url": "https://simonwillison.net/2026/Sep/11/boris-cherny/",
+      "title": "Quoting Boris Cherny",
+      "source": "Simon Willison",
+      "published": "2026-09-11",
+      "summary": "Production code written by Claude should have a higher bar than if it was written by a human. At Anthropic, we have many guardrails in place to make sure this is happening: lots of lint rules, lots of tests, Claude-drive",
+      "tier": "值得看",
+      "critical": false,
+      "reasons": [
+        "论文/工具类"
+      ],
+      "pool_date": "2026-09-12"
+    },
+    {
+      "url": "https://simonwillison.net/2026/Sep/12/paul-ford/",
+      "title": "Quoting Paul Ford",
+      "source": "Simon Willison",
+      "published": "2026-09-12",
+      "summary": "For a while, I must admit, it looked as if software developer roles like mine were done for. How could we fight against tireless robots? But our industry is slowly realizing that making truly cutting-edge software still ",
+      "tier": "值得看",
+      "critical": false,
+      "reasons": [
+        "论文/工具类"
+      ],
+      "pool_date": "2026-09-13"
+    },
+    {
+      "url": "https://simonwillison.net/2026/Sep/11/so-you-want-to-use-openrouter/",
+      "title": "So you want to use OpenRouter?",
+      "source": "Simon Willison",
+      "published": "2026-09-11",
+      "summary": "So you want to use OpenRouter? One of OpenRouter's selling points is that it \"handles fallbacks automatically and picks the most cost-effective option for each request\", so you can call a single API endpoint for a model ",
+      "tier": "值得看",
+      "critical": false,
+      "reasons": [
+        "论文/工具类"
+      ],
+      "pool_date": "2026-09-12"
+    },
+    {
+      "url": "https://simonwillison.net/2026/Sep/14/commit-rewriter/",
+      "title": "commit-rewriter 0.1",
+      "source": "Simon Willison",
+      "published": "2026-09-14",
+      "summary": "Release: commit-rewriter 0.1 I built this little web app the other day to help edit the commit messages for the Datasette security releases . The initial commits were full of coding agent cruft and references to issue ID",
+      "tier": "值得看",
+      "critical": false,
+      "reasons": [
+        "命中:tool"
+      ],
+      "pool_date": "2026-09-14"
+    },
+    {
+      "url": "https://simonwillison.net/2026/Sep/13/shot-scraper/",
+      "title": "shot-scraper 1.12",
+      "source": "Simon Willison",
+      "published": "2026-09-13",
+      "summary": "Release: shot-scraper 1.12 I've added WebP support to my shot-scraper screenshot automation tool. You can now take a WebP screenshot of a web page like this: shot-scraper https://simonwillison.net -o screenshot.webp --qu",
+      "tier": "值得看",
+      "critical": false,
+      "reasons": [
+        "命中:tool"
+      ],
+      "pool_date": "2026-09-14"
+    },
+    {
+      "url": "https://arxiv.org/abs/2609.10654",
+      "title": "A Multi-Stage Rule-Chaining Framework for Compositional and Interpretable Cognitive Reasoning",
+      "source": "arXiv cs.AI",
+      "published": "2026-09-12",
+      "summary": "The Abstraction and Reasoning Corpus (ARC) benchmarks cognitive generalization, the ability to infer and apply abstract rules from limited examples. This paper presents a multi-stage rule-chaining framework that performs",
+      "tier": "值得看",
+      "critical": false,
+      "reasons": [
+        "命中:paper,framework,benchmark"
+      ],
+      "pool_date": "2026-09-12"
+    },
+    {
+      "url": "https://arxiv.org/abs/2609.10712",
+      "title": "An Open Recipe for IMO Gold: Training Nemotron for Olympiad Mathematics",
+      "source": "arXiv cs.AI",
+      "published": "2026-09-12",
+      "summary": "We study how model post-training and test-time inference design affect natural-language proof generation for hard olympiad mathematics. Starting from Nemotron 3 Ultra, we train two specialist checkpoints using supervised",
+      "tier": "值得看",
+      "critical": false,
+      "reasons": [
+        "命中:tool,benchmark"
+      ],
+      "pool_date": "2026-09-12"
+    },
+    {
+      "url": "https://arxiv.org/abs/2609.10629",
+      "title": "Automating Quadratic Unconstrained Binary Optimization (QUBO) Formulation Generation from Natural Language",
+      "source": "arXiv cs.AI",
+      "published": "2026-09-12",
+      "summary": "Quadratic Unconstrained Binary Optimization (QUBO) is a central formulation for combinatorial optimization and has gained increasing attention due to its compatibility with quantum, hybrid quantum-classical, and quantum-",
+      "tier": "值得看",
+      "critical": false,
+      "reasons": [
+        "命中:github,framework,benchmark"
+      ],
+      "pool_date": "2026-09-12"
+    },
+    {
+      "url": "https://arxiv.org/abs/2609.10724",
+      "title": "Finishing the Task Is Not Enough: Evaluating Agent Resilience and Considerate Participation under Accumulating Challenge",
+      "source": "arXiv cs.AI",
+      "published": "2026-09-12",
+      "summary": "Sustained deployment of generative AI agents requires more than isolated task success. Agents must remain useful across repeated interactions, changing conditions, and dependencies on people within shared workflows, espe",
+      "tier": "值得看",
+      "critical": false,
+      "reasons": [
+        "论文/工具类"
+      ],
+      "pool_date": "2026-09-12"
+    },
+    {
+      "url": "https://arxiv.org/abs/2609.10584",
+      "title": "Probabilistic Focal Search: Accelerating Bounded-Suboptimal Search via Lower-Bound Advancement",
+      "source": "arXiv cs.AI",
+      "published": "2026-09-12",
+      "summary": "Bounded-suboptimal search seeks a solution within a factor $w$ of optimal while reducing search effort. Focal Search (FS) uses heuristic guidance within FOCAL, the frontier nodes eligible under the threshold $w f_{\\min}$",
+      "tier": "值得看",
+      "critical": false,
+      "reasons": [
+        "命中:guide,benchmark"
+      ],
+      "pool_date": "2026-09-12"
+    },
+    {
+      "url": "https://arxiv.org/abs/2609.10657",
+      "title": "Quantifying the Memorization-to-Generalization Transition: Scaling Laws and Phase Structure in Grokking",
+      "source": "arXiv cs.AI",
+      "published": "2026-09-12",
+      "summary": "Neural networks trained past memorization frequently undergo a delayed transition to generalization, a phenomenon known as grokking. Despite theoretical progress on \\emph{why} this transition occurs, the quantitative str",
+      "tier": "值得看",
+      "critical": false,
+      "reasons": [
+        "论文/工具类"
+      ],
+      "pool_date": "2026-09-12"
+    },
+    {
+      "url": "https://arxiv.org/abs/2609.10728",
+      "title": "Towards a Deterministic Math Solver for Clinical Language Models",
+      "source": "arXiv cs.AI",
+      "published": "2026-09-12",
+      "summary": "Large language models are unreliable at arithmetic, which is a problem for clinical calculators where a single numerical error changes the recommendation. The standard response is to hardcode each calculator as a validat",
+      "tier": "值得看",
+      "critical": false,
+      "reasons": [
+        "命中:guide,library,benchmark"
+      ],
+      "pool_date": "2026-09-12"
+    },
+    {
+      "url": "https://arxiv.org/abs/2609.10656",
+      "title": "Understanding LoRA Rank Trade-offs in Diffusion Model Fine-Tuning",
+      "source": "arXiv cs.AI",
+      "published": "2026-09-12",
+      "summary": "Selecting LoRA rank for diffusion fine-tuning requires balancing quality and compute cost. We present a controlled study on CIFAR-10 using a DDPM U-Net with ranks {2,4,8,16,32}, fixed optimization settings, and a reprodu",
+      "tier": "值得看",
+      "critical": false,
+      "reasons": [
+        "论文/工具类"
+      ],
+      "pool_date": "2026-09-12"
+    }
+  ]
+}
