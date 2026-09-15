@@ -1,6 +1,6 @@
 ---
 name: Agent 事件日志
-field: AI-Agent
+field: Agent
 type: 模式
 aliases:
   - Operation Log

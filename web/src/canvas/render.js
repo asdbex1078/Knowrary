@@ -2,6 +2,7 @@
 // 投影层只放当前应该可见的元素；阶段 5 的 LOD 会在这里按缩放级别裁剪。
 import { Graph } from '@antv/x6'
 import { Selection } from '@antv/x6-plugin-selection'
+import { Snapline } from '@antv/x6-plugin-snapline'
 import { Transform } from '@antv/x6-plugin-transform'
 import { clusterSummary, containerOf } from './lod'
 import { CLUSTER_H, CLUSTER_W, FAMILY_STYLE, clusterBox, NODE_H, NODE_W, aggregateAttrs, aggregateLabel, clusterAttrs,
@@ -45,7 +46,8 @@ export function buildHistoryCells(index, layout, options = {}) {
       id: e.id, source: e.source, target: e.target, zIndex: gold ? 8 : 5,
       attrs, connector: { name: 'smooth' },
       data: { kind: 'edge', family: e.family, type: e.type, year: e.year ?? null,
-              baseWidth: attrs.line.strokeWidth },
+              baseWidth: attrs.line.strokeWidth, baseDash: attrs.line.strokeDasharray || null,
+              baseClass: attrs.line.class || null, baseZ: gold ? 8 : 5 },
     }
   })
   return { nodes, edges, plan }
@@ -86,7 +88,18 @@ export function createGraph(container) {
           .filter((n) => n.getBBox().containsRect(bbox))
           .sort((a, b) => b.getBBox().width * b.getBBox().height - a.getBBox().width * a.getBBox().height)
       },
-      validate: ({ child, parent }) => child.shape === 'kg-node' && parent?.shape === 'kg-group',
+      validate: ({ child, parent }) => {
+        if (!parent || parent.shape !== 'kg-group') return false
+        if (child.shape === 'kg-node') return true
+        if (child.shape !== 'kg-group') return false
+        // 防环：沿 parent 链往上走，不能碰到 child
+        let cur = parent
+        while (cur) {
+          if (cur.id === child.id) return false
+          cur = cur.getParent()
+        }
+        return true
+      },
     },
     // 全图默认走直线：orth 直角折线不做避障，193 条边会绕成迷宫。
     // 手工调过拐点的边仍按 layout.edges 里存的 router 渲染。
@@ -96,11 +109,46 @@ export function createGraph(container) {
   // 拖空白 = 平移；shift + 拖空白 = 框选
   graph.use(new Selection({ enabled: true, multiple: true, rubberband: true, modifiers: 'shift',
     showNodeSelectionBox: true, filter: (cell) => cell.shape === 'kg-node' }))
-  // 只有图片可以拉伸：知识点卡片的大小是按 pageRank 定的，手动改会让"大小=重要性"这条读图规则失效
-  graph.use(new Transform({ resizing: { enabled: (node) => node.shape === 'kg-image', minWidth: 80,
-    minHeight: 60, preserveAspectRatio: true }, rotating: false }))
+  // 可以拉伸的只有图片和分组框。
+  // 知识点卡片不行：它的大小是按 pageRank 定的，手动改会让"大小=重要性"这条读图规则失效。
+  // 分组框要能拉：框的大小不是算出来的结论，是"我打算在这里画多少东西"的预留——
+  // 想在组里加内容、想留白画连线，都得先有地方。簇卡片（折叠态）不给拉，它的尺寸跟着缩放走。
+  graph.use(new Transform({
+    resizing: {
+      enabled: (node) => node.shape === 'kg-image' || node.shape === 'kg-group',
+      minWidth: (node) => (node.shape === 'kg-group' ? GROUP_MIN_W : 80),
+      minHeight: (node) => (node.shape === 'kg-group' ? GROUP_MIN_H : 60),
+      preserveAspectRatio: (node) => node.shape === 'kg-image',
+    },
+    rotating: false,
+  }))
+  // 对齐线：拖动时和邻居对齐就画一条参考线。手工摆位的图"一眼望去还行、放大全是歪的"，
+  // 根子是没有参考系——1~2px 的错位肉眼在缩小状态下看不出来，放大后全暴露。
+  // 默认开，可在画布工具里关掉（tolerance 给 6px：太小吸不住，太大会"粘"到不想对齐的邻居）。
+  // 图片是当背景板用的大方块（zIndex 压在节点下面），拿它当对齐参照只会满屏参考线；
+  // 其余手放上去的东西——节点、分组框、簇卡片、便签、引用卡——都参与对齐。
+  graph.use(new Snapline({ enabled: true, tolerance: 6, sharp: true, resizing: true,
+    filter: (node) => node.shape !== 'kg-image' }))
   bindWheelPan(graph)
   return graph
+}
+
+export const GROUP_MIN_W = 200   // 再小就装不下一张知识点卡片（160）加边距
+export const GROUP_MIN_H = 120
+
+export const SNAP_GRID = 8   // 松手后坐标取整到这个网格；比背景网格（24）细，不会明显挪动位置
+
+/** 对齐线开关。关掉时连吸附一起关，"吸附"这件事对用户是一个概念。 */
+export function setSnap(graph, on) {
+  const plugin = graph.getPlugin('snapline')
+  if (!plugin) return
+  if (on) plugin.enable()
+  else plugin.disable()
+}
+
+/** 某个落点对齐到网格后要挪多少。两个分量都是 0 就说明本来就在格子上。 */
+export function snapDelta(x, y, grid = SNAP_GRID) {
+  return { dx: Math.round(x / grid) * grid - x, dy: Math.round(y / grid) * grid - y }
 }
 
 /**
@@ -261,7 +309,8 @@ export function buildCells(index, layout, options = {}) {
       connector: curved ? { name: 'smooth' } : undefined,
       labels: showLabels ? [edgeLabel(e)] : [],
       data: { kind: 'edge', family: e.family, type: e.type, year: e.year ?? null,
-              baseWidth: base.line.strokeWidth },
+              baseWidth: base.line.strokeWidth, baseDash: base.line.strokeDasharray || null,
+              baseClass: base.line.class || null, baseZ: 5 },
     })
   }
   for (const [pair, items] of aggregated) {
@@ -270,8 +319,8 @@ export function buildCells(index, layout, options = {}) {
     edges.push({
       id: `agg:${pair}`, source: from, target: to, zIndex: 4,
       attrs, labels: showLabels ? [aggregateLabel(items.length)] : [],   // 缩小时不画数字，避免满屏小标签
-      data: { kind: 'agg', pair, count: items.length, baseWidth: attrs.line.strokeWidth,
-              families: [...new Set(items.map((e) => e.family))] },
+      data: { kind: 'agg', pair, count: items.length, baseWidth: attrs.line.strokeWidth, baseDash: null,
+              baseClass: null, baseZ: 4, families: [...new Set(items.map((e) => e.family))] },
     })
   }
   return { nodes, edges }
@@ -413,17 +462,89 @@ export function applyEdgeLabels(graph, index, show) {
   })
 }
 
-// 悬停 / 选中某个节点时：它的边亮起来、其余边淡出，网状图才看得清
-export function highlightEdges(graph, relatedIds) {
+// 悬停 / 选中某个节点时：它的边亮起来、其余边淡出，网状图才看得清。
+//
+// flow：亮起来的边跑虚线动画（.kg-flow），像有光点顺着关系流过去。
+// 静态的"变粗"只告诉你哪几根有关，流动还额外告诉你**朝哪个方向**——
+// 这在一张到处是双向语义的图里，比箭头小三角好认得多。
+// 实线族本身没有 dash，流不起来，所以高亮期间临时给一段 dash，退出时按 baseDash 还原。
+const FLOW_DASH = '7 6'
+
+/**
+ * 写 line 上的某个属性，值没变就一个字节都不动。
+ *
+ * 不是为了省事：X6 删属性（removeAttrByPath）或把属性置空会触发整条边的视图重建，
+ * 原来的 <path> 元素被换掉。悬停高亮每次都无条件重写的话，重建有概率正好落在
+ * mousedown 与 mouseup 之间——X6 就不再合成 click，点边挂不上拐点手柄。
+ */
+function setLine(edge, key, value) {
+  const now = edge.attr(`line/${key}`) ?? null
+  if ((value ?? null) === now) return
+  if (value == null) edge.removeAttrByPath(`line/${key}`)
+  else edge.attr(`line/${key}`, value)
+}
+
+export function highlightEdges(graph, relatedIds, { flow = false } = {}) {
   graph.batchUpdate(() => {
     for (const edge of graph.getEdges()) {
-      const base = edge.getData()?.baseWidth || 1
+      const data = edge.getData() || {}
+      const base = data.baseWidth || 1
       const on = !relatedIds || relatedIds.has(edge.id)
+      const lit = !!relatedIds && on
       edge.attr('line/opacity', on ? 1 : 0.07)
-      edge.attr('line/strokeWidth', relatedIds && on ? base * 2 : base)
-      edge.setZIndex(relatedIds && on ? 30 : edge.getData()?.kind === 'agg' ? 4 : 5)
+      edge.attr('line/strokeWidth', lit ? base * 2 : base)
+      edge.setZIndex(lit ? 30 : data.baseZ ?? (data.kind === 'agg' ? 4 : 5))
+      // 退出高亮要还原成这条边**自己的**基础样式："被激活"本来就自带金色流动虚线，
+      // 一律清空会把它也抹掉（历史视图里那条边就不流动了）。
+      const wantClass = lit && flow ? 'kg-flow' : data.baseClass || null
+      const wantDash = lit && flow ? (data.baseDash || FLOW_DASH) : data.baseDash ?? null
+      setLine(edge, 'class', wantClass)
+      setLine(edge, 'strokeDasharray', wantDash)
     }
   })
+}
+
+const PATH_COLOR = '#d8a838'   // 和"被激活"用同一支金色：两者都是"沿着关系走"的意思
+
+/**
+ * 点亮一条路径：路上的节点描金边，路上的边流动，其余一律淡出。
+ * 节点的原样式先存进 data.pathBase，清除时照着还原——重绘会重建 cell，所以不怕存漏。
+ */
+export function highlightPath(graph, nodeIds, edgeIds) {
+  highlightEdges(graph, edgeIds, { flow: true })
+  graph.batchUpdate(() => {
+    for (const node of graph.getNodes()) {
+      if (node.shape !== 'kg-node') continue
+      const on = nodeIds.has(node.id)
+      const data = node.getData() || {}
+      if (on) {
+        if (!data.pathBase) {
+          node.setData({ pathBase: { stroke: node.attr('body/stroke'),
+                                     strokeWidth: node.attr('body/strokeWidth') } }, { deep: true })
+        }
+        node.attr('body/stroke', PATH_COLOR)
+        node.attr('body/strokeWidth', 2.6)
+      } else {
+        node.attr('body/opacity', 0.35)
+      }
+    }
+  })
+}
+
+export function clearPath(graph) {
+  graph.batchUpdate(() => {
+    for (const node of graph.getNodes()) {
+      if (node.shape !== 'kg-node') continue
+      const base = (node.getData() || {}).pathBase
+      if (base) {
+        node.attr('body/stroke', base.stroke)
+        node.attr('body/strokeWidth', base.strokeWidth)
+        node.setData({ pathBase: null }, { deep: true })
+      }
+      node.attr('body/opacity', 1)
+    }
+  })
+  highlightEdges(graph, null)
 }
 
 

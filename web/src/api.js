@@ -42,8 +42,78 @@ export const postPlace = (body) => request('/api/place', {
   body: JSON.stringify(body),
 })
 
-/** 记一次复习：只写 review-log.json，不碰 md，也不碰 layout。 */
-export const postReview = (id) => request(`/api/review/${encodeURIComponent(id)}`, { method: 'POST' })
+/** 记一次复习：只写 review-log.json，不碰 md，也不碰 layout。grade 三档：记得 / 模糊 / 忘了。 */
+export const postReview = (id, grade = '记得') => request(`/api/review/${encodeURIComponent(id)}`, {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ grade }),
+})
+
+/** 出题：调 LLM（review 角色），可能耗时数秒。只读，不写任何文件。 */
+export const postQuiz = (body) => request('/api/quiz', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify(body),
+})
+
+/** 整轮比对：我写的答案 vs 标准答案 → 漏掉点 / 记错点 / 建议档位。只读，不写盘。 */
+export const postQuizDiagnose = (body) => request('/api/quiz/diagnose', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify(body),
+})
+
+/** 交卷：答题明细进 quiz-log.json，每个考点按最差档位推进一次复习。仍然不碰 md。 */
+export const postQuizGrade = (body) => request('/api/quiz/grade', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify(body),
+})
+
+/** AI 建议：关系、去重、分类。调用 LLM（review 角色），可能耗时数秒。 */
+export const postSuggest = (body) => request('/api/suggest', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify(body),
+})
+
+/** 改一个知识点的 id，并把 [[链接]] / 画布位置 / 复习记录 / 学习计划一起迁走。
+ *  默认 dry_run=true 只算影响面，确认后再发一次 dry_run=false。 */
+export const postRename = (body) => request('/api/rename', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify(body),
+})
+
+/** 把两张重复的卡并成一张。默认 dry_run=true 只算影响面。 */
+export const postMerge = (body) => request('/api/merge', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify(body),
+})
+
+/** 模型调用账本：今天 / 累计 / 分功能 + 最近明细。只读。 */
+export const fetchUsage = () => request('/api/llm/usage')
+
+// —— 阶段 10：今日清单 + 学习计划 ——
+/** 今天可以动手的事，按固定优先级排。纯排序，不调 LLM。 */
+export const fetchToday = () => request('/api/coach/today')
+
+export const fetchPlans = () => request('/api/plans')
+
+/** 整份替换。base_revision 对不上会 409，拿 current_revision 重新拉取后再提交。 */
+export const putPlans = (body) => request('/api/plans', {
+  method: 'PUT',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify(body),
+})
+
+/** 目标 → 知识点清单（LLM，learn 角色，可能耗时数秒）。只提议，不写盘。 */
+export const postPlanPropose = (body) => request('/api/plans/propose', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify(body),
+})
 
 // —— 阶段 5：vault 的 assets/ 图片 ——
 export const fetchAssets = () => request('/api/assets')
@@ -53,3 +123,35 @@ export const uploadAsset = (name, file) => request(
   `/api/asset/${encodeURIComponent(name)}`,
   { method: 'POST', headers: { 'Content-Type': file.type || 'application/octet-stream' }, body: file },
 )
+
+/** 对话式教练：SSE 流式。事件形状见 server/chat.py，onEvent 每收到一条就调一次。
+ *  用 fetch + ReadableStream 而不是 EventSource：EventSource 只能 GET，发不了整段对话。 */
+export async function streamChat(messages, onEvent, signal) {
+  const res = await fetch('/api/chat', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ messages }),
+    signal,
+  })
+  if (!res.ok || !res.body) {
+    const err = new Error(`POST /api/chat → ${res.status}`)
+    err.status = res.status
+    try { err.body = await res.json() } catch { err.body = null }
+    throw err
+  }
+  const reader = res.body.getReader()
+  const decoder = new TextDecoder()
+  let buf = ''
+  for (;;) {
+    const { done, value } = await reader.read()
+    if (done) break
+    buf += decoder.decode(value, { stream: true })
+    const chunks = buf.split('\n\n')
+    buf = chunks.pop() || ''            // 最后一段可能只收了一半，留到下一轮
+    for (const chunk of chunks) {
+      const line = chunk.split('\n').find((l) => l.startsWith('data: '))
+      if (!line) continue
+      try { onEvent(JSON.parse(line.slice(6))) } catch { /* 半条 JSON，丢掉 */ }
+    }
+  }
+}

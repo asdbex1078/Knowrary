@@ -8,8 +8,10 @@ defineProps({
   options: { type: Array, default: () => [] },
   selected: { type: Array, default: () => [] },
   families: { type: Object, required: true },
+  trunk: { type: Boolean, default: false },
+  chain: { type: Array, default: null },      // 主干道模式下算出来的那条链
 })
-const emit = defineEmits(['close', 'toggle', 'select-all', 'toggle-family'])
+const emit = defineEmits(['close', 'toggle', 'select-all', 'toggle-family', 'toggle-trunk'])
 
 const FAMS = ['演化', '依赖', '对照']
 </script>
@@ -20,6 +22,21 @@ const FAMS = ['演化', '依赖', '对照']
     <template #default>
       <p class="dim" style="font-size: 12.5px; line-height: 1.6">
         按分组切出独立的一条时间线（JVM 史、LLM 史各自成线），可多选叠加。
+      </p>
+
+      <label class="switch-row" style="margin: 12px -9px 0">
+        <input type="checkbox" :checked="trunk" @change="emit('toggle-trunk')" />
+        <span class="check"><Icon name="check" :size="11" :width="2.6" /></span>
+        <span class="label">主干道
+          <span class="sub">把最长的一条演化链拉成水平主轴，旁支挂上下。<br>
+            看「谁接谁」用它；看「谁和谁是一类」用下面的泳道。</span>
+        </span>
+      </label>
+      <p v-if="trunk && chain?.length" class="dim tl-chain">
+        主干 {{ chain.length }} 站：{{ chain.join(' → ') }}
+      </p>
+      <p v-else-if="trunk" class="warn-text" style="font-size: 11.5px; line-height: 1.6">
+        当前范围里找不到连续的演化链（需要两端都有 year 的「演化」边），已退回泳道。
       </p>
 
       <div class="section" style="margin-top: 14px">

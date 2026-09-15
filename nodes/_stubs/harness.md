@@ -1,6 +1,6 @@
 ---
 name: Agent Harness
-field: AI-Agent
+field: Agent
 status: stub
 desc: 包裹 LLM 与工具调用循环的运行框架层，负责检查点、取消、重试与状态读写
 source: 长程Agent任务生命周期与可控终止.md

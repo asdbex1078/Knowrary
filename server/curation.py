@@ -7,10 +7,11 @@ revision 并发与备份逻辑一份不复制。
 from __future__ import annotations
 
 import datetime as dt
+import difflib
 from pathlib import Path
 
-from .contracts import (GroupPatch, InboxItem, InboxRead, LayoutDoc, LayoutPatch, NodePatch, Placed,
-                        PlaceRequest, PlaceResult, ReviewDone)
+from .contracts import (CoachToday, FileDiff, GroupPatch, InboxItem, InboxRead, LayoutDoc, LayoutPatch,
+                        NodePatch, Placed, PlaceRequest, PlaceResult, ReviewDone)
 from .index_service import current_index
 from .layout_store import apply_patch, load_or_init
 from .paths import core
@@ -98,8 +99,15 @@ def place(vault: Path, req: PlaceRequest) -> PlaceResult:
 
 
 def digest(vault: Path) -> dict:
+    """图谱本身的欠账。错题归今日清单（coach_today）管，这里不重复开第二个出口。"""
     index, layout = load_pair(vault)
     return core.build_digest(vault, index, layout.model_dump())
+
+
+def coach_today(vault: Path) -> CoachToday:
+    """今日清单：错题 > 到期 > 未建 > 只有壳 > Inbox。纯排序，不调 LLM，不写任何文件。"""
+    index, layout = load_pair(vault)
+    return CoachToday(**core.build_today(vault, index, layout.model_dump(), core.load_plans(vault)))
 
 
 def review_due(vault: Path) -> dict:
@@ -108,9 +116,29 @@ def review_due(vault: Path) -> dict:
     return {"due": items, "count": len(items), "generated_at": dt.date.today().isoformat()}
 
 
-def mark_reviewed(vault: Path, node_id: str) -> ReviewDone:
+def mark_reviewed(vault: Path, node_id: str, grade: str = "记得") -> ReviewDone:
     index = current_index(vault)
     if not any(n["id"] == node_id and not n.get("virtual") for n in index["nodes"]):
         raise PlaceRejected(f"节点 `{node_id}` 不在索引里")
-    entry = core.record_review(vault, node_id)
-    return ReviewDone(id=node_id, reviews=len(entry["reviews"]), next_due=entry.get("next_due"))
+    entry = core.record_review(vault, node_id, grade=grade)
+    return ReviewDone(id=node_id, reviews=len(entry["reviews"]), step=entry["step"],
+                      lapses=entry["lapses"], next_due=entry.get("next_due"))
+
+
+# ---------------------------------------------------------------- 变更预览（阶段 3 / 12 共用）
+
+def diff_of(edit) -> str:
+    """给人看的统一 diff（只保留有变化的片段）。"""
+    lines = difflib.unified_diff(edit.before.splitlines(), edit.after.splitlines(),
+                                 fromfile=f"a/{edit.rel}", tofile=f"b/{edit.rel}", lineterm="", n=2)
+    return "\n".join(list(lines)[:60])
+
+
+def preview(vault: Path, changes: list[dict], index: dict) -> list[FileDiff]:
+    """算出这组变更会改成什么样，**不写盘**。
+
+    `/api/changes` 的 dry_run 和对话里的「变更卡」用的是同一份：卡片上看到的 diff
+    必须和真按下写入时写下去的一模一样，各算一遍迟早对不上。
+    """
+    edits = core.plan(vault, changes, index)
+    return [FileDiff(path=e.rel, notes=e.notes, diff=diff_of(e)) for e in edits]

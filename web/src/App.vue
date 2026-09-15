@@ -1,8 +1,8 @@
 <script setup>
 import { computed, onBeforeUnmount, onMounted, reactive, ref, shallowRef, watch } from 'vue'
 import {
-  fetchDigest, fetchDue, fetchHealth, fetchIndex, fetchInbox, fetchLayout, fetchNode,
-  patchLayout, postChanges, postPlace, postReview,
+  fetchDigest, fetchDue, fetchPlans, putPlans, postPlanPropose, fetchToday, fetchUsage, postMerge, postRename, postQuiz, postQuizDiagnose, postQuizGrade, fetchHealth, fetchIndex, fetchInbox, fetchLayout, fetchNode,
+  patchLayout, postChanges, postPlace, postReview, postSuggest, streamChat,
 } from './api'
 import AppHeader from './components/AppHeader.vue'
 import ActivityBar from './components/ActivityBar.vue'
@@ -15,12 +15,19 @@ import HelpDialog from './components/HelpDialog.vue'
 import ContextMenu from './components/ContextMenu.vue'
 import RelationDialog from './components/RelationDialog.vue'
 import NodeDialog from './components/NodeDialog.vue'
+import QuizDialog from './components/QuizDialog.vue'
+import UsageDialog from './components/UsageDialog.vue'
+import RenameDialog from './components/RenameDialog.vue'
+import MergeDialog from './components/MergeDialog.vue'
 import GroupBar from './components/GroupBar.vue'
 import MiniMap from './components/MiniMap.vue'
 import ToastHost from './ui/ToastHost.vue'
 import Icon from './ui/Icon.vue'
 import InboxTray from './panels/InboxTray.vue'
 import DigestPanel from './panels/DigestPanel.vue'
+import StudyPanel from './panels/StudyPanel.vue'
+import ChatPanel from './panels/ChatPanel.vue'
+import PlansPanel from './panels/PlansPanel.vue'
 import ImagePicker from './panels/ImagePicker.vue'
 import TimelinePanel from './panels/TimelinePanel.vue'
 import { clone, createHistory, diffPatch, isEmptyPatch } from './canvas/history'
@@ -28,11 +35,13 @@ import { createPatcher } from './canvas/patcher'
 import { ancestors as groupAncestors, computeCollapsed } from './canvas/lod'
 import {
   LABEL_ZOOM, applyEdgeLabels, applyViewport, buildCells, buildHistoryCells, contentBBox, createGraph,
-  currentViewport, highlightEdges, mount, movedPositions,
+  clearPath, currentViewport, highlightEdges, highlightPath, mount, movedPositions, setSnap, snapDelta,
 } from './canvas/render'
 import { timelineOptions } from './canvas/timeline'
 import { communityLayout, compareWithGroups } from './canvas/communities'
 import { mindmapLayout, toPatch } from './canvas/layouts'
+import { describePath, shortestPath } from './canvas/paths'
+import { GROUP_LAYOUTS, hasSubGroups, layoutGroup, membersOf } from './canvas/groupLayout'
 import { FAMILIES, setTheme } from './canvas/shapes'
 
 const canvasEl = ref(null)
@@ -49,6 +58,8 @@ const selected = ref(null)
 const detail = shallowRef(null)          // GET /api/node/:id 的结果（md 原文 + 出入边）
 const pending = ref([])                  // 待提交的 ChangeSet（本地攒着，未确认不碰 md）
 const changePreview = shallowRef(null)   // 预览结果（每个文件的 diff）
+const suggestions = shallowRef(null)    // SuggestResult from /api/suggest
+const suggesting = ref(false)           // LLM 正在生成建议
 const stats = reactive({ nodes: 0, edges: 0, stubs: 0 })
 /**
  * 哪些关系族画出来。
@@ -79,12 +90,18 @@ const dueIds = shallowRef(new Set())     // 今天该复习的节点，画布上
 const placing = ref(false)
 // 历史视图（阶段 6）：X 轴锁在年份上，坐标不持久化，进来一次算一次
 const mode = ref('structure')
-const hist = reactive({ compact: false, validity: false, upto: null, 演化: true, 依赖: false, 对照: false })
+const hist = reactive({ compact: false, validity: false, upto: null, trunk: false,
+                        演化: true, 依赖: false, 对照: false })
 const histPlan = shallowRef(null)
+const histChain = computed(() => histPlan.value?.trunk || null)
 const timelines = ref([])          // 选中的 layout 分组 id（空 = 全部）
 let playing = null
 const isPlaying = ref(false)
 const autoLod = ref(true)                // 缩小自动折叠成簇卡片（设计文档 3.7）
+// 对齐线 + 落点吸附：和主题、小地图一样是"这台机器上怎么摆图"的偏好，不进 layout.json
+const snap = ref(localStorage.getItem('knowrary-snap') !== '0')
+const pathFrom = ref(null)               // 路径搜索的起点（右键选定），等着第二个节点
+const pathHit = shallowRef(null)         // 找到的路径 { nodes, edges }，纯展示态，不落盘
 const focusGroup = ref(null)             // 聚焦的域：点簇卡片进入，只展开它
 const search = ref('')                   // 顶栏搜索词
 let panorama = null                      // 进入聚焦前的视口，退出时还原
@@ -118,7 +135,33 @@ const showMap = ref(localStorage.getItem('knowrary-map') !== '0')
 const viewBox = ref({ cx: 0, cy: 0, w: 0, h: 0 })   // 当前视口（图坐标），小地图用
 
 // —— 界面状态：左侧工具窗口、右侧检查器、浮层提示、帮助 ——
-const panel = ref('')                    // '' | inbox | digest | assets | timeline
+const panel = ref('')                    // '' | inbox | plans | study | digest | assets | timeline
+const plansDoc = shallowRef(null)        // 学习计划；只写 plans.json，不碰 md 也不碰 layout
+const plansProgress = shallowRef({})     // 每个知识点的掌握度，服务端现算
+const plansSchedules = shallowRef({})     // 时间账：装不装得下、每阶段排到哪天、落后几个；同样现算
+
+// —— 阶段 12：对话式教练 ——
+// 会话状态在前端：每次把整段对话发给服务端，它不持有会话。刷新丢的是这一段，
+// 但每一轮都已经留档在 .knowrary/chat/YYYY-MM.jsonl（F10.7）。
+const chatLog = ref([])                  // [{ role, content, tools?, cards?, streaming? }]
+const chatBusy = ref(false)
+let chatAbort = null
+const plansBusy = ref(false)
+const planProposal = shallowRef(null)    // AI 拆出的要点；纯提议，人采纳了才进 draft
+const planProposing = ref(false)
+const todayList = shallowRef(null)      // 今日清单：纯排序，不调 LLM
+const usage = shallowRef(null)          // 模型调用账本
+const showUsage = ref(false)
+const renaming = shallowRef(null)       // 正在改名的节点 { id, name }
+const renameImpact = shallowRef(null)   // dry-run 算出的影响面
+const renameBusy = ref(false)
+const merging = shallowRef(null)        // { keep, drop }
+const mergeImpact = shallowRef(null)
+const mergeBusy = ref(false)
+const dueList = ref([])                  // 今日到期明细（dueIds 只存 id，画布角标用）
+const quiz = shallowRef(null)            // 本轮题目；null = 没在考试
+const quizBusy = ref(false)              // 出题 / 诊断 / 交卷中（都要等服务端）
+const quizDiag = shallowRef(null)        // 整轮比对结果；纯提议，档位仍由我点
 const inspectorHidden = ref(false)
 const showHelp = ref(false)
 const problems = ref([])                 // 加载时发现的待处理项，挂在状态栏上
@@ -130,6 +173,8 @@ function openPanel(id) {
   panel.value = panel.value === id ? '' : id
   if (panel.value === 'digest' && !digest.value) refreshDigest()
   if (panel.value === 'inbox') refreshInbox()
+  if (panel.value === 'study') { refreshToday(); refreshDue() }
+  if (panel.value === 'plans') refreshPlans()
 }
 
 const statusText = computed(() => ({
@@ -185,6 +230,7 @@ async function load() {
   inboxCount.value = index.nodes.filter((n) => !n.virtual && !layout.layout.nodes[n.id]).length
   refreshInbox()
   refreshDue()
+  refreshUsage()
   ready.value = false
   const refit = !storedViewportUsable()
   render({ view: refit ? 'fit' : 'stored' })
@@ -222,6 +268,7 @@ function render({ view = 'keep' } = {}) {
   }
   applyingViewport = false
   zoom.value = g.zoom()
+  if (pathHit.value) applyPath()   // 重绘会重建 cell，高亮得重新贴一遍
   syncView()
 }
 
@@ -301,7 +348,7 @@ function renderHistory({ view = 'fit' } = {}) {
   const g = graph.value
   const cells = buildHistoryCells(indexDoc.value, layoutDoc.value, {
     timelines: timelines.value, families: histFamilies(), compact: hist.compact, upto: hist.upto,
-    validity: hist.validity,
+    validity: hist.validity, trunk: hist.trunk,
   })
   histPlan.value = cells.plan
   applyingViewport = true
@@ -439,6 +486,7 @@ function rebuildGraph(reason = '') {
   }
   const fresh = createGraph(canvasEl.value)
   graph.value = fresh
+  setSnap(fresh, snap.value)
   bindEvents(fresh)
   if (window.__kg) window.__kg.graph = fresh
   render({ view: 'stored' })
@@ -462,21 +510,39 @@ function bindEvents(g) {
   g.on('node:moved', safe(({ node }) => {
     if (!ready.value) return
     if (node.id.startsWith('note:') || node.id.startsWith('ref:')) {
-      const pos = node.position()
-      moveDecoration(node.id, Math.round(pos.x), Math.round(pos.y))
+      const pos = snapped(node.position())
+      node.position(pos.x, pos.y)
+      moveDecoration(node.id, pos.x, pos.y)
       return
     }
     if (node.shape === 'kg-cluster') return moveCluster(node)
-    for (const p of movedPositions(node)) queueIfChanged(p.kind, p.id, { x: p.x, y: p.y })
+    const moved = movedPositions(node)
+    // 松手后把落点吸到网格上。只挪被拖的那个 cell，X6 会带着它的子元素一起走；
+    // movedPositions 是在挪之前采的，所以同样的位移量要补到整批坐标上，落盘的才是真实位置。
+    const head = moved[0]
+    if (snap.value && head) {
+      const { dx, dy } = snapDelta(head.x, head.y)
+      if (dx || dy) {
+        node.position(head.x + dx, head.y + dy)
+        for (const p of moved) { p.x += dx; p.y += dy }
+      }
+    }
+    for (const p of moved) queueIfChanged(p.kind, p.id, { x: p.x, y: p.y })
   }))
   g.on('node:change:parent', safe(({ node, current }) => {
-    if (!ready.value || node.shape !== 'kg-node') return
-    const pos = node.position()
-    queueIfChanged('node', node.id, { group: current || null, x: Math.round(pos.x), y: Math.round(pos.y) })
+    if (!ready.value) return
+    if (node.shape === 'kg-node') {
+      const pos = node.position()
+      queueIfChanged('node', node.id, { group: current || null, x: Math.round(pos.x), y: Math.round(pos.y) })
+    } else if (node.shape === 'kg-group') {
+      const pos = node.position()
+      queueIfChanged('group', node.id, { parent: current || null, x: Math.round(pos.x), y: Math.round(pos.y) })
+    }
   }))
   g.on('node:selected', safe(({ node }) => {
     selected.value = describe(node.id)
     inspectorHidden.value = false
+    suggestions.value = null
     focus(node.id)
     loadDetail(node.id)
   }))
@@ -503,12 +569,16 @@ function bindEvents(g) {
     else if (node.shape === 'kg-group') exitGroup()   // 双击域的空白处退回全景
   }))
   g.on('node:resized', safe(({ node }) => {
-    if (!ready.value || node.shape !== 'kg-image') return
+    if (!ready.value) return
     const { width, height } = node.size()
     const pos = node.position()
-    saveList('img', (item) => (item.id === node.id.slice(4)
-      ? { ...item, x: Math.round(pos.x), y: Math.round(pos.y), w: Math.round(width), h: Math.round(height) }
-      : item))
+    if (node.shape === 'kg-image') {
+      saveList('img', (item) => (item.id === node.id.slice(4)
+        ? { ...item, x: Math.round(pos.x), y: Math.round(pos.y), w: Math.round(width), h: Math.round(height) }
+        : item))
+      return
+    }
+    if (node.shape === 'kg-group') resizeGroup(node)
   }))
   // 点聚合边展开这对分组之间的明细，再点收起；点普通边则挂上拐点手柄
   g.on('edge:click', safe(({ edge }) => {
@@ -701,7 +771,58 @@ function relatedEdgeIds(nodeId) {
 }
 
 function focus(nodeId) {
-  highlightEdges(graph.value, nodeId ? relatedEdgeIds(nodeId) : null)
+  if (pathHit.value) return              // 路径点亮时不让单节点高亮把它冲掉
+  highlightEdges(graph.value, nodeId ? relatedEdgeIds(nodeId) : null, { flow: true })
+}
+
+// ---- 路径搜索：两个知识点之间最短的那条解释链 ----
+
+/** 索引里的一条边，在画布上对应哪个 cell（跨组时是那一束聚合边）。 */
+function edgeCellId(e) {
+  const layout = layoutDoc.value
+  const a = layout.nodes[e.source]?.group || null
+  const b = layout.nodes[e.target]?.group || null
+  const pair = a && b ? `${a}->${b}` : null
+  return !aggregate.value || !pair || a === b || expanded.value.has(pair) ? e.id : `agg:${pair}`
+}
+
+function applyPath() {
+  const hit = pathHit.value
+  if (!hit) return
+  highlightPath(graph.value, new Set(hit.nodes), new Set(hit.edges.map(edgeCellId)))
+}
+
+function clearPathHighlight(quiet = false) {
+  pathFrom.value = null
+  if (!pathHit.value) return
+  pathHit.value = null
+  clearPath(graph.value)
+  if (!quiet) setBanner('已取消路径高亮')
+}
+
+function startPath(id) {
+  if (pathFrom.value === id) { clearPathHighlight(true); setBanner('已取消路径起点'); return }
+  clearPathHighlight(true)
+  pathFrom.value = id
+  setBanner(`路径起点：「${nodeName(id)}」——右键另一个知识点选「找到这里的路径」`, 'success')
+}
+
+function endPath(id) {
+  const from = pathFrom.value
+  if (!from || from === id) return
+  const hit = shortestPath(indexDoc.value, layoutDoc.value, from, id, visibleFamilies())
+  if (!hit) {
+    setBanner(`「${nodeName(from)}」和「${nodeName(id)}」之间在当前可见的关系族里走不通`, 'error')
+    return
+  }
+  pathHit.value = hit
+  pathFrom.value = null
+  applyPath()
+  setBanner(`${hit.edges.length} 跳：${describePath(indexDoc.value, hit)}`, 'success')
+}
+
+function nodeName(id) {
+  return indexDoc.value?.nodes.find((n) => n.id === id)?.name || id
 }
 
 // ---- 右键菜单：画布上每类元素一套动作 ----
@@ -723,6 +844,12 @@ function nodeMenu(id) {
   else if (place) items.push({ id: 'draft', label: '标记为草稿（待关联）', icon: 'pencil' })
   if (dueIds.value.has(id)) items.push({ id: 'review', label: '复习过了', icon: 'rotate' })
   items.push(
+    { sep: true },
+    ...(pathFrom.value && pathFrom.value !== id
+      ? [{ id: 'path-to', label: `找「${nodeName(pathFrom.value)}」到这里的路径`, icon: 'timeline' }]
+      : [{ id: 'path-from', label: pathFrom.value === id ? '取消路径起点' : '以它为路径起点',
+           icon: 'timeline', on: pathFrom.value === id }]),
+    ...(pathHit.value ? [{ id: 'path-clear', label: '取消路径高亮', icon: 'x' }] : []),
     { sep: true },
     { id: 'detail', label: '查看详情', icon: 'file' },
     { id: 'neighbor', label: neighbor.value === id ? '退出只看邻居' : '只看它的邻居',
@@ -759,6 +886,14 @@ function groupMenu(gid, folded) {
     { id: 'new-subgroup', label: '在这里新建子簇', icon: 'grid' },
     { id: 'rename', label: '重命名这个域', icon: 'pencil' },
   )
+  // 组内重排：每个域自己挑摆法。子域各摆各的，父域里只剩框，重排它没有意义。
+  const inner = !folded && count >= 2 && !hasSubGroups(layoutDoc.value, gid)
+  if (inner) {
+    items.push({ sep: true })
+    for (const [kind, spec] of Object.entries(GROUP_LAYOUTS)) {
+      items.push({ id: `inner-${kind}`, label: `组内重排：${spec.label}`, icon: 'grid' })
+    }
+  }
   if (focusGroup.value) items.push({ id: 'exit-focus', label: '返回全景', icon: 'arrowLeft', hint: 'Esc' })
   const pinned = g?.pinned === 'expanded' ? '已钉住展开' : g?.pinned === 'collapsed' ? '已钉住折叠' : '自动折叠'
   return { title: g?.name || gid,
@@ -809,6 +944,9 @@ const MENU_ACTIONS = {
   review: (id) => markReviewed(id),
   detail: (id) => gotoNode(id),
   neighbor: (id) => toggleNeighbor(id),
+  'path-from': (id) => startPath(id),
+  'path-to': (id) => endPath(id),
+  'path-clear': () => clearPathHighlight(),
   obsidian: (id) => openInObsidian(id),
   copy: (id) => copyWikiLink(id),
   unplace: (id) => unplace(id),
@@ -822,6 +960,8 @@ const MENU_ACTIONS = {
   'pin-expanded': (gid) => setPinned(gid, layoutDoc.value.groups[gid]?.pinned === 'expanded' ? null : 'expanded'),
   'pin-auto': (gid) => setPinned(gid, null),
   rename: (gid) => renameGroup(gid),
+  ...Object.fromEntries(Object.keys(GROUP_LAYOUTS).map(
+    (kind) => [`inner-${kind}`, (gid) => runGroupLayout(gid, kind)])),
   'exit-focus': () => exitGroup(),
 
   'edge-delete': (id) => deleteEdge(id),
@@ -860,6 +1000,57 @@ function setPinned(gid, value) {
   setBanner(value === 'collapsed' ? '已折叠；再次展开用右键菜单或放大'
     : value === 'expanded' ? '已钉住展开：缩小也不会收成簇卡片'
       : '已恢复自动折叠：缩小到看不清字时自动收起', 'success')
+}
+
+/**
+ * 拖分组框的把手改大小。
+ *
+ * 从上边 / 左边拖时，X6 改的不只是尺寸：它把整个框平移了，而 Node.translate 会
+ * 递归带上所有子元素。也就是说框里的知识点也跟着挪了位置——画面上看不出来
+ * （它们和框的相对位置没变），但 layout.json 里还是老坐标，不落盘的话刷新一次全跳回去。
+ * 所以这里连子元素的新坐标一起写。
+ */
+function resizeGroup(node) {
+  if (!writable()) return
+  const { width, height } = node.size()
+  const pos = node.position()
+  const box = { x: Math.round(pos.x), y: Math.round(pos.y),
+                w: Math.round(width), h: Math.round(height) }
+  queueIfChanged('group', node.id, box)
+  for (const p of movedPositions(node).slice(1)) queueIfChanged(p.kind, p.id, { x: p.x, y: p.y })
+  // 不走 render()：画布上的框已经是新尺寸了，重绘只会闪一下、顺手把刚拉出来的把手也拆掉。
+  // syncView 只更新小地图和贴在框上的工具条位置，正是这次改动影响到的两样东西。
+  syncView()
+  warnIfOverflow(node.id, box)
+}
+
+/** 框缩到装不下里面的东西时说一声——节点露在自己的域外面，读图时会误以为它不属于这个域。 */
+function warnIfOverflow(gid, box) {
+  const out = Object.entries(layoutDoc.value.nodes).filter(([, n]) => n.group === gid)
+    .filter(([, n]) => n.x < box.x || n.y < box.y
+      || n.x + (n.w || 160) > box.x + box.w || n.y + (n.h || 60) > box.y + box.h).length
+  if (out) setBanner(`有 ${out} 个知识点露在「${layoutDoc.value.groups[gid]?.name || gid}」框外了`, 'error')
+}
+
+/**
+ * 只重排一个域内部，域的位置和别的域一概不动。
+ *
+ * 和"换布局"那条路径不同，这里不走预览态：影响面只有一个框，撤销一步就回去了，
+ * 再套一层"预览 / 确认"反而碍事。
+ */
+function runGroupLayout(gid, kind) {
+  if (!writable()) return
+  const result = layoutGroup(indexDoc.value, layoutDoc.value, gid, kind)
+  if (!result) {
+    setBanner(kind === 'mindmap' ? '这个域里没有结构族的边，搭不出层级——试试力导向或网格'
+      : '这个域里的知识点不够两个，没什么可排的', 'error')
+    return
+  }
+  for (const [id, pos] of Object.entries(result.nodes)) queueIfChanged('node', id, pos)
+  queueIfChanged('group', gid, result.box)
+  render()
+  setBanner(`「${layoutDoc.value.groups[gid]?.name || gid}」已按${GROUP_LAYOUTS[kind].label}重排`
+    + `（${membersOf(layoutDoc.value, gid).length} 个知识点，⌘Z 撤销）`, 'success')
 }
 
 function renameGroup(gid) {
@@ -988,6 +1179,10 @@ const fieldNames = computed(() =>
 
 const takenIds = computed(() => new Set((indexDoc.value?.nodes || []).map((n) => n.id)))
 
+/** id → 展示名：测验里的考点 chip、以及任何只拿得到 id 的地方。 */
+const nodeNames = computed(() =>
+  Object.fromEntries((indexDoc.value?.nodes || []).map((n) => [n.id, n.name || n.id])))
+
 /** 这个域里的节点大多存在哪个目录 / 属于哪个领域——新建时拿它当默认值。 */
 function majority(gid, pick) {
   const tally = new Map()
@@ -1027,6 +1222,7 @@ async function createNode(form) {
     setBanner(`已新建 ${res.files[0]?.path || form.id}`, 'success')
     gotoNode(form.id)
     if (form.thenRelate) relating.value = describe(form.id)
+    fetchSuggestions(form.id)
   } catch (err) {
     status.value = 'error'
     setBanner(`新建失败：${err.body?.detail?.message || err.body?.detail || err.message}`, 'error')
@@ -1047,6 +1243,30 @@ async function placeNew(id, spot) {
   const fresh = await fetchLayout()
   layoutDoc.value = fresh.layout
   revision.value = fresh.layout.revision
+}
+
+// ---- AI 建议 ----
+
+async function fetchSuggestions(nodeId) {
+  if (!nodeId) return
+  suggesting.value = true
+  suggestions.value = null
+  try {
+    const result = await postSuggest({ node_id: nodeId, index_revision: indexRevision.value })
+    // 只有当前选中节点还是那个才赋值（用户可能已经切走了）
+    if (selected.value?.id === nodeId) suggestions.value = result
+  } catch (err) {
+    setBanner(`AI 建议失败：${err.body?.detail || err.message}`, 'error')
+  } finally {
+    suggesting.value = false
+    refreshUsage()
+  }
+}
+
+function dismissSuggestion(index) {
+  if (!suggestions.value?.edges) return
+  const next = { ...suggestions.value, edges: suggestions.value.edges.filter((_, i) => i !== index) }
+  suggestions.value = next
 }
 
 // ---- 建立 / 删除关系：直接写回 md（服务端写前自动备份） ----
@@ -1193,6 +1413,21 @@ function jumpTo({ x, y }) {
   ready.value = true
   graph.value?.centerPoint(x, y)
   syncView()
+}
+
+/** 落点取整：开了吸附就贴到网格，没开就照旧四舍五入到整数像素。 */
+function snapped({ x, y }) {
+  if (!snap.value) return { x: Math.round(x), y: Math.round(y) }
+  const { dx, dy } = snapDelta(x, y)
+  return { x: Math.round(x + dx), y: Math.round(y + dy) }
+}
+
+function toggleSnap() {
+  snap.value = !snap.value
+  localStorage.setItem('knowrary-snap', snap.value ? '1' : '0')
+  setSnap(graph.value, snap.value)
+  setBanner(snap.value ? '对齐已开：拖动时出参考线，松手贴到 8px 网格'
+    : '对齐已关：位置完全按手放的地方存', 'success')
 }
 
 function toggleMap() {
@@ -1352,8 +1587,10 @@ async function refreshInbox() {
 
 async function refreshDue() {
   try {
-    dueIds.value = new Set((await fetchDue()).due.map((d) => d.id))
-  } catch { dueIds.value = new Set() }
+    const data = await fetchDue()
+    dueList.value = data.due
+    dueIds.value = new Set(data.due.map((d) => d.id))
+  } catch { dueList.value = []; dueIds.value = new Set() }
 }
 
 async function refreshDigest() {
@@ -1416,17 +1653,351 @@ function innermostGroupAt(x, y) {
   return best?.gid || null
 }
 
-async function markReviewed(id) {
+async function markReviewed(id, grade = '记得') {
   try {
-    const res = await postReview(id)
-    const next = new Set(dueIds.value)
-    next.delete(id)
-    dueIds.value = next
-    render()
-    if (panel.value === 'digest') refreshDigest()
-    setBanner(`已记录第 ${res.reviews} 次复习，下次 ${res.next_due} 再来`, 'success')
+    const res = await postReview(id, grade)
+    afterReview([res.id])
+    const tail = grade === '忘了' ? `，明天（${res.next_due}）再考一次` : `，下次 ${res.next_due} 再来`
+    setBanner(`「${id}」记为「${grade}」${tail}`, grade === '忘了' ? 'info' : 'success')
   } catch (err) {
     setBanner(`记录复习失败：${err.message}`, 'error')
+  }
+}
+
+/** 复习状态变了之后的统一收尾：到期角标、面板、画布都跟着刷新。 */
+function afterReview(ids) {
+  const next = new Set(dueIds.value)
+  ids.forEach((id) => next.delete(id))
+  dueIds.value = next
+  dueList.value = dueList.value.filter((d) => !ids.includes(d.id))
+  render()
+  if (panel.value === 'digest') refreshDigest()
+  if (panel.value === 'study') { refreshToday(); refreshDue() }
+}
+
+// —— 重命名：改 id 并把引用一起迁走 ——
+
+/** 传 null 表示"名字改了，上一次的影响面作废"。 */
+async function previewRename(next) {
+  if (!next) { renameImpact.value = null; return }
+  renameBusy.value = true
+  try {
+    const res = await postRename({ old_id: renaming.value.id, new_id: next,
+                                   base_revision: indexRevision.value, dry_run: true })
+    renameImpact.value = res.impact
+  } catch (err) {
+    setBanner(`改名不成：${err.body?.detail?.error || err.body?.detail || err.message}`, 'error')
+  } finally {
+    renameBusy.value = false
+  }
+}
+
+async function applyRename(next) {
+  renameBusy.value = true
+  const old = renaming.value.id
+  try {
+    await postRename({ old_id: old, new_id: next, base_revision: indexRevision.value, dry_run: false })
+    renaming.value = null
+    renameImpact.value = null
+    await load()                       // id 变了，索引和布局都得整份重读
+    gotoNode(next)
+    setBanner(`「${old}」已改名为「${next}」，引用都迁过去了`, 'success')
+  } catch (err) {
+    setBanner(`改名失败：${err.body?.detail?.error || err.body?.detail || err.message}`, 'error')
+  } finally {
+    renameBusy.value = false
+  }
+}
+
+function openRename(id) {
+  renameImpact.value = null
+  renaming.value = { id, name: describe(id)?.name || id }
+}
+
+// —— 合并重复节点 ——
+
+function openMerge(pair) {
+  mergeImpact.value = null
+  merging.value = pair
+}
+
+/** 对调保留/丢弃。方向一换，上一次算的影响面就作废。 */
+function swapMerge() {
+  merging.value = { keep: merging.value.drop, drop: merging.value.keep }
+  mergeImpact.value = null
+}
+
+async function previewMerge() {
+  mergeBusy.value = true
+  try {
+    const res = await postMerge({ ...idsOf(merging.value), base_revision: indexRevision.value,
+                                  dry_run: true })
+    mergeImpact.value = res.impact
+  } catch (err) {
+    setBanner(`合并不成：${err.body?.detail?.error || err.body?.detail || err.message}`, 'error')
+  } finally {
+    mergeBusy.value = false
+  }
+}
+
+async function applyMerge() {
+  mergeBusy.value = true
+  const { keep, drop } = merging.value
+  try {
+    await postMerge({ keep_id: keep, drop_id: drop, base_revision: indexRevision.value,
+                      dry_run: false })
+    merging.value = null
+    mergeImpact.value = null
+    await load()                      // 少了一个节点、边也变了，整份重读
+    refreshDigest()
+    gotoNode(keep)
+    setBanner(`已把「${drop}」并进「${keep}」，引用都迁过去了`, 'success')
+  } catch (err) {
+    setBanner(`合并失败：${err.body?.detail?.error || err.body?.detail || err.message}`, 'error')
+  } finally {
+    mergeBusy.value = false
+  }
+}
+
+const idsOf = (p) => ({ keep_id: p.keep, drop_id: p.drop })
+
+// —— 模型用量：所有 LLM 调用都记账，状态栏常驻读数 ——
+
+async function refreshUsage() {
+  try {
+    usage.value = await fetchUsage()
+  } catch { /* 账本拉不到不影响任何正事 */ }
+}
+
+/** 调完模型就刷一次账本——"实时关注"的实时就靠这个。 */
+const llmBusy = computed(() => quizBusy.value || planProposing.value || suggesting.value)
+
+// —— 阶段 12：对话式教练 ——
+
+const TOOL_LABEL = {
+  search_nodes: '在图里搜了一下', read_node: '读了一个节点', overview: '看了图谱概况',
+  today: '看了今日清单', plans: '看了学习计划', quiz: '出了几道题',
+  record_review: '记了一次复习', propose_changes: '拟了一张变更卡',
+}
+
+/** 发一句话。服务端流式回，边收边渲染；工具调用和变更卡挂在这条回复下面。 */
+async function sendChat(body) {
+  if (chatBusy.value) return
+  chatLog.value = [...chatLog.value, { role: 'user', content: body }]
+  const reply = reactive({ role: 'assistant', content: '', tools: [], cards: [], streaming: true })
+  chatLog.value = [...chatLog.value, reply]
+  chatBusy.value = true
+  chatAbort = new AbortController()
+  // 只把 role/content 发过去：tools / cards 是本地渲染用的，喂回模型只会干扰它
+  const wire = chatLog.value.filter((m) => m.content || m.role === 'user')
+                            .map((m) => ({ role: m.role, content: m.content }))
+                            .filter((m) => m.content.trim())
+  try {
+    await streamChat(wire, (ev) => {
+      if (ev.type === 'delta') reply.content = stripToolBlocks(reply.content + ev.text)
+      else if (ev.type === 'tool') reply.tools.push({ label: TOOL_LABEL[ev.name] || ev.name, summary: ev.summary })
+      else if (ev.type === 'card') reply.cards.push({ ...ev.card, applied: false })
+      else if (ev.type === 'review') { refreshDue(); pushToast(`已记一次「忘了」：${ev.id}`, 'info') }
+      else if (ev.type === 'done') reply.content = stripToolBlocks(ev.text) || reply.content
+      else if (ev.type === 'error') setBanner(`对话失败：${ev.message}`, 'error')
+    }, chatAbort.signal)
+  } catch (err) {
+    if (err.name !== 'AbortError') setBanner(`对话失败：${err.body?.detail || err.message}`, 'error')
+  } finally {
+    reply.streaming = false
+    chatBusy.value = false
+    chatAbort = null
+  }
+}
+
+/** 工具块是给服务端看的，不该在屏幕上闪过——和 server/chat.py 的 strip_tools 同一个形状。
+ *  流式时块可能只到一半，所以未闭合的也要藏掉。 */
+function stripToolBlocks(text) {
+  return text.replace(/```knowrary[\s\S]*?```/g, '').replace(/```knowrary[\s\S]*$/, '').trim()
+}
+
+function stopChat() { chatAbort?.abort() }
+
+/** 变更卡上的「写入」：走的仍然是 /api/changes 这唯一入口，和详情面板一模一样。 */
+async function applyChatCard({ card, i, j }) {
+  chatBusy.value = true
+  try {
+    const res = await postChanges({ base_revision: indexRevision.value, dry_run: false,
+                                    changes: card.changes })
+    chatLog.value[i].cards[j].applied = true
+    await load()
+    setBanner(`已写回 ${res.files.length} 个文件，原文备份在 ${res.backup}`, 'success')
+  } catch (err) {
+    setBanner(`写回失败：${err.body?.detail?.message || err.body?.detail || err.message}`, 'error')
+  } finally {
+    chatBusy.value = false
+  }
+}
+
+// —— 阶段 10：今日清单（教练调度，不调 LLM）——
+
+async function refreshToday() {
+  try {
+    todayList.value = await fetchToday()
+  } catch (err) {
+    setBanner(`今日清单加载失败：${err.message}`, 'error')
+  }
+}
+
+/** 清单里「只有壳」的一条 → 跳过去并把正文编辑框展开。 */
+function writeBody(item) {
+  gotoNode(item.id)
+  writeNonce.value += 1
+}
+
+/** 清单里 Inbox 的一条 → 交给服务端按邻居投票找位置放上画布，放完重排清单。 */
+async function placeFromToday(item) {
+  await placeOne(item)
+  refreshToday()
+}
+
+// —— 阶段 10：学习计划（只写 plans.json）——
+
+async function refreshPlans() {
+  try {
+    const data = await fetchPlans()
+    plansDoc.value = data.doc
+    plansProgress.value = data.progress
+    plansSchedules.value = data.schedules || {}
+  } catch (err) {
+    setBanner(`学习计划加载失败：${err.message}`, 'error')
+  }
+}
+
+/** 整份提交。base_revision 对不上就重新拉取——本地改动还在面板里，不会丢。 */
+async function savePlans(plans) {
+  plansBusy.value = true
+  try {
+    const res = await putPlans({ base_revision: plansDoc.value?.revision ?? 0, plans })
+    plansDoc.value = { ...plansDoc.value, revision: res.revision, plans }
+    plansProgress.value = res.progress
+    plansSchedules.value = res.schedules || {}
+    setBanner('学习计划已保存', 'success')
+  } catch (err) {
+    if (err.status === 409) {
+      setBanner('计划在别处被改过了，已重新拉取，请再存一次', 'error')
+      refreshPlans()
+    } else {
+      setBanner(`保存计划失败：${err.body?.detail || err.message}`, 'error')
+    }
+  } finally {
+    plansBusy.value = false
+  }
+}
+
+/** 目标 → 要点。传 null 表示收起提议区。只提议，不写任何文件。 */
+async function proposePlan(req) {
+  if (!req) { planProposal.value = null; return }
+  if (!req.goal?.trim() || planProposing.value) return
+  planProposing.value = true
+  try {
+    const res = await postPlanPropose({ goal: req.goal.trim(), plan_name: req.plan_name || '',
+                                        kind: req.kind || '学习', coach: req.coach || '',
+                                        target_date: req.target_date || null,
+                                        weekly_hours: req.weekly_hours || 7,
+                                        mode: req.mode || '标准' })
+    if (!res.stages.length) {
+      setBanner('这次没拆出要点来——把目标写具体一点再试', 'error')
+      return
+    }
+    planProposal.value = res
+  } catch (err) {
+    setBanner(`拆解失败：${err.body?.detail || err.message}`, 'error')
+  } finally {
+    planProposing.value = false
+    refreshUsage()
+  }
+}
+
+/** 某个领域的知识点通常落在哪个目录；这个领域一个节点都还没有就给它一个新目录。 */
+function dirForField(field) {
+  if (!field) return ''
+  const tally = new Map()
+  for (const n of indexDoc.value?.nodes || []) {
+    if (n.field !== field) continue
+    const d = dirOf(n)
+    if (d) tally.set(d, (tally.get(d) || 0) + 1)
+  }
+  const top = [...tally.entries()].sort((a, b) => b[1] - a[1])[0]?.[0]
+  return top || `nodes/${field}`
+}
+
+/**
+ * 计划里「未建」的点 → 开新建对话框，领域和目录都由**这份计划**决定。
+ *
+ * 不能走 openNodeDialog 的默认值：那套是按"画布上正指着哪个域"算的，
+ * 从计划面板点进来时根本没有 activeGroup，就退化成全库多数派——
+ * 于是「神经网络与反向传播」被塞进 nodes/02-计算机硬件/。
+ * 计划自己知道它属于哪个领域，就该由它说了算；它也说不出时宁可留空让人选，不硬塞。
+ */
+function buildPoint(point) {
+  const field = point.field || plansDoc.value?.plans?.[point.plan]?.field || ''
+  const box = layoutDoc.value?.viewport
+  openNodeDialog({ x: (box?.cx ?? 0) - 80, y: (box?.cy ?? 0) - 30 }, null)
+  creating.value = { ...creating.value, name: point.id, field, dir: dirForField(field),
+                     groupName: '', planWhy: point.why || '' }
+}
+
+// —— 阶段 9：测验（出题走 LLM，自评三档回写复习调度；全程不碰 md）——
+
+async function startQuiz(arg) {
+  const ids = Array.isArray(arg) ? arg : arg?.ids || []
+  const style = Array.isArray(arg) ? '复习' : arg?.style || '复习'
+  if (!ids.length || quizBusy.value) return
+  quizBusy.value = true
+  try {
+    const res = await postQuiz({ node_ids: ids, count: Math.min(5, Math.max(3, ids.length)),
+                                 style, coach: Array.isArray(arg) ? '' : arg?.coach || '' })
+    ;(res.warnings || []).forEach((w) => pushToast(w, 'info'))
+    if (!res.questions.length) {
+      setBanner('这轮没出出题来——模型没给有效题目，换几个节点再试', 'error')
+      return
+    }
+    quiz.value = res
+    quizDiag.value = null
+  } catch (err) {
+    setBanner(`出题失败：${err.message}`, 'error')
+  } finally {
+    quizBusy.value = false
+  }
+}
+
+/** 整轮比对：只读，不写盘。拿不到诊断也不挡交卷——按自评记就是了。 */
+async function diagnoseQuiz(rows) {
+  quizBusy.value = true
+  try {
+    const res = await postQuizDiagnose({
+      answers: rows.map((r) => ({ question: r.question, grade: r.grade, my_answer: r.my_answer })),
+    })
+    ;(res.warnings || []).forEach((w) => pushToast(w, 'info'))
+    quizDiag.value = res
+  } catch (err) {
+    setBanner(`比对失败，按你的自评记：${err.message}`, 'error')
+  } finally {
+    quizBusy.value = false
+    refreshUsage()
+  }
+}
+
+async function submitQuiz(answers) {
+  quizBusy.value = true
+  try {
+    const res = await postQuizGrade({ answers, index_revision: quiz.value?.index_revision ?? null })
+    afterReview(res.reviewed.map((r) => r.id))
+    const wrong = res.wrong.length
+    setBanner(wrong ? `交卷：${answers.length} 题错 ${wrong} 题，错的已排进明天`
+                    : `交卷：${answers.length} 题全对，间隔往后拉了`, wrong ? 'info' : 'success')
+    quiz.value = null
+    quizDiag.value = null
+  } catch (err) {
+    setBanner(`交卷失败：${err.message}`, 'error')
+  } finally {
+    quizBusy.value = false
   }
 }
 
@@ -1610,6 +2181,7 @@ async function redo() {
 /** Esc 的收起顺序：弹窗 → 左侧工具窗口 → 右侧检查器 → 退出聚焦。 */
 function onEscape() {
   if (ctx.value) { ctx.value = null; return }
+  if (pathHit.value || pathFrom.value) { clearPathHighlight(); return }
   if (relating.value) { relating.value = null; return }
   if (creating.value) { creating.value = null; return }
   if (showHelp.value) { showHelp.value = false; return }
@@ -1723,6 +2295,7 @@ onMounted(async () => {
   document.documentElement.dataset.theme = theme.value
   const g = createGraph(canvasEl.value)
   graph.value = g
+  setSnap(g, snap.value)
   patcher.value = createPatcher({
     getRevision: () => revision.value,
     setRevision: (r) => { revision.value = r },
@@ -1788,23 +2361,39 @@ onBeforeUnmount(() => {
 
       <InboxTray v-if="panel === 'inbox'" class="inbox" :items="inboxItems" :busy="placing"
                  @place="placeOne" @place-all="placeAll" @close="panel = ''" />
+      <ChatPanel v-else-if="panel === 'chat'" class="study" :messages="chatLog" :busy="chatBusy"
+                 @send="sendChat" @stop="stopChat" @apply="applyChatCard" @goto="gotoNode"
+                 @clear="chatLog = []" @close="panel = ''" />
+      <PlansPanel v-else-if="panel === 'plans'" class="study" :doc="plansDoc" :progress="plansProgress"
+                  :schedules="plansSchedules" :fields="fieldNames"
+                  :busy="plansBusy" :proposal="planProposal" :proposing="planProposing"
+                  @save="savePlans" @goto="gotoNode" @build="buildPoint" @propose="proposePlan"
+                  @quiz="startQuiz" @refresh="refreshPlans" @close="panel = ''" />
+      <StudyPanel v-else-if="panel === 'study'" class="study" :today="todayList" :busy="quizBusy"
+                  @goto="gotoNode" @quiz="startQuiz($event.id ? [$event.id] : $event)"
+                  @build="buildPoint" @write="writeBody" @place="placeFromToday"
+                  @plans="panel = 'plans'; refreshPlans()"
+                  @refresh="refreshToday" @close="panel = ''" />
       <DigestPanel v-else-if="panel === 'digest'" class="digest" :digest="digest"
-                   @goto="gotoNode" @refresh="refreshDigest" @review="markReviewed" @close="panel = ''" />
+                   @goto="gotoNode" @refresh="refreshDigest" @merge="openMerge" @close="panel = ''" />
       <ImagePicker v-else-if="panel === 'assets'" class="picker" @pick="addImage" @add-note="addNote"
                    @error="setBanner($event, 'error')" @close="panel = ''" />
       <TimelinePanel v-else-if="panel === 'timeline'" class="timeline" :options="timelineChoices" :selected="timelines"
-                     :families="hist" @toggle="toggleTimeline" @toggle-family="toggleHistFamily"
+                     :families="hist" :trunk="hist.trunk" :chain="histChain"
+                     @toggle="toggleTimeline" @toggle-family="toggleHistFamily"
+                     @toggle-trunk="hist.trunk = !hist.trunk; renderHistory({ view: 'fit' })"
                      @select-all="timelines = []; renderHistory({ view: 'fit' })" @close="panel = ''" />
 
       <div class="stage">
         <div ref="canvasEl" class="canvas" @dragover.prevent @drop="onCanvasDrop" />
 
         <CanvasTools v-if="mode === 'structure'" :visible="visible" :shown-families="shownFamilies"
-                     :collapsed="collapsedIds.size" :aggregate="aggregate" :auto-lod="autoLod"
+                     :collapsed="collapsedIds.size" :aggregate="aggregate" :auto-lod="autoLod" :snap="snap"
                      :layouts="LAYOUTS" :can-undo="canUndo" :can-redo="canRedo" :locked="!!preview"
                      @toggle-family="visible[$event] = !visible[$event]; render()"
                      @toggle-aggregate="aggregate = !aggregate; expanded = new Set(); render()"
                      @toggle-lod="autoLod = !autoLod; render()"
+                     @toggle-snap="toggleSnap"
                      @pick-layout="runLayout" @add-note="addNote" @add-image="panel = 'assets'"
                      @undo="undo" @redo="redo" />
 
@@ -1862,18 +2451,23 @@ onBeforeUnmount(() => {
       <Inspector v-if="inspectorOpen" :selected="selected" :detail="detail" :relation-types="relationTypes"
                  :all-node-ids="allNodeIds" :pending="pending" :change-preview="changePreview"
                  :is-due="!!selected && dueIds.has(selected.id)"
+                 :suggestions="suggestions" :suggesting="suggesting"
                  @close="inspectorHidden = true" @goto="gotoNode" @edit-desc="editDesc" @add-ref="addRef"
-                 @review="markReviewed" @finalize="finalize" @retype-edge="retypeEdge"
+                 @review="markReviewed($event.id, $event.grade)" @quiz="startQuiz"
+                 @rename="openRename"
+                 @finalize="finalize" @retype-edge="retypeEdge"
                  @remove-edge="removeEdge" @add-edge="addEdgeDraft" @drop-change="dropChange"
                  @preview-changes="previewChanges" @apply-changes="applyChanges"
                  @clear-changes="pending = []; changePreview = null"
+                 @suggest="fetchSuggestions(selected?.id)" @dismiss-suggestion="dismissSuggestion"
                  :write-nonce="writeNonce" @save-body="saveBody" />
     </div>
 
     <StatusBar :mode="mode" :stats="stats" :edges-shown="edgesShown" :agg-shown="aggShown"
                :hist-plan="histPlan" :range="yearRange" :index-revision="indexRevision" :revision="revision"
-               :focus-name="focusName" :problems="problems"
-               @exit-focus="exitGroup" @show-problems="showProblems" @help="showHelp = true" />
+               :focus-name="focusName" :problems="problems" :usage="usage" :llm-busy="llmBusy"
+               @exit-focus="exitGroup" @show-problems="showProblems" @help="showHelp = true"
+               @show-usage="showUsage = true; refreshUsage()" />
 
     <ContextMenu v-if="ctx" v-bind="ctx" @pick="onMenuPick" @close="ctx = null" />
 
@@ -1883,6 +2477,21 @@ onBeforeUnmount(() => {
     <RelationDialog v-if="relating" :source="relating" :families="relationTypes"
                     :nodes="indexDoc?.nodes || []" :placed="placedIds" :linked="linkedOf"
                     @create="createRelation" @close="relating = null" />
+
+    <QuizDialog v-if="quiz" :questions="quiz.questions" :names="nodeNames" :diagnosis="quizDiag"
+                :busy="quizBusy" @diagnose="diagnoseQuiz" @submit="submitQuiz"
+                @goto="gotoNode($event); quiz = null" @close="quiz = null; quizDiag = null" />
+
+    <MergeDialog v-if="merging" :pair="merging" :impact="mergeImpact" :busy="mergeBusy"
+                 @preview="previewMerge" @apply="applyMerge" @swap="swapMerge"
+                 @goto="gotoNode($event); merging = null" @close="merging = null; mergeImpact = null" />
+
+    <RenameDialog v-if="renaming" :source="renaming" :taken="takenIds" :impact="renameImpact"
+                  :busy="renameBusy" @preview="previewRename" @apply="applyRename"
+                  @close="renaming = null; renameImpact = null" />
+
+    <UsageDialog v-if="showUsage && usage" :usage="usage" @refresh="refreshUsage"
+                 @close="showUsage = false" />
 
     <HelpDialog v-if="showHelp" :mode="mode" @close="showHelp = false" />
   </div>

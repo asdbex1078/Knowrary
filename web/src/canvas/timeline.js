@@ -13,6 +13,7 @@ export const LANE_TITLE_H = 26     // 泳道标题占的高度，节点从它下
 export const LANE_GAP = 24
 export const BLOCK_GAP = 60        // 多条时间线叠加时，块与块之间的空行
 export const AXIS_H = 40
+export const TRUNK_GAP = 74        // 主干与第一排旁支之间的距离
 
 /** 分组的所有后代（含自己）。 */
 export function descendants(groups, gid) {
@@ -107,6 +108,82 @@ function packLane(items) {
 }
 
 /**
+ * 找出最长的一条演化链，当主干用。
+ *
+ * 只沿时间正向走（source.year ≤ target.year）：一来演化本来就该是这个方向，
+ * 二来顺手保证了无环——诊断报告里那 13 处关系环说明图上真的会有反向边，
+ * 拿它跑最长路会死循环。
+ */
+export function longestChain(nodes, edges) {
+  const byId = new Map(nodes.map((n) => [n.id, n]))
+  const out = new Map()
+  for (const e of edges) {
+    if (e.family !== '演化') continue
+    const a = byId.get(e.source)
+    const b = byId.get(e.target)
+    if (!a || !b || a.year > b.year) continue
+    out.set(e.source, [...(out.get(e.source) || []), e.target])
+  }
+  const order = [...byId.keys()].sort((x, y) => byId.get(x).year - byId.get(y).year)
+  const best = new Map(order.map((id) => [id, 1]))
+  const prev = new Map()
+  for (const id of order) {
+    for (const t of out.get(id) || []) {
+      if (best.get(id) + 1 > best.get(t)) {
+        best.set(t, best.get(id) + 1)
+        prev.set(t, id)
+      }
+    }
+  }
+  let end = null
+  for (const [id, n] of best) if (end === null || n > best.get(end)) end = id
+  const chain = []
+  for (let cur = end; cur !== undefined && cur !== null; cur = prev.get(cur)) chain.unshift(cur)
+  return chain.length >= 2 ? chain : []          // 一个点不叫链
+}
+
+/**
+ * 主干道布局：把最长的那条演化链拉成一条水平主轴，其余节点作为旁支挂在上下。
+ *
+ * 为什么需要它：泳道布局回答"谁和谁是一类"，而聚焦到一条线时你要问的是"谁接谁"。
+ * 同一个泳道里几条链交织时，散点加连线根本读不出主线走向。
+ * X 仍然锁死在年份上，所以这里只动 Y——位置依旧不是算法乱猜的。
+ */
+function trunkLayout(kept, scale, edges) {
+  const nodes = kept.map((k) => k.node)
+  const chain = longestChain(nodes, edges)
+  if (!chain.length) return null
+  const onTrunk = new Set(chain)
+
+  const box = (node) => {
+    const size = sizeFor(node)
+    return { id: node.id, year: node.year, w: size.w, h: size.h, x: scale.at(node.year) }
+  }
+  const trunk = chain.map((id) => box(nodes.find((n) => n.id === id)))
+  const rest = nodes.filter((n) => !onTrunk.has(n.id)).map(box)
+
+  // 旁支上下交替，各自跑一遍扫描线：只往一边堆会把图拉得很高
+  const up = [], down = []
+  rest.sort((a, b) => a.year - b.year || a.id.localeCompare(b.id))
+  rest.forEach((item, i) => (i % 2 ? up : down).push(item))
+  const upRows = packLane(up)
+  const downRows = packLane(down)
+
+  const trunkY = AXIS_H + LANE_GAP + LANE_TITLE_H + upRows * ROW_H + (up.length ? TRUNK_GAP : LANE_PAD)
+  const placed = new Map()
+  for (const item of trunk) placed.set(item.id, { ...item, y: trunkY, trunk: true })
+  for (const item of up) placed.set(item.id, { ...item, y: trunkY - TRUNK_GAP - (item.row + 1) * ROW_H + ROW_H })
+  for (const item of down) placed.set(item.id, { ...item, y: trunkY + TRUNK_GAP + item.row * ROW_H })
+
+  const height = trunkY + TRUNK_GAP + downRows * ROW_H + LANE_PAD + (down.length ? 0 : -TRUNK_GAP)
+  const name = `主干：${chain[0]} → … → ${chain[chain.length - 1]}（${chain.length} 站）`
+  return { placed, chain,
+           lanes: [{ name, y: AXIS_H + LANE_GAP, h: height - AXIS_H - LANE_GAP,
+                     width: scale.width + NODE_W + 80 }],
+           height: height + LANE_GAP }
+}
+
+/**
  * 时间滑块拖到 t 时，这个节点还该不该出现。
  *
  * 默认是"出生年 ≤ t"的叙事视角；勾上有效期就换成区间视角（F4.5，法律 / 标准场景）：
@@ -126,7 +203,7 @@ export function visibleAt(node, upto, validity) {
  */
 export function buildTimeline(index, layout, opts = {}) {
   const { timelines = [], families = new Set(['演化']), compact = false, upto = null,
-          validity = false } = opts
+          validity = false, trunk = false } = opts
   const withYear = index.nodes.filter((n) => !n.virtual && typeof n.year === 'number')
   const laneNames = new Map()
   const kept = []
@@ -138,6 +215,16 @@ export function buildTimeline(index, layout, opts = {}) {
     kept.push({ node, lane })
   }
   const scale = yearScale(kept.map((k) => k.node.year), compact)
+
+  // 主干道：先算出可见的演化边，再挑最长链。挑不出链（没有演化边、或只剩孤点）
+  // 就退回泳道，而不是给一张空图——那样用户只会以为功能坏了。
+  if (trunk) {
+    const visible = new Set(kept.map((k) => k.node.id))
+    const ev = index.edges.filter((e) => visible.has(e.source) && visible.has(e.target))
+    const laid = trunkLayout(kept, scale, ev)
+    if (laid) return finish(laid.placed, laid.lanes, laid.height, scale, index, kept, withYear,
+                            families, { trunk: laid.chain })
+  }
 
   const placed = new Map()
   const lanes = []
@@ -159,18 +246,22 @@ export function buildTimeline(index, layout, opts = {}) {
     y += h + LANE_GAP
   }
 
+  return finish(placed, lanes, y, scale, index, kept, withYear, families, {})
+}
+
+/** 两种布局共用的收尾：挑边、算诊断、拼出 plan。 */
+function finish(placed, lanes, height, scale, index, kept, withYear, families, extra) {
   const edges = index.edges.filter((e) => families.has(e.family)
     && placed.has(e.source) && placed.has(e.target))
   // 两端都有 year 才画，所以缺年份的演化边是"数据欠账"，单独报出来而不是悄悄丢掉
   const missingYear = index.edges.filter((e) => e.family === '演化' && e.year == null
     && placed.has(e.source) && placed.has(e.target)).map((e) => e.id)
-  const skipped = withYear.length - kept.length
   return {
     placed, lanes, ticks: scale.ticks, width: scale.width + NODE_W + 80,
-    height: y, edges,
+    height, edges, ...extra,
     diagnostics: {
       noYear: index.nodes.filter((n) => !n.virtual && typeof n.year !== 'number').length,
-      missingYear, skipped,
+      missingYear, skipped: withYear.length - kept.length,
     },
   }
 }

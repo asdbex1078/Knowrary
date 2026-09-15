@@ -300,6 +300,8 @@ class PlaceResult(Strict):
 class ReviewDone(Strict):
     id: str
     reviews: int
+    step: int = 0                      # 间隔序号：忘了归 0、模糊不变、记得 +1
+    lapses: int = 0                    # 累计答"忘了"的次数
     next_due: str | None = None
 
 
@@ -312,3 +314,352 @@ class NodeDetail(Strict):
     out: list[dict[str, Any]] = Field(default_factory=list)
     in_edges: list[dict[str, Any]] = Field(default_factory=list)
     obsidian_uri: str = ""
+
+
+# ---------------------------------------------------------------- Suggest（AI 建议）
+
+class SuggestRequest(Strict):
+    node_id: str
+    index_revision: int | None = None
+
+
+class SuggestEdge(Strict):
+    type: str
+    target: str
+    direction: Literal["out", "in"] = "out"
+    reason: str = ""
+    confidence: float = 0.8
+
+
+class SuggestDuplicate(Strict):
+    existing_id: str
+    reason: str = ""
+    confidence: float = 0.8
+
+
+class SuggestResult(Strict):
+    node_id: str
+    edges: list[SuggestEdge] = Field(default_factory=list)
+    duplicates: list[SuggestDuplicate] = Field(default_factory=list)
+    suggested_field: str | None = None
+    suggested_group: str | None = None
+    suggested_group_name: str | None = None
+    raw_llm: str | None = None
+
+
+# ---------------------------------------------------------------- Quiz（测验与三档反馈）
+
+Grade = Literal["记得", "模糊", "忘了"]
+
+
+class QuizRequest(Strict):
+    """对哪些节点出题。节点多了 prompt 会超长，服务端按 MAX_NODES 截断并在 warnings 里说明。"""
+
+    node_ids: list[str]
+    count: int = Field(default=3, ge=1, le=10)
+    style: Literal["复习", "面试"] = "复习"
+    coach: str = ""                          # 面试口径下的方向，例如「Java 后端开发」
+
+
+class QuizQuestion(Strict):
+    type: str = "回忆题"                     # 回忆题 / 关系题 / 辨析题
+    stem: str
+    answer: str = ""
+    points: list[str] = Field(default_factory=list)   # 考点节点 id，答错时按这些安排复习
+    hint: str = ""
+
+
+class QuizSet(Strict):
+    questions: list[QuizQuestion] = Field(default_factory=list)
+    index_revision: int = 0                  # 提交批改时带回来，索引变了就该重新出题
+    warnings: list[str] = Field(default_factory=list)
+
+
+class QuizAnswer(Strict):
+    question: QuizQuestion
+    grade: Grade
+    my_answer: str = ""                      # 我写下的答案；诊断靠它跟标准答案比对
+    missed: list[str] = Field(default_factory=list)    # 诊断给出的漏掉点，交卷时一并留档
+    wrong_points: list[str] = Field(default_factory=list)   # 诊断给出的记错点
+
+
+class QuizGradeRequest(Strict):
+    answers: list[QuizAnswer]
+    index_revision: int | None = None
+
+
+class QuizDiagnoseRequest(Strict):
+    """整轮一次性比对：逐题调模型会让每道题都卡几秒，答题节奏全毁。"""
+
+    answers: list[QuizAnswer]
+
+
+class QuizDiagnosisItem(Strict):
+    n: int                                   # 第几题，从 1 开始
+    missed: list[str] = Field(default_factory=list)
+    wrong: list[str] = Field(default_factory=list)
+    suggested_grade: Grade = "模糊"
+    comment: str = ""
+
+
+class QuizDiagnosis(Strict):
+    items: list[QuizDiagnosisItem] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+
+
+class QuizGraded(Strict):
+    reviewed: list[dict[str, Any]] = Field(default_factory=list)   # {id, grade, step, lapses, next_due}
+    wrong: list[str] = Field(default_factory=list)                 # 这一轮答"忘了"的节点
+
+
+class ReviewRequest(Strict):
+    """POST /api/review/:id 的可选 body。不带 body 等价于「记得」，兼容旧前端。"""
+
+    grade: Grade = "记得"
+
+
+# ---------------------------------------------------------------- Plans（学习计划 F10）
+
+# 知识点 id 同时是将来 md 的文件名，所以沿用节点 id 的忌讳字符。
+# 写成"允许的字符类"而不是前瞻断言：pydantic 的 Rust 正则引擎不支持 look-around。
+ID_PATTERN = r'^[^\\/:*?"<>|\s]+$'
+
+
+PointLoad = Literal["轻", "中", "重"]
+
+
+class PlanPoint(Strict):
+    """计划里的一个知识点。
+
+    **id 允许指向图里还不存在的节点**——这正是学习计划的用途：你要学 Transformer 的时候
+    这些节点一个都还没有。`name` / `why` 让计划在节点建出来之前也读得懂。
+    """
+
+    id: str = Field(min_length=1, max_length=200, pattern=ID_PATTERN)
+    name: str = ""
+    why: str = ""
+    load: PointLoad = "中"      # 学习负荷三档；换算成小时是 core.LOAD_HOURS 那一张表
+
+
+class PlanStage(Strict):
+    name: str = Field(min_length=1, max_length=120)
+    deadline: str | None = None
+    points: list[PlanPoint] = Field(default_factory=list)
+
+
+# 三种口径，不是三套架构（F10.3b）：拆解模板与出题口径不同，数据结构和链路完全共用。
+#   学习 = 按依赖顺序（先学的在前）  面试 = 按会怎么问  领域 = 按覆盖度铺一张地图
+PlanKind = Literal["学习", "面试", "领域"]
+
+
+class Plan(Strict):
+    name: str = Field(min_length=1, max_length=120)
+    goal: str = ""                     # 面试计划里这里放岗位要求原文
+    kind: PlanKind = "学习"
+    coach: str = ""                    # 教练侧写，例如「Java 后端开发」「SRE 运维」；注入拆解与出题
+    field: str = ""                    # 这份计划的顶层领域；建知识点时的落脚点由它决定
+    created: str | None = None
+    target_date: str | None = None
+    weekly_hours: int = Field(default=7, ge=1, le=80)   # 每周能投入几小时；时间账的分母
+    daily_quota: int = Field(default=2, ge=1, le=20)
+    stages: list[PlanStage] = Field(default_factory=list)
+
+
+class PlansDoc(Strict):
+    schema_version: int = 1
+    revision: int = 0
+    updated_at: str | None = None
+    plans: dict[str, Plan] = Field(default_factory=dict)
+
+
+class PlansRead(Strict):
+    doc: PlansDoc
+    progress: dict[str, Any] = Field(default_factory=dict)   # {plan_id: {points, counts, total, built}}
+    schedules: dict[str, Any] = Field(default_factory=dict)  # {plan_id: 时间账}，同样现算不落盘
+    index_revision: int = 0
+
+
+class PlansWrite(Strict):
+    """整份替换。计划是人手编排的小文档，没必要上 Merge Patch——
+    但 revision 仍然要挡并发，语义与 layout 的 base_revision 一致。"""
+
+    base_revision: int
+    plans: dict[str, Plan]
+
+
+class PlansSaved(Strict):
+    revision: int
+    progress: dict[str, Any] = Field(default_factory=dict)
+    schedules: dict[str, Any] = Field(default_factory=dict)
+
+
+ProposeMode = Literal["标准", "速学"]
+
+
+class PlanProposeRequest(Strict):
+    """目标 → 知识点清单。只提议，不落盘；人在面板上逐条增删后才进 plans.json。"""
+
+    goal: str = Field(min_length=1, max_length=8000)   # 面试计划要塞得下一整份 JD
+    plan_name: str = ""
+    kind: PlanKind = "学习"
+    coach: str = ""
+    target_date: str | None = None                    # 有它模型才排得出阶段截止日
+    weekly_hours: int = Field(default=7, ge=1, le=80)
+    mode: ProposeMode = "标准"                         # 速学＝时间装不下时，砍到最精炼的一份
+    known_points: list[str] = Field(default_factory=list, max_length=200)
+    """这份计划里已经有的点（`id` 或 `id（名字）`）。不喂给模型，它就会把同一个目标
+    再拆一遍近义词——`RNN` / `RNN与长程依赖` 这种，靠 id 去重是拦不住的。"""
+
+
+class PlanProposal(Strict):
+    stages: list[PlanStage] = Field(default_factory=list)
+    schedule: dict[str, Any] = Field(default_factory=dict)   # 这份提议排进给定时间后的时间账
+    dropped: list[PlanPoint] = Field(default_factory=list)   # 速学模式砍掉的点，必须留痕
+    duplicates: list[str] = Field(default_factory=list)      # 这份计划里已经有的点，面板上默认划掉
+    suggested_field: str = ""          # 这份计划该落在哪个领域，采纳时填进计划
+    notes: str = ""
+    existing: list[str] = Field(default_factory=list)    # 提议里已经在图谱中的 id，面板上标出来
+    warnings: list[str] = Field(default_factory=list)
+
+
+# ---------------------------------------------------------------- Coach（今日清单 F10.3）
+
+class CoachItem(Strict):
+    """今天可以动手的一条。kind 决定点下去干什么，前端按它分派。"""
+
+    kind: Literal["wrong", "due", "unbuilt", "shell", "inbox"]
+    id: str
+    name: str
+    why: str = ""                      # 计划里写的"为什么要学它"
+    detail: str = ""                   # 「逾期 3 天」「错过 2 次」「放进某某组」
+    plan: str | None = None
+    plan_name: str | None = None
+    stage: str | None = None
+
+
+class CoachPlanLine(Strict):
+    id: str
+    name: str
+    stage: str = ""                    # 当前阶段；全建完了是空串
+    done: bool = False
+    built: int = 0
+    total: int = 0
+    behind: int = 0                    # 已经过了阶段截止日、却还没建出来的点数
+    verdict: str = ""                  # 充裕 / 紧 / 不可能；没填目标日期就是空串
+    days_left: int | None = None
+    suggested_quota: int = 0           # 按剩余点数和剩余天数算的每日建议量
+    stage_deadline: str | None = None  # 当前阶段的截止日（人手填的优先，否则用建议日）
+
+
+class CoachToday(Strict):
+    generated_at: str
+    items: list[CoachItem] = Field(default_factory=list)
+    counts: dict[str, int] = Field(default_factory=dict)
+    plans: list[CoachPlanLine] = Field(default_factory=list)
+    pools: dict[str, list[str]] = Field(default_factory=dict)   # 出题范围：今日 / 没考过 / 已建全部
+
+
+# ---------------------------------------------------------------- 对话式教练（阶段 12）
+
+class ChatMessage(Strict):
+    role: Literal["user", "assistant"]
+    content: str = Field(max_length=100000)
+
+
+class ChatRequest(Strict):
+    """整段对话每次都重发：会话状态在前端，服务端不持有——
+    刷新页面不会"丢一半上下文"，也不用管会话过期。"""
+
+    messages: list[ChatMessage] = Field(min_length=1, max_length=200)
+
+
+# ---------------------------------------------------------------- LLM 用量
+
+class UsageBucket(Strict):
+    calls: int = 0
+    errors: int = 0
+    cost_usd: float = 0.0              # 只有 provider 自己报了才非 0（目前只有 claude-cli 报）
+    ms: int = 0
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cache_read_tokens: int = 0
+    cache_write_tokens: int = 0
+
+
+class UsageRead(Strict):
+    date: str
+    today: UsageBucket
+    totals: UsageBucket
+    by_op: dict[str, UsageBucket] = Field(default_factory=dict)
+    recent: list[dict[str, Any]] = Field(default_factory=list)
+    provider: str = ""                 # 当前各角色用的是谁，方便对账
+    roles: dict[str, str] = Field(default_factory=dict)
+    cost_known: bool = False           # false = 这个 provider 不报价，页面上只显示 token
+
+
+# ---------------------------------------------------------------- 重命名（改 id）
+
+class RenameRequest(Strict):
+    """改一个知识点的 id。文件名就是 id，所以这同时是改文件名。"""
+
+    old_id: str
+    new_id: str = Field(min_length=1, max_length=200, pattern=ID_PATTERN)
+    base_revision: int
+    dry_run: bool = True               # 默认只算影响面；确认后再发一次 dry_run=false
+
+
+class RenameImpact(Strict):
+    old_id: str
+    new_id: str
+    path: str
+    new_path: str
+    links: int = 0                     # `[[旧id]]` 一共出现多少处
+    files: list[str] = Field(default_factory=list)
+    layout: bool = False               # 画布位置要不要跟着迁
+    layout_edges: int = 0
+    refs: int = 0
+    docs: int = 0                      # 有几个分组把它当总览文档
+    reviews: int = 0
+    quiz: int = 0
+    plans: list[str] = Field(default_factory=list)
+
+
+class RenameResult(Strict):
+    impact: RenameImpact
+    applied: bool = False
+    index_revision: int = 0
+
+
+# ---------------------------------------------------------------- 合并重复节点
+
+class MergeRequest(Strict):
+    """把两张讲同一件事的卡并成一张。保留谁、丢弃谁由人定，服务端不猜。"""
+
+    keep_id: str
+    drop_id: str
+    base_revision: int
+    dry_run: bool = True
+
+
+class MergeImpact(Strict):
+    keep_id: str
+    drop_id: str
+    keep_path: str
+    drop_path: str
+    moved_edges: list[dict[str, str]] = Field(default_factory=list)   # 会迁到保留那张上的边
+    dropped_edges: list[str] = Field(default_factory=list)            # 并完没意义、会丢掉的边（附原因）
+    links: int = 0
+    files: list[str] = Field(default_factory=list)
+    body_chars: int = 0                # 会被追加到保留那张末尾的正文长度
+    layout: bool = False
+    layout_edges: int = 0
+    refs: int = 0
+    reviews: int = 0
+    quiz: int = 0
+    plans: list[str] = Field(default_factory=list)
+
+
+class MergeResult(Strict):
+    impact: MergeImpact
+    applied: bool = False
+    index_revision: int = 0
