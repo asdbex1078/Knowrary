@@ -1,7 +1,7 @@
 # server —— Knowrary 本地服务（FastAPI）
 
 只做三件事：**只读** index、**读写** layout、静态托管前端产物。
-**这一层永远不改 Markdown**——改 md 只能走阶段 3 的 ChangeSet（`POST /api/changes`，待建）。
+**改 md 只能走 ChangeSet**（`POST /api/changes`，默认只预览）；复习与测验只写 `.knowrary/` 下的记录，一律不碰 Markdown。
 
 ## 启动
 
@@ -15,7 +15,7 @@ KNOWRARY_VAULT=/别的/vault ./server/dev.sh 9000
 浏览器打开 <http://127.0.0.1:8765/>（托管 `web/dist`）。改前端时另开一个终端：
 `cd web && npm run dev`（5173，`/api` 代理到 8765）。
 
-## 接口（阶段 2 已实现）
+## 接口
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
@@ -23,6 +23,17 @@ KNOWRARY_VAULT=/别的/vault ./server/dev.sh 9000
 | GET | `/api/index` | 派生索引全量（阶段 1 的 core 生成，md 变化时自动重建并落盘） |
 | GET | `/api/layout` | `{layout, orphans, index_revision, generated}`；没有 layout.json 时按 field / 目录自动生成 |
 | PATCH | `/api/layout` | 部分文档合并写入，带 `base_revision` 乐观并发 |
+| GET | `/api/node/:id` | md 原文 + 元数据 + 出入边 + Obsidian 链接 |
+| GET | `/api/inbox` · POST `/api/place` | 未上画布的节点 / 放上画布（只写 layout） |
+| GET | `/api/digest` | 欠账清单：草稿 / 桥 / 重复 / stub / 环 |
+| GET / PUT | `/api/plans` | 学习计划：整份替换 + `base_revision`；进度五档现算不落盘 |
+| POST | `/api/plans/propose` | 目标 → 知识点清单（LLM **learn** 角色），只提议不落盘 |
+| GET | `/api/coach/today` | 今日清单：错题 > 到期 > 未建 > 只有壳 > Inbox，**不调 LLM** |
+| POST | `/api/changes` | **Markdown 写回唯一入口**，默认 `dry_run=true` 只出 diff |
+| POST | `/api/suggest` | AI 建议关系 / 去重 / 分类，走 LLM review 角色 |
+| GET | `/api/review/due` · POST `/api/review/:id` | 到期复习 / 记一次复习（body 可选 `grade` 三档） |
+| POST | `/api/quiz` · `/api/quiz/diagnose` · `/api/quiz/grade` | 出题（LLM）/ 整轮比对作答（LLM，只读）/ 交卷 |
+| GET/POST | `/api/asset(s)` | vault `assets/` 下的图片 |
 
 `PATCH` 语义（JSON Merge Patch 风格）：
 
@@ -48,11 +59,13 @@ KNOWRARY_VAULT=/别的/vault ./server/dev.sh 9000
 | 文件 | 作用 |
 | --- | --- |
 | `paths.py` | vault 解析（`KNOWRARY_VAULT`）与 `tools/knowrary/core` 注入 |
-| `contracts.py` | 三份契约的 pydantic v2 模型：index（只读）、layout + LayoutPatch、ChangeSet（阶段 3） |
+| `contracts.py` | 契约的 pydantic v2 模型：index（只读）、layout + LayoutPatch、ChangeSet、Suggest、Quiz |
+| `llm_call.py` | 按角色取 provider + 解析回答 JSON，suggest / quiz 共用 |
+| `suggest.py` · `quiz.py` · `plans.py` | AI 建议 / 出题与交卷 / 学习计划，都只提议或只写自己的记录 |
 | `index_service.py` | 按 md 文件指纹缓存索引，变化即重建并写 `.knowrary/index.json` |
 | `layout_store.py` | layout 读写：初始生成、部分合并、revision 校验、原子写、孤立引用 |
 | `app.py` | FastAPI 路由与静态托管 |
-| `tests/run.py` | 服务层自测（TestClient + 临时 vault，16 个用例） |
+| `tests/run.py` | 服务层自测（TestClient + 临时 vault，42 个用例） |
 
 初始布局生成与孤立引用判定住在 `tools/knowrary/core/layout.py`（零第三方依赖），
 所以 `python3 tools/knowrary/knowrary.py layout init/check` 不需要 .venv 也能用。
@@ -60,6 +73,6 @@ KNOWRARY_VAULT=/别的/vault ./server/dev.sh 9000
 ## 自测
 
 ```bash
-.venv/bin/python server/tests/run.py          # 16 个用例
+.venv/bin/python server/tests/run.py          # 42 个用例
 .venv/bin/python server/tests/run.py revision # 只跑名字含 revision 的
 ```

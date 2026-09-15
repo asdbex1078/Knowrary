@@ -1,11 +1,27 @@
 {
-  "schema_version": 1,
-  "updated_at": "2026-09-14T16:03:42Z",
+  "schema_version": 2,
+  "updated_at": "2026-09-15T08:04:05Z",
   "nodes": {
     "Transformer": {
       "reviews": [
-        "2026-09-15"
+        {
+          "date": "2026-09-15",
+          "grade": "记得"
+        }
       ],
+      "step": 1,
+      "lapses": 0,
+      "next_due": "2026-09-16"
+    },
+    "长程任务生命周期": {
+      "reviews": [
+        {
+          "date": "2026-09-15",
+          "grade": "记得"
+        }
+      ],
+      "step": 1,
+      "lapses": 0,
       "next_due": "2026-09-16"
     }
   }

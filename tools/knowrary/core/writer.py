@@ -190,8 +190,10 @@ def _create_node_edit(vault: Path, change: dict, taken: set[str]) -> FileEdit:
         raise ChangeRejected(f"新知识点只能建在 {' / '.join(r + '/' for r in NODE_ROOTS)} 下：{rel}")
     if path.exists():
         raise ChangeRejected(f"文件已存在：{rel}")
-    if not path.parent.is_dir():
-        raise ChangeRejected(f"目录不存在：{rel.rsplit('/', 1)[0]}")
+    # 目录不存在就顺手建：开一个新领域时 vault 里本来就没有那个文件夹，
+    # 逼着人先去 Obsidian 里手动新建一个空目录没有道理。
+    # 越界与 `..` 已经在上面的 resolve 比对里拦掉了，这里只可能建在 nodes/ 或 fields/ 底下。
+    path.parent.mkdir(parents=True, exist_ok=True)
     if path.stem != node_id:
         raise ChangeRejected(f"文件名要和 id 一致（id 默认取文件名）：{path.name} ≠ {node_id}.md")
     return FileEdit(path=path, rel=rel, before="",
@@ -213,10 +215,20 @@ def plan(vault: Path, changes: list[dict], index: dict) -> list[FileEdit]:
     nodes = {n["id"]: n for n in index["nodes"]}
     edits: list[FileEdit] = []
     taken = set(nodes)
+    created: dict[str, FileEdit] = {}
     for change in creates:
-        edits.append(_create_node_edit(vault, change, taken))
+        edit = _create_node_edit(vault, change, taken)
+        edits.append(edit)
         taken.add(change["source"])
+        created[change["source"]] = edit
     for node_id, group in sorted(by_node.items()):
+        # 同一批里刚新建的节点：它还不在索引里，但边要能挂上去——
+        # 否则"建一个节点顺便连几条边"只能拆成两次请求，中间那一刻图上多一个孤岛。
+        fresh = created.get(node_id)
+        if fresh is not None:
+            fresh.after, notes = apply_to_text(fresh.after, node_id, group)
+            fresh.notes = [*fresh.notes, *notes]
+            continue
         meta = nodes.get(node_id)
         if not meta or not meta.get("path"):
             raise ChangeRejected(f"节点 `{node_id}` 不存在或没有对应文件")

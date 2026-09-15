@@ -1,6 +1,6 @@
 ---
 name: Transformer
-field: 计算机体系结构
+field: AI
 year: 2017
 desc: Transformer架构、组成
 learned: 2026-09-14

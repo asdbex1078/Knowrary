@@ -18,11 +18,14 @@ const props = defineProps({
   changePreview: { type: Object, default: null },
   isDue: { type: Boolean, default: false },
   writeNonce: { type: Number, default: 0 },   // 外面 ++ 一次就把正文编辑框打开
+  suggestions: { type: Object, default: null },   // SuggestResult from /api/suggest
+  suggesting: { type: Boolean, default: false },   // LLM 正在生成建议
 })
 const emit = defineEmits([
-  'close', 'goto', 'edit-desc', 'add-ref', 'review', 'finalize',
+  'close', 'goto', 'edit-desc', 'add-ref', 'review', 'quiz', 'rename', 'finalize',
   'retype-edge', 'remove-edge', 'add-edge', 'drop-change',
   'preview-changes', 'apply-changes', 'clear-changes', 'save-body',
+  'suggest', 'dismiss-suggestion',
 ])
 
 const tab = ref('detail')
@@ -131,14 +134,26 @@ function diffLines(text) {
                 <a v-if="detail" class="btn primary" :href="detail.obsidian_uri">
                   <Icon name="external" :size="14" />在 Obsidian 打开
                 </a>
-                <button v-if="isDue" class="btn" title="记一次复习（只写 review-log.json）"
-                        @click="emit('review', selected.id)">
-                  <Icon name="rotate" :size="14" />复习过了
+                <button class="btn" title="就这个知识点出几道题（调 LLM，几秒）"
+                        @click="emit('quiz', [selected.id])">
+                  <Icon name="play" :size="14" />考一下
+                </button>
+                <button v-if="detail" class="btn" title="改 id（同时是文件名），引用会一起迁走"
+                        @click="emit('rename', selected.id)">
+                  <Icon name="pencil" :size="14" />重命名
                 </button>
                 <button v-if="isDraft" class="btn" title="位置确认下来，不再是草稿（只改 layout）"
                         @click="emit('finalize', selected.id)">
                   <Icon name="check" :size="14" />定稿
                 </button>
+              </div>
+
+              <div v-if="isDue" class="act-row grade-row">
+                <span class="dim" style="font-size: 11.5px">不考的话，直接记一笔：</span>
+                <button v-for="g in ['忘了', '模糊', '记得']" :key="g" class="btn subtle tiny"
+                        data-act="review" :data-grade="g"
+                        :title="`记为「${g}」，只写 review-log.json`"
+                        @click="emit('review', { id: selected.id, grade: g })">{{ g }}</button>
               </div>
 
               <dl class="meta-grid">
@@ -213,6 +228,46 @@ function diffLines(text) {
                   </li>
                 </ul>
                 <p v-else class="dim">还没有出边。</p>
+              </div>
+
+              <div class="section">
+                <div class="section-head">
+                  AI 建议
+                  <button class="btn subtle tiny" style="margin-left: auto" :disabled="suggesting"
+                          @click="emit('suggest')">
+                    <Icon name="rotate" :size="13" />{{ suggesting ? '分析中…' : '请求建议' }}
+                  </button>
+                </div>
+                <div v-if="suggesting" class="dim" style="padding: 6px 0">LLM 正在分析关系…</div>
+                <template v-if="suggestions">
+                  <div v-if="suggestions.duplicates?.length" class="card warn-text" style="margin-bottom: 8px">
+                    <div v-for="(d, i) in suggestions.duplicates" :key="i" style="margin-bottom: 4px">
+                      <strong>疑似重复：</strong>
+                      <span class="link" @click="emit('goto', d.existing_id)">{{ d.existing_id }}</span>
+                      <span class="dim" style="margin-left: 4px">{{ d.reason }}</span>
+                    </div>
+                  </div>
+                  <ul v-if="suggestions.edges?.length">
+                    <li v-for="(s, i) in suggestions.edges" :key="i" class="edge-row">
+                      <span class="dim" style="min-width: 48px">{{ s.type }}</span>
+                      <Icon :name="s.direction === 'out' ? 'arrowRight' : 'arrowLeft'" :size="13" class="dim" />
+                      <span class="to link" @click="emit('goto', s.target)">{{ s.target }}</span>
+                      <span v-if="s.reason" class="dim tail" style="font-size: 10.5px">{{ s.reason }}</span>
+                      <button class="btn subtle tiny" title="采纳这条建议"
+                              @click="emit('add-edge', { relation: s.type, target: s.target, direction: s.direction, year: '', note: s.reason })">
+                        <Icon name="plus" :size="13" />采纳
+                      </button>
+                      <button class="icon-btn ghost tiny" title="忽略" @click="emit('dismiss-suggestion', i)">
+                        <Icon name="x" :size="13" />
+                      </button>
+                    </li>
+                  </ul>
+                  <p v-else-if="!suggestions.duplicates?.length" class="dim">LLM 没有发现需要建议的关系。</p>
+                  <p v-if="suggestions.suggested_field" class="dim" style="margin-top: 6px">
+                    建议领域：<strong>{{ suggestions.suggested_field }}</strong>
+                  </p>
+                </template>
+                <p v-else-if="!suggesting" class="dim">点「请求建议」让 AI 分析可能的关系。</p>
               </div>
 
               <div class="section">

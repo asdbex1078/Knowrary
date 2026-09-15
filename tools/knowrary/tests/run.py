@@ -507,6 +507,190 @@ def 到期列表按日期排序且跳过stub():
 
 
 @case
+def 三档反馈推进或回退间隔序号():
+    vault, index, _ = placed_vault()
+    core.record_review(vault, "a", _dt.date(2026, 9, 12), grade="记得")
+    assert core.load_log(vault)["nodes"]["a"]["step"] == 1
+    core.record_review(vault, "a", _dt.date(2026, 9, 13), grade="记得")
+    e = core.load_log(vault)["nodes"]["a"]
+    assert e["step"] == 2 and e["next_due"] == "2026-09-15", e            # 序号 2 → 隔 2 天
+
+    core.record_review(vault, "a", _dt.date(2026, 9, 15), grade="模糊")
+    e = core.load_log(vault)["nodes"]["a"]
+    assert e["step"] == 2 and e["next_due"] == "2026-09-17", e            # 模糊：序号不动
+
+    core.record_review(vault, "a", _dt.date(2026, 9, 17), grade="忘了")
+    e = core.load_log(vault)["nodes"]["a"]
+    assert e["step"] == 0 and e["lapses"] == 1, e                          # 忘了：序号归 0
+    assert e["next_due"] == "2026-09-18", e                                # 明天再考一次
+    assert [r["grade"] for r in e["reviews"]] == ["记得", "记得", "模糊", "忘了"], e
+
+    try:
+        core.record_review(vault, "a", grade="半懂")
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("非法档位必须被拒绝")
+
+
+@case
+def 旧版复习记录能读成三档格式():
+    vault, index, _ = placed_vault()
+    # v1：reviews 是日期字符串数组，没有 step / lapses
+    core.write_json_atomic(vault / ".knowrary/review-log.json", {
+        "schema_version": 1, "updated_at": None,
+        "nodes": {"a": {"reviews": ["2026-09-10", "2026-09-11"], "next_due": "2026-09-13"}}})
+    e = core.load_log(vault)["nodes"]["a"]
+    assert e["step"] == 2 and e["lapses"] == 0, e                          # 旧记录等价于每次都"记得"
+    assert [r["grade"] for r in e["reviews"]] == ["记得", "记得"], e
+    assert core.next_due_for(e, None) == "2026-09-13", e                   # 到期日与旧算法一致
+
+    # 读操作不许改用户的文件
+    raw = (vault / ".knowrary/review-log.json").read_text(encoding="utf-8")
+    core.load_log(vault)
+    assert (vault / ".knowrary/review-log.json").read_text(encoding="utf-8") == raw
+
+
+@case
+def 错题本按考点聚合答错次数():
+    vault, index, _ = placed_vault()
+    kept = core.append_answers(vault, [
+        {"points": ["a"], "type": "回忆题", "stem": "A 是什么", "answer": "...", "grade": "忘了"},
+        {"points": ["a", "b"], "type": "关系题", "stem": "A 和 B", "answer": "...", "grade": "模糊"},
+        {"points": ["b"], "type": "回忆题", "stem": "B 是什么", "answer": "...", "grade": "记得"},
+        {"points": ["c"], "grade": "不认识"},        # 非法档位：丢弃
+        {"points": [], "grade": "忘了"},             # 没有考点：丢弃
+    ])
+    assert len(kept) == 3, kept
+    rows = core.wrong_nodes(core.load_quiz_log(vault))
+    assert [r["id"] for r in rows] == ["a", "b"], rows                     # 全对的不进错题本
+    assert rows[0]["wrong"] == 1 and rows[0]["fuzzy"] == 1 and rows[0]["attempts"] == 2, rows[0]
+    assert rows[1]["wrong"] == 0 and rows[1]["attempts"] == 2, rows[1]
+
+
+@case
+def 答题记录不碰md():
+    vault, index, _ = placed_vault()
+    before = {p: p.read_bytes() for p in vault.rglob("*.md")}
+    core.append_answers(vault, [{"points": ["a"], "stem": "x", "answer": "y", "grade": "忘了"}])
+    core.record_review(vault, "a", grade="忘了")
+    after = {p: p.read_bytes() for p in vault.rglob("*.md")}
+    assert before == after, "测验与复习不许改动任何 Markdown"
+
+
+@case
+def 掌握度五档全部算得出来():
+    today = _dt.date(2026, 9, 15)
+    m = core.mastery_of
+    assert m(None, None, today) == "未建"                          # 计划里的点，图里还没有
+    assert m({"id": "x", "virtual": True}, None, today) == "未建"   # 只被引用过的虚拟 stub
+    assert m({"id": "x", "stub": True}, None, today) == "只有壳"
+    # 有正文、没复习记录：learned 次日到期 → 待复习
+    assert m({"id": "x", "learned": "2026-09-01"}, None, today) == "待复习"
+    fresh = {"reviews": [{"date": "2026-09-15", "grade": "记得"}], "step": 1}
+    assert m({"id": "x"}, fresh, today) == "学过"                   # 刚复习过，间隔还短
+    deep = {"reviews": [{"date": "2026-09-15", "grade": "记得"}], "step": 5}
+    assert m({"id": "x"}, deep, today) == "已掌握"
+    # 已掌握但到期了，仍然先报"待复习"——它是当下要动手的那一档
+    due = {"reviews": [{"date": "2026-08-01", "grade": "记得"}], "step": 5}
+    assert m({"id": "x"}, due, today) == "待复习"
+
+
+@case
+def 计划进度按点汇总且不落盘():
+    plan = {"stages": [{"points": [{"id": "a"}, {"id": "没建的"}]},
+                       {"points": [{"id": "a"}, {"id": "也没建"}]}]}   # a 跨阶段重复出现
+    index = {"nodes": [{"id": "a", "learned": "2026-09-14"}]}
+    log = {"nodes": {"a": {"reviews": [{"date": "2026-09-15", "grade": "记得"}], "step": 1}}}
+    got = core.progress_of(plan, index, log, _dt.date(2026, 9, 15))
+    assert got["total"] == 3 and got["built"] == 1, got               # 去重后 3 个点，建好 1 个
+    assert got["counts"]["未建"] == 2, got["counts"]
+    assert got["points"]["a"] == "学过", got["points"]
+    assert core.point_ids({"plans": {"p": plan}}) == ["a", "没建的", "也没建"]
+
+
+@case
+def llm配置里的注释键不算条目():
+    """模板 llm.example.json 的 roles 段里就带着 `_说明`，照抄它必须能用。"""
+    import llm_backend
+    repo_example = REPO / ".knowrary" / "llm.example.json"
+    cfg = json.loads(repo_example.read_text(encoding="utf-8"))
+    llm_backend.validate_config(cfg, repo_example)          # 以前这里会抛「角色 _说明 指向不存在的 provider」
+    name, provider = llm_backend.resolve_provider(cfg, "learn")
+    assert name == "claude-cli" and provider["type"] == "claude-cli", (name, provider)
+    assert "_说明" not in llm_backend.describe(cfg, repo_example)
+    # 注释键不能顶替真条目：providers 里只剩注释时仍然要报错
+    try:
+        llm_backend.validate_config({"providers": {"_说明": "空的"}}, repo_example)
+    except llm_backend.LLMConfigError:
+        pass
+    else:
+        raise AssertionError("providers 里只有注释也放过了")
+
+
+@case
+def 用量按本地日期分桶():
+    """record 按 UTC 分桶、summary 按本地日期读，东八区每天前 8 小时「今天」就永远是 0。"""
+    vault = make_vault({"nodes/a.md": node_md("A")})
+    log = core.record_usage(vault, {"op": "quiz", "role": "review", "provider": "x",
+                                    "ok": True, "ms": 5, "input_tokens": 7})
+    today = _dt.date.today().isoformat()
+    assert today in log["by_day"], (today, list(log["by_day"]))
+    assert core.usage_summary(log)["today"]["calls"] == 1, core.usage_summary(log)["today"]
+    assert log["recent"][0]["ts"].endswith("Z")        # 时间点仍然记 UTC，只有账期是本地的
+
+
+@case
+def 时间账按负荷排阶段并判可行性():
+    plan = {"target_date": "2026-10-01", "weekly_hours": 7,      # 16 天 × 1h/天 = 16 小时
+            "stages": [{"name": "一", "points": [{"id": "a", "load": "重"}, {"id": "b", "load": "轻"}]},
+                       {"name": "二", "points": [{"id": "c", "load": "中"}]}]}
+    today = _dt.date(2026, 9, 15)
+    got = core.schedule_of(plan, set(), today)
+    assert got["total_hours"] == 8.5 and got["remaining_hours"] == 8.5, got   # 5 + 1 + 2.5
+    assert got["capacity_hours"] == 16.0 and got["verdict"] == "充裕", got
+    # 已经建出来的点不再占时间预算，剩余工时和建议日一起往回缩
+    done = core.schedule_of(plan, {"a"}, today)
+    assert done["remaining_hours"] == 3.5 and done["total_hours"] == 8.5, done
+    assert done["suggested_target_date"] < got["suggested_target_date"], (done, got)
+    # 阶段建议截止日按剩余工时摊在窗口里，且逐段递增、不超过目标日
+    days = [r["suggested_deadline"] for r in got["stages"]]
+    assert days[0] < days[1] == "2026-10-01", days
+
+
+@case
+def 时间账装不下时判不可能并给出现实日期():
+    plan = {"target_date": "2026-09-20", "weekly_hours": 7,      # 5 天 × 1h = 5 小时
+            "stages": [{"name": "一", "points": [{"id": f"p{i}", "load": "重"} for i in range(4)]}]}
+    today = _dt.date(2026, 9, 15)
+    got = core.schedule_of(plan, set(), today)
+    assert got["verdict"] == "不可能", got                        # 20 小时塞进 5 小时
+    assert got["suggested_target_date"] == "2026-10-10", got      # 20h × 1.25 缓冲 ÷ 1h/天 = 25 天
+    assert got["suggested_quota"] == 1, got                       # 4 个点 / 5 天
+    # 目标日已经过去 → 容量为 0，仍然判不可能而不是崩
+    plan["target_date"] = "2026-09-01"
+    assert core.schedule_of(plan, set(), today)["verdict"] == "不可能"
+    # 日期填成人话不该让整条链路炸，当没填处理
+    plan["target_date"] = "下个月吧"
+    loose = core.schedule_of(plan, set(), today)
+    assert loose["verdict"] == "" and loose["days_left"] is None, loose
+
+
+@case
+def 落后只认写进计划的截止日():
+    today = _dt.date(2026, 9, 15)
+    plan = {"weekly_hours": 7, "stages": [
+        {"name": "一", "deadline": "2026-09-10", "points": [{"id": "a"}, {"id": "b"}]},
+        {"name": "二", "deadline": "2026-12-01", "points": [{"id": "c"}]}]}
+    assert core.schedule_of(plan, set(), today)["behind"] == 2          # 逾期阶段里两个都没建
+    assert core.schedule_of(plan, {"a"}, today)["behind"] == 1          # 建好一个就少欠一个
+    assert core.schedule_of(plan, {"a", "b"}, today)["behind"] == 0
+    # 没写 deadline 的阶段不算落后——建议日随时会变，拿它判落后会天天变脸
+    bare = {"weekly_hours": 7, "stages": [{"name": "一", "points": [{"id": "a"}]}]}
+    assert core.schedule_of(bare, set(), today)["behind"] == 0
+
+
+@case
 def 放置按关系族加权投票选分组():
     _, index, layout = placed_vault()
     assert core.inbox_ids(index, layout) == ["d"], core.inbox_ids(index, layout)

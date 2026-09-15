@@ -4,21 +4,31 @@
 """
 from __future__ import annotations
 
-import difflib
+import json
+import logging
+
 from urllib.parse import quote
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import assets, curation
-from .contracts import (ChangeResult, ChangeSet, FileDiff, InboxRead, LayoutPatch, LayoutRead, LayoutSaved,
-                        NodeDetail, PlaceRequest, PlaceResult, ReviewDone)
+from . import assets, chat as chat_svc, curation, plans as plans_svc
+from .contracts import (ChangeResult, ChangeSet, ChatRequest, CoachToday, FileDiff, InboxRead,
+                        LayoutPatch, LayoutRead,
+                        LayoutSaved, MergeImpact, MergeRequest, MergeResult, NodeDetail,
+                        PlanProposal, PlanProposeRequest, PlaceRequest,
+                        PlaceResult, PlansRead, PlansSaved, PlansWrite, QuizDiagnoseRequest,
+                        QuizDiagnosis, QuizGradeRequest, QuizGraded, QuizRequest, QuizSet, RenameImpact,
+                        RenameRequest, RenameResult, ReviewDone, ReviewRequest, SuggestRequest,
+                        SuggestResult, UsageRead)
 from .index_service import current_index, invalidate
 from .layout_store import (LayoutBroken, PatchRejected, RevisionConflict, apply_patch, find_orphans,
                            load_or_init)
 from .paths import WEB3D_DIST, WEB_DIST, core, vault_path
+
+log = logging.getLogger(__name__)
 
 app = FastAPI(title="Knowrary 本地服务", version="0.2.0",
               description="结构视图的数据源：index 只读、layout 可写、Markdown 不动")
@@ -122,18 +132,126 @@ def get_digest() -> dict:
     return curation.digest(vault_path())
 
 
+@app.post("/api/suggest", response_model=SuggestResult)
+def post_suggest(req: SuggestRequest) -> SuggestResult:
+    """AI 建议：关系、去重、分类。调用 LLM（review 角色），可能耗时数秒。"""
+    vault = vault_path()
+    index = current_index(vault)
+    meta = next((n for n in index["nodes"] if n["id"] == req.node_id), None)
+    if meta is None:
+        raise HTTPException(status_code=404, detail=f"节点 `{req.node_id}` 不在索引里")
+    from . import suggest as sug
+    return sug.suggest(vault, req.node_id)
+
+
+@app.get("/api/plans", response_model=PlansRead)
+def get_plans() -> PlansRead:
+    """学习计划 + 每个知识点的掌握度（五档，现算不落盘）。"""
+    return plans_svc.read(vault_path())
+
+
+@app.put("/api/plans", response_model=PlansSaved)
+def put_plans(req: PlansWrite) -> PlansSaved:
+    """整份替换计划。base_revision 对不上返回 409，客户端重新拉取后再提交。"""
+    try:
+        return plans_svc.write(vault_path(), req)
+    except plans_svc.PlansConflict as exc:
+        raise HTTPException(status_code=409, detail={"error": str(exc), "current_revision": exc.current}) from exc
+    except plans_svc.PlansRejected as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.post("/api/chat")
+def post_chat(req: ChatRequest) -> StreamingResponse:
+    """对话式教练：SSE 流式。**这条路永远不写 Markdown**——模型只能提议，
+    变更卡走 `/api/changes` 由人按下写入（4.4）。"""
+    vault = vault_path()
+
+    def events():
+        try:
+            for ev in chat_svc.run(vault, req):
+                yield f"data: {json.dumps(ev, ensure_ascii=False)}\n\n"
+        except chat_svc.ChatRejected as exc:
+            yield f"data: {json.dumps({'type': 'error', 'message': str(exc)}, ensure_ascii=False)}\n\n"
+        except BaseException as exc:            # SystemExit 是 llm_backend 的报错方式
+            log.warning("对话失败：%s", exc)
+            yield f"data: {json.dumps({'type': 'error', 'message': str(exc)[:300]}, ensure_ascii=False)}\n\n"
+
+    return StreamingResponse(events(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+@app.get("/api/llm/usage", response_model=UsageRead)
+def get_llm_usage() -> UsageRead:
+    """模型调用账本：今天 / 累计 / 分功能 + 最近几十条明细。只读。"""
+    vault = vault_path()
+    data = core.usage_summary(core.load_usage(vault))
+    cfg, _ = _llm_config(vault)
+    roles = {r: v for r, v in (cfg.get("roles") or {}).items() if isinstance(v, str)}
+    return UsageRead(**data, roles=roles, provider="、".join(sorted(set(roles.values()))),
+                     cost_known=bool(data["totals"]["cost_usd"]) or _reports_cost(cfg, roles))
+
+
+def _llm_config(vault):
+    from .paths import core as _c  # noqa: F401  确保 sys.path 已注入
+    import llm_backend
+    return llm_backend.load_config(vault)
+
+
+def _reports_cost(cfg: dict, roles: dict) -> bool:
+    """只有 claude-cli 会把花了多少钱一起返回；其他 provider 只有 token。"""
+    providers = cfg.get("providers") or {}
+    return any((providers.get(p) or {}).get("type") == "claude-cli" for p in roles.values())
+
+
+@app.get("/api/coach/today", response_model=CoachToday)
+def get_coach_today() -> CoachToday:
+    """今天可以动手的事，按固定优先级排。不调 LLM——"今天干什么"是排序不是生成。"""
+    return curation.coach_today(vault_path())
+
+
+@app.post("/api/plans/propose", response_model=PlanProposal)
+def post_plans_propose(req: PlanProposeRequest) -> PlanProposal:
+    """目标 → 分阶段知识点清单（LLM，learn 角色）。只提议，不写任何文件。"""
+    return plans_svc.propose(vault_path(), req)
+
+
 @app.get("/api/review/due")
 def get_review_due() -> dict:
     return curation.review_due(vault_path())
 
 
 @app.post("/api/review/{node_id}", response_model=ReviewDone)
-def post_review(node_id: str) -> ReviewDone:
-    """记一次复习：只写 review-log.json，不碰 md，也不碰 layout。"""
+def post_review(node_id: str, req: ReviewRequest | None = None) -> ReviewDone:
+    """记一次复习：只写 review-log.json，不碰 md，也不碰 layout。
+
+    body 可选带三档 grade（记得 / 模糊 / 忘了）；不带 body 等价于「记得」。
+    """
     try:
-        return curation.mark_reviewed(vault_path(), node_id)
+        return curation.mark_reviewed(vault_path(), node_id, (req or ReviewRequest()).grade)
     except curation.PlaceRejected as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.post("/api/quiz", response_model=QuizSet)
+def post_quiz(req: QuizRequest) -> QuizSet:
+    """出题：调 LLM（review 角色），可能耗时数秒。只读，不写任何文件。"""
+    from . import quiz as qz
+    return qz.generate(vault_path(), req)
+
+
+@app.post("/api/quiz/diagnose", response_model=QuizDiagnosis)
+def post_quiz_diagnose(req: QuizDiagnoseRequest) -> QuizDiagnosis:
+    """整轮比对我的作答与标准答案：漏掉点、记错点、建议档位。只读，不写任何文件。"""
+    from . import quiz as qz
+    return qz.diagnose(vault_path(), req.answers)
+
+
+@app.post("/api/quiz/grade", response_model=QuizGraded)
+def post_quiz_grade(req: QuizGradeRequest) -> QuizGraded:
+    """交卷：答题明细进 quiz-log.json，每个考点按最差档位推进一次复习调度。不碰 md。"""
+    from . import quiz as qz
+    return qz.grade(vault_path(), req.answers)
 
 
 @app.get("/api/assets")
@@ -162,6 +280,58 @@ async def post_asset(name: str, request: Request, overwrite: bool = False) -> di
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
+@app.post("/api/rename", response_model=RenameResult)
+def post_rename(req: RenameRequest) -> RenameResult:
+    """改一个知识点的 id，并把所有指向它的引用一起迁走。默认只算影响面。
+
+    为什么要有这个接口：文件名就是 id，在 Obsidian 或 IDE 里直接改名会一次断四类引用
+    （`[[链接]]` / 画布位置与边样式 / 复习与答题记录 / 学习计划），而且事后补不回来——
+    旧 id 已经没了，系统只看得到"少了一个、多了一个"。所以改名必须是一个动作。
+    """
+    vault = vault_path()
+    index = current_index(vault)
+    if req.base_revision != index["revision"]:
+        raise HTTPException(status_code=409, detail={"error": "索引已经变了，请重新拉取后再改名",
+                                                     "current_revision": index["revision"]})
+    try:
+        impact = core.plan_rename(vault, index, req.old_id, req.new_id)
+    except core.RenameRejected as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if req.dry_run:
+        return RenameResult(impact=RenameImpact(**impact), index_revision=index["revision"])
+    core.backup_rename(vault, impact)
+    core.apply_rename(vault, impact)
+    invalidate(vault)
+    return RenameResult(impact=RenameImpact(**impact), applied=True,
+                        index_revision=current_index(vault)["revision"])
+
+
+@app.post("/api/merge", response_model=MergeResult)
+def post_merge(req: MergeRequest) -> MergeResult:
+    """把两张重复的卡并成一张：边、引用、位置、复习与答题记录全并到保留的那张上。
+
+    正文是**追加**不是智能合并——两段讲同一件事的话怎么揉只有人知道，
+    这里只保证内容不丢，并标出它从哪并来。默认只算影响面。
+    """
+    vault = vault_path()
+    index = current_index(vault)
+    if req.base_revision != index["revision"]:
+        raise HTTPException(status_code=409, detail={"error": "索引已经变了，请重新拉取后再合并",
+                                                     "current_revision": index["revision"]})
+    try:
+        impact = core.plan_merge(vault, index, req.keep_id, req.drop_id)
+    except core.MergeRejected as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if req.dry_run:
+        return MergeResult(impact=MergeImpact(**impact), index_revision=index["revision"])
+    core.backup_rename(vault, {"path": impact["drop_path"],
+                               "files": [impact["keep_path"], *impact["files"]]})
+    core.apply_merge(vault, impact)
+    invalidate(vault)
+    return MergeResult(impact=MergeImpact(**impact), applied=True,
+                       index_revision=current_index(vault)["revision"])
+
+
 @app.post("/api/changes", response_model=ChangeResult)
 def post_changes(changeset: ChangeSet) -> ChangeResult:
     """Markdown 写回的唯一入口：默认只预览，dry_run=false 才落盘（落盘前自动备份）。"""
@@ -179,20 +349,13 @@ def post_changes(changeset: ChangeSet) -> ChangeResult:
     except core.ChangeRejected as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
-    files = [FileDiff(path=e.rel, notes=e.notes, diff=_diff(e)) for e in edits]
+    files = [FileDiff(path=e.rel, notes=e.notes, diff=curation.diff_of(e)) for e in edits]
     if changeset.dry_run:
         return ChangeResult(applied=False, files=files, index_revision=index["revision"])
     snapshot = core.commit(vault, edits)
     invalidate(vault)                      # md 变了，索引缓存作废
     return ChangeResult(applied=True, files=files, backup=snapshot or None,
                         index_revision=current_index(vault)["revision"])
-
-
-def _diff(edit) -> str:
-    """给人看的统一 diff（只保留有变化的片段）。"""
-    lines = difflib.unified_diff(edit.before.splitlines(), edit.after.splitlines(),
-                                 fromfile=f"a/{edit.rel}", tofile=f"b/{edit.rel}", lineterm="", n=2)
-    return "\n".join(list(lines)[:60])
 
 
 def _mount_web() -> None:

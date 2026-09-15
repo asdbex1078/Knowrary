@@ -6,6 +6,7 @@
 """
 from __future__ import annotations
 
+import hashlib
 import threading
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -25,11 +26,18 @@ _CACHE: dict[Path, _Cache] = {}
 
 
 def fingerprint(vault: Path) -> tuple:
-    """vault 的 md 指纹：文件数 + 最新修改时间 + 类型表 mtime。"""
+    """vault 的 md 指纹：文件数 + 最新修改时间 + 全部路径的哈希 + 类型表 mtime。
+
+    路径哈希不能省：**改名和移动文件都不改 mtime，文件数也不变**——只看
+    (数量, 最新 mtime) 的话，在 Obsidian 里把一个节点拖到别的目录之后指纹纹丝不动，
+    索引不重建，`path` 继续指向已经不存在的位置，点开这个节点就报错。
+    """
     paths = core.walk_md(vault)
     newest = max((p.stat().st_mtime_ns for p in paths), default=0)
+    rels = "\n".join(sorted(str(p.relative_to(vault)) for p in paths))
     table = vault / "relation-types.json"
-    return (len(paths), newest, table.stat().st_mtime_ns if table.exists() else 0)
+    return (len(paths), newest, hashlib.sha256(rels.encode("utf-8")).hexdigest()[:16],
+            table.stat().st_mtime_ns if table.exists() else 0)
 
 
 def current_index(vault: Path) -> dict:

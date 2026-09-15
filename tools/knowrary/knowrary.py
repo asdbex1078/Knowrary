@@ -574,7 +574,9 @@ def cmd_llm(args: argparse.Namespace) -> None:
         print(f"提示：复制 {example} 到 {llm_backend.config_path(vault)} 后编辑，即可切换 provider / 模型")
     if args.action != "test":
         return
-    targets = [args.llm] if args.llm else sorted(set(cfg["roles"].values()))
+    # 只取真正的角色，`_说明` 那类注释键不算——否则会拿一整段说明去当 provider 名
+    roles = {r: n for r, n in cfg["roles"].items() if not str(r).startswith("_")}
+    targets = [args.llm] if args.llm else sorted(set(roles.values()))
     failed = 0
     for name in targets:
         _, provider = llm_backend.resolve_provider(cfg, "learn", name)

@@ -1,6 +1,6 @@
 ---
 name: 长程 Agent 最小架构
-field: AI-Agent
+field: Agent
 type: 模式
 tags:
   - Agent

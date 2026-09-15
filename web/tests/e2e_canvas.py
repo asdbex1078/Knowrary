@@ -682,17 +682,71 @@ async def case_due_badge(page: Page, ck: Check) -> None:
     text = await poll(page, """(() => {
       const a = document.querySelector('aside.digest');
       return a ? a.textContent.replace(/\s+/g, ' ') : '';
-    })()""", lambda v: v and "待复习" in v, timeout=12)
-    ck.add("欠账清单列出草稿与待复习", "草稿" in (text or "") and "戊" in (text or ""), (text or "")[:110])
+    })()""", lambda v: v and "草稿" in v, timeout=12)
+    ck.add("欠账清单列出草稿", "草稿" in (text or "") and "戊" in (text or ""), (text or "")[:110])
 
-    await page.ev("""(() => { const b = document.querySelector('aside.digest [data-act="review"]');
+    # 复习不在欠账里了：图谱的欠账归欠账，"我该复习什么"归「学习」面板
+    # 「学习计划」排在「学习」前面，只写"学习"会命中前者——按 tip 找必须给得够长
+    await open_rail(page, "学习 · 今日")
+    study = await poll(page, """(() => {
+      const a = document.querySelector('aside.study');
+      return a ? a.textContent.replace(/\s+/g, ' ') : '';
+    })()""", lambda v: v and "待复习" in v, timeout=12)
+    ck.add("学习面板列出待复习", "戊" in (study or ""), (study or "")[:110])
+
+    # 「学习」面板上到期项是「考一下」（走测验），不想考、只想手记一笔的三档快捷在详情面板里。
+    # 所以先点中这个节点，再点详情面板上的「记得」。
+    await page.ev("""(() => {
+      const el = document.querySelector('[data-cell-id="戊"]');
+      const r = el.getBoundingClientRect();
+      const at = (x, y) => document.elementFromPoint(x, y) || document.body;
+      const fire = (t, x, y) => at(x, y).dispatchEvent(new MouseEvent(t, { bubbles: true, cancelable: true,
+        clientX: x, clientY: y, view: window, button: 0, buttons: t === 'mouseup' ? 0 : 1 }));
+      const x = r.x + r.width / 2, y = r.y + r.height / 2;
+      fire('mousedown', x, y); fire('mouseup', x, y);
+      return 'clicked';
+    })()""")
+    await poll(page, """!!document.querySelector('.insp [data-act="review"]')""", lambda v: v, timeout=12)
+    await page.ev("""(() => { const b = document.querySelector('.insp [data-act="review"][data-grade="记得"]');
       if (!b) return 'missing'; b.click(); return 'ok'; })()""")
     banner = await poll(page, "document.querySelector('.toast .toast-text')?.textContent || ''",
-                        lambda v: "复习" in (v or ""), timeout=12)
-    ck.add("记一次复习后到期列表少一个", "第 1 次复习" in (banner or ""), (banner or "").strip()[:60])
+                        lambda v: "记为" in (v or ""), timeout=12)
+    ck.add("记一次复习后到期列表少一个", "记得" in (banner or ""), (banner or "").strip()[:60])
     gone = await poll(page, """document.querySelector('[data-cell-id="戊"] circle')?.getAttribute('fill') || ''""",
                       lambda v: v == "transparent")
     ck.add("复习完圆点熄灭", gone == "transparent", f"circle fill = {gone}")
+
+
+async def case_chat_panel(page: Page, ck: Check) -> None:
+    """聊天面板：开场白点得动、输入框收得住字。**不发消息**——那会真打 LLM。
+
+    这一条守的是"面板渲染不炸"：Vue 里一个模板错就整屏空白，只有真浏览器能发现。
+    """
+    await open_rail(page, "聊天")
+    text = await poll(page, """(() => {
+      const a = document.querySelector('aside.study .chat-wrap');
+      return a ? a.textContent.replace(/\s+/g, ' ') : '';
+    })()""", lambda v: v and "聊着学" in v, timeout=12)
+    ck.add("聊天面板开得出来", "聊着学" in (text or ""), (text or "")[:60])
+
+    starters = await page.ev("""document.querySelectorAll('aside.study .starters .btn').length""")
+    ck.add("开场白按钮摆出来了", (starters or 0) >= 4, f"{starters} 个")
+
+    # 点「讲个概念」只填输入框、不发出去（它以「：」结尾）
+    await page.ev("""(() => {
+      const b = [...document.querySelectorAll('aside.study .starters .btn')]
+        .find((x) => x.textContent.includes('讲个概念'));
+      if (!b) return 'missing';
+      b.click(); return 'ok';
+    })()""")
+    # Vue 渲染是异步的：点完立刻读 value 会读到空，要等它刷一帧
+    filled = await poll(page, """document.querySelector('aside.study .chat-input textarea')?.value || ''""",
+                        lambda v: v and "我想搞懂" in v, timeout=8)
+    ck.add("要补话的开场白只填进输入框", "我想搞懂" in (filled or ""), str(filled)[:40])
+
+    sendable = await page.ev("""!document.querySelector('aside.study .chat-input .icon-btn.primary')?.disabled""")
+    ck.add("有字之后发送键才亮", bool(sendable), f"disabled={not sendable}")
+    await open_rail(page, "学习 · 今日")      # 收拾干净，别影响后面的用例
 
 
 async def case_drag_from_inbox(page: Page, ck: Check, vault: Path) -> None:
@@ -1292,6 +1346,7 @@ async def scenarios(page: Page, api: str, results: list) -> None:
     await case_rendered(page, ck)
     await case_inbox_place(page, ck, VAULT_HOLDER[0])
     await case_due_badge(page, ck)
+    await case_chat_panel(page, ck)
     await case_drag_from_inbox(page, ck, VAULT_HOLDER[0])
     await case_finalize(page, ck)
     await case_image(page, ck, VAULT_HOLDER[0])

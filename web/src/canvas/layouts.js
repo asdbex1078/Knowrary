@@ -51,7 +51,8 @@ export function buildForest(index) {
   return { trees, loose, byId }
 }
 
-function runMindmap(tree) {
+/** 跑一棵脑图，返回每个节点的坐标和这棵树占的框（组内重排也复用它）。 */
+export function runMindmap(tree) {
   const out = Hierarchy.mindmap(tree, {
     direction: 'H',
     getId: (d) => d.id,

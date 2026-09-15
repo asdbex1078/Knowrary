@@ -18,10 +18,18 @@ const props = defineProps({
 const emit = defineEmits(['create', 'close'])
 
 const name = ref(props.defaults.name || '')
-const desc = ref('')
+const desc = ref(props.defaults.planWhy || '')
 const field = ref(props.defaults.field || props.fields[0] || '')
 const year = ref('')     // 可选：填了才进历史视图的时间轴
 const dir = ref(props.defaults.dir || props.dirs[0] || 'nodes')
+// 目录可以手敲：开一个新领域时 vault 里还没有那个文件夹，只能选已有的就卡死了
+const badDir = computed(() => {
+  const d = dir.value.trim()
+  if (!d) return '目录不能为空'
+  if (!/^(nodes|fields)(\/|$)/.test(d)) return '只能建在 nodes/ 或 fields/ 下'
+  if (/\.\.|\/\//.test(d)) return '路径里不能有 .. 或空目录段'
+  return ''
+})
 const thenRelate = ref(true)
 const nameEl = ref(null)
 
@@ -32,7 +40,8 @@ const bad = computed(() => {
   if (props.taken.has(id.value)) return `已经有一个叫「${id.value}」的知识点了`
   return ''
 })
-const ready = computed(() => !!id.value && !bad.value && !!desc.value.trim() && !!field.value.trim())
+const ready = computed(() =>
+  !!id.value && !bad.value && !badDir.value && !!desc.value.trim() && !!field.value.trim())
 
 function submit() {
   if (!ready.value) return
@@ -90,10 +99,11 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onKey, true))
       </div>
       <label class="fld">
         <span class="lb">存到</span>
-        <select v-model="dir">
-          <option v-for="d in dirs" :key="d" :value="d">{{ d }}/</option>
-        </select>
+        <input v-model="dir" list="kg-node-dirs" placeholder="nodes/……" />
+        <datalist id="kg-node-dirs"><option v-for="d in dirs" :key="d" :value="d" /></datalist>
+        <span class="hint">目录不存在会顺手建出来；新开一个领域时直接敲新路径即可。</span>
       </label>
+      <p v-if="badDir" class="warn-text">{{ badDir }}</p>
 
       <label class="switch-row" style="margin: 2px -9px 0">
         <input type="checkbox" v-model="thenRelate" />
