@@ -100,6 +100,21 @@ function laneOf(node, layout, selected) {
   return null
 }
 
+/**
+ * 一个节点在时间轴上的盒子。
+ *
+ * start / end 顺手带上：游标每走一站都要判"这一年它还有效吗"，
+ * 存在盒子里就不用回头再查一遍 index。
+ */
+function boxOf(node, scale) {
+  const size = sizeFor(node)
+  return {
+    id: node.id, year: node.year, w: size.w, h: size.h, x: scale.at(node.year),
+    start: typeof node.start_year === 'number' ? node.start_year : node.year,
+    end: typeof node.end_year === 'number' ? node.end_year : null,
+  }
+}
+
 /** 泳道内的扫描线放置：按年份从左到右，撞上了就往下挪一行。 */
 function packLane(items) {
   const rows = []
@@ -163,10 +178,7 @@ function trunkLayout(kept, scale, edges) {
   if (!chain.length) return null
   const onTrunk = new Set(chain)
 
-  const box = (node) => {
-    const size = sizeFor(node)
-    return { id: node.id, year: node.year, w: size.w, h: size.h, x: scale.at(node.year) }
-  }
+  const box = (node) => boxOf(node, scale)
   const trunk = chain.map((id) => box(nodes.find((n) => n.id === id)))
   const rest = nodes.filter((n) => !onTrunk.has(n.id)).map(box)
 
@@ -192,17 +204,24 @@ function trunkLayout(kept, scale, edges) {
 }
 
 /**
- * 时间滑块拖到 t 时，这个节点还该不该出现。
+ * 时间游标停在 upto 时，图上哪些点算"已经发生"。
  *
- * 默认是"出生年 ≤ t"的叙事视角；勾上有效期就换成区间视角（F4.5，法律 / 标准场景）：
- * start_year ≤ t < end_year，2010 年废止的东西在 2015 年就不该还挂在图上。
+ * 默认是"出生年 ≤ upto"的叙事视角；勾上有效期就换成区间视角（F4.5，法律 / 标准场景）：
+ * start_year ≤ upto < end_year，2010 年废止的东西在 2015 年就不算还有效。
+ *
+ * **它只决定画法，不决定进不进图。** 布局是拿全量节点一次算定的，游标扫过只是把
+ * "未来"的点淡下去——这样拖滑块 / 回放时比例尺和泳道行数都不变，已经出现的点
+ * 不会跟着滑、不会重排、更不会整屏重刷一遍入场动画。
+ *
+ * 只认 plan 里存好的 year / start / end，不回头查 index：回放每站都要算一次。
  */
-export function visibleAt(node, upto, validity) {
-  if (upto === null) return true
-  if (!validity) return node.year <= upto
-  const start = typeof node.start_year === 'number' ? node.start_year : node.year
-  const end = typeof node.end_year === 'number' ? node.end_year : null
-  return start <= upto && (end === null || upto < end)
+export function activeAt(plan, upto, validity) {
+  const on = new Set()
+  for (const [id, box] of plan.placed) {
+    if (upto === null || (!validity && box.year <= upto)
+        || (validity && box.start <= upto && (box.end === null || upto < box.end))) on.add(id)
+  }
+  return on
 }
 
 /**
@@ -210,25 +229,26 @@ export function visibleAt(node, upto, validity) {
  * opts: { timelines, families, compact, upto, validity }
  */
 export function buildTimeline(index, layout, opts = {}) {
-  const { timelines = [], families = new Set(['演化']), compact = false, upto = null,
-          validity = false, trunk = false } = opts
+  const { timelines = [], families = new Set(['演化']), compact = false, trunk = false } = opts
+  // upto / validity **不参与布局**：它们只决定哪些点画成"已发生"（见 activeAt）。
+  // 以前这两个值会把节点整个滤掉，于是 yearScale 只拿可见年份算，
+  // 滑块一动整条 X 轴就重新拉伸、泳道行数也跟着变——回放时全图一直在滑在跳。
   const withYear = index.nodes.filter((n) => !n.virtual && typeof n.year === 'number')
   const laneNames = new Map()
   const kept = []
   for (const node of withYear) {
     const lane = laneOf(node, layout, timelines)
     if (lane === null) continue                     // 不在所选时间线里
-    if (!visibleAt(node, upto, validity)) continue
     laneNames.set(lane, true)
     kept.push({ node, lane })
   }
   const scale = yearScale(kept.map((k) => k.node.year), compact)
 
-  // 主干道：先算出可见的演化边，再挑最长链。挑不出链（没有演化边、或只剩孤点）
+  // 主干道：先算出图上的演化边，再挑最长链。挑不出链（没有演化边、或只剩孤点）
   // 就退回泳道，而不是给一张空图——那样用户只会以为功能坏了。
   if (trunk) {
-    const visible = new Set(kept.map((k) => k.node.id))
-    const ev = index.edges.filter((e) => visible.has(e.source) && visible.has(e.target))
+    const inGraph = new Set(kept.map((k) => k.node.id))
+    const ev = index.edges.filter((e) => inGraph.has(e.source) && inGraph.has(e.target))
     const laid = trunkLayout(kept, scale, ev)
     if (laid) return finish(laid.placed, laid.lanes, laid.height, scale, index, kept, withYear,
                             families, { trunk: laid.chain })
@@ -248,10 +268,7 @@ export function buildTimeline(index, layout, opts = {}) {
     const block = lane.split('／')[0]
     if (lastBlock !== null && block !== lastBlock) y += BLOCK_GAP     // 多条时间线之间留空行
     lastBlock = block
-    const items = kept.filter((k) => k.lane === lane).map(({ node }) => {
-      const size = sizeFor(node)
-      return { id: node.id, year: node.year, w: size.w, h: size.h, x: scale.at(node.year) }
-    })
+    const items = kept.filter((k) => k.lane === lane).map(({ node }) => boxOf(node, scale))
     const rows = packLane(items)
     const h = rows * ROW_H + LANE_PAD + LANE_TITLE_H
     const top = y + LANE_TITLE_H + LANE_PAD / 2      // 标题下面才开始排节点，别压着泳道名
@@ -265,17 +282,28 @@ export function buildTimeline(index, layout, opts = {}) {
 
 /** 两种布局共用的收尾：挑边、算诊断、拼出 plan。 */
 function finish(placed, lanes, height, scale, index, kept, withYear, families, extra) {
-  const edges = index.edges.filter((e) => families.has(e.family)
-    && placed.has(e.source) && placed.has(e.target))
+  const inGraph = index.edges.filter((e) => placed.has(e.source) && placed.has(e.target))
+  const edges = inGraph.filter((e) => families.has(e.family))
   // 两端都有 year 才画，所以缺年份的演化边是"数据欠账"，单独报出来而不是悄悄丢掉
-  const missingYear = index.edges.filter((e) => e.family === '演化' && e.year == null
-    && placed.has(e.source) && placed.has(e.target)).map((e) => e.id)
+  const missingYear = inGraph.filter((e) => e.family === '演化' && e.year == null).map((e) => e.id)
+  // 最长演化链：主干道布局本来就要算，泳道布局这里补算一次给「沿演化链导览」用。
+  // **不受关系族开关影响**——导览走的是"谁接谁"，不该因为用户把演化边关了就没路可走。
+  const chain = extra.trunk
+    || longestChain([...placed].map(([id, box]) => ({ id, year: box.year })), inGraph)
   return {
     placed, lanes, ticks: scale.ticks, width: scale.width + NODE_W + 80,
-    height, edges, ...extra,
+    height, edges, ...extra, chain,
+    at: scale.at,                                   // 年份 → x，游标定位要用
+    eventYears: scale.ticks.map((t) => t.year),     // "有事发生"的年份，回放按这个跳站
+    // 链上相邻两站之间的那条演化边，导览要点亮它
+    chainEdges: chain.slice(1).map((id, i) => inGraph.find(
+      (e) => e.family === '演化' && e.source === chain[i] && e.target === id)?.id).filter(Boolean),
     diagnostics: {
       noYear: index.nodes.filter((n) => !n.virtual && typeof n.year !== 'number').length,
       missingYear, skipped: withYear.length - kept.length,
+      // 导览走得动走不动，取决于这两个数。链短的时候要能说清是"功能坏了"还是"图里就这么点线"
+      evoAll: index.edges.filter((e) => e.family === '演化').length,
+      evoUsable: inGraph.filter((e) => e.family === '演化').length,
     },
   }
 }

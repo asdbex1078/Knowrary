@@ -496,7 +496,6 @@ class ProjectList(Strict):
     """
 
     kind: ListKind = "学习"
-    level: Level | None = None         # 这份清单的难度档；空 = 跟项目走
     name: str = Field(default="主线", max_length=120)
     goal: str = ""                     # 面试清单里这里放岗位要求原文
     coach: str = ""                    # 教练侧写，例如「Java 后端开发」；注入拆解与出题
@@ -515,7 +514,7 @@ class Project(Strict):
     name: str = Field(min_length=1, max_length=120)
     created: str | None = None
     field: str = ""                    # 默认落脚领域，清单没写自己的就用它
-    level: Level = "会用"              # 项目默认难度档；清单可以各自覆盖
+    level: Level = "会用"              # 学到什么份上：出题深浅、对话详细度、拆点粒度都看它
     weekly_hours: int = Field(default=7, ge=1, le=80)   # 每周能投入几小时；时间账的分母
     daily_quota: int = Field(default=2, ge=1, le=20)    # 今日清单一次摆几个建设项
     legacy_id: str | None = None       # 从 plans.json 迁来的旧 id，对话目录迁移用

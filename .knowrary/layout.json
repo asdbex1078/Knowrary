@@ -1,18 +1,18 @@
 {
   "schema_version": 2,
-  "revision": 5,
-  "updated_at": "2026-09-16T12:01:48Z",
+  "revision": 14,
+  "updated_at": "2026-09-16T15:56:55Z",
   "viewport": {
-    "zoom": 0.234,
-    "cx": 1196.0,
-    "cy": 1252.0
+    "zoom": 0.15,
+    "cx": 1221.0,
+    "cy": 2288.0
   },
   "groups": {
     "g-Agent": {
       "name": "Agent",
       "x": 0.0,
       "y": 0.0,
-      "w": 1104.0,
+      "w": 776.0,
       "h": 396.0,
       "parent": null,
       "collapsed": false,
@@ -32,23 +32,11 @@
       "color": null,
       "doc": null
     },
-    "g-Agent--未分层": {
-      "name": "未分层",
-      "x": 832.0,
-      "y": 44.0,
-      "w": 248.0,
-      "h": 128.0,
-      "parent": "g-Agent",
-      "collapsed": false,
-      "pinned": null,
-      "color": null,
-      "doc": null
-    },
     "g-计算机系统": {
       "name": "计算机系统",
       "x": 0.0,
       "y": 596.0,
-      "w": 2392.0,
+      "w": 2064.0,
       "h": 1512.0,
       "parent": null,
       "collapsed": false,
@@ -61,7 +49,7 @@
       "x": 24.0,
       "y": 640.0,
       "w": 728.0,
-      "h": 228.0,
+      "h": 328.0,
       "parent": "g-计算机系统",
       "collapsed": false,
       "pinned": null,
@@ -128,24 +116,12 @@
       "color": null,
       "doc": null
     },
-    "g-计算机系统--未分层": {
-      "name": "未分层",
-      "x": 1880.0,
-      "y": 1556.0,
-      "w": 488.0,
-      "h": 128.0,
-      "parent": "g-计算机系统",
-      "collapsed": false,
-      "pinned": null,
-      "color": null,
-      "doc": null
-    },
     "g-AI": {
       "name": "AI",
       "x": 0.0,
       "y": 2308.0,
-      "w": 952.0,
-      "h": 196.0,
+      "w": 2000.0,
+      "h": 296.0,
       "parent": null,
       "collapsed": false,
       "pinned": null,
@@ -155,6 +131,18 @@
     "g-AI--硬件": {
       "name": "硬件",
       "x": 24.0,
+      "y": 2352.0,
+      "w": 488.0,
+      "h": 128.0,
+      "parent": "g-AI",
+      "collapsed": false,
+      "pinned": null,
+      "color": null,
+      "doc": null
+    },
+    "g-AI--体系结构": {
+      "name": "体系结构",
+      "x": 592.0,
       "y": 2352.0,
       "w": 248.0,
       "h": 128.0,
@@ -166,9 +154,9 @@
     },
     "g-AI--系统软件": {
       "name": "系统软件",
-      "x": 352.0,
+      "x": 920.0,
       "y": 2352.0,
-      "w": 248.0,
+      "w": 488.0,
       "h": 128.0,
       "parent": "g-AI",
       "collapsed": false,
@@ -178,10 +166,10 @@
     },
     "g-AI--AI应用": {
       "name": "AI应用",
-      "x": 680.0,
+      "x": 1488.0,
       "y": 2352.0,
-      "w": 248.0,
-      "h": 128.0,
+      "w": 488.0,
+      "h": 228.0,
       "parent": "g-AI",
       "collapsed": false,
       "pinned": null,
@@ -200,8 +188,18 @@
       "placedAt": null,
       "anchor": null
     },
-    "任务取消语义": {
+    "harness": {
       "x": 288.0,
+      "y": 88.0,
+      "w": 196.0,
+      "h": 64.0,
+      "group": "g-Agent--AI应用",
+      "state": "final",
+      "placedAt": null,
+      "anchor": null
+    },
+    "任务取消语义": {
+      "x": 528.0,
       "y": 88.0,
       "w": 196.0,
       "h": 64.0,
@@ -211,8 +209,8 @@
       "anchor": null
     },
     "任务暂停与恢复": {
-      "x": 528.0,
-      "y": 88.0,
+      "x": 48.0,
+      "y": 188.0,
       "w": 196.0,
       "h": 64.0,
       "group": "g-Agent--AI应用",
@@ -221,7 +219,7 @@
       "anchor": null
     },
     "取消检查点": {
-      "x": 48.0,
+      "x": 288.0,
       "y": 188.0,
       "w": 196.0,
       "h": 64.0,
@@ -231,16 +229,6 @@
       "anchor": null
     },
     "外部副作用与幂等键": {
-      "x": 288.0,
-      "y": 188.0,
-      "w": 196.0,
-      "h": 64.0,
-      "group": "g-Agent--AI应用",
-      "state": "final",
-      "placedAt": null,
-      "anchor": null
-    },
-    "崩溃恢复": {
       "x": 528.0,
       "y": 188.0,
       "w": 196.0,
@@ -250,7 +238,7 @@
       "placedAt": null,
       "anchor": null
     },
-    "长程Agent最小架构": {
+    "崩溃恢复": {
       "x": 48.0,
       "y": 288.0,
       "w": 196.0,
@@ -260,7 +248,7 @@
       "placedAt": null,
       "anchor": null
     },
-    "长程任务生命周期": {
+    "长程Agent最小架构": {
       "x": 288.0,
       "y": 288.0,
       "w": 196.0,
@@ -270,12 +258,12 @@
       "placedAt": null,
       "anchor": null
     },
-    "harness": {
-      "x": 856.0,
-      "y": 88.0,
+    "长程任务生命周期": {
+      "x": 528.0,
+      "y": 288.0,
       "w": 196.0,
       "h": 64.0,
-      "group": "g-Agent--未分层",
+      "group": "g-Agent--AI应用",
       "state": "final",
       "placedAt": null,
       "anchor": null
@@ -333,6 +321,16 @@
     "物理-电学": {
       "x": 528.0,
       "y": 784.0,
+      "w": 196.0,
+      "h": 64.0,
+      "group": "g-计算机系统--理论",
+      "state": "final",
+      "placedAt": null,
+      "anchor": null
+    },
+    "计算机系统": {
+      "x": 48.0,
+      "y": 884.0,
       "w": 196.0,
       "h": 64.0,
       "group": "g-计算机系统--理论",
@@ -760,7 +758,7 @@
       "placedAt": null,
       "anchor": null
     },
-    "代码段": {
+    "乐观锁": {
       "x": 1008.0,
       "y": 1700.0,
       "w": 196.0,
@@ -770,8 +768,18 @@
       "placedAt": null,
       "anchor": null
     },
-    "堆内存": {
+    "代码段": {
       "x": 48.0,
+      "y": 1800.0,
+      "w": 196.0,
+      "h": 64.0,
+      "group": "g-计算机系统--系统软件",
+      "state": "final",
+      "placedAt": null,
+      "anchor": null
+    },
+    "堆内存": {
+      "x": 288.0,
       "y": 1800.0,
       "w": 196.0,
       "h": 64.0,
@@ -781,7 +789,7 @@
       "anchor": null
     },
     "字节码": {
-      "x": 288.0,
+      "x": 528.0,
       "y": 1800.0,
       "w": 196.0,
       "h": 64.0,
@@ -791,7 +799,7 @@
       "anchor": null
     },
     "数据段": {
-      "x": 528.0,
+      "x": 768.0,
       "y": 1800.0,
       "w": 196.0,
       "h": 64.0,
@@ -801,7 +809,7 @@
       "anchor": null
     },
     "栈内存": {
-      "x": 768.0,
+      "x": 1008.0,
       "y": 1800.0,
       "w": 196.0,
       "h": 64.0,
@@ -811,8 +819,8 @@
       "anchor": null
     },
     "栈帧": {
-      "x": 1008.0,
-      "y": 1800.0,
+      "x": 48.0,
+      "y": 1900.0,
       "w": 196.0,
       "h": 64.0,
       "group": "g-计算机系统--系统软件",
@@ -821,7 +829,7 @@
       "anchor": null
     },
     "程序": {
-      "x": 48.0,
+      "x": 288.0,
       "y": 1900.0,
       "w": 196.0,
       "h": 64.0,
@@ -831,16 +839,6 @@
       "anchor": null
     },
     "程序的内存布局": {
-      "x": 288.0,
-      "y": 1900.0,
-      "w": 196.0,
-      "h": 64.0,
-      "group": "g-计算机系统--系统软件",
-      "state": "final",
-      "placedAt": null,
-      "anchor": null
-    },
-    "编译原理": {
       "x": 528.0,
       "y": 1900.0,
       "w": 196.0,
@@ -850,7 +848,7 @@
       "placedAt": null,
       "anchor": null
     },
-    "编译器": {
+    "编译原理": {
       "x": 768.0,
       "y": 1900.0,
       "w": 196.0,
@@ -860,7 +858,7 @@
       "placedAt": null,
       "anchor": null
     },
-    "编译器前端": {
+    "编译器": {
       "x": 1008.0,
       "y": 1900.0,
       "w": 196.0,
@@ -870,7 +868,7 @@
       "placedAt": null,
       "anchor": null
     },
-    "编译器后端": {
+    "编译器前端": {
       "x": 48.0,
       "y": 2000.0,
       "w": 196.0,
@@ -880,8 +878,18 @@
       "placedAt": null,
       "anchor": null
     },
-    "解释器": {
+    "编译器后端": {
       "x": 288.0,
+      "y": 2000.0,
+      "w": 196.0,
+      "h": 64.0,
+      "group": "g-计算机系统--系统软件",
+      "state": "final",
+      "placedAt": null,
+      "anchor": null
+    },
+    "解释器": {
+      "x": 528.0,
       "y": 2000.0,
       "w": 196.0,
       "h": 64.0,
@@ -910,27 +918,7 @@
       "placedAt": null,
       "anchor": null
     },
-    "乐观锁": {
-      "x": 1904.0,
-      "y": 1600.0,
-      "w": 196.0,
-      "h": 64.0,
-      "group": "g-计算机系统--未分层",
-      "state": "final",
-      "placedAt": null,
-      "anchor": null
-    },
-    "计算机系统": {
-      "x": 2144.0,
-      "y": 1600.0,
-      "w": 196.0,
-      "h": 64.0,
-      "group": "g-计算机系统--未分层",
-      "state": "final",
-      "placedAt": null,
-      "anchor": null
-    },
-    "TPU": {
+    "NPU": {
       "x": 48.0,
       "y": 2396.0,
       "w": 196.0,
@@ -940,8 +928,28 @@
       "placedAt": null,
       "anchor": null
     },
+    "TPU": {
+      "x": 288.0,
+      "y": 2396.0,
+      "w": 196.0,
+      "h": 64.0,
+      "group": "g-AI--硬件",
+      "state": "final",
+      "placedAt": null,
+      "anchor": null
+    },
+    "内存墙": {
+      "x": 616.0,
+      "y": 2396.0,
+      "w": 196.0,
+      "h": 64.0,
+      "group": "g-AI--体系结构",
+      "state": "final",
+      "placedAt": null,
+      "anchor": null
+    },
     "CUDA": {
-      "x": 376.0,
+      "x": 944.0,
       "y": 2396.0,
       "w": 196.0,
       "h": 64.0,
@@ -950,9 +958,49 @@
       "placedAt": null,
       "anchor": null
     },
-    "Transformer": {
-      "x": 704.0,
+    "KV-Cache": {
+      "x": 1184.0,
       "y": 2396.0,
+      "w": 196.0,
+      "h": 64.0,
+      "group": "g-AI--系统软件",
+      "state": "final",
+      "placedAt": null,
+      "anchor": null
+    },
+    "GQA": {
+      "x": 1512.0,
+      "y": 2400.0,
+      "w": 196.0,
+      "h": 64.0,
+      "group": "g-AI--AI应用",
+      "state": "final",
+      "placedAt": null,
+      "anchor": null
+    },
+    "MLA": {
+      "x": 1752.0,
+      "y": 2400.0,
+      "w": 196.0,
+      "h": 64.0,
+      "group": "g-AI--AI应用",
+      "state": "final",
+      "placedAt": null,
+      "anchor": null
+    },
+    "MQA": {
+      "x": 1512.0,
+      "y": 2496.0,
+      "w": 196.0,
+      "h": 64.0,
+      "group": "g-AI--AI应用",
+      "state": "final",
+      "placedAt": null,
+      "anchor": null
+    },
+    "Transformer": {
+      "x": 1752.0,
+      "y": 2496.0,
       "w": 196.0,
       "h": 64.0,
       "group": "g-AI--AI应用",

@@ -118,7 +118,7 @@ def load_projects(vault: Path) -> dict:
             old = load_json(legacy)
         except (ValueError, OSError):
             return empty_projects()
-        return upgrade_v1(old) if isinstance(old, dict) else empty_projects()
+        return _merge_levels(upgrade_v1(old)) if isinstance(old, dict) else empty_projects()
     try:
         data = load_json(path)
     except (ValueError, OSError):
@@ -126,12 +126,12 @@ def load_projects(vault: Path) -> dict:
     if not isinstance(data, dict):
         return empty_projects()
     if isinstance(data.get("plans"), dict) and "projects" not in data:
-        return upgrade_v1(data)                     # 文件名换了但内容还是 v1
+        return _merge_levels(upgrade_v1(data))      # 文件名换了但内容还是 v1
     if not isinstance(data.get("projects"), dict):
         return empty_projects()
     data["schema_version"] = SCHEMA_VERSION
     data.setdefault("revision", 0)
-    return data
+    return _merge_levels(data)
 
 
 def save_projects(vault: Path, doc: dict) -> dict:
@@ -287,6 +287,47 @@ def point_ids(doc: dict, project_id: str | None = None) -> list[str]:
                     seen.add(nid)
                     out.append(nid)
     return out
+
+
+# ---------------------------------------------------------------- 难度档
+
+# 学到什么份上。**这是一个维度，不是三套逻辑**：同一条链路，只是喂给模型的口径不同——
+# 出题深浅、对话展开到哪一层、拆点拆多细，全由它一个字段决定。
+#
+# 为什么不用数字（1-5 星）：数字要靠脑补对应到"什么算合格"，模型和人都会各想各的；
+# 三个词各自绑一句可判定的标准，写在 server/levels.py 里，改口径只改那一处。
+#
+# **一个项目一个档，就这一个旋钮。** 试过"项目默认 + 清单覆盖"两层，
+# 界面上立刻多出一个长得差不多的下拉——两个都写着难度、还得想它们谁盖谁，
+# 这种复杂度换来的表达力（同一个项目里两份清单深浅不同）远不值当：
+# 真要分深浅，那本来就该是两个项目。
+LEVELS = ("了解", "会用", "精通")
+DEFAULT_LEVEL = "会用"
+
+
+def level_of(project: dict | None) -> str:
+    """这个项目按哪一档。没填、填错都落默认档。"""
+    value = (project or {}).get("level")
+    return value if value in LEVELS else DEFAULT_LEVEL
+
+
+def _merge_levels(doc: dict) -> dict:
+    """把清单上的旧 `level` 抬到项目上。
+
+    两层合成一层之前存过的数据里，清单上可能有自己的档——直接丢掉等于把人填过的
+    东西悄悄抹了，所以抬上去：项目还是默认档时，用清单里第一个明确写过的。
+    """
+    for project in (doc.get("projects") or {}).values():
+        if not isinstance(project, dict):
+            continue
+        lifted = next((ls.get("level") for ls in project.get("lists") or []
+                       if isinstance(ls, dict) and ls.get("level") in LEVELS), None)
+        if lifted and project.get("level") in (None, "", DEFAULT_LEVEL):
+            project["level"] = lifted
+        for ls in project.get("lists") or []:
+            if isinstance(ls, dict):
+                ls.pop("level", None)
+    return doc
 
 
 # ---------------------------------------------------------------- 时间账

@@ -146,6 +146,18 @@ def post_place(req: PlaceRequest) -> PlaceResult:
             "hint": "重新 GET /api/layout 后基于新 revision 重试"}) from exc
 
 
+@app.post("/api/place/regroup", response_model=PlaceResult)
+def post_regroup(body: dict) -> PlaceResult:
+    """把落在父框里的草稿挪进它那一层的泳道（`layer` 是后加的字段，早先的点没有）。"""
+    try:
+        return curation.regroup(vault_path(), int(body.get("base_revision") or 0),
+                                only_draft=body.get("only_draft", True))
+    except RevisionConflict as exc:
+        raise HTTPException(status_code=409, detail={
+            "message": str(exc), "current_revision": exc.current.revision,
+            "hint": "重新 GET /api/layout 后基于新 revision 重试"}) from exc
+
+
 @app.get("/api/digest")
 def get_digest() -> dict:
     """图谱欠账清单：草稿 / 待复习 / stub / 跨分组桥 / 重复候选 / 环。只读。"""
@@ -226,6 +238,15 @@ def get_chat_history(project: str | None = None, limit: int = 40,
 def get_chat_sessions(project: str | None = None) -> dict:
     """这个项目下聊过几段。**从留档行聚合，不存会话表。**"""
     return {"sessions": chat_svc.sessions(vault_path(), project)}
+
+
+@app.patch("/api/chat/sessions/{session}")
+def patch_chat_session(session: str, body: dict) -> dict:
+    """给一段对话改名。存的是一张「id → 名字」的贴纸，不是会话表；
+    留空就撕掉贴纸，回到自动取的标题（第一句我说的话）。"""
+    title = chat_svc.rename_session(vault_path(), session, str(body.get("title") or ""),
+                                    body.get("project") or None)
+    return {"session": session, "title": title}
 
 
 @app.get("/api/llm/usage", response_model=UsageRead)

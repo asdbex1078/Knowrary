@@ -21,6 +21,10 @@ const name = ref(props.defaults.name || '')
 const desc = ref(props.defaults.planWhy || '')
 const field = ref(props.defaults.field || props.fields[0] || '')
 const year = ref('')     // 可选：填了才进历史视图的时间轴
+// 抽象层：历史视图按它分泳道，新节点也按它落到对应的那条道里。
+// 不填的话，一个没有边的新点只能落在领域那个大框里——正好在所有泳道之外。
+const LAYERS = ['理论', '硬件', '体系结构', '汇编接口', '系统软件', '高级语言', 'AI应用']
+const layer = ref(props.defaults.layer || '')
 const dir = ref(props.defaults.dir || props.dirs[0] || 'nodes')
 // 目录可以手敲：开一个新领域时 vault 里还没有那个文件夹，只能选已有的就卡死了
 const badDir = computed(() => {
@@ -47,6 +51,7 @@ function submit() {
   if (!ready.value) return
   emit('create', { id: id.value, name: id.value, desc: desc.value.trim(),
                    field: field.value.trim(), dir: dir.value, thenRelate: thenRelate.value,
+                   layer: layer.value || null,
                    year: /^\d{3,4}$/.test(year.value.trim()) ? Number(year.value.trim()) : null })
 }
 
@@ -75,14 +80,14 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onKey, true))
 
     <div class="rel-body">
       <label class="fld">
-        <span class="lb">名称<i>必填</i></span>
+        <span class="lb">名称<i class="req">必填</i></span>
         <input ref="nameEl" v-model="name" placeholder="例如：控制器" @keydown.enter.prevent="desc || submit()" />
         <span class="hint">它同时是文件名和 id：<code>{{ dir }}/{{ id || '名称' }}.md</code></span>
       </label>
       <p v-if="bad" class="warn-text">{{ bad }}</p>
 
       <label class="fld">
-        <span class="lb">一句话摘要<i>必填</i></span>
+        <span class="lb">一句话摘要<i class="req">必填</i></span>
         <input v-model="desc" placeholder="它是什么、解决什么问题" />
       </label>
 
@@ -92,9 +97,18 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onKey, true))
           <input v-model="year" inputmode="numeric" placeholder="如 2017，填了才进历史视图" />
         </label>
         <label class="fld">
-          <span class="lb">领域</span>
-          <input v-model="field" list="kg-fields" placeholder="field" />
+          <span class="lb">抽象层<i>可选</i></span>
+          <select v-model="layer">
+            <option value="">不分层</option>
+            <option v-for="l in LAYERS" :key="l" :value="l">{{ l }}</option>
+          </select>
+          <span class="hint">历史视图按它分泳道；不填的话新点只能落在领域那个大框里</span>
+        </label>
+        <label class="fld">
+          <span class="lb">领域<i class="req">必填</i></span>
+          <input v-model="field" list="kg-fields" placeholder="例如：计算机系统" />
           <datalist id="kg-fields"><option v-for="f in fields" :key="f" :value="f" /></datalist>
+          <span class="hint">决定它归到图上哪个框；可以从已有领域里挑，也能直接敲个新的</span>
         </label>
       </div>
       <label class="fld">

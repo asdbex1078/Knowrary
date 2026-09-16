@@ -912,6 +912,30 @@ def 放置按关系族加权投票选分组():
 
 
 @case
+def 一条边都没有的节点落进对应抽象层那条泳道():
+    """分组按抽象层切开之后，只认 field 会把节点丢在父框里、所有泳道之外。"""
+    layout = {"revision": 1, "groups": {
+        "g-AI": {"name": "AI", "x": 0, "y": 0, "w": 900, "h": 600},
+        "g-AI--硬件": {"name": "硬件", "parent": "g-AI", "x": 20, "y": 40, "w": 400, "h": 200},
+        "g-AI--AI应用": {"name": "AI应用", "parent": "g-AI", "x": 20, "y": 300, "w": 400, "h": 200},
+        "g-别的": {"name": "别的", "x": 1000, "y": 0, "w": 300, "h": 300},
+        "g-别的--硬件": {"name": "硬件", "parent": "g-别的", "x": 1020, "y": 40, "w": 200, "h": 100},
+    }, "nodes": {}}
+    index = {"edges": [], "nodes": [
+        {"id": "孤点", "field": "AI", "layer": "AI应用"},
+        {"id": "没填层", "field": "AI"},
+        {"id": "别的域", "field": "不存在的域", "layer": "硬件"},
+    ]}
+    assert core.target_group("孤点", index, layout) == "g-AI--AI应用"
+    # 同名的「硬件」在别的域下面，不能把点吸过去
+    assert core.target_group("没填层", index, layout) == "g-AI", "没有「未分层」子框时退回父框"
+    layout["groups"]["g-AI--未分层"] = {"name": "未分层", "parent": "g-AI",
+                                      "x": 440, "y": 40, "w": 200, "h": 100}
+    assert core.target_group("没填层", index, layout) == "g-AI--未分层"
+    assert core.target_group("别的域", index, layout) is None, "域都不在图上就该留 Inbox"
+
+
+@case
 def 排满的分组会往下长一行而不是挤开别人():
     _, index, layout = placed_vault()
     gid = layout["nodes"]["a"]["group"]
@@ -919,12 +943,13 @@ def 排满的分组会往下长一行而不是挤开别人():
     old_h = layout["groups"][gid]["h"]
 
     assert core.place_node("d", index, layout, gid=gid) is None, "框内还有空位？这个用例就没意义了"
-    box, grown = core.place_or_grow("d", index, layout, today="2026-09-12", gid=gid)
+    box, gpatch, npatch = core.place_or_grow("d", index, layout, today="2026-09-12", gid=gid)
     assert box and box["group"] == gid and box["state"] == "draft", box
     assert box["anchor"] == "a" and box["placedAt"] == "2026-09-12", box
-    assert grown[gid] == old_h + core.CELL_H, grown
+    assert gpatch[gid]["h"] == old_h + core.CELL_H, gpatch
+    assert npatch == {}, "只是长高，不该挪任何节点"
     assert layout["nodes"] == before, "长框时挪动了已有节点"
-    assert box["y"] + box["h"] <= layout["groups"][gid]["y"] + grown[gid], "节点落在长高后的框外"
+    assert box["y"] + box["h"] <= layout["groups"][gid]["y"] + gpatch[gid]["h"], "节点落在长高后的框外"
 
 
 @case
@@ -936,16 +961,59 @@ def 长框会压到兄弟组时宁可不放():
                                   "w": box["w"], "h": 100.0, "parent": box.get("parent"),
                                   "collapsed": False, "pinned": None, "color": None}
     assert core.plan_growth(gid, layout) is None
-    assert core.place_or_grow("d", index, layout, gid=gid) == (None, {})
+    # 并排的块被挡住就宁可不放；只有**泳道**（子框横跨整幅、上下码开）才允许整体下移
+    assert core.is_lane_stack(layout["groups"][gid].get("parent"), layout) is False
+    assert core.place_or_grow("d", index, layout, gid=gid) == (None, {}, {})
+
+
+@case
+def 泳道满了整条往下挪一行():
+    """泳道框是按「当时有几个点」算出来的，常常只装得下一两个；
+    不许长就等于这条道以后再也进不来新点（实测 248x128 的道，容量正好 1 个）。"""
+    layout = {"revision": 1, "groups": {
+        "g-AI": {"name": "AI", "x": 0, "y": 0, "w": 300, "h": 400},
+        "g-AI--硬件": {"name": "硬件", "parent": "g-AI", "x": 10, "y": 40, "w": 280, "h": 128},
+        "g-AI--应用": {"name": "AI应用", "parent": "g-AI", "x": 10, "y": 168, "w": 280, "h": 128},
+    }, "nodes": {
+        "GPU": {"x": 22, "y": 84, "w": 168, "h": 52, "group": "g-AI--硬件", "state": "final"},
+        "RAG": {"x": 22, "y": 212, "w": 168, "h": 52, "group": "g-AI--应用", "state": "final"},
+    }}
+    index = {"edges": [], "nodes": [{"id": "NPU", "field": "AI", "layer": "硬件"},
+                                    {"id": "GPU", "field": "AI", "layer": "硬件"},
+                                    {"id": "RAG", "field": "AI", "layer": "AI应用"}]}
+    assert core.is_lane_stack("g-AI", layout) is True
+    assert core.plan_growth("g-AI--硬件", layout) is None, "普通长法会压到下面那条道"
+
+    box, gpatch, npatch = core.place_or_grow("NPU", index, layout, today="2026-09-16")
+    assert box and box["group"] == "g-AI--硬件", box
+    assert gpatch["g-AI--硬件"]["h"] == 128 + core.CELL_H, gpatch
+    assert gpatch["g-AI--应用"]["y"] == 168 + core.CELL_H, "下面那条道要整条下移"
+    assert gpatch["g-AI"]["h"] == 400 + core.CELL_H, "父框跟着长高，否则泳道顶出去"
+    assert npatch == {"RAG": {"y": 212 + core.CELL_H}}, "道里的节点要跟着道一起走"
+    assert "GPU" not in npatch, "本来就在上面的节点不该动"
+    # 新节点落在长高后的道里
+    assert box["y"] + box["h"] <= 40 + gpatch["g-AI--硬件"]["h"], box
+
+
+@case
+def 并排的块不算泳道():
+    """两个域并排摆着时，把人家推走是破坏排版，不是加一行。"""
+    layout = {"revision": 1, "groups": {
+        "top": {"name": "顶", "x": 0, "y": 0, "w": 400, "h": 200},
+        "left": {"name": "左", "parent": "top", "x": 10, "y": 40, "w": 180, "h": 120},
+        "right": {"name": "右", "parent": "top", "x": 200, "y": 40, "w": 180, "h": 120},
+    }, "nodes": {}}
+    assert core.is_lane_stack("top", layout) is False
+    assert core.plan_lane_growth("left", layout) is None
 
 
 @case
 def digest_汇总欠账():
     vault, index, layout = placed_vault()
-    box, grown = core.place_or_grow("d", index, layout, today="2026-09-01")
+    box, gpatch, _ = core.place_or_grow("d", index, layout, today="2026-09-01")
     layout["nodes"]["d"] = box
-    for k, h in grown.items():
-        layout["groups"][k]["h"] = h
+    for k, fields in gpatch.items():
+        layout["groups"][k].update(fields)
     d = core.build_digest(vault, index, layout, _dt.date(2026, 9, 12))
     assert d["counts"]["inbox"] == 0 and d["counts"]["drafts"] == 1, d["counts"]
     assert d["drafts"][0]["days"] == 11 and d["drafts"][0]["stale"] is True, d["drafts"]

@@ -469,6 +469,48 @@ select:disabled { cursor: not-allowed; opacity: .5; }
 .float.zoom { bottom: 12px; right: 12px; }
 .float.context { top: 12px; left: 12px; }
 .float.player { bottom: 12px; left: 50%; translate: -50% 0; padding: 6px 10px; gap: 10px; }
+
+/* 沿演化链导览的讲解卡：贴左下。
+   不能放右下——那里是缩放工具条（.float.zoom），一盖上去导览期间就没法缩放了；
+   也不能放中间，被推到画面中央的正是当前这一站。 */
+.float.tour {
+  bottom: 12px; left: 12px; width: 296px;
+  flex-direction: column; align-items: stretch; gap: 0; padding: 10px 12px 11px;
+  animation: tour-in .18s var(--ease) both;
+}
+@keyframes tour-in { from { opacity: 0; translate: 0 6px; } }
+.float.tour header { display: flex; align-items: center; gap: 7px; }
+.float.tour .badge {
+  font-size: 11px; font-weight: 650; letter-spacing: .02em;
+  color: #fff; background: var(--accent); padding: 2px 7px; border-radius: 999px;
+}
+.float.tour .yr { font-size: 11.5px; font-weight: 600; color: var(--text-2); }
+.float.tour .via {
+  font-size: 11px; color: var(--text-3); margin-left: auto;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 130px;
+}
+.float.tour header > .icon-btn { margin-left: 2px; flex: none; }
+.float.tour h3 { font-size: 15px; font-weight: 650; margin: 7px 0 0; letter-spacing: -.01em; }
+.float.tour .desc {
+  font-size: 12px; line-height: 1.55; color: var(--text-2); margin: 4px 0 0;
+  display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden;
+}
+
+/* 站点条：既是进度也是目录 */
+.float.tour .stops { display: flex; gap: 3px; list-style: none; padding: 0; margin: 10px 0 9px; }
+.float.tour .stops li { flex: 1; min-width: 0; }
+.float.tour .stops button {
+  display: block; width: 100%; height: 4px; border: none; padding: 0; cursor: pointer;
+  border-radius: 2px; background: var(--line-2);
+  transition: background .18s var(--ease), height .18s var(--ease);
+}
+.float.tour .stops button.done { background: var(--accent); opacity: .5; }
+.float.tour .stops button.on { background: var(--accent); height: 7px; margin-top: -1.5px; }
+.float.tour .stops button:hover { background: var(--accent); }
+
+.float.tour footer { display: flex; align-items: center; gap: 6px; }
+.float.tour footer .btn { flex: 1; justify-content: center; gap: 2px; }
+.float.tour footer .btn:disabled { opacity: .4; cursor: default; }
 .float.banner-bar { top: 12px; left: 50%; translate: -50% 0; padding: 6px 8px 6px 14px; gap: 10px; }
 
 .zoom-val {
@@ -786,11 +828,46 @@ kbd.key {
 /* 跨代激活：金色虚线往前流 */
 @keyframes kg-dash { to { stroke-dashoffset: -26; } }
 .x6-edge path.kg-flow { animation: kg-dash 1.1s linear infinite; }
-/* 时间滑块一动就重建节点，借这个动画做"逐个浮现"。
-   只能动 opacity：CSS 的 transform 会盖掉 SVG 元素自己的 transform 属性，
+/* 历史视图的动画只能动 opacity：CSS 的 transform 会盖掉 SVG 元素自己的 transform 属性，
    一加位移，X6 给每个 cell 算好的坐标就全被拍回原点堆在左上角。 */
+
+/* 进场淡入：**只在刚切进历史视图那一下**放一次（kg-enter 由 JS 加上、400ms 后摘掉）。
+   以前挂在 .kg-history .x6-node 上，于是每次重建 cell 都重放一遍——
+   回放每 220ms 重建一次整张图，0.32s 的动画永远播不完，看起来就是一直在闪。 */
 @keyframes kg-fade { from { opacity: 0; } to { opacity: 1; } }
-.kg-history .x6-node { animation: kg-fade .32s ease both; }
+.kg-history.kg-enter .x6-node { animation: kg-fade .32s ease backwards; }
+
+/* 时间游标：已发生的点正常，游标右边（未来）的点淡下去。
+   淡入淡出交给 transition，回放时只加减 class，不动 cell —— 零重建 = 零闪、零跳。 */
+.kg-history .x6-node, .kg-history .x6-edge { transition: opacity .34s var(--ease); }
+.kg-history .x6-node.kg-future, .kg-history .x6-edge.kg-future { opacity: .16; }
+.kg-history .kg-off { display: none; }
+
+/* 导览停在哪一站：金色描边加一圈呼吸光晕。
+   只能用 stroke / filter，不能用 transform——SVG 元素的 transform 属性会被 CSS 覆盖掉，
+   一加位移 X6 算好的坐标就全被拍回原点（见本节开头）。 */
+.kg-history .x6-node.kg-stop { opacity: 1 !important; }
+.kg-history .x6-node.kg-stop .kg-card {
+  stroke: #d8a838; stroke-width: 2.8;
+  animation: kg-stop-glow 1.8s var(--ease) infinite;
+}
+@keyframes kg-stop-glow {
+  0%, 100% { filter: drop-shadow(0 0 0 rgba(216, 168, 56, .55)); }
+  50% { filter: drop-shadow(0 0 7px rgba(216, 168, 56, .75)); }
+}
+
+/* 刚被游标扫过的那一批：点亮一下就收，别留着抢注意力 */
+@keyframes kg-lit {
+  0% { opacity: .16; }
+  22% { opacity: 1; }
+  100% { opacity: 1; }
+}
+.kg-history .x6-node.kg-lit { animation: kg-lit .62s var(--ease) backwards; }
+.kg-history .x6-node.kg-lit .kg-card { animation: kg-lit-ring .62s var(--ease) backwards; }
+@keyframes kg-lit-ring {
+  0% { stroke: #e0891f; stroke-width: 3; }
+  100% { stroke-width: 1.2; }
+}
 
 /* ---------- 20. 右键菜单 / 建立关系 / 小地图 ---------- */
 .ctx-menu {
@@ -1215,6 +1292,7 @@ kbd.key {
   max-width: 230px; padding: 4px 21px 4px 7px; border-radius: 7px; border: 1px solid var(--line);
   background-color: var(--bg-1); color: var(--text-1); font: inherit; font-size: 11.5px;
 }
+.sess-name { max-width: 230px; padding: 4px 8px; background-color: var(--surface); }
 .chat-view .chat-wrap { flex: 1; min-height: 0; padding: 14px 16px 12px; }
 .focus-chip {
   display: flex; align-items: center; gap: 5px; margin-top: 8px; padding: 4px 8px;

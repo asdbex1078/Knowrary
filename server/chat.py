@@ -30,6 +30,7 @@ from pathlib import Path
 from . import curation
 from .contracts import ChatRequest, QuizRequest
 from .index_service import current_index
+from .levels import fragment as level_fragment
 from .llm_call import chat as llm_chat
 from .paths import core
 from .projects import read as read_projects
@@ -474,7 +475,7 @@ def chat_log_path(vault: Path, project: str | None = None, today: dt.date | None
 
 def append_log(vault: Path, role: str, text: str, node_ids: list[str] | None = None,
                project: str | None = None, session: str | None = None,
-               stance: str | None = None) -> None:
+               stance: str | None = None, trace: list[str] | None = None) -> None:
     """一行一轮，按月分文件。**不建库、不切分、不做 embedding**（F10.7）：
     对话是过程不是知识，检索系统已经存在，就是那张图。找旧对话用 grep。
 
@@ -485,6 +486,9 @@ def append_log(vault: Path, role: str, text: str, node_ids: list[str] | None = N
     row = {"ts": dt.datetime.now().astimezone().isoformat(timespec="seconds"),
            "role": role, "text": text, "node_ids": node_ids or [], "session": session or "",
            "stance": stance or ""}
+    # 过程（"我先查一下…"、工具报错）另存一栏：它和答案混在一行里，回看时得整段重读一遍
+    if trace:
+        row["trace"] = trace
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         with path.open("a", encoding="utf-8") as fh:
@@ -518,6 +522,38 @@ def _read_rows(vault: Path, project: str | None, months: int = 2) -> list[dict]:
     return rows
 
 
+def titles_path(vault: Path, project: str | None = None) -> Path:
+    slot = project if project and core.ID_OK.match(project) else SCRATCH
+    return vault / ".knowrary" / "chat" / slot / "titles.json"
+
+
+def load_titles(vault: Path, project: str | None = None) -> dict:
+    """人手改过的会话名。**这不是会话表**，是一张「id → 我给它起的名字」的贴纸：
+    没改过的会话在这里一行都没有，删掉这个文件也只是回到自动取的标题。"""
+    path = titles_path(vault, project)
+    if not path.exists():
+        return {}
+    try:
+        data = core.load_json(path)
+    except (ValueError, OSError):
+        return {}
+    return {str(k): str(v)[:TITLE_CHARS * 2] for k, v in data.items()} if isinstance(data, dict) else {}
+
+
+def rename_session(vault: Path, session: str, title: str, project: str | None = None) -> str:
+    """给一段对话改名。留空 = 撕掉贴纸，回到自动取的标题。"""
+    titles = load_titles(vault, project)
+    title = " ".join((title or "").split())[:TITLE_CHARS * 2]
+    if title:
+        titles[session] = title
+    else:
+        titles.pop(session, None)
+    path = titles_path(vault, project)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    core.write_json_atomic(path, titles)
+    return title
+
+
 def sessions(vault: Path, project: str | None = None) -> list[dict]:
     """会话列表，**从留档行聚合出来**，不存第二份。
 
@@ -539,8 +575,11 @@ def sessions(vault: Path, project: str | None = None) -> list[dict]:
     # 时间戳精确到秒，一来一回常常同秒；同秒时按 ts 排会退化成不稳定顺序，
     # 而追加顺序本身就是真正的"最近"。
     out = sorted(buckets.values(), key=lambda b: b["seq"], reverse=True)
+    mine = load_titles(vault, project)
     for b in out:
-        b["title"] = b["title"] or "（没说什么）"
+        b["auto"] = b["title"] or "（没说什么）"      # 自动取的那个：改名框里当占位符
+        b["title"] = mine.get(b["id"]) or b["auto"]
+        b["renamed"] = b["id"] in mine
     return out
 
 
@@ -557,7 +596,8 @@ def history(vault: Path, project: str | None = None, limit: int = 40,
     elif rows:
         newest = rows[-1].get("session") or "legacy"
         rows = [r for r in rows if (r.get("session") or "legacy") == newest]
-    return [{"role": r["role"], "content": r["text"], "node_ids": r.get("node_ids") or []}
+    return [{"role": r["role"], "content": r["text"], "node_ids": r.get("node_ids") or [],
+             "trace": r.get("trace") or []}
             for r in rows][-limit:]
 
 
@@ -634,6 +674,18 @@ def stance_of(name: str | None) -> dict:
     return STANCES.get(name or DEFAULT_STANCE, STANCES[DEFAULT_STANCE])
 
 
+def _project_level(vault: Path, project: str | None) -> str:
+    """当前项目的难度档。不绑项目（全局对话）就用默认档。
+
+    为什么按项目而不按清单：一次对话不属于某一份清单，但一定属于某个项目的视角。
+    清单级的覆盖只影响出题与拆点，那两件事本来就是从某一份清单发起的。
+    """
+    if not project:
+        return core.DEFAULT_LEVEL
+    doc = core.load_projects(vault)
+    return core.level_of((doc.get("projects") or {}).get(project))
+
+
 def _system_prompt(vault: Path, stance: str | None, project: str | None = None) -> str:
     """基底一份 + 口径一份。工具表从白名单渲染——**说明书和实际权限是同一份数据**，
     两边各写一遍迟早对不上（"表里写着能用、调了却说没有"是最让人发火的那种 bug）。"""
@@ -643,6 +695,7 @@ def _system_prompt(vault: Path, stance: str | None, project: str | None = None) 
     table = "\n".join(f"| `{t}` | {TOOL_DOC[t]} |" for t in conf["tools"] if t in TOOL_DOC)
     formats = "\n\n".join(FORMAT_DOC[t] for t in conf["tools"] if t in FORMAT_DOC)
     return (_prompt_file("chat")
+            .replace("{{level}}", level_fragment(_project_level(vault, project), "chat"))
             .replace("{{overview}}", _overview(vault))
             .replace("{{tools}}", table)
             .replace("{{formats}}", formats)
@@ -659,6 +712,36 @@ def strip_tools(text: str) -> str:
     否则会出现"聊天记录里没有、屏幕上闪过一段 JSON"这种事。
     """
     return _TOOL_RE.sub("", text or "").strip()
+
+
+# 教练每轮末尾问的那个检验问题。用一个轻量围栏标出来，而不是让它调工具——
+# 调工具要多一个来回（多一次计费、多等几秒），而这件事没有任何需要服务端算的东西。
+_CHECK_RE = re.compile(r"```check\s*\n(.*?)```", re.S)
+
+
+def pull_checks(text: str, default_points: list[str]) -> tuple[str, list[dict]]:
+    """把 ```check 块从答案里摘出来，返回 (还给人看的文本, 题目列表)。
+
+    题干仍然留在正文里——那句问话本来就是对话的一部分，摘掉会让最后一段没头没尾；
+    摘掉的只是围栏和「考点:」那一行。
+    """
+    out: list[dict] = []
+
+    def take(m: re.Match) -> str:
+        body = m.group(1).strip()
+        stem_lines, points = [], []
+        for line in body.splitlines():
+            hit = re.match(r"^\s*(?:考点|points)\s*[:：]\s*(.+)$", line)
+            if hit:
+                points += [p.strip() for p in re.split(r"[,，、\s]+", hit.group(1)) if p.strip()]
+            else:
+                stem_lines.append(line)
+        stem = "\n".join(stem_lines).strip()
+        if stem:
+            out.append({"stem": stem, "points": points or list(default_points)})
+        return stem
+
+    return _CHECK_RE.sub(take, text or "").strip(), out
 
 
 def _fit_history(msgs: list[dict]) -> tuple[list[dict], int]:
@@ -754,7 +837,8 @@ def _run(vault: Path, req: ChatRequest):
         messages.insert(1, {"role": "user", "content":
             f"（提醒：这一段之前还有 {dropped} 轮没带过来。你缺的上下文别猜——"
             f"先 `search_nodes` / `read_node` 去图里找，找不到就直接问我。）"})
-    said: list[str] = []
+    said: list[str] = []      # 过程：每一次"还要接着调工具"的那段话
+    answer = ""
     # 同一轮里同参数的工具调用只真跑一次：模型确实会连着用一模一样的参数再搜一遍
     # （真实对话里观察到的），每重复一次就白烧一个来回。
     seen_calls: dict[str, str] = {}
@@ -766,10 +850,14 @@ def _run(vault: Path, req: ChatRequest):
                 yield ev
             else:
                 text, usage = ev["text"], ev["usage"]
-        said.append(strip_tools(text))
+        step_text = strip_tools(text)
         call = _parse_tool(text)
         if not call:
+            # 不再调工具 = 这一段就是答案本身。前面那些"我先查一下""工具挂了"是过程，
+            # 拼进正文的话，每次都要在一堆过程里找那几句有营养的（真实使用里最费时间的一点）。
+            answer = step_text
             break
+        said.append(step_text)
 
         name, args = call
         key = f"{name}:{json.dumps(args, ensure_ascii=False, sort_keys=True)}"
@@ -810,13 +898,26 @@ def _run(vault: Path, req: ChatRequest):
     else:
         yield {"type": "tool", "name": "（停）", "args": {},
                "summary": f"连着调了 {MAX_STEPS} 次工具还没给出回答，这一轮到此为止。"}
+        answer = said.pop() if said else ""      # 用尽了步数：最后说的那段当答案
 
-    answer = "\n\n".join(t for t in said if t.strip())
-    touched = _mentioned(vault, answer)
+    trace = [t for t in said if t.strip()]
+    # 高亮按"这一轮提到过谁"算，所以连过程一起看——图上该亮的节点常常是查出来的那个
+    touched = _mentioned(vault, "\n\n".join([*trace, answer]))
+    # 讲完一段随口问的那个检验问题：攒进题库。它是**在我刚学完那一刻、对着我当时的理解**
+    # 提出来的，比事后让模型看着 md 现编的题贴身；而且它已经生成过一次了，别再付第二次钱。
+    answer, checks = pull_checks(answer, touched)
+    for c in checks:
+        try:
+            row = core.add_question(vault, c["stem"], c["points"], source="chat")
+        except OSError as exc:
+            log.warning("题库没写上：%s", exc)
+            continue
+        if row:
+            yield {"type": "question", "stem": row["stem"], "points": row["points"]}
     append_log(vault, "assistant", answer, node_ids=touched, project=req.project,
-               session=req.session, stance=req.stance or DEFAULT_STANCE)
+               session=req.session, stance=req.stance or DEFAULT_STANCE, trace=trace)
     # node_ids 从调试信息升级成了界面契约：「聊到哪、图上亮哪」靠它（重构方案 §8 第 4 条）
-    yield {"type": "done", "text": answer, "usage": usage, "node_ids": touched}
+    yield {"type": "done", "text": answer, "trace": trace, "usage": usage, "node_ids": touched}
 
 
 def _mentioned(vault: Path, text: str) -> list[str]:

@@ -661,6 +661,66 @@ def chat_检验问题会被摘进题库且题干仍留在答案里():
 
 
 @case
+def 归位_只动草稿并且只往已有泳道里挪():
+    c, vault = client()
+    # 造一个泳道式布局：领域「测试」下面两条道
+    layout = {
+        "schema_version": 1, "revision": 1,
+        "groups": {
+            "g-测试": {"name": "测试", "x": 0, "y": 0, "w": 300, "h": 400},
+            "g-测试--硬件": {"name": "硬件", "parent": "g-测试", "x": 10, "y": 40, "w": 280, "h": 128},
+            "g-测试--理论": {"name": "理论", "parent": "g-测试", "x": 10, "y": 168, "w": 280, "h": 128},
+        },
+        "nodes": {
+            # 落在父框里的草稿：补了 layer，应该被挪进「硬件」
+            "a": {"x": 20, "y": 320, "w": 168, "h": 52, "group": "g-测试", "state": "draft"},
+            # 同样落在父框里，但是已定稿：不许动
+            "b": {"x": 20, "y": 330, "w": 168, "h": 52, "group": "g-测试", "state": "final"},
+        },
+    }
+    core.write_json_atomic(vault / ".knowrary" / "layout.json", layout)
+    for nid, layer in (("a", "硬件"), ("b", "硬件")):
+        core.write(vault / f"nodes/组A/{nid}.md",
+                   f"---\nname: {nid}\nfield: 测试\nlayer: {layer}\ndesc: x\n---\n# {nid}\n\n## 关系\n")
+    index_service.invalidate()
+
+    rev = c.get("/api/layout").json()["layout"]["revision"]
+    out = c.post("/api/place/regroup", json={"base_revision": rev}).json()
+    assert [p["id"] for p in out["placed"]] == ["a"], out
+    assert out["placed"][0]["group"] == "g-测试--硬件", out
+    after = c.get("/api/layout").json()["layout"]
+    assert after["nodes"]["b"]["group"] == "g-测试", "定稿的节点被挪了"
+    assert after["nodes"]["a"]["state"] == "draft", "归位不该改状态"
+
+    # 再来一次：已经各归各位，什么都不动
+    again = c.post("/api/place/regroup", json={"base_revision": after["revision"]}).json()
+    assert again["placed"] == [] and again["revision"] == after["revision"], again
+
+
+@case
+def 归位_想去的道还不存在时宁可别动它():
+    """`by_field_and_layer` 找不到同名子框会退回领域大框；
+    把一个已经待在某条道里的点拽回大框，比原地不动更糟。"""
+    c, vault = client()
+    core.write_json_atomic(vault / ".knowrary" / "layout.json", {
+        "schema_version": 1, "revision": 1,
+        "groups": {
+            "g-测试": {"name": "测试", "x": 0, "y": 0, "w": 300, "h": 400},
+            "g-测试--未分层": {"name": "未分层", "parent": "g-测试", "x": 10, "y": 40, "w": 280, "h": 128},
+        },
+        "nodes": {"a": {"x": 20, "y": 84, "w": 168, "h": 52, "group": "g-测试--未分层", "state": "draft"}},
+    })
+    core.write(vault / "nodes/组A/a.md",
+               "---\nname: a\nfield: 测试\nlayer: 体系结构\ndesc: x\n---\n# a\n\n## 关系\n")
+    index_service.invalidate()
+    rev = c.get("/api/layout").json()["layout"]["revision"]
+    out = c.post("/api/place/regroup", json={"base_revision": rev}).json()
+    assert out["placed"] == [], out
+    after = c.get("/api/layout").json()["layout"]
+    assert after["nodes"]["a"]["group"] == "g-测试--未分层", "被拽回大框了"
+
+
+@case
 def quiz_跳过stub与不存在的节点():
     c, _, _ = with_inbox_node()
     original = stub_llm(json.dumps({"questions": []}))
@@ -2640,11 +2700,28 @@ def chat_难度档跟着项目走():
 
 
 @case
-def 清单的难度档盖得住项目的():
-    assert core.level_of({"level": "了解"}, {"level": "精通"}) == "精通"
-    assert core.level_of({"level": "了解"}, {"level": None}) == "了解"
-    assert core.level_of({}, {}) == core.DEFAULT_LEVEL
-    assert core.level_of({"level": "瞎填的"}, None) == core.DEFAULT_LEVEL
+def 难度档一个项目一个():
+    assert core.level_of({"level": "了解"}) == "了解"
+    assert core.level_of({}) == core.DEFAULT_LEVEL
+    assert core.level_of({"level": "瞎填的"}) == core.DEFAULT_LEVEL
+    assert core.level_of(None) == core.DEFAULT_LEVEL
+
+
+@case
+def 两层合一层时清单上的旧难度抬到项目上():
+    """直接丢掉等于把人填过的东西悄悄抹了。"""
+    c, vault, _ = with_inbox_node()
+    (vault / ".knowrary" / "projects.json").write_text(json.dumps({
+        "schema_version": 2, "revision": 3, "projects": {
+            "ai": {"name": "AI", "level": "会用",
+                   "lists": [{"kind": "学习", "name": "主线", "level": "了解"}]},
+            "hw": {"name": "硬件", "level": "精通",
+                   "lists": [{"kind": "学习", "name": "主线", "level": "了解"}]}}},
+        ensure_ascii=False), "utf-8")
+    doc = c.get("/api/projects").json()["doc"]
+    assert doc["projects"]["ai"]["level"] == "了解", doc["projects"]["ai"]
+    assert doc["projects"]["hw"]["level"] == "精通", "项目自己写过档就不该被清单盖掉"
+    assert all("level" not in ls for p in doc["projects"].values() for ls in p["lists"]), doc
 
 
 @case
@@ -2782,6 +2859,33 @@ def chat_检验题进题库():
     # 题干留在正文里（那句问话本来就是对话的一部分），摘掉的只是围栏
     done = [e for e in evs if e["type"] == "done"][-1]
     assert done["text"].endswith("A 的关键机制是什么？") and "```" not in done["text"], done["text"]
+
+
+@case
+def chat_会话能改名而且不建会话表():
+    """名字默认取第一句我说的话；改过的存成一张「id → 名字」的贴纸，撕掉就回到自动的。"""
+    c, vault, _ = with_inbox_node()
+    original, _ = stub_chat(["好的"])
+    try:
+        c.post("/api/chat", json={"messages": [{"role": "user", "content": "NPU 和 GPU 的核心差别是什么"}],
+                                  "session": "s1"})
+    finally:
+        restore_chat(original)
+    rows = c.get("/api/chat/sessions").json()["sessions"]
+    assert rows[0]["title"].startswith("NPU 和 GPU"), rows
+    assert rows[0]["renamed"] is False and rows[0]["auto"] == rows[0]["title"], rows
+
+    r = c.patch("/api/chat/sessions/s1", json={"title": "  端侧推理那次  "})
+    assert r.json()["title"] == "端侧推理那次", r.text
+    rows = c.get("/api/chat/sessions").json()["sessions"]
+    assert rows[0]["title"] == "端侧推理那次" and rows[0]["renamed"] is True, rows
+    assert rows[0]["auto"].startswith("NPU 和 GPU"), "自动取的那个还要留着当占位符"
+    # 贴纸就是一个小文件，删了只是回到自动标题
+    assert (vault / ".knowrary" / "chat" / "_scratch" / "titles.json").exists()
+
+    c.patch("/api/chat/sessions/s1", json={"title": ""})
+    rows = c.get("/api/chat/sessions").json()["sessions"]
+    assert rows[0]["title"].startswith("NPU 和 GPU") and rows[0]["renamed"] is False, rows
 
 
 @case

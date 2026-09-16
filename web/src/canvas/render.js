@@ -5,10 +5,10 @@ import { Selection } from '@antv/x6-plugin-selection'
 import { Snapline } from '@antv/x6-plugin-snapline'
 import { Transform } from '@antv/x6-plugin-transform'
 import { clusterSummary, containerOf } from './lod'
-import { CLUSTER_H, CLUSTER_W, FAMILY_STYLE, clusterBox, NODE_H, NODE_W, aggregateAttrs, aggregateLabel, clusterAttrs,
-         activationAttrs, edgeAttrs, groupAttrs, imageAttrs, laneAttrs, nodeAttrs, noteAttrs, paletteFor,
-         NEUTRAL, refAttrs, registerShapes, sizeFor, tickAttrs, tokens } from './shapes'
-import { AXIS_H, buildTimeline } from './timeline'
+import { CLUSTER_H, CLUSTER_W, CURSOR_ID, CURSOR_W, FAMILY_STYLE, clusterBox, NODE_H, NODE_W, aggregateAttrs,
+         aggregateLabel, clusterAttrs, activationAttrs, edgeAttrs, groupAttrs, imageAttrs, laneAttrs, nodeAttrs,
+         noteAttrs, paletteFor, NEUTRAL, refAttrs, registerShapes, sizeFor, tickAttrs, tokens } from './shapes'
+import { AXIS_H, activeAt, buildTimeline } from './timeline'
 
 /**
  * 历史视图的画布元素：泳道 + 年份刻度 + 有 year 的节点 + 两端都在图里的边。
@@ -39,6 +39,10 @@ export function buildHistoryCells(index, layout, options = {}) {
       data: { kind: 'node', group: group || null, field: meta?.field || null },
     })
   }
+  // 时间游标：位置由 paintHistoryTime 每次挪，这里只负责把它建出来
+  nodes.push({ id: CURSOR_ID, shape: 'kg-cursor', x: -999, y: AXIS_H - 6, width: CURSOR_W,
+               height: Math.max(plan.height - AXIS_H + 6, 80), zIndex: 9,
+               attrs: { label: { text: '' } }, data: { kind: 'cursor' } })
   const edges = plan.edges.map((e) => {
     const gold = e.type === '被激活'
     const attrs = gold ? activationAttrs() : edgeAttrs(e.family)
@@ -52,6 +56,70 @@ export function buildHistoryCells(index, layout, options = {}) {
   })
   return { nodes, edges, plan }
 }
+
+const TICK_OFFSET = 40    // 年份刻度线相对节点左沿的偏移，游标要和它对齐
+const LIT_MS = 620               // "刚被游标扫过"的点亮时长，和 CSS 里的 kg-lit 对齐
+
+/** 一个 cell 对应的那个 <g>，取不到就返回 null（还没挂载 / 已经被换掉）。 */
+function viewEl(graph, id) {
+  const cell = graph.getCellById(id)
+  return cell ? graph.findViewByCell(cell)?.container || null : null
+}
+
+function lit(el) {
+  clearTimeout(el.__kgLit)
+  el.classList.remove('kg-lit')
+  void el.getBoundingClientRect()          // 强制回流，否则连点两站时动画不会重放
+  el.classList.add('kg-lit')
+  el.__kgLit = setTimeout(() => el.classList.remove('kg-lit'), LIT_MS)
+}
+
+/**
+ * 把时间游标挪到 upto，并按"已发生 / 未来"给节点和边加减 class。
+ *
+ * **全程不碰 cell 的增删**：这正是回放不再一闪一闪的原因。
+ * 以前每帧都 fromJSON 重建整张图，节点 DOM 一换，绑在 .x6-node 上的入场动画就重放一遍，
+ * 0.32s 的动画配 0.22s 的间隔 = 永远播不完的闪；加上比例尺跟着可见节点变，已出现的点还一直在滑。
+ *
+ * prev 是上一站的"已发生"集合，用来只给这一站新亮起来的点做一次点亮动画；传 null 就不点亮
+ * （进入历史视图的第一帧、或者滑块往回拖时，不该满屏闪光）。
+ * 返回这一站的集合，调用方留着当下一次的 prev。
+ */
+export function paintHistoryTime(graph, plan, { upto = null, validity = false, prev = null } = {}) {
+  if (!graph || !plan) return null
+  const active = activeAt(plan, upto, validity)
+  for (const id of plan.placed.keys()) {
+    const el = viewEl(graph, id)
+    if (!el) continue
+    const on = active.has(id)
+    el.classList.toggle('kg-future', !on)
+    if (on && prev && !prev.has(id)) lit(el)
+  }
+  for (const e of plan.edges) {
+    const el = viewEl(graph, e.id)
+    if (el) el.classList.toggle('kg-future', !(active.has(e.source) && active.has(e.target)))
+  }
+  const cursor = graph.getCellById(CURSOR_ID)
+  if (cursor) {
+    const el = viewEl(graph, CURSOR_ID)
+    // 「全部年份」没有游标可言：藏起来，而不是杵在最右边假装扫完了
+    el?.classList.toggle('kg-off', upto === null)
+    if (upto !== null) {
+      cursor.position(plan.at(upto) + TICK_OFFSET - CURSOR_W / 2, AXIS_H - 6)
+      cursor.attr('label/text', String(upto))
+    }
+  }
+  return active
+}
+
+/** 导览当前停在哪一站：同一时刻只有一个 .kg-stop。传 null 就是全摘掉。 */
+export function markStop(graph, id) {
+  if (!graph) return
+  for (const el of graph.container.querySelectorAll('.kg-stop')) el.classList.remove('kg-stop')
+  if (id) viewEl(graph, id)?.classList.add('kg-stop')
+}
+
+const DRAGGABLE = new Set(['kg-node', 'kg-group', 'kg-cluster', 'kg-note', 'kg-ref', 'kg-image'])
 
 export const LABEL_ZOOM = 0.8 // 边标签只在放大到这个比例以上才画（性能守则 4）
 
@@ -104,7 +172,10 @@ export function createGraph(container) {
     // 全图默认走直线：orth 直角折线不做避障，193 条边会绕成迷宫。
     // 手工调过拐点的边仍按 layout.edges 里存的 router 渲染。
     connecting: { router: 'normal', connector: 'normal', allowBlank: false },
-    interacting: { nodeMovable: true, edgeMovable: false, edgeLabelMovable: false },
+    // 只有"内容"能拖。泳道、年份刻度、时间游标是图的骨架不是图的内容——
+    // 它们的坐标是算出来的，拖走既没意义，还会被 node:moved 当成真节点写进 layout。
+    interacting: { nodeMovable: (view) => DRAGGABLE.has(view.cell.shape),
+                   edgeMovable: false, edgeLabelMovable: false },
   })
   // 拖空白 = 平移；shift + 拖空白 = 框选
   graph.use(new Selection({ enabled: true, multiple: true, rubberband: true, modifiers: 'shift',
@@ -189,7 +260,7 @@ function groupDepth(groups, id, seen = new Set()) {
 
 export function buildCells(index, layout, options = {}) {
   const { families = null, showLabels = false, collapsed = new Set(), zoom = 1, due = new Set(),
-          states = {}, only = null } = options
+          states = {}, only = null, avoidNodes = false } = options
   // only：「只看某个节点的邻居」模式，画布上只留这一小撮节点与它们之间的边。
   // 做成投影层的过滤而不是把别的元素调暗——网状图里"调暗"照样挡视线。
   const keepGroup = only
@@ -310,8 +381,15 @@ export function buildCells(index, layout, options = {}) {
       id: e.id, source: e.source, target: e.target, zIndex: 5,
       attrs: base,
       vertices: style?.vertices || (bend ? [bend] : []),
-      router: style?.router ? { name: style.router } : undefined,
-      connector: curved ? { name: 'smooth' } : undefined,
+      // 「绕开卡片」：manhattan 把节点当障碍物绕行。默认不开——它会把所有线掰成直角，
+      // 是另一种观感；而且手工拐过的边必须听人的，不能被自动路由推翻。
+      router: style?.router ? { name: style.router }
+        : (avoidNodes && !style?.vertices?.length
+            ? { name: 'manhattan', args: { padding: 14, step: 16 } }
+            : undefined),
+      connector: style?.router || (avoidNodes && !style?.vertices?.length)
+        ? { name: 'rounded', args: { radius: 8 } }
+        : (curved ? { name: 'smooth' } : undefined),
       labels: showLabels ? [edgeLabel(e)] : [],
       data: { kind: 'edge', family: e.family, type: e.type, year: e.year ?? null,
               baseWidth: base.line.strokeWidth, baseDash: base.line.strokeDasharray || null,
@@ -324,6 +402,9 @@ export function buildCells(index, layout, options = {}) {
     edges.push({
       id: `agg:${pair}`, source: from, target: to, zIndex: 4,
       attrs, labels: showLabels ? [aggregateLabel(items.length)] : [],   // 缩小时不画数字，避免满屏小标签
+      // 聚合边一样要绕：跨组的那几条最长，也最容易横穿别人的卡片
+      router: avoidNodes ? { name: 'manhattan', args: { padding: 14, step: 16 } } : undefined,
+      connector: avoidNodes ? { name: 'rounded', args: { radius: 8 } } : undefined,
       data: { kind: 'agg', pair, count: items.length, baseWidth: attrs.line.strokeWidth, baseDash: null,
               baseClass: null, baseZ: 4, families: [...new Set(items.map((e) => e.family))] },
     })

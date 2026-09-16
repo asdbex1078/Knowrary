@@ -16,7 +16,8 @@ from .mdio import (NODE_DIRS, RE_LINK, RE_REL_HEADER, dump_frontmatter, first_pa
                    yaml_scalar)
 from .parser import (LAYERS, UNLAYERED, Node, digest_of, load_node, load_vault,
                      validate_frontmatter)
-from .placement import inbox_ids, place_node, place_or_grow, plan_growth, target_group
+from .placement import (by_field_and_layer, inbox_ids, is_lane_stack, place_node,
+                        place_or_grow, plan_growth, plan_lane_growth, target_group)
 from .projects import (DEFAULT_LEVEL, DEFAULT_LOAD, ID_OK, KINDS, LEVELS, level_of, exam_state, states_of, study_state, LOAD_HOURS, LOADS, MASTERY_ORDER, all_progress,
                        all_schedules, as_date, ascii_id, done_ids, empty_projects, legacy_plans_path,
                        list_field, lists_of, load_projects, mastery_of, merge_progress, point_ids,
@@ -41,7 +42,8 @@ __all__ = [
     "current_stage", "done_ids", "project_lines", "due_nodes", "legacy_plans_path", "list_field", "lists_of",
     "empty_projects", "inbox_ids", "load_log", "load_projects", "load_quiz_log", "mastery_of",
     "merge_progress", "next_due_for", "place_node", "place_or_grow", "plan_growth",
-    "projects_path", "point_ids", "add_question", "enrich_questions", "pool_norm", "pool_for_nodes", "load_pool", "mark_questions", "pool_stats", "save_open", "load_open", "clear_open", "LEVELS", "DEFAULT_LEVEL", "level_of", "progress_of", "progress_of_project", "stage_points",
+    "plan_lane_growth", "is_lane_stack",
+    "projects_path", "point_ids", "by_field_and_layer", "add_question", "enrich_questions", "pool_norm", "pool_for_nodes", "load_pool", "mark_questions", "pool_stats", "save_open", "load_open", "clear_open", "LEVELS", "DEFAULT_LEVEL", "level_of", "progress_of", "progress_of_project", "stage_points",
     "schedule_of", "upgrade_v1", "record_review", "record_usage", "load_usage", "usage_summary",
     "MergeRejected", "RenameRejected", "apply_merge", "apply_rename", "backup_rename",
     "plan_merge", "plan_rename",

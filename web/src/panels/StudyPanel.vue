@@ -16,9 +16,10 @@ import Icon from '../ui/Icon.vue'
 const props = defineProps({
   today: { type: Object, default: null },    // { items, counts, projects, pools, generated_at }
   busy: { type: Boolean, default: false },   // 出题中
+  openQuiz: { type: Object, default: null }, // 上次出了还没交卷的那份题
 })
 const emit = defineEmits(['goto', 'quiz', 'review', 'build', 'write', 'place', 'plans', 'global',
-                          'refresh', 'close'])
+                          'refresh', 'close', 'resume-quiz', 'drop-quiz'])
 
 // 每一类怎么呈现、点下去干什么。act 为空的只跳转定位。
 const KIND = {
@@ -55,6 +56,15 @@ const poolCount = (k) => (props.today?.pools?.[k] || []).length
     </template>
 
     <template #default>
+      <!-- 出一次题是花了钱的：刷新一下、点错一下就没了的话，下次就不敢点「考一下」了 -->
+      <div v-if="openQuiz" class="open-quiz">
+        <span>上次还有 <b>{{ openQuiz.questions.length }}</b> 题没交卷</span>
+        <button class="btn subtle tiny" @click="emit('resume-quiz')">接着答</button>
+        <button class="icon-btn ghost tiny" title="不要这份卷子了" @click="emit('drop-quiz')">
+          <Icon name="x" :size="13" />
+        </button>
+      </div>
+
       <div v-if="!today" class="dim">排清单中…</div>
 
       <template v-else>

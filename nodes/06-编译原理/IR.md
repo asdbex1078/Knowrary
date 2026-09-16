@@ -1,6 +1,7 @@
 ---
 name: IR
 field: 计算机系统
+year: 1958
 layer: 系统软件
 tags:
   - 编译
@@ -14,4 +15,11 @@ source: 知识图谱zhis.jpg
 
 实例：LLVM IR；JVM 字节码（[[字节码]]）；eBPF 中的 BPF 字节码。
 
+> **年份锚点：1958。** SHARE 委员会的 UNCOL（Universal Computer Oriented Language）提案第一次提出
+> 用一层通用中间语言把「N 种语言 × M 种机器」降成「N + M」——正是上面那句"前后端解耦"。
+> UNCOL 自己从未实现，但中间语言这个想法从此立住了。
+>
+> （`year` 取「历史视图锚点年」口径，不是唯一发明年。）
+
 ## 关系
+- 演化为:: [[LLVM]] (2003) — 中间表示从编译器内部的临时产物，做成贯穿全流程的一等公民

@@ -13,13 +13,14 @@ defineProps({
   aggregate: { type: Boolean, default: true },
   autoLod: { type: Boolean, default: true },
   snap: { type: Boolean, default: true },
+  avoidNodes: { type: Boolean, default: false },
   layouts: { type: Object, default: () => ({}) },
   canUndo: { type: Boolean, default: false },
   canRedo: { type: Boolean, default: false },
   locked: { type: Boolean, default: false },
 })
 const emit = defineEmits([
-  'toggle-family', 'toggle-aggregate', 'toggle-lod', 'toggle-snap', 'pick-layout',
+  'toggle-family', 'toggle-aggregate', 'toggle-lod', 'toggle-snap', 'toggle-avoid', 'pick-layout',
   'add-note', 'add-image', 'undo', 'redo',
 ])
 </script>
@@ -60,6 +61,11 @@ const emit = defineEmits([
           <input type="checkbox" :checked="snap" @change="emit('toggle-snap')" />
           <span class="check"><Icon name="check" :size="11" :width="2.6" /></span>
           <span class="label">对齐吸附<span class="sub">拖动出参考线，松手贴 8px 网格</span></span>
+        </label>
+        <label class="switch-row">
+          <input type="checkbox" :checked="avoidNodes" @change="emit('toggle-avoid')" />
+          <span class="check"><Icon name="check" :size="11" :width="2.6" /></span>
+          <span class="label">连线绕开卡片<span class="sub">直角走线，从卡片之间穿；手工拐过的边不受影响</span></span>
         </label>
       </template>
     </Popover>

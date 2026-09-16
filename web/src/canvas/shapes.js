@@ -109,6 +109,10 @@ export const FAMILY_STYLE = {
 
 export const FAMILIES = Object.keys(FAMILY_STYLE)
 
+export const CURSOR_ID = '__time-cursor__'   // 时间游标那个 cell 的固定 id
+export const CURSOR_W = 2.5
+export const CURSOR_COLOR = '#e0891f'        // 和「演化」同一支橙：两者说的都是"时间往前走"
+
 export function registerShapes() {
   Graph.registerNode('kg-node', {
     inherit: 'rect',
@@ -195,8 +199,28 @@ export function registerShapes() {
     width: 1, height: 40,
     markup: [{ tagName: 'rect', selector: 'body' }, { tagName: 'text', selector: 'label' }],
     attrs: {
-      body: { width: 1, refHeight: '100%', fill: '#dfe4ea' },
+      // stroke 必须显式关掉：inherit: 'rect' 会带上 X6 基础 rect 的 stroke: #000，
+      // 1px 宽的方块被 1px 黑描边整个糊满——本该是浅灰参考线的刻度一直画成了黑线，
+      // 二十几条黑竖线压过泳道和卡片，整张历史图的噪声大半来自这里。
+      body: { width: 1, refHeight: '100%', fill: '#dfe4ea', stroke: 'none' },
       label: { refX: 0, refY: -8, fontSize: 12, fontWeight: 600, textAnchor: 'middle' },
+    },
+  }, true)
+
+  // 历史视图的时间游标：一根贯穿全图的竖线，顶上挂一枚年份药丸。
+  // 回放时只挪它 + 给节点加减一个 class，全程不重建 cell——这是"不闪不跳"的前提。
+  Graph.registerNode('kg-cursor', {
+    inherit: 'rect',
+    width: CURSOR_W, height: 40,
+    markup: [{ tagName: 'rect', selector: 'body' }, { tagName: 'rect', selector: 'pill' },
+             { tagName: 'text', selector: 'label' }],
+    attrs: {
+      // 同样要显式 stroke: none，否则继承来的黑描边会把橙色游标画成黑线（见 kg-tick 的注释）
+      body: { width: CURSOR_W, refHeight: '100%', rx: 1, ry: 1, fill: CURSOR_COLOR, stroke: 'none' },
+      pill: { x: -31, y: -28, width: 64, height: 23, rx: 11.5, ry: 11.5, fill: CURSOR_COLOR,
+              stroke: 'none' },
+      label: { refX: CURSOR_W / 2, y: -12, fontSize: 13, fontWeight: 700, fill: '#fff',
+               textAnchor: 'middle' },
     },
   }, true)
 
