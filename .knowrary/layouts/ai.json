@@ -1,11 +1,11 @@
 {
   "schema_version": 2,
-  "revision": 4,
-  "updated_at": "2026-09-16T11:57:09Z",
+  "revision": 5,
+  "updated_at": "2026-09-16T12:01:55Z",
   "viewport": {
-    "zoom": 0.675,
-    "cx": 605.0,
-    "cy": 492.0
+    "zoom": 1.0,
+    "cx": 584.0,
+    "cy": 514.0
   },
   "groups": {
     "g-list-0": {
