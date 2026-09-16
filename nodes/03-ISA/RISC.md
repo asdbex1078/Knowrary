@@ -1,7 +1,8 @@
 ---
 name: RISC
-field: 计算机体系结构
+field: 计算机系统
 year: 1980
+layer: 体系结构
 tags:
   - ISA
 desc: 精简指令集。一条指令完成一个操作，cpu 的压力变小，编译器的压力增大，可以提高 cpu 的主频

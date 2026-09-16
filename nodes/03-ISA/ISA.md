@@ -1,6 +1,7 @@
 ---
 name: ISA
-field: 计算机体系结构
+field: 计算机系统
+layer: 体系结构
 tags:
   - ISA
 desc: "指令集架构。 cpu 控制计算机 控制了 cpu = 控制计算机 如何控制 cpu？ ==> ISA 指令架构"

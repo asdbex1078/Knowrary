@@ -1,7 +1,8 @@
 ---
 name: JVM
-field: 计算机体系结构
+field: 计算机系统
 year: 1995
+layer: 系统软件
 tags:
   - JVM
   - 编译原理

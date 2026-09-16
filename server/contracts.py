@@ -527,6 +527,7 @@ class PlanProposeRequest(Strict):
     target_date: str | None = None                    # 有它模型才排得出阶段截止日
     weekly_hours: int = Field(default=7, ge=1, le=80)
     mode: ProposeMode = "标准"                         # 速学＝时间装不下时，砍到最精炼的一份
+    project: str | None = None                        # 拆给哪个项目：算"别的项目已有的点"时排除它自己
     known_points: list[str] = Field(default_factory=list, max_length=200)
     """这份清单里已经有的点（`id` 或 `id（名字）`）。不喂给模型，它就会把同一个目标
     再拆一遍近义词——`RNN` / `RNN与长程依赖` 这种，靠 id 去重是拦不住的。"""
@@ -537,6 +538,9 @@ class PlanProposal(Strict):
     schedule: dict[str, Any] = Field(default_factory=dict)   # 这份提议排进给定时间后的时间账
     dropped: list[PlanPoint] = Field(default_factory=list)   # 速学模式砍掉的点，必须留痕
     duplicates: list[str] = Field(default_factory=list)      # 这份清单里已经有的点，面板上默认划掉
+    in_projects: dict[str, list[str]] = Field(default_factory=dict)
+    """{点 id: [别的项目名…]}。**只标不拦**——项目是视角，重叠合法且免费
+    （同一个点属于两个项目，掌握度还是同一个）；但你得看得见它已经在别处列过。"""
     suggested_field: str = ""          # 这份清单该落在哪个领域，采纳时填进项目
     notes: str = ""
     existing: list[str] = Field(default_factory=list)    # 提议里已经在图谱中的 id，面板上标出来
@@ -585,6 +589,9 @@ class CoachToday(Strict):
     projects: list[CoachPlanLine] = Field(default_factory=list)
     pools: dict[str, list[str]] = Field(default_factory=dict)   # 出题范围：今日 / 没考过 / 本项目 / 已建全部
     estimate_hours: float = 0.0        # 今天这一屏大概要多久（建设按负荷、复习按每个几分钟）
+    elsewhere: dict[str, int] = Field(default_factory=dict)
+    """按项目过滤时，**别的项目还欠着多少**（{wrong, due}）。过滤可以，藏起来不行——
+    藏起来的复习等于没有复习。"""
 
 
 # ---------------------------------------------------------------- 对话式教练（阶段 12）

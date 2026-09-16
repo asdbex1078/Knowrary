@@ -137,13 +137,41 @@ _COMPRESS = """
 """
 
 
-def _build_prompt(req: PlanProposeRequest, index: dict, today: dt.date) -> str:
+def _other_projects_points(vault: Path, exclude: str | None) -> dict[str, list[str]]:
+    """别的项目已经列过的点：{点 id: [项目名…]}。
+
+    项目是视角，重叠**合法且免费**（同一个点属于两个项目，掌握度还是同一个）——
+    所以这里不去重、不阻止，只是把它标出来：
+    你建 MHA 项目时会看见「自注意力」已经在 Transformer 项目里，
+    然后自己决定是复用还是这次不列。
+    """
+    doc = core.load_projects(vault)
+    out: dict[str, list[str]] = {}
+    for pid, pr in (doc.get("projects") or {}).items():
+        if pid == exclude:
+            continue
+        name = pr.get("name") or pid
+        for ls in core.lists_of(pr):
+            for nid in core.stage_points(ls.get("stages") or []):
+                names = out.setdefault(nid, [])
+                if name not in names:
+                    names.append(name)
+    return out
+
+
+def _build_prompt(req: PlanProposeRequest, index: dict, today: dt.date,
+                  elsewhere: dict[str, list[str]] | None = None) -> str:
     real = [n for n in index["nodes"] if not n.get("virtual")]
     ids = "、".join(sorted(n["id"] for n in real)) or "（图谱还是空的）"
     fields = "、".join(sorted({n.get("field") for n in real if n.get("field")})) or "（还没有领域）"
     goal = req.goal if not req.plan_name else f"{req.plan_name}：{req.goal}"
     coach = f"，方向是{req.coach.strip()}" if req.coach.strip() else ""
-    known = "、".join(req.known_points) or "（这份计划还是空的）"
+    mine = "、".join(req.known_points) or "（这份清单还是空的）"
+    # 别的项目已经列过的点也喂进去：不喂它就会把「自注意力」在每个项目里各拆一遍
+    others = "；".join(f"{nid}（在{'、'.join(names)}里）"
+                       for nid, names in sorted((elsewhere or {}).items())[:80])
+    known = mine + (f"\n\n**别的项目已经列过的点**（可以复用同一个 id，不要另起近义的新名字）："
+                    f"\n{others}" if others else "")
     return (_load_prompt(req.kind)
             .replace("{{known_points}}", known)
             .replace("{{coach}}", coach)
@@ -168,11 +196,13 @@ def propose(vault: Path, req: PlanProposeRequest) -> PlanProposal:
     op = OPS.get(req.kind, OPS["学习"])
     if req.mode == "速学":
         op += "-fast"           # 速学单独记账，否则算不清"赶工"烧了多少
-    raw = ask(vault, "learn", _build_prompt(req, index, today), op=op)
+    elsewhere = _other_projects_points(vault, req.project)
+    raw = ask(vault, "learn", _build_prompt(req, index, today, elsewhere), op=op)
     known = {n["id"] for n in index["nodes"] if not n.get("virtual")}
     built = {n["id"] for n in index["nodes"]
              if not n.get("virtual") and not n.get("stub") and n.get("path")}
-    return _parse_proposal(parse_json(raw, f"plan goal={req.goal[:30]}"), known, built, req, today)
+    return _parse_proposal(parse_json(raw, f"plan goal={req.goal[:30]}"), known, built, req, today,
+                           elsewhere)
 
 
 def _clean_points(items, seen: set[str], warnings: list[str]) -> list[PlanPoint]:
@@ -195,8 +225,8 @@ def _clean_points(items, seen: set[str], warnings: list[str]) -> list[PlanPoint]
     return out
 
 
-def _parse_proposal(data: dict, known: set[str], built: set[str],
-                    req: PlanProposeRequest, today: dt.date) -> PlanProposal:
+def _parse_proposal(data: dict, known: set[str], built: set[str], req: PlanProposeRequest,
+                    today: dt.date, elsewhere: dict[str, list[str]] | None = None) -> PlanProposal:
     stages, warnings, seen = [], [], set()
     for st in (data.get("stages") or [])[:MAX_STAGES]:
         if not isinstance(st, dict):
@@ -221,7 +251,9 @@ def _parse_proposal(data: dict, known: set[str], built: set[str],
     if req.target_date and not core.as_date(req.target_date):
         warnings.append(f"看不懂的目标日期 `{req.target_date}`，时间账按「没有截止日」算了")
     schedule = _schedule_for(stages, built, req, today)
+    in_projects = {nid: names for nid, names in (elsewhere or {}).items() if nid in seen}
     return PlanProposal(stages=stages, schedule=schedule, dropped=dropped, duplicates=duplicates,
+                        in_projects=in_projects,
                         suggested_field=field, notes=str(data.get("notes") or ""),
                         existing=sorted(seen & known), warnings=warnings)
 

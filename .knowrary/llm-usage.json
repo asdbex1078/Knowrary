@@ -1,15 +1,15 @@
 {
   "schema_version": 1,
-  "updated_at": "2026-09-15T16:15:50Z",
+  "updated_at": "2026-09-16T07:03:16Z",
   "totals": {
-    "calls": 16,
-    "errors": 1,
-    "cost_usd": 2.689484,
-    "ms": 779805,
-    "input_tokens": 32,
-    "output_tokens": 32204,
-    "cache_read_tokens": 226407,
-    "cache_write_tokens": 172445
+    "calls": 24,
+    "errors": 4,
+    "cost_usd": 3.471448,
+    "ms": 984420,
+    "input_tokens": 42,
+    "output_tokens": 36674,
+    "cache_read_tokens": 291922,
+    "cache_write_tokens": 234724
   },
   "by_day": {
     "2026-09-15": {
@@ -23,14 +23,14 @@
       "cache_write_tokens": 93055
     },
     "2026-09-16": {
-      "calls": 7,
-      "errors": 0,
-      "cost_usd": 0.957931,
-      "ms": 109975,
-      "input_tokens": 16,
-      "output_tokens": 3590,
-      "cache_read_tokens": 115684,
-      "cache_write_tokens": 79390
+      "calls": 15,
+      "errors": 3,
+      "cost_usd": 1.739896,
+      "ms": 314590,
+      "input_tokens": 26,
+      "output_tokens": 8060,
+      "cache_read_tokens": 181199,
+      "cache_write_tokens": 141669
     }
   },
   "by_op": {
@@ -83,9 +83,124 @@
       "output_tokens": 3590,
       "cache_read_tokens": 115684,
       "cache_write_tokens": 79390
+    },
+    "chat-教练": {
+      "calls": 8,
+      "errors": 3,
+      "cost_usd": 0.781964,
+      "ms": 204615,
+      "input_tokens": 10,
+      "output_tokens": 4470,
+      "cache_read_tokens": 65515,
+      "cache_write_tokens": 62279
     }
   },
   "recent": [
+    {
+      "ts": "2026-09-16T07:03:16Z",
+      "op": "chat-教练",
+      "role": "learn",
+      "provider": "claude-cli",
+      "model": "claude-opus-5[1m]",
+      "input_tokens": 2,
+      "output_tokens": 1007,
+      "cache_read_tokens": 13103,
+      "cache_write_tokens": 13803,
+      "cost_usd": 0.17552749999999998,
+      "ok": true,
+      "ms": 37562,
+      "chars": 767
+    },
+    {
+      "ts": "2026-09-16T07:02:38Z",
+      "op": "chat-教练",
+      "role": "learn",
+      "provider": "claude-cli",
+      "model": "claude-opus-5[1m]",
+      "input_tokens": 2,
+      "output_tokens": 1432,
+      "cache_read_tokens": 13103,
+      "cache_write_tokens": 12966,
+      "cost_usd": 0.1770025,
+      "ok": true,
+      "ms": 37382,
+      "chars": 771
+    },
+    {
+      "ts": "2026-09-16T07:02:01Z",
+      "op": "chat-教练",
+      "role": "learn",
+      "provider": "claude-cli",
+      "model": "claude-opus-5[1m]",
+      "input_tokens": 2,
+      "output_tokens": 621,
+      "cache_read_tokens": 13103,
+      "cache_write_tokens": 12070,
+      "cost_usd": 0.1427865,
+      "ok": true,
+      "ms": 52785,
+      "chars": 276
+    },
+    {
+      "ts": "2026-09-16T07:01:08Z",
+      "op": "chat-教练",
+      "role": "learn",
+      "provider": "claude-cli",
+      "model": "claude-opus-5[1m]",
+      "input_tokens": 2,
+      "output_tokens": 811,
+      "cache_read_tokens": 13103,
+      "cache_write_tokens": 11779,
+      "cost_usd": 0.14850049999999998,
+      "ok": true,
+      "ms": 30161,
+      "chars": 317
+    },
+    {
+      "ts": "2026-09-16T07:00:38Z",
+      "op": "chat-教练",
+      "role": "learn",
+      "provider": "claude-cli",
+      "model": "claude-opus-5[1m]",
+      "input_tokens": 2,
+      "output_tokens": 599,
+      "cache_read_tokens": 13103,
+      "cache_write_tokens": 11661,
+      "cost_usd": 0.1381465,
+      "ok": true,
+      "ms": 31261,
+      "chars": 118
+    },
+    {
+      "ts": "2026-09-16T06:59:21Z",
+      "op": "chat-教练",
+      "role": "learn",
+      "provider": "gpt",
+      "model": "gpt-5-codex",
+      "ok": false,
+      "ms": 5171,
+      "error": "LLM 连接失败（https://api.linkapi.ai/v1/chat/completions）：[SSL: UNEXPECTED_EOF_WHILE_READING] EOF occurred in violation of protocol (_ssl.c:1006)"
+    },
+    {
+      "ts": "2026-09-16T06:41:24Z",
+      "op": "chat-教练",
+      "role": "learn",
+      "provider": "gpt",
+      "model": "gpt-5-codex",
+      "ok": false,
+      "ms": 5026,
+      "error": "LLM 请求失败 HTTP 503（https://api.linkapi.ai/v1/chat/completions）：\n{\"error\":{\"code\":\"model_not_found\",\"message\":\"分组 codex 下模型 gpt-5-codex 无可用渠道（distributor） (request id: 202609160641245409484448268d9d6uim"
+    },
+    {
+      "ts": "2026-09-16T06:35:12Z",
+      "op": "chat-教练",
+      "role": "learn",
+      "provider": "anthropic",
+      "model": "claude-sonnet-5",
+      "ok": false,
+      "ms": 5267,
+      "error": "LLM 请求失败 HTTP 401（https://api.anthropic.com/v1/messages）：\n{\"type\":\"error\",\"error\":{\"type\":\"authentication_error\",\"message\":\"API key is invalid.\"},\"request_id\":null}"
+    },
     {
       "ts": "2026-09-15T16:15:50Z",
       "op": "chat",

@@ -23,6 +23,16 @@ STATUS_VALUES = ("active", "deprecated", "disputed", "stub")
 LAYOUT_KEYS = ("x", "y", "w", "h", "group", "collapsed", "pinned")
 REQUIRED_FIELDS = ("name", "field", "desc")
 
+# 抽象层：历史视图按它分泳道，**从下往上**排（底层在下，应用在上）。
+#
+# 为什么不复用 `field` 或 layout 分组：它们是**主题**维度（冯诺依曼体系 / 编译原理 / AI），
+# 而这是**层次**维度（硬件 / 汇编 / 语言 / 应用）。一个节点只能落一个分组，
+# 两个维度抢同一个字段的话，结构图和历史图必有一个要将就。所以正交地各存各的。
+#
+# 可选字段：不填就落「未分层」，不影响任何既有功能。
+LAYERS = ("理论", "硬件", "体系结构", "汇编接口", "系统软件", "高级语言", "AI应用")
+UNLAYERED = "未分层"
+
 
 @dataclass
 class Node:
@@ -105,6 +115,12 @@ def validate_frontmatter(vault: Path, node: Node, diags: Diagnostics) -> None:
     for k in LAYOUT_KEYS:
         if k in node.fm:
             diags.error("layout_in_frontmatter", f"frontmatter 混入布局字段 `{k}`，布局只存 layout.json", **loc)
+    layer = node.fm.get("layer")
+    if layer and layer not in LAYERS:
+        # 只警告不报错：`layer` 是给历史视图分泳道用的可选提示，写错了那个节点自己单开一条道，
+        # 不该因此让整份 index 变成"有错误"。但拼错必须看得见，否则会静静多出一条泳道。
+        diags.warn("unknown_layer", f"layer `{layer}` 不在已知的抽象层里"
+                                    f"（{' / '.join(LAYERS)}）", **loc)
     _validate_years(node, diags, loc)
 
 

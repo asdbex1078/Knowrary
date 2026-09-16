@@ -1,14 +1,14 @@
 {
   "schema_version": 2,
-  "revision": 12,
-  "updated_at": "2026-09-15T16:59:58Z",
+  "revision": 14,
+  "updated_at": "2026-09-16T07:04:52Z",
   "projects": {
     "transformer": {
       "name": "Transformer",
       "created": "2026-09-15",
+      "field": "AI-Agent",
       "weekly_hours": 7,
       "daily_quota": 3,
-      "field": "AI-Agent",
       "legacy_id": "新计划",
       "lists": [
         {
@@ -338,9 +338,9 @@
     "p2": {
       "name": "计组",
       "created": "2026-09-15",
+      "field": "",
       "weekly_hours": 7,
       "daily_quota": 2,
-      "field": "",
       "legacy_id": "新计划2",
       "lists": [
         {
@@ -357,9 +357,9 @@
     "ai": {
       "name": "AI技术发展史",
       "created": "2026-09-15",
+      "field": "AI",
       "weekly_hours": 7,
       "daily_quota": 2,
-      "field": "AI",
       "legacy_id": "新计划3",
       "lists": [
         {

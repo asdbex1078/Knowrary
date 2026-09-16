@@ -274,6 +274,14 @@ def cmd_index(args: argparse.Namespace) -> None:
     sys.exit(1 if problems or (args.strict and errors) else 0)
 
 
+def _safe_layout(path: Path) -> dict:
+    try:
+        doc = load_json(path)
+        return doc if isinstance(doc, dict) else {}
+    except (ValueError, OSError):
+        return {}
+
+
 def cmd_layout(args: argparse.Namespace) -> None:
     """layout init：按 field / 子目录生成初始布局；layout check：校验引用列出孤立记录。
 
@@ -286,16 +294,26 @@ def cmd_layout(args: argparse.Namespace) -> None:
     if args.action == "init":
         if path.exists() and not args.force:
             raise SystemExit(f"{path.relative_to(vault)} 已存在（加 --force 重新生成，会丢弃现有位置）")
+        keep = _safe_layout(path) if path.exists() else {}
         if name != "layout":
             project = (load_projects(vault).get("projects") or {}).get(name)
             if project is None:
                 raise SystemExit(f"没有 `{name}` 这个项目")
             doc = build_project_layout(project, index)
         else:
-            doc = stamp(build_initial_layout(index))
+            doc = stamp(build_initial_layout(index, by=args.by))
+        # **重排的是分组和位置，不该顺手把便签 / 贴图 / 引用卡 / 手工拐点一起清掉**——
+        # 那些是另一类用户数据，和"按什么分组"没有关系。
+        for k in ("refs", "notes", "images", "edges"):
+            if keep.get(k):
+                doc[k] = keep[k]
+        if keep.get("viewport"):
+            doc["viewport"] = keep["viewport"]
         write_json_atomic(path, doc)
+        carried = ", ".join(f"{k} {len(keep[k])}" for k in ("refs", "notes", "images", "edges")
+                            if keep.get(k))
         print(f"已生成 {path.relative_to(vault)}：分组 {len(doc['groups'])}，节点 {len(doc['nodes'])}，"
-              f"revision {doc['revision']}")
+              f"revision {doc['revision']}" + (f"；保留了 {carried}" if carried else ""))
         return
     if not path.exists():
         raise SystemExit(f"{path.relative_to(vault)} 不存在，先跑 `layout init` 或启动服务")
@@ -681,6 +699,8 @@ def add_data_parsers(sub: argparse._SubParsersAction) -> None:
     y.add_argument("action", choices=["init", "check"], nargs="?", default="check")
     y.add_argument("--vault", required=True)
     y.add_argument("--layout", help="项目 id：查那个项目的画布；不给就是全局图")
+    y.add_argument("--by", choices=["dir", "layer"], default="dir",
+                   help="init 时二级分组按什么分：dir=nodes/ 子目录（默认），layer=抽象层")
     y.add_argument("--force", action="store_true", help="init 时覆盖已有 layout.json")
     y.add_argument("--max-warn", type=int, default=20)
     y.set_defaults(fn=cmd_layout)

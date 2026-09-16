@@ -23,7 +23,7 @@ from .relations import NormalizedEdge, RelationTypes, load_relation_types, norma
 
 INDEX_SCHEMA_VERSION = 1
 NODE_FM_FIELDS = ("name", "field", "type", "status", "desc", "year", "start_year", "end_year",
-                  "aliases", "tags", "learned", "source")
+                  "aliases", "tags", "learned", "source", "layer")
 
 
 @dataclass

@@ -66,24 +66,30 @@ defineExpose({ focus: () => inputEl.value?.focus() })
       <option v-for="(p, id) in projects" :key="id" :value="id">{{ p.name || id }}</option>
     </select>
 
+    <!-- 跟着当前项目走的两个视图 -->
     <div class="seg" role="tablist">
-      <button :class="{ on: mode === 'chat' }" role="tab" title="聊着学（1）——启动成本最低的入口"
+      <button :class="{ on: mode === 'chat' }" role="tab"
+              :title="`项目 · 聊着学（1）${project ? '' : '——现在是「全局」那条线，不绑项目'}`"
               @click="emit('switch-mode', 'chat')">
         <Icon name="network" :size="14" />对话
       </button>
-      <button :class="{ on: mode === 'project' }" role="tab" title="只看当前项目的点（2）"
+      <button :class="{ on: mode === 'project' }" role="tab" :disabled="!project"
+              :title="project ? '项目 · 只看当前项目的点，还没建的画成幽灵（2）' : '先在左边选一个项目'"
               @click="emit('switch-mode', 'project')">
         <Icon name="checklist" :size="14" />项目图
       </button>
-      <!-- 项目视角与全局视角之间的桥就是这一个 tab：选着项目时切过去会顺手高亮那些点，
-           回答"我学的这些东西在整张图里是什么位置"。**不再另设一个按钮**——
-           两个控件都叫「全局图」只会让人问"为什么有两个"。 -->
+    </div>
+
+    <!-- 整个图谱层面的两个视图。**和上面那组分开**：
+         它们不跟着项目走，混在一排里会让人不知道自己在看哪个范围。 -->
+    <div class="seg global" role="tablist">
       <button :class="{ on: mode === 'structure' }" role="tab"
-              :title="project ? '整张图（3）——会高亮当前项目的点' : '整张图（3）'"
+              :title="project ? '全局 · 整张图（3）——会高亮当前项目的点' : '全局 · 整张图（3）'"
               @click="emit('switch-mode', 'structure')">
         <Icon name="map" :size="14" />全局图
       </button>
-      <button :class="{ on: mode === 'history' }" role="tab" title="只看有 year 的节点，X 轴是年份（4）"
+      <button :class="{ on: mode === 'history' }" role="tab"
+              title="全局 · 只看有 year 的节点，X 轴是年份（4）"
               @click="emit('switch-mode', 'history')">
         <Icon name="clock" :size="14" />历史
       </button>

@@ -1,6 +1,7 @@
 ---
 name: 长程 Agent 最小架构
 field: Agent
+layer: AI应用
 type: 模式
 tags:
   - Agent

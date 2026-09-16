@@ -1,6 +1,7 @@
 ---
 name: JIT
-field: 计算机体系结构
+field: 计算机系统
+layer: 系统软件
 tags:
   - 编译
   - 编译原理

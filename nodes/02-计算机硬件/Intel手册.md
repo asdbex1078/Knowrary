@@ -1,6 +1,7 @@
 ---
 name: Intel手册
-field: 计算机体系结构
+field: 计算机系统
+layer: 硬件
 tags:
   - 参考资料
   - 计算机硬件

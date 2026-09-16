@@ -1,7 +1,8 @@
 ---
 name: C语言
-field: 计算机体系结构
+field: 计算机系统
 year: 1972
+layer: 高级语言
 tags:
   - 语言
   - 高级语言

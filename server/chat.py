@@ -21,6 +21,8 @@ import json
 import logging
 import queue
 import re
+
+from difflib import SequenceMatcher
 import threading
 
 from pathlib import Path
@@ -36,7 +38,10 @@ from .quiz import generate as generate_quiz
 
 log = logging.getLogger(__name__)
 
-MAX_STEPS = 4            # 一条消息里最多连续调几次工具：再多就是模型在原地打转
+# 一条消息里最多连续调几次工具。**放宽到 8**：像"建一个项目"这种活儿本来就要走好几步——
+# 看已有项目 → 搜图谱 → 读几个节点 → 提议项目 → 拆点，4 步根本走不完，
+# 到头来只能让人自己去面板上接着干。同参调用会被短路（`seen_calls`），所以放宽不会变成原地打转。
+MAX_STEPS = 8
 MAX_MESSAGES = 60        # 往回带几轮对话：更早的自己去 grep chat/*.jsonl
 SEARCH_TOP = 8
 BODY_CHARS = 1200
@@ -62,10 +67,37 @@ def _overview(vault: Path) -> str:
     shells = sum(1 for n in real if n.get("stub"))
     tops = "、".join(f"{k}({v})" for k, v in sorted(fields.items(), key=lambda kv: -kv[1])[:8])
     return (f"{len(real)} 个节点、{len(index['edges'])} 条关系，其中 {shells} 个还只是壳。"
-            f"\n领域分布：{tops or '（还没有领域）'}")
+            f"\n领域分布：{tops or '（还没有领域）'}"
+            f"\n\n**我已经有的项目**（建新项目前先看这里）：\n{_projects_brief(vault)}")
+
+
+def _projects_brief(vault: Path) -> str:
+    """已有项目一行一个：名字、id、每份清单的口径和点数。
+
+    不喂这个，模型建新项目时就不知道你已经有什么——
+    "我有 Transformer 项目了，又建一个 MHA"这种事它看不见，也就提不出
+    "要不要在 Transformer 里加一份清单"。同 `known_points` 那条老规矩（F10.3b）。
+    """
+    doc = core.load_projects(vault)
+    rows = []
+    for pid, pr in (doc.get("projects") or {}).items():
+        parts = []
+        for ls in core.lists_of(pr):
+            n = len(core.stage_points(ls.get("stages") or []))
+            parts.append(f"{ls.get('name') or ls.get('kind')}[{ls.get('kind')}] {n} 个点")
+        goal = next((ls.get("goal") for ls in core.lists_of(pr) if ls.get("goal")), "")
+        rows.append(f"- `{pid}`「{pr.get('name') or pid}」：{'；'.join(parts) or '还没有清单'}"
+                    + (f"　目标：{goal[:40]}" if goal else ""))
+    return "\n".join(rows) or "（一个项目都还没有）"
 
 
 def _tool_search(vault: Path, args: dict) -> tuple[str, dict]:
+    """搜节点，**也搜项目清单里还没建出来的点**。
+
+    只搜索引是不够的：一个项目常常 40 个点里 39 个还没建（它们只活在 projects.json 里），
+    这时问"图里有没有多头注意力"会得到零命中，而 Transformer 项目里明明就列着它——
+    于是又建一个重复的。计划里的点和已建节点是同一件事的两个阶段，搜的时候不该只看后一半。
+    """
     q = str(args.get("q") or "").strip()
     if not q:
         return "没给关键字，搜不了。", {}
@@ -80,9 +112,31 @@ def _tool_search(vault: Path, args: dict) -> tuple[str, dict]:
             hits.append(n)
     hits.sort(key=lambda n: -(n.get("degree") or 0))
     rows = [{"id": n["id"], "name": n.get("name"), "desc": n.get("desc"),
-             "field": n.get("field"), "只有壳": bool(n.get("stub"))} for n in hits[:limit]]
-    body = json.dumps(rows, ensure_ascii=False) if rows else f"图里没有和「{q}」匹配的节点。"
-    return body, {"hits": len(rows)}
+             "field": n.get("field"), "状态": "只有壳" if n.get("stub") else "已建"}
+            for n in hits[:limit]]
+
+    built = {n["id"] for n in index["nodes"] if not n.get("virtual")}
+    planned = []
+    for pid, pr in (core.load_projects(vault).get("projects") or {}).items():
+        for ls in core.lists_of(pr):
+            for stage in ls.get("stages") or []:
+                for pt in stage.get("points") or []:
+                    nid = pt.get("id") or ""
+                    if nid in built or q.lower() not in f"{nid} {pt.get('name') or ''}".lower():
+                        continue
+                    planned.append({"id": nid, "name": pt.get("name"), "why": pt.get("why"),
+                                    "状态": "计划里有、还没建",
+                                    "在哪个项目": f"{pr.get('name') or pid}·{ls.get('name') or ls.get('kind')}"})
+    planned = planned[:limit]
+
+    if not rows and not planned:
+        return f"图里和计划里都没有和「{q}」匹配的东西。", {"hits": 0}
+    out = {}
+    if rows:
+        out["已建的节点"] = rows
+    if planned:
+        out["计划里列过、还没建出来的点"] = planned
+    return json.dumps(out, ensure_ascii=False), {"hits": len(rows) + len(planned)}
 
 
 def _tool_read(vault: Path, args: dict) -> tuple[str, dict]:
@@ -162,6 +216,51 @@ def _tool_review(vault: Path, args: dict) -> tuple[str, dict]:
             {"id": nid, "grade": "忘了", "next_due": done.next_due})
 
 
+def _tool_propose_points(vault: Path, args: dict) -> tuple[str, dict]:
+    """把一份清单拆成知识点。**走的是面板上「让 AI 拆一份」同一条链路**——
+    同一套模板、同一份时间账、同一个"别的项目已经列过"的标注，只是入口在对话里。
+
+    这一步以前只能去面板点，于是"帮我建个项目"在对话里做到一半就断了。
+    """
+    from .contracts import PlanProposeRequest
+    from .projects import propose as propose_points
+
+    pid = str(args.get("project") or "").strip()
+    doc = core.load_projects(vault)
+    project = (doc.get("projects") or {}).get(pid)
+    if project is None:
+        return (f"没有 `{pid}` 这个项目。先用 `propose_project` 提议建一个，"
+                f"等他点了「创建」再回来拆点。"), {}
+    lists = core.lists_of(project)
+    want = str(args.get("list") or "").strip()
+    idx = next((i for i, ls in enumerate(lists) if (ls.get("name") or "") == want), 0 if lists else -1)
+    if idx < 0:
+        return f"项目「{project.get('name') or pid}」下面还没有清单。", {}
+    ls = lists[idx]
+
+    req = PlanProposeRequest(
+        goal=str(args.get("goal") or ls.get("goal") or project.get("name") or pid)[:8000],
+        plan_name=project.get("name") or pid,
+        kind=ls.get("kind") if ls.get("kind") in core.KINDS else "学习",
+        coach=str(ls.get("coach") or ""),
+        target_date=ls.get("target_date"),
+        weekly_hours=int(project.get("weekly_hours") or 7),
+        mode="速学" if args.get("mode") == "速学" else "标准",
+        project=pid,
+        known_points=[p for p in core.stage_points(ls.get("stages") or [])][:200],
+    )
+    proposal = propose_points(vault, req).model_dump()
+    n = sum(len(st["points"]) for st in proposal["stages"])
+    if not n:
+        return "这次没拆出点来——把目标说具体一点我再试。", {}
+    dupes = len(proposal.get("in_projects") or {})
+    extra = f"其中 {dupes} 个别的项目里也列过（重叠是合法的，掌握度还是同一个）。" if dupes else ""
+    return (f"拆出 {n} 个点，卡片摆出来了。{extra}**还没进清单**，等他点「采纳」。"
+            f"别在同一条消息里又拆一遍。"),\
+           {"points": {"project": pid, "project_name": project.get("name") or pid,
+                       "list": idx, "list_name": ls.get("name") or "", **proposal}}
+
+
 def _tool_propose_project(vault: Path, args: dict) -> tuple[str, dict]:
     """提议建一个项目 / 往现有项目里加一份清单。**不写盘**，出一张卡等人点。
 
@@ -174,6 +273,7 @@ def _tool_propose_project(vault: Path, args: dict) -> tuple[str, dict]:
                 "中文放 name 字段里。"), {}
     doc = core.load_projects(vault)
     exists = (doc.get("projects") or {}).get(pid)
+    near = _near_projects(doc, str(args.get("name") or pid), args.get("lists") or [])
     lists = []
     for ls in args.get("lists") or []:
         if not isinstance(ls, dict):
@@ -187,15 +287,45 @@ def _tool_propose_project(vault: Path, args: dict) -> tuple[str, dict]:
     if not lists and not exists:
         lists = [{"kind": "学习", "name": "主线", "goal": str(args.get("goal") or ""),
                   "coach": "", "field": "", "target_date": None, "stages": []}]
-    card = {"id": pid, "action": "update" if exists else "create",
+    card = {"id": pid, "action": "update" if exists else "create", "near": near,
             "name": str(args.get("name") or pid)[:120],
             "field": str(args.get("field") or "")[:120],
             "weekly_hours": int(args.get("weekly_hours") or 7),
             "daily_quota": int(args.get("daily_quota") or 2),
             "lists": lists}
-    what = f"往「{exists.get('name') or pid}」里加 {len(lists)} 份清单" if exists else f"新建项目「{card['name']}"
-    return (f"{what}」的卡片已经摆在他面前了。**还没建**，等他点「创建」。"
-            f"建完之后清单还是空的——要填点，让他点「让 AI 拆一份」，或者你继续问清楚目标再提议。"), {"project": card}
+    what = (f"往「{exists.get('name') or pid}」里加 {len(lists)} 份清单" if exists
+            else f"新建项目「{card['name']}」")
+    hint = ""
+    if near and not exists:
+        names = "、".join(f"「{n['name']}」" for n in near)
+        hint = (f"\n\n**注意：他已经有{names}，看起来和这个是一回事或者是它的一部分。**"
+                f"先问一句：是要独立一个项目，还是在那个项目里加一份清单？"
+                f"（项目之间重叠是合法的——同一个点属于两个项目，掌握度还是同一个——"
+                f"但没必要的话别平白多一个项目。）")
+    return (f"{what}的卡片已经摆在他面前了。**还没建**，等他点「创建」。"
+            f"建完之后清单还是空的——要填点，让他点「让 AI 拆一份」，或者你继续问清楚目标再提议。"
+            + hint), {"project": card}
+
+
+def _near_projects(doc: dict, name: str, lists: list) -> list[dict]:
+    """名字或目标跟已有项目撞车的，列出来。**服务端算，不靠模型自觉**。
+
+    只提示不阻止：项目是视角，重叠本来就合法（重构方案 §1）。
+    但"又建了一个其实是子集的项目"这件事，人得在按下创建之前看见。
+    """
+    goals = " ".join(str(ls.get("goal") or "") for ls in lists if isinstance(ls, dict))
+    hay = f"{name} {goals}"
+    out = []
+    for pid, pr in (doc.get("projects") or {}).items():
+        other = pr.get("name") or pid
+        other_goal = next((ls.get("goal") for ls in core.lists_of(pr) if ls.get("goal")), "")
+        ratio = SequenceMatcher(None, name, other).ratio()
+        hit = (ratio >= 0.5 or other in hay or (name and name in f"{other} {other_goal}")
+               or (other_goal and any(w and w in hay for w in other_goal.split()[:6])))
+        if hit:
+            out.append({"id": pid, "name": other,
+                        "why": f"名字接近（{other}）" if ratio >= 0.5 else "目标里提到了同样的东西"})
+    return out[:3]
 
 
 def _tool_propose(vault: Path, args: dict) -> tuple[str, dict]:
@@ -226,6 +356,7 @@ TOOL_DOC = {
     "record_review": "`id`、`grade` | 记一次复习。**只能记「忘了」**，见下面的纪律",
     "propose_changes": "`changes` | 提议把学到的东西写进图谱。**只是提议**，会变成一张卡片等我点「写入」",
     "propose_project": "`id`、`name`、`field`、`lists` | 提议建一个项目，或往现有项目里加一份清单。同样只是卡片",
+    "propose_points": "`project`、`list`、`goal` | 把某个项目的某份清单拆成知识点。走面板上「让 AI 拆一份」同一条链路，同样出卡片",
 }
 
 READ_ONLY = ("search_nodes", "read_node", "overview")
@@ -278,6 +409,7 @@ TOOLS = {
     "record_review": _tool_review,
     "propose_changes": _tool_propose,
     "propose_project": _tool_propose_project,
+    "propose_points": _tool_propose_points,
 }
 
 
@@ -465,7 +597,23 @@ def _stream(vault: Path, messages: list[dict], op: str = "chat"):
 
 
 def run(vault: Path, req: ChatRequest):
-    """一条消息的完整回合：可能夹着几次工具调用。逐个 yield 事件给 SSE。"""
+    """一条消息的完整回合：可能夹着几次工具调用。逐个 yield 事件给 SSE。
+
+    这一轮要是炸了（模型不通、配置写错），**留档里也要留个记号**：
+    只记提问不记结果的话，失败五次就攒出五条没人答的问题，
+    下次接着聊时全被读回去当上下文。
+    """
+    try:
+        yield from _run(vault, req)
+    except ChatRejected:
+        raise
+    except BaseException as exc:
+        append_log(vault, "assistant", f"（这一轮没答成：{str(exc)[:200]}）",
+                   project=req.project, session=req.session, stance=req.stance or DEFAULT_STANCE)
+        raise
+
+
+def _run(vault: Path, req: ChatRequest):
     history = [m.model_dump() for m in req.messages][-MAX_MESSAGES:]
     if not history or history[-1]["role"] != "user":
         raise ChatRejected("最后一条必须是我说的话")
@@ -514,6 +662,8 @@ def run(vault: Path, req: ChatRequest):
             yield {"type": "card", "card": extra["card"]}
         if extra.get("project"):
             yield {"type": "project", "project": extra["project"]}
+        if extra.get("points"):
+            yield {"type": "points", "points": extra["points"]}
         if extra.get("id") and name == "record_review":
             yield {"type": "review", "id": extra["id"], "next_due": extra.get("next_due")}
 
