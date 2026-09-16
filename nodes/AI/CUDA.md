@@ -2,6 +2,7 @@
 name: CUDA
 field: AI
 year: 2007
+layer: 系统软件
 desc: 硬件再强也要有编程模型才能被算法用起来，CUDA 是 GPU 从图形卡变成 AI 算力的软件护城河，也是后面框架的地基
 learned: 2026-09-15
 ---

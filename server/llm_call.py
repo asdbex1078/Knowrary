@@ -31,7 +31,7 @@ def ask(vault: Path, role: str, prompt: str, op: str = "?") -> str:
         text, used = llm_backend.ask_detailed(prompt, provider)
     except BaseException as exc:                      # SystemExit 也要记：它是 llm_backend 的报错方式
         _record(vault, {**row, "ok": False, "ms": _ms(started), "error": str(exc)[:200]})
-        raise
+        raise _with_context(exc, role, name, provider) from None
     _record(vault, {**row, **used, "model": used.get("model") or provider.get("model"),
                     "ok": True, "ms": _ms(started), "chars": len(text or "")})
     return text
@@ -50,10 +50,20 @@ def chat(vault: Path, role: str, messages: list[dict], op: str = "chat", on_delt
         text, used = llm_backend.chat(messages, provider, on_delta=on_delta)
     except BaseException as exc:
         _record(vault, {**row, "ok": False, "ms": _ms(started), "error": str(exc)[:200]})
-        raise
+        raise _with_context(exc, role, name, provider) from None
     _record(vault, {**row, **used, "model": used.get("model") or provider.get("model"),
                     "ok": True, "ms": _ms(started), "chars": len(text or "")})
     return text, used
+
+
+def _with_context(exc: BaseException, role: str, name: str, provider: dict) -> BaseException:
+    """报错里带上**是哪个角色、哪个 provider、哪个模型**在报。
+
+    原来只有一句 "LLM 请求失败 HTTP 503（某个 url）"，而 url 上看不出这是 learn 还是 review、
+    用的是配置里哪一条——配了多个 provider 时，第一件事就是猜"到底是谁炸了"。
+    """
+    head = f"[{role} 角色 · provider `{name}` · 模型 {provider.get('model') or '(默认)'}] "
+    return type(exc)(head + str(exc)) if isinstance(exc, SystemExit) else exc
 
 
 def _ms(started: float) -> int:

@@ -611,6 +611,43 @@ def 清单进度按点汇总且不落盘():
 
 
 @case
+def 按抽象层铺布局_二级分组是层且次序固定():
+    vault = make_vault({
+        "nodes/x/a.md": node_md("A", extra="layer: AI应用\n"),
+        "nodes/y/b.md": node_md("B", extra="layer: 理论\n"),
+        "nodes/y/c.md": node_md("C", extra="layer: 硬件\n"),
+        "nodes/y/d.md": node_md("D"),                       # 没填 → 未分层
+    })
+    index = core.build_index(vault, None).data
+    doc = core.build_initial_layout(index, by="layer")
+    subs = [g["name"] for g in doc["groups"].values() if g.get("parent")]
+    assert subs == ["理论", "硬件", "AI应用", "未分层"], subs      # 底层在前，不是字典序
+    assert doc["nodes"]["b"]["group"].endswith("理论"), doc["nodes"]["b"]
+    # 默认那套（按子目录）没被动过
+    old = core.build_initial_layout(index)
+    assert sorted(g["name"] for g in old["groups"].values() if g.get("parent")) == ["x", "y"]
+
+
+@case
+def 抽象层是可选字段_写错只警告不报错():
+    """`layer` 是历史视图分泳道用的**正交维度**：结构图按主题分组，历史图按层分泳道。
+    可选，所以没填不算错；但拼错必须看得见，否则会静静多出一条泳道。"""
+    vault = make_vault({
+        "nodes/a.md": node_md("A", extra="year: 1936\nlayer: 理论\n"),
+        "nodes/b.md": node_md("B", extra="year: 1971\n"),                 # 没填，合法
+        "nodes/c.md": node_md("C", extra="year: 1999\nlayer: 硬體\n"),    # 拼错
+    })
+    r = core.build_index(vault, None)
+    by_id = {n["id"]: n for n in r.data["nodes"]}
+    assert by_id["a"]["layer"] == "理论", by_id["a"]        # 进了索引，前端才看得见
+    assert "layer" not in by_id["b"] or by_id["b"].get("layer") is None
+    assert not r.diags.errors, [d.render() for d in r.diags.errors]
+    warns = [d.render() for d in r.diags.warnings if "layer" in d.render()]
+    assert warns and "硬體" in warns[0], warns
+    assert "理论" in core.LAYERS and "AI应用" in core.LAYERS and len(core.LAYERS) == 7
+
+
+@case
 def 日历全部派生且热力不算模型调用():
     """五期：日历不新增任何记录，四份现有数据拼出来。"""
     vault = make_vault({"nodes/a.md": node_md("A", extra="learned: 2026-09-15\n"),

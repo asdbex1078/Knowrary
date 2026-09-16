@@ -1,6 +1,7 @@
 ---
 name: Agent 事件日志
 field: Agent
+layer: AI应用
 type: 模式
 aliases:
   - Operation Log

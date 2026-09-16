@@ -76,10 +76,18 @@ export function yearScale(years, compact) {
   return { at, ticks: sorted.map((y) => ({ year: y, x: pos.get(y) })), width: x, unit }
 }
 
-/** 泳道归属：选了时间线就按它的直接子分组分，没选就按 field。 */
+// 抽象层：**从下往上**排（底层在下、应用在上），所以渲染时要倒过来铺。
+// 这是和主题（field / 分组）正交的另一个维度——一个节点只能落一个分组，
+// 两个维度抢同一个字段的话，结构图和历史图必有一个要将就。
+export const LAYERS = ['理论', '硬件', '体系结构', '汇编接口', '系统软件', '高级语言', 'AI应用']
+export const UNLAYERED = '未分层'
+export const BY_LAYER = '__layer__'        // 时间线选择器里的特殊一档
+
+/** 泳道归属：按抽象层 / 按所选时间线的直接子分组 / 都没选就按 field。 */
 function laneOf(node, layout, selected) {
   const place = layout.nodes?.[node.id]
   const groups = layout.groups || {}
+  if (selected.includes(BY_LAYER)) return node.layer || UNLAYERED
   if (!selected.length) return node.field || '(未指定)'
   for (const root of selected) {
     const family = descendants(groups, root)
@@ -230,7 +238,13 @@ export function buildTimeline(index, layout, opts = {}) {
   const lanes = []
   let y = AXIS_H + LANE_GAP
   let lastBlock = null
-  for (const lane of [...laneNames.keys()].sort((a, b) => a.localeCompare(b, 'zh'))) {
+  const byLayer = timelines.includes(BY_LAYER)
+  // 按层时用固定次序（底层在下 → 数组倒过来铺），别用字典序——
+  // 「AI应用」排在「体系结构」前面这种事，一眼就看得出是错的。
+  const order = byLayer
+    ? [...LAYERS].reverse().concat(UNLAYERED).filter((l) => laneNames.has(l))
+    : [...laneNames.keys()].sort((a, b) => a.localeCompare(b, 'zh'))
+  for (const lane of order) {
     const block = lane.split('／')[0]
     if (lastBlock !== null && block !== lastBlock) y += BLOCK_GAP     // 多条时间线之间留空行
     lastBlock = block

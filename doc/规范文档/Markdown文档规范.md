@@ -35,6 +35,7 @@ vault/
 id: transformer
 name: Transformer
 field: AI-LLM
+layer: AI应用
 type: 模型架构
 status: active
 year: 2017
@@ -54,7 +55,8 @@ learned: 2026-09-10
 | --- | --- | --- | --- |
 | `id` | 否 | string | 缺省取文件名；显式值必须唯一 |
 | `name` | 是 | string | 展示名称，不能为空 |
-| `field` | 是 | string | 顶层领域，对应默认分组 |
+| `field` | 是 | string | 顶层领域（**主题**维度），对应默认分组 |
+| `layer` | 否 | enum | 抽象层（**层次**维度，与 field 正交）：`理论` / `硬件` / `体系结构` / `汇编接口` / `系统软件` / `高级语言` / `AI应用`。历史视图可按它分泳道，从下往上排；不填落「未分层」，写错只警告不报错 |
 | `type` | 否 | string | 节点类型 |
 | `status` | 否 | enum | `active`、`deprecated`、`disputed`、`stub` |
 | `year` | 否 | integer | 进入历史视图的核心年份 |

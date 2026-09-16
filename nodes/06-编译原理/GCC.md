@@ -1,7 +1,8 @@
 ---
 name: GCC
-field: 计算机体系结构
+field: 计算机系统
 year: 1987
+layer: 系统软件
 tags:
   - 编译
   - 工具链

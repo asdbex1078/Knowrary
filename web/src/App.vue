@@ -141,7 +141,12 @@ const viewBox = ref({ cx: 0, cy: 0, w: 0, h: 0 })   // 当前视口（图坐标�
 // —— 界面状态：左侧工具窗口、右侧检查器、浮层提示、帮助 ——
 const panel = ref('')                    // '' | inbox | plans | study | digest | assets | timeline
 const plansDoc = shallowRef(null)        // 项目；只写 projects.json，不碰 md 也不碰 layout
-const currentProject = ref('')           // 当前项目：今日清单、出题范围、对话留档都按它过滤；空串 = 全局
+// 当前项目：今日清单、出题范围、对话留档、**画布用哪份 layout** 都按它走；空串 = 全局。
+// **开局就从 localStorage 读**：挂载时第一次 fetchLayout 就要知道该拉哪一份，
+// 等 refreshPlans 回来再改就晚了——那时画布已经画成全局图了（刷新后跳回全局的那个 bug）。
+const currentProject = ref((() => {
+  try { return localStorage.getItem('knowrary-project') || '' } catch { return '' }
+})())
 let projectPicked = false                // 是否已经定过当前项目（避免每次刷新都被首个项目顶掉）
 
 // 学 / 考双态，画布上画成左下角两个小方块。**只覆盖当前项目里的点**——
@@ -178,11 +183,48 @@ async function applyProjectCard({ card, i, j }) {
     await putProjects({ base_revision: doc.doc.revision, projects: next })
     chatLog.value[i].projects[j].applied = true
     await refreshPlans()
-    switchProject(card.id)
-    setBanner(old ? `已往「${card.name}」加了 ${card.lists.length} 份清单`
-                  : `已创建项目「${card.name}」，去项目面板点「让 AI 拆一份」把点填进来`, 'success')
+    // **直接把人送到那一项**：建完还要自己去左侧栏找项目面板、再在下拉里挑一遍，
+    // 这一步的摩擦比建项目本身还大。
+    await switchProject(card.id)
+    openPanel('plans', { force: true })
+    setBanner(old ? `已往「${card.name}」加了 ${card.lists.length} 份清单，面板已经切过去了`
+                  : `已创建项目「${card.name}」，面板已经切过去了——点「让 AI 拆一份」把点填进来`, 'success')
   } catch (err) {
     setBanner(`创建失败：${err.body?.detail || err.message}`, 'error')
+  } finally {
+    chatBusy.value = false
+  }
+}
+
+/** 对话里拆出来的点：采纳进那份清单。和面板上的「采纳」写的是同一份 projects.json。 */
+async function applyPointsCard({ card, i, j }) {
+  chatBusy.value = true
+  try {
+    const doc = await fetchProjects()
+    const next = JSON.parse(JSON.stringify(doc.doc.projects || {}))
+    const ls = next[card.project]?.lists?.[card.list]
+    if (!ls) throw new Error('这份清单不在了（项目可能被改过）')
+    const mine = new Set(ls.stages.flatMap((st) => st.points.map((p) => p.id)))
+    let added = 0
+    for (const st of card.stages) {
+      const points = st.points.filter((p) => !mine.has(p.id))
+      if (!points.length) continue
+      points.forEach((p) => mine.add(p.id))
+      added += points.length
+      const hit = ls.stages.find((x) => x.name === st.name)
+      if (hit) { hit.points.push(...points); hit.deadline = hit.deadline || st.deadline || null }
+      else ls.stages.push({ name: st.name, deadline: st.deadline || null, points })
+    }
+    if (!ls.field && card.suggested_field) ls.field = card.suggested_field
+    await putProjects({ base_revision: doc.doc.revision, projects: next })
+    chatLog.value[i].points[j].applied = true
+    await refreshPlans()
+    await switchProject(card.project)
+    openPanel('plans', { force: true })
+    setBanner(`已把 ${added} 个点采纳进「${card.project_name}·${card.list_name}」，面板已经切过去了`,
+              'success')
+  } catch (err) {
+    setBanner(`采纳失败：${err.body?.detail || err.message}`, 'error')
   } finally {
     chatBusy.value = false
   }
@@ -233,14 +275,27 @@ function projectField() {
 
 /** 重新拉当前这份 layout（换画布时用）。 */
 async function reloadLayout() {
-  const fresh = await fetchLayout(layoutName())
+  let fresh
+  try {
+    fresh = await fetchLayout(layoutName())
+  } catch (err) {
+    if (err.status !== 404) throw err
+    // 项目画布没了（项目被删）：退回全局图，别让整屏卡在"加载失败"
+    currentProject.value = ''
+    setBanner('那个项目已经不在了，已退回全局图')
+    fresh = await fetchLayout(null)
+  }
   layoutDoc.value = fresh.layout
   revision.value = fresh.layout.revision
 }
 
 /** 当前这块画布写去哪一份 layout：项目图写项目自己的，其余都写全局图。 */
 function layoutName() {
-  return mode.value === 'project' && currentProject.value ? currentProject.value : null
+  // **对话模式右边那块图也用项目画布**：在某个项目下聊天，背后却摆着整张全局图，
+  // "聊到哪、图上亮哪"就完全失灵了——你聊的点多半还没建，只在项目画布上有幽灵占位。
+  // 选了「🌐 全局」就回到全局图（那条线本来就不绑项目）。
+  const scoped = mode.value === 'project' || mode.value === 'chat'
+  return scoped && currentProject.value ? currentProject.value : null
 }
 
 // 当前项目里的点。项目图有**自己的一份 layout**（四期），里面还带着「未建」的幽灵占位。
@@ -303,8 +358,9 @@ const problems = ref([])                 // 加载时发现的待处理项，挂
 const inspectorOpen = computed(() =>
   !inspectorHidden.value && (!!selected.value || pending.value.length > 0))
 
-function openPanel(id) {
-  panel.value = panel.value === id ? '' : id
+/** `force` = 无论当前开着什么都切到这个面板（程序主动带人过去时用，不能让它变成"切回关闭"）。 */
+function openPanel(id, { force = false } = {}) {
+  panel.value = !force && panel.value === id ? '' : id
   if (panel.value === 'digest' && !digest.value) refreshDigest()
   if (panel.value === 'inbox') refreshInbox()
   if (panel.value === 'study') { refreshToday(); refreshDue() }
@@ -355,7 +411,15 @@ function setBanner(text, kind = '') {
 }
 
 async function load() {
-  const [index, layout] = await Promise.all([fetchIndex(), fetchLayout(layoutName())])
+  let layout
+  const [index, first] = await Promise.all([fetchIndex(), fetchLayout(layoutName()).catch((e) => e)])
+  if (first instanceof Error) {
+    if (first.status !== 404) throw first
+    currentProject.value = ''          // localStorage 里存的项目已经没了：退回全局图
+    layout = await fetchLayout(null)
+  } else {
+    layout = first
+  }
   fetchHealth().then((h) => { has3d.value = !!h.web3d }).catch(() => {})
   indexDoc.value = index
   layoutDoc.value = layout.layout
@@ -479,6 +543,12 @@ const yearRange = computed(() => {
   return years.length ? [Math.min(...years), Math.max(...years)] : [0, 0]
 })
 const timelineChoices = computed(() => timelineOptions(layoutDoc.value))
+/** 「按抽象层」那一档旁边的提示：有多少节点填了 layer。没填的会全挤进「未分层」。 */
+const layeredHint = computed(() => {
+  const withYear = (indexDoc.value?.nodes || []).filter((n) => !n.virtual && typeof n.year === 'number')
+  const n = withYear.filter((x) => x.layer).length
+  return withYear.length ? `${n}/${withYear.length} 已分层` : ''
+})
 
 function renderHistory({ view = 'fit' } = {}) {
   const g = graph.value
@@ -1960,16 +2030,24 @@ const llmBusy = computed(() => quizBusy.value || planProposing.value || suggesti
 async function switchProject(id) {
   if (id === currentProject.value) return          // 空串是合法值：「全局」那一条线
   await patcher.value?.flush()              // 上一个项目的改动先落盘，别带到下一份去
+  const wasLayout = layoutName()
   currentProject.value = id
   try { localStorage.setItem('knowrary-project', id) } catch { /* 无痕模式 */ }
   if (panel.value === 'study') refreshToday()
   if (panel.value === 'calendar') refreshCalendar()
-  if (mode.value === 'project') {
+  // **画布跟着换。** 判据是"这一屏该画哪份 layout"，不是"现在是不是项目图模式"——
+  // 对话模式右边那块图用的也是项目画布，只按模式判会漏掉它：
+  // 在 A 项目下聊天、切到 B，背后还摆着 A 的图。
+  if (layoutName() !== wasLayout) {
     history.reset()                         // 撤销栈是跟着某一份 layout 的，换了就作废
     histVer.value++
     await reloadLayout()
-    render({ view: 'fit' })
-    if (!id) setBanner('「全局」没有项目画布——这一屏现在是全局图。选一个项目才有自己的画布')
+    if (mode.value !== 'history') render({ view: mode.value === 'chat' ? 'stored' : 'fit' })
+  }
+  if (!id && mode.value === 'project') {
+    // 「全局」没有项目画布。留在一个空模式里只会让人困惑，直接退到全局图。
+    await switchMode('structure')
+    setBanner('「全局」不绑项目，没有项目画布——已经切到全局图')
   }
   if (mode.value === 'chat') {
     // 对话按项目分线：换项目等于换一条线。上一段没丢——它一直在 .knowrary/chat/<项目>/ 里
@@ -2046,7 +2124,7 @@ async function sendChat(body) {
     : body
   chatLog.value = [...chatLog.value, { role: 'user', content: text }]
   const reply = reactive({ role: 'assistant', content: '', tools: [], cards: [], projects: [],
-                           streaming: true })
+                           points: [], streaming: true })
   chatLog.value = [...chatLog.value, reply]
   chatBusy.value = true
   chatAbort = new AbortController()
@@ -2061,6 +2139,7 @@ async function sendChat(body) {
       else if (ev.type === 'tool') reply.tools.push({ label: TOOL_LABEL[ev.name] || ev.name, summary: ev.summary })
       else if (ev.type === 'card') reply.cards.push({ ...ev.card, applied: false })
       else if (ev.type === 'project') reply.projects.push({ ...ev.project, applied: false })
+      else if (ev.type === 'points') reply.points.push({ ...ev.points, applied: false })
       else if (ev.type === 'review') { refreshDue(); pushToast(`已记一次「忘了」：${ev.id}`, 'info') }
       else if (ev.type === 'done') {
         reply.content = stripToolBlocks(ev.text) || reply.content
@@ -2139,17 +2218,19 @@ async function refreshPlans() {
     const data = await fetchProjects()
     plansDoc.value = data.doc
     // 记住上次看的项目：这是个界面偏好，localStorage 就够了（不需要第二份存储）
-    // 记住上次看的项目：这是个界面偏好，localStorage 就够了（不需要第二份存储）。
-    // **空串是合法值**（「全局」那条线），所以用 null 区分"没存过"，不能拿 || 兜底。
-    if (!projectPicked) {
-      let want = null
-      try { want = localStorage.getItem('knowrary-project') } catch { /* 无痕模式 */ }
-      currentProject.value = want !== null && (want === '' || data.doc.projects?.[want])
-        ? want : (Object.keys(data.doc.projects || {})[0] || '')
-      projectPicked = true
-    } else if (currentProject.value && !data.doc.projects?.[currentProject.value]) {
-      currentProject.value = ''                    // 项目被删了就退回全局
+    // 开局那次已经从 localStorage 读过了，这里只负责校验：
+    // 存的项目要是没了（被删 / 换了 vault），退回全局；从没存过就落到第一个项目。
+    const known = data.doc.projects || {}
+    if (currentProject.value && !known[currentProject.value]) {
+      currentProject.value = ''
+      await reloadLayout()                        // 画布跟着退回全局图
+      render({ view: 'stored' })
+    } else if (!projectPicked && !currentProject.value) {
+      let saved = null
+      try { saved = localStorage.getItem('knowrary-project') } catch { /* 无痕模式 */ }
+      if (saved === null) currentProject.value = Object.keys(known)[0] || ''
     }
+    projectPicked = true
     plansProgress.value = data.progress
     plansSchedules.value = data.schedules || {}
   } catch (err) {
@@ -2665,13 +2746,14 @@ onBeforeUnmount(() => {
       <MorningBrief v-if="briefOn" :today="todayList" @close="briefOn = false"
                     @start="briefStart" @quiz="briefOn = false; startQuiz($event)" />
 
-      <ActivityBar :active="panel" :mode="mode" :inbox="inboxCount" :due="dueIds.size" :theme="theme"
+      <ActivityBar :active="panel" :mode="mode" :project="currentProject"
+                   :inbox="inboxCount" :due="dueIds.size" :theme="theme"
                    @select="openPanel" @toggle-theme="toggleTheme" />
 
       <InboxTray v-if="panel === 'inbox'" class="inbox" :items="inboxItems" :busy="placing"
                  @place="placeOne" @place-all="placeAll" @close="panel = ''" />
       <ProjectsPanel v-else-if="panel === 'plans'" class="study" :doc="plansDoc" :progress="plansProgress"
-                     :schedules="plansSchedules" :fields="fieldNames"
+                     :schedules="plansSchedules" :fields="fieldNames" :project="currentProject"
                      :busy="plansBusy" :proposal="planProposal" :proposing="planProposing"
                      @save="savePlans" @goto="gotoNode" @build="buildPoint" @propose="proposePlan"
                      @quiz="startQuiz" @switch="switchProject" @refresh="refreshPlans"
@@ -2679,7 +2761,7 @@ onBeforeUnmount(() => {
       <StudyPanel v-else-if="panel === 'study'" class="study" :today="todayList" :busy="quizBusy"
                   @goto="gotoNode" @quiz="startQuiz($event.id ? [$event.id] : $event)"
                   @build="buildPoint" @write="writeBody" @place="placeFromToday"
-                  @plans="panel = 'plans'; refreshPlans()"
+                  @plans="panel = 'plans'; refreshPlans()" @global="switchProject('')"
                   @refresh="refreshToday" @close="panel = ''" />
       <CalendarPanel v-else-if="panel === 'calendar'" class="study" :data="calendar"
                      @goto="gotoNode" @refresh="refreshCalendar" @close="panel = ''" />
@@ -2687,7 +2769,8 @@ onBeforeUnmount(() => {
                    @goto="gotoNode" @refresh="refreshDigest" @merge="openMerge" @close="panel = ''" />
       <ImagePicker v-else-if="panel === 'assets'" class="picker" @pick="addImage" @add-note="addNote"
                    @error="setBanner($event, 'error')" @close="panel = ''" />
-      <TimelinePanel v-else-if="panel === 'timeline'" class="timeline" :options="timelineChoices" :selected="timelines"
+      <TimelinePanel v-else-if="panel === 'timeline'" class="timeline" :options="timelineChoices"
+                     :selected="timelines" :layered="layeredHint"
                      :families="hist" :trunk="hist.trunk" :chain="histChain"
                      @toggle="toggleTimeline" @toggle-family="toggleHistFamily"
                      @toggle-trunk="hist.trunk = !hist.trunk; renderHistory({ view: 'fit' })"
@@ -2701,7 +2784,7 @@ onBeforeUnmount(() => {
                   :stance="chatStance" @stance="setStance"
                   :graph-open="graphPane"
                   @send="sendChat" @stop="stopChat" @apply="applyChatCard"
-                  @apply-project="applyProjectCard" @goto="gotoNode"
+                  @apply-project="applyProjectCard" @apply-points="applyPointsCard" @goto="gotoNode"
                   @new-session="newChatSession" @pick-session="pickChatSession"
                   @drop-focus="chatFocus = null" @toggle-graph="toggleGraphPane" />
 
@@ -2719,7 +2802,7 @@ onBeforeUnmount(() => {
 
         <CanvasTools v-if="mode === 'structure' || mode === 'project'" :visible="visible" :shown-families="shownFamilies"
                      :collapsed="collapsedIds.size" :aggregate="aggregate" :auto-lod="autoLod" :snap="snap"
-                     :layouts="LAYOUTS" :can-undo="canUndo" :can-redo="canRedo" :locked="!!preview"
+                     :layouts="mode === 'project' ? {} : LAYOUTS" :can-undo="canUndo" :can-redo="canRedo" :locked="!!preview"
                      @toggle-family="visible[$event] = !visible[$event]; render()"
                      @toggle-aggregate="aggregate = !aggregate; expanded = new Set(); render()"
                      @toggle-lod="autoLod = !autoLod; render()"

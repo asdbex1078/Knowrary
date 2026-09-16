@@ -32,8 +32,8 @@ const props = defineProps({
   focus: { type: Object, default: null },         // 从图上点过来的节点：带进下一轮上下文
   graphOpen: { type: Boolean, default: true },
 })
-const emit = defineEmits(['send', 'stop', 'apply', 'apply-project', 'goto', 'new-session',
-                          'pick-session', 'drop-focus', 'toggle-graph', 'stance'])
+const emit = defineEmits(['send', 'stop', 'apply', 'apply-project', 'apply-points', 'goto',
+                          'new-session', 'pick-session', 'drop-focus', 'toggle-graph', 'stance'])
 
 // 三档口径。**不是三个 agent**：同一条链路、同一张图、同一套复习记录，
 // 换的只是系统提示词和工具白名单。
@@ -154,6 +154,43 @@ function onKey(e) {
                 <Icon name="check" :size="13" />创建
               </button>
               <span class="dim" style="font-size: 11px">只写 projects.json，不碰 md、不碰画布</span>
+            </div>
+          </div>
+
+          <!-- 拆点卡：把清单拆成知识点。和面板上「让 AI 拆一份」是同一条链路 -->
+          <div v-for="(pt, j) in (m.points || [])" :key="`pt${j}`" class="change-card">
+            <div class="cc-head">
+              <Icon name="network" :size="13" />
+              给「{{ pt.project_name }}·{{ pt.list_name }}」拆了
+              {{ pt.stages.reduce((n, s) => n + s.points.length, 0) }} 个点
+              <span v-if="pt.applied" class="chip m-mastered">已采纳</span>
+            </div>
+            <div v-for="(st, k) in pt.stages" :key="k" class="prop-stage">
+              <div class="prop-stage-name">{{ st.name }}
+                <span v-if="st.deadline" class="dim" style="font-weight: 400">· 排到 {{ st.deadline }}</span>
+              </div>
+              <ul>
+                <li v-for="q in st.points" :key="q.id" class="edge-row point">
+                  <span class="chip" :class="pt.existing?.includes(q.id) ? 'm-learned' : 'm-unbuilt'">
+                    {{ pt.existing?.includes(q.id) ? '图里有' : '要新建' }}
+                  </span>
+                  <span class="to">{{ q.name || q.id }}</span>
+                  <span class="load">{{ q.load }}</span>
+                  <span v-if="pt.in_projects?.[q.id]" class="chip m-due"
+                        :title="'重叠是合法的：掌握度还是同一个'">{{ pt.in_projects[q.id].join('/') }} 里有</span>
+                  <span v-if="q.why" class="yr why">{{ q.why }}</span>
+                </li>
+              </ul>
+            </div>
+            <p v-if="pt.schedule?.verdict" class="dim" style="font-size: 11.5px">
+              时间账：{{ pt.schedule.verdict }}——这份约 {{ pt.schedule.total_hours }} 小时，
+              按现在的投入要学到 {{ pt.schedule.suggested_target_date }}
+            </p>
+            <div v-if="!pt.applied" class="cc-acts">
+              <button class="btn primary tiny" :disabled="busy" @click="emit('apply-points', { card: pt, i, j })">
+                <Icon name="check" :size="13" />采纳进清单
+              </button>
+              <span class="dim" style="font-size: 11px">只写 projects.json；标了「别的项目里有」的是重叠，不是错</span>
             </div>
           </div>
 

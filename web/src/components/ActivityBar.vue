@@ -12,34 +12,69 @@ const props = defineProps({
   inbox: { type: Number, default: 0 },
   due: { type: Number, default: 0 },
   theme: { type: String, default: 'light' },
+  project: { type: String, default: '' },      // 空串 = 「🌐 全局」
 })
 const emit = defineEmits(['select', 'toggle-theme'])
 
-const items = computed(() => {
-  const list = [
-    { id: 'inbox', icon: 'inbox', tip: 'Inbox · 待上图的知识点', badge: props.inbox, structureOnly: true },
-    { id: 'plans', icon: 'checklist', tip: '项目 · 学习计划 / 面试方案 / 领域地图', structureOnly: true },
-    { id: 'study', icon: 'rotate', tip: '学习 · 今日复习与测验', badge: props.due, gold: true },
-    { id: 'digest', icon: 'layers', tip: '欠账 · 草稿 / 桥 / 重复 / stub' },
-    { id: 'calendar', icon: 'clock', tip: '日历 · 每天建了多少、复习了多少（全是算出来的）' },
-    { id: 'assets', icon: 'image', tip: '素材 · 贴图与便签', structureOnly: true },
-    { id: 'timeline', icon: 'timeline', tip: '时间线 · 分组与过滤', historyOnly: true },
-  ]
-  return list.filter((it) => {
-    if (it.structureOnly) return props.mode === 'structure'
-    if (it.historyOnly) return props.mode === 'history'
-    return true
-  })
+// 每个工具窗口标上**作用域**，并且**按当前是不是在某个项目下过滤**：
+// 在一个项目里的时候，你要的是"这个项目能干什么"，全图层面的欠账 / 日历 / Inbox
+// 只会让人分心；反过来，"新建项目"这种事本来就该在「🌐 全局」下做。
+// 所以不是把两组摆在一起让人挑，而是按当前作用域只给该给的。
+//
+// `scopes` = 在哪个作用域下出现（project = 选着某个项目时，global = 选着「🌐 全局」时）；
+// `modes`  = 在哪几个视图下有意义（贴图要有画布，时间线只属于历史）。
+const ITEMS = [
+  { id: 'plans', icon: 'checklist', name: '清单', scopes: ['project'],
+    tip: '这个项目的学习计划 / 面试方案 / 领域地图', modes: ['chat', 'project', 'structure'] },
+  { id: 'study', icon: 'rotate', name: '今日', gold: true, badge: 'due', scopes: ['project', 'global'],
+    tip: '今天该建什么、该复习什么（复习是全局的，建设按当前项目过滤）',
+    modes: ['chat', 'project', 'structure'] },
+  { id: 'assets', icon: 'image', name: '素材', scopes: ['project', 'global'],
+    tip: '往当前这块画布上贴图、加便签', modes: ['project', 'structure'] },
+
+  { id: 'plans', icon: 'checklist', name: '项目', scopes: ['global'], key: 'plans-global',
+    tip: '所有项目：新建、切换、改配置', modes: ['chat', 'project', 'structure'] },
+  { id: 'inbox', icon: 'inbox', name: 'Inbox', badge: 'inbox', scopes: ['global'],
+    tip: '待上全局图的知识点', modes: ['project', 'structure'] },
+  { id: 'digest', icon: 'layers', name: '欠账', scopes: ['global'],
+    tip: '草稿 / 桥 / 重复 / stub（整张图的）', modes: ['chat', 'project', 'structure'] },
+  { id: 'calendar', icon: 'clock', name: '日历', scopes: ['global'],
+    tip: '每天建了多少、复习了多少（全是算出来的）', modes: ['chat', 'project', 'structure', 'history'] },
+  { id: 'timeline', icon: 'timeline', name: '时间线', scopes: ['global'],
+    tip: '历史视图的泳道与过滤', modes: ['history'] },
+]
+
+/** 角标是响应式的，所以列表里只存"取哪个数"，值在这里现取。 */
+const badgeOf = (it) => (it.badge === 'inbox' ? props.inbox : it.badge === 'due' ? props.due : 0)
+
+/** 当前作用域下该有哪些工具。
+ *
+ * **作用域跟着视图走，不只跟着项目选择走**：顶栏已经把视图分成了项目级（对话 / 项目图）
+ * 和全局级（全局图 / 历史）。站在全局图或历史视图上时，就算选着某个项目，
+ * 你要的也是整张图的工具（Inbox / 欠账 / 时间线）——按项目过滤会把它们藏起来，
+ * 于是"历史视图里调不出时间线面板"。
+ */
+const groups = computed(() => {
+  const projectView = props.mode === 'chat' || props.mode === 'project'
+  const scope = projectView && props.project ? 'project' : 'global'
+  const items = ITEMS.filter((it) => it.scopes.includes(scope) && it.modes.includes(props.mode))
+  return items.length ? [{ scope, items }] : []
 })
 </script>
 
 <template>
   <nav class="rail">
-    <button v-for="it in items" :key="it.id" class="rail-btn" :class="{ on: active === it.id }"
-            :data-tip="it.tip" @click="emit('select', it.id)">
-      <Icon :name="it.icon" :size="18" />
-      <span v-if="it.badge" class="badge" :class="{ gold: it.gold }">{{ it.badge > 99 ? '99+' : it.badge }}</span>
-    </button>
+    <template v-for="(g, gi) in groups" :key="g.scope">
+      <button v-for="it in g.items" :key="it.key || it.id" class="rail-btn"
+              :class="{ on: active === it.id }"
+              :data-tip="`${g.scope === 'project' ? '项目' : '全局'} · ${it.name} · ${it.tip}`"
+              @click="emit('select', it.id)">
+        <Icon :name="it.icon" :size="18" />
+        <span v-if="badgeOf(it)" class="badge" :class="{ gold: it.gold }">
+          {{ badgeOf(it) > 99 ? '99+' : badgeOf(it) }}
+        </span>
+      </button>
+    </template>
 
     <span class="spacer" />
 

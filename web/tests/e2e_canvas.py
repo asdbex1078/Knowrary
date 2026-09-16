@@ -232,6 +232,7 @@ class Check:
 
 
 async def case_initial(page: Page, ck: Check) -> None:
+    """首屏：布局自动生成，全局图上四个节点都画出来了（要在「全局图」模式下数）。"""
     await wait_render(page, 4)
     base = ck.layout()
     ck.add("首次打开自动生成布局", base["revision"] == 1 and len(base["nodes"]) == 4,
@@ -611,6 +612,18 @@ async def click_text(page: Page, sel: str, text: str) -> str:
     return out
 
 
+async def use_scope(page: Page, project: str) -> None:
+    """切作用域。左侧栏是按作用域过滤的：在项目下只给项目的工具，
+    全局的（Inbox / 欠账 / 日历 / 项目管理）要先切到「🌐 全局」。"""
+    await page.ev(f"""(() => {{
+      const s = document.querySelector('.proj-switch');
+      if (!s || s.value === {project!r}) return 'same';
+      s.value = {project!r}; s.dispatchEvent(new Event('change', {{ bubbles: true }}));
+      return 'ok';
+    }})()""")
+    await asyncio.sleep(0.8)
+
+
 async def open_rail(page: Page, tip: str) -> str:
     """点左侧活动栏上的工具窗口图标（按 data-tip 里的名字找）。"""
     out = await page.ev(f"""(() => {{
@@ -720,7 +733,7 @@ async def case_due_badge(page: Page, ck: Check) -> None:
 
     # 复习不在欠账里了：图谱的欠账归欠账，"我该复习什么"归「学习」面板
     # 「学习计划」排在「学习」前面，只写"学习"会命中前者——按 tip 找必须给得够长
-    await open_rail(page, "学习 · 今日")
+    await open_rail(page, "今日")
     study = await poll(page, """(() => {
       const a = document.querySelector('aside.study');
       return a ? a.textContent.replace(/\s+/g, ' ') : '';
@@ -812,6 +825,11 @@ async def case_project_view(page: Page, ck: Check, api: str) -> None:
       .map(o => o.value))""")
     ck.add("切换器里有「全局」那一档（不绑项目的对话落 _scratch）",
            "" in json.loads(opts or "[]"), str(opts))
+    scopes = await page.ev("""JSON.stringify([...document.querySelectorAll('.topbar .seg')]
+      .map(g => [...g.querySelectorAll('button')].map(b => b.textContent.trim())))""")
+    ck.add("顶栏按作用域分成两组（项目级 / 全局级）",
+           json.loads(scopes or "[]") == [["对话", "项目图"], ["全局图", "历史"]], str(scopes))
+
     ck.add("顶栏只有一个「全局图」（tab 自己就是那座桥，不另设按钮）",
            await page.ev("""[...document.querySelectorAll('.topbar button')]
              .filter(b => b.textContent.trim() === '全局图').length""") == 1,
@@ -869,6 +887,7 @@ async def case_project_view(page: Page, ck: Check, api: str) -> None:
 
 async def case_calendar(page: Page, ck: Check) -> None:
     """学习日历：热力图画得出来、点某天能看明细。**全派生，点一圈不该写任何文件。**"""
+    await use_scope(page, "")
     await open_rail(page, "日历")
     text = await poll(page, """(() => {
       const a = document.querySelector('aside.study');
@@ -935,6 +954,115 @@ async def case_chat_view(page: Page, ck: Check) -> None:
 
     sendable = await page.ev("""!document.querySelector('.chat-view .chat-input .icon-btn.primary')?.disabled""")
     ck.add("有字之后发送键才亮", bool(sendable), f"disabled={not sendable}")
+
+    # 对话和画布是**左右分栏**，不是画布盖在上面——重叠的话看起来就像"点了对话没反应"
+    box = await page.ev("""JSON.stringify((() => {
+      const c = document.querySelector('.chat-view').getBoundingClientRect();
+      const g = document.querySelector('.canvas').getBoundingClientRect();
+      const top = document.elementFromPoint(c.x + c.width / 2, c.y + c.height / 2);
+      return { split: Math.round(g.x) >= Math.round(c.x + c.width) - 2,
+               onTop: !!top?.closest('.chat-view') };
+    })())""")
+    info = json.loads(box)
+    ck.add("对话与画布左右分栏、不重叠", info["split"] and info["onTop"], box)
+
+    await use_scope(page, "demo")      # 上一个用例把作用域切到「全局」了，这里要的是项目下的样子
+    rail_proj = await page.ev("""JSON.stringify([...document.querySelectorAll('.rail .rail-btn')]
+      .map(b => (b.dataset.tip || '').split(' · ')[1]).filter(Boolean))""")
+    ck.add("项目下只给项目工具（不塞全局的欠账 / 日历 / Inbox）",
+           "清单" in (rail_proj or "") and "欠账" not in (rail_proj or ""), str(rail_proj))
+
+    # 切项目要跟着切到那个项目的对话线
+    await page.ev("""(() => {
+      const s = document.querySelector('.proj-switch');
+      s.value = ''; s.dispatchEvent(new Event('change', { bubbles: true })); return 'ok';
+    })()""")
+    await asyncio.sleep(0.8)
+    empty = await page.ev("""document.querySelector('.chat-view .chat-wrap')?.textContent.includes('聊着学')""")
+    ck.add("切到「全局」换成那条线的对话", bool(empty), "全局线是空的（还没聊过）")
+    # 对话右边那块图用的是**项目画布**；切项目时它必须跟着换，
+    # 不然你在 B 项目里聊天、背后摆着 A 项目的图
+    glob_nodes = await page.ev("""document.querySelectorAll('[data-shape="kg-node"]').length""")
+    await use_scope(page, "demo")
+    # 对话模式下画布只剩右边一条，auto-LOD 会把分组折叠成簇卡片 → 数不到 kg-node，
+    # 所以直接看当前加载的是哪一份 layout（__kg 那几个 getter 就是为这个留的）
+    loaded = await poll(page, "JSON.stringify(Object.keys(__kg.layout.nodes).sort())",
+                        lambda v: v and "还没建的" in v, timeout=10)
+    ck.add("对话模式下切项目，右边那块图跟着换（加载的是项目画布）",
+           set(json.loads(loaded or "[]")) == {"甲", "乙", "还没建的"},
+           f"全局时 {glob_nodes} 个节点 → 现在 {loaded}")
+
+    rail_proj2 = await page.ev("""JSON.stringify([...document.querySelectorAll('.rail .rail-btn')]
+      .map(b => (b.dataset.tip || '').split(' · ')[1]).filter(Boolean))""")
+    ck.add("项目下左侧栏是项目那套", "清单" in (rail_proj2 or ""), str(rail_proj2))
+
+    # 项目下的清单面板只看这一个项目：不给项目切换器、不给新建（那些去「🌐 全局」做）
+    await open_rail(page, "清单")
+    panel = await poll(page, """(() => {
+      const a = document.querySelector('aside.study');
+      if (!a) return '';
+      return JSON.stringify({ title: a.querySelector('.drawer-head')?.textContent.trim().slice(0, 4),
+                              switcher: a.querySelectorAll('.plan-switch').length,
+                              txt: a.textContent.slice(0, 40) });
+    })()""", lambda v: v and "title" in v, timeout=10)
+    info2 = json.loads(panel or "{}")
+    ck.add("项目下的清单面板不列别的项目", info2.get("switcher") == 0, str(info2))
+    ck.add("项目下这一屏叫「清单」不叫「项目」", "清单" in (info2.get("title") or ""), str(info2))
+
+    # 「建」按钮必须在可视区内：why 一长就把它挤出去的话，等于这个按钮不存在
+    fit = await page.ev("""JSON.stringify((() => {
+      const li = [...document.querySelectorAll('aside.study .edge-row.point')]
+        .find(x => x.querySelector('.row-acts .btn'));
+      if (!li) return { found: false };
+      const p = li.getBoundingClientRect(), b = li.querySelector('.row-acts .btn').getBoundingClientRect();
+      return { found: true, inside: b.right <= p.right + 1 && b.left >= p.left,
+               whyOwnLine: !!li.querySelector('.why-line') };
+    })())""")
+    box2 = json.loads(fit or "{}")
+    ck.add("「建」按钮没被 why 挤出行外", box2.get("found") and box2.get("inside"), str(box2))
+
+    # 清单能拉宽（和对话那条一样的机制），长文本靠省略号 + title 兜底
+    wide = await page.ev("""(() => {
+      const a = document.querySelector('aside.study');
+      const before = a.getBoundingClientRect().width;
+      const b = [...a.querySelectorAll('.drawer-head .icon-btn')]
+        .find(x => (x.title || '').includes('展宽'));
+      if (!b) return JSON.stringify({ err: 'no-expand' });
+      b.click();
+      // 上限 = min(面板自己的 max, 视口 - 320)，两者取小
+      return JSON.stringify({ before, cap: Math.min(1100, window.innerWidth - 320) });
+    })()""")
+    w = json.loads(wide)
+    after2 = await poll(page, "document.querySelector('aside.study')?.getBoundingClientRect().width || 0",
+                        lambda v: v and abs(v - (w.get("cap") or 0)) < 3, timeout=8)
+    ck.add("清单面板能一键展宽", abs((after2 or 0) - w.get("cap", 0)) < 3,
+           f"{round(w.get('before', 0))} → {round(after2 or 0)}px")
+    ck.add("放不下的点名有 title 兜底",
+           await page.ev("""[...document.querySelectorAll('aside.study .edge-row.point .to')]
+             .every(el => el.title !== undefined && el.title !== '')"""), "悬停能看全")
+    await open_rail(page, "清单")
+
+    # 刷新后还在原来的项目上：挂载时第一次 fetchLayout 就得知道拉哪一份，
+    # 否则画布会先画成全局图（"刷新跳回全局"那个 bug）
+    await page.ev("location.reload()")
+    await asyncio.sleep(2.2)
+    await page.ev("""(() => { document.querySelector('.brief .icon-btn')?.click(); })()""")
+    after = await poll(page, "JSON.stringify({p: __kg.project, "
+                             "n: Object.keys(__kg.layout.nodes).sort()})",
+                       lambda v: v and '"p":"demo"' in v, timeout=12)
+    ck.add("刷新后还在原项目，画布也还是项目画布",
+           json.loads(after or "{}").get("n") == ["乙", "甲", "还没建的"], str(after))
+
+    # 切回「🌐 全局」：左侧栏该换成全局那套，「项目图」该变灰
+    await use_scope(page, "")
+    rail_global = await page.ev("""JSON.stringify([...document.querySelectorAll('.rail .rail-btn')]
+      .map(b => (b.dataset.tip || '').split(' · ')[1]).filter(Boolean))""")
+    ck.add("「全局」下只给全局工具（项目管理 / Inbox / 欠账 / 日历）",
+           "项目" in (rail_global or "") and "清单" not in (rail_global or ""), str(rail_global))
+    ck.add("选了「全局」时「项目图」是灰的（没有项目就没有项目画布）",
+           await page.ev("""[...document.querySelectorAll('.topbar .seg button')]
+             .find(b => b.textContent.trim() === '项目图')?.disabled === true"""), "disabled")
+
     await switch_mode(page, "全局图")      # 收拾干净，后面的用例要画布
 
 
@@ -1074,13 +1202,15 @@ async def case_edge_vertices(page: Page, ck: Check) -> None:
 
 async def case_history(page: Page, ck: Check, vault: Path) -> None:
     """历史视图：只有带 year 的节点进图、泳道与刻度、被激活金线、滑块回放、全程不写结构布局。"""
+    # layer 故意跨主题：甲在「组A/测试」但属于硬件层，庚在「另一域」却是 AI应用层——
+    # 这正是两个维度正交的意义，按层分泳道时它们会重新排队
     (vault / "nodes/组A/甲.md").write_text(
-        "---\nname: 甲\nfield: 测试\ndesc: 甲\nyear: 1990\n---\n# 甲\n\n正文\n\n"
+        "---\nname: 甲\nfield: 测试\ndesc: 甲\nyear: 1990\nlayer: 硬件\n---\n# 甲\n\n正文\n\n"
         "## 关系\n- 被激活:: [[丙]] (2005)\n", "utf-8")
     (vault / "nodes/组B/丙.md").write_text(
-        "---\nname: 丙\nfield: 测试\ndesc: 丙\nyear: 2005\n---\n# 丙\n\n正文\n", "utf-8")
+        "---\nname: 丙\nfield: 测试\ndesc: 丙\nyear: 2005\nlayer: 理论\n---\n# 丙\n\n正文\n", "utf-8")
     (vault / "nodes/组B/庚.md").write_text(
-        "---\nname: 庚\nfield: 另一域\ndesc: 庚\nyear: 2015\n---\n# 庚\n\n正文\n", "utf-8")
+        "---\nname: 庚\nfield: 另一域\ndesc: 庚\nyear: 2015\nlayer: AI应用\n---\n# 庚\n\n正文\n", "utf-8")
     # 有效期节点：2000 年起、2010 年废止，用来验 F4.5
     (vault / "nodes/组B/辛.md").write_text(
         "---\nname: 辛\nfield: 另一域\ndesc: 辛\nyear: 2000\nstart_year: 2000\nend_year: 2010\n---\n"
@@ -1143,6 +1273,19 @@ async def case_history(page: Page, ck: Check, vault: Path) -> None:
     lane_names = await poll(page, """JSON.stringify([...document.querySelectorAll('[data-shape="kg-lane"] text')]
       .map((t) => t.textContent))""", lambda v: v and v != "[]", timeout=12)
     ck.add("选中分组后泳道跟着换", "组B" in (lane_names or ""), lane_names or "没取到泳道名")
+
+    # 「按抽象层」：和主题正交的另一个维度，泳道从下往上是 理论 → … → AI应用
+    # （时间线面板上一步已经开着了，再 open_rail 会把它关掉）
+    await click_text(page, ".timeline .tl-btn", "按抽象层")
+    await asyncio.sleep(1.0)
+    lanes = await poll(page, """JSON.stringify([...document.querySelectorAll('[data-shape="kg-lane"]')]
+      .sort((a, b) => a.getBoundingClientRect().y - b.getBoundingClientRect().y)
+      .map(el => el.textContent.trim()))""", lambda v: v and v != "[]", timeout=12)
+    got = json.loads(lanes or "[]")
+    ck.add("按抽象层分泳道", set(got) >= {"理论", "硬件", "AI应用"}, str(got))
+    ck.add("泳道按层次排序，不是字典序", got.index("AI应用") < got.index("理论") if
+           ("AI应用" in got and "理论" in got) else False, f"{got}（上→下）")
+    await open_rail(page, "时间线")
 
     ck.add("历史视图不修改结构布局", ck.layout()["revision"] == before,
            f"revision 仍是 {before}")
@@ -1520,9 +1663,11 @@ async def case_group_doc(page: Page, ck: Check, vault: Path) -> None:
 
 async def scenarios(page: Page, api: str, results: list) -> None:
     ck = Check(api)
-    await case_initial(page, ck)
+    # 顺序有讲究：默认模式是「对话」，画布只占右边一条，**auto-LOD 会把分组折叠成簇卡片**，
+    # 这时数不到 kg-node。所以先关简报、切到全局图，再断言首屏渲染。
     await case_morning_brief(page, ck)
     await case_modes(page, ck)
+    await case_initial(page, ck)
     await case_aggregate(page, ck)
     after_node = await case_drag_node(page, ck)
     after_group = await case_drag_group(page, ck, after_node)

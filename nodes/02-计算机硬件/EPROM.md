@@ -1,7 +1,8 @@
 ---
 name: EPROM
-field: 计算机体系结构
+field: 计算机系统
 year: 1971
+layer: 硬件
 tags:
   - 硬件
   - 计算机硬件

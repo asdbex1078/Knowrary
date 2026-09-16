@@ -17,7 +17,8 @@ const props = defineProps({
   today: { type: Object, default: null },    // { items, counts, projects, pools, generated_at }
   busy: { type: Boolean, default: false },   // 出题中
 })
-const emit = defineEmits(['goto', 'quiz', 'review', 'build', 'write', 'place', 'plans', 'refresh', 'close'])
+const emit = defineEmits(['goto', 'quiz', 'review', 'build', 'write', 'place', 'plans', 'global',
+                          'refresh', 'close'])
 
 // 每一类怎么呈现、点下去干什么。act 为空的只跳转定位。
 const KIND = {

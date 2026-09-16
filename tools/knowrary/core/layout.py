@@ -80,11 +80,15 @@ def _merge_same_name_sub(field: str, subs: dict[str, list[str]]) -> dict[str, li
 
 
 def _add_child_groups(field: str, subs: dict[str, list[str]], top_id: str,
-                      origin: tuple[float, float], doc: dict) -> tuple[float, float]:
-    """在顶层分组里横向摆放二级分组，超过行宽换行。返回顶层分组的内容尺寸。"""
+                      origin: tuple[float, float], doc: dict,
+                      keep_order: bool = False) -> tuple[float, float]:
+    """在顶层分组里横向摆放二级分组，超过行宽换行。返回顶层分组的内容尺寸。
+
+    `keep_order`：按传进来的次序摆（分层时次序有意义，字典序会把「AI应用」排到「体系结构」前面）。
+    """
     x0, y0 = origin
     cx, cy, row_h, used_w = x0 + PAD_X, y0 + PAD_TOP, 0.0, 0.0
-    for sub, ids in sorted(subs.items()):
+    for sub, ids in (subs.items() if keep_order else sorted(subs.items())):
         w, h = group_size(len(ids))
         if cx > x0 + PAD_X and cx + w > x0 + MAX_ROW_W:
             cx, cy, row_h = x0 + PAD_X, cy + row_h + GROUP_GAP, 0.0
@@ -98,16 +102,44 @@ def _add_child_groups(field: str, subs: dict[str, list[str]], top_id: str,
     return used_w + PAD_X, (cy + row_h) - y0 + PAD_BOT
 
 
-def build_initial_layout(index: dict) -> dict:
-    """按 field / 子目录两级分组生成初始布局，顶层分组自上而下排列。"""
+def bucket_by_layer(index: dict) -> dict[str, dict[str, list[str]]]:
+    """{field: {层: [节点 id]}}。二级分组按**抽象层**而不是子目录。
+
+    为什么值得单独一种铺法：目录是文件放哪儿，层是它在栈的哪一层。
+    这个 vault 的目录（01-理论基础 … 07-高级语言）本来就是层，
+    但新节点未必按这个目录放，而 `layer` 是显式的。
+    """
+    from .parser import LAYERS, UNLAYERED
+    out: dict[str, dict[str, list[str]]] = {}
+    for node in index["nodes"]:
+        if node.get("virtual"):
+            continue
+        field = node.get("field") or "(未指定)"
+        out.setdefault(field, {}).setdefault(node.get("layer") or UNLAYERED, []).append(node["id"])
+    order = {name: i for i, name in enumerate((*LAYERS, UNLAYERED))}
+    for subs in out.values():
+        for ids in subs.values():
+            ids.sort()
+    # 按层的固定次序返回（dict 保序），底层在前——画出来就是自下而上的栈
+    return {f: {k: subs[k] for k in sorted(subs, key=lambda k: order.get(k, 99))}
+            for f, subs in out.items()}
+
+
+def build_initial_layout(index: dict, by: str = "dir") -> dict:
+    """按 field 两级分组生成初始布局，顶层分组自上而下排列。
+
+    `by="dir"`：二级分组 = `nodes/` 子目录（默认，老行为）。
+    `by="layer"`：二级分组 = 抽象层，按 LAYERS 的固定次序。
+    """
+    buckets = bucket_by_layer(index) if by == "layer" else bucket_nodes(index)
     doc = empty_layout()
     y = 0.0
-    for field, subs in sorted(bucket_nodes(index).items()):
+    for field, subs in (buckets.items() if by == "layer" else sorted(buckets.items())):
         top_id = f"g-{field}"
-        subs = _merge_same_name_sub(field, subs)
+        subs = subs if by == "layer" else _merge_same_name_sub(field, subs)
         doc["groups"][top_id] = {"name": field, "x": 0.0, "y": y, "w": 0.0, "h": 0.0, "parent": None,
                                  "collapsed": False, "pinned": None, "color": "#eef2f8"}
-        w, h = _add_child_groups(field, subs, top_id, (0.0, y), doc)
+        w, h = _add_child_groups(field, subs, top_id, (0.0, y), doc, keep_order=(by == "layer"))
         doc["groups"][top_id]["w"], doc["groups"][top_id]["h"] = w, h
         y += h + FIELD_GAP
     return doc

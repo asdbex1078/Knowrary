@@ -1,934 +1,795 @@
 {
   "schema_version": 2,
-  "revision": 1014,
-  "updated_at": "2026-09-16T02:59:29Z",
+  "revision": 1,
+  "updated_at": "2026-09-16T09:24:07Z",
   "viewport": {
-    "zoom": 0.05,
-    "cx": 3398.0,
-    "cy": -337.0
+    "zoom": 0.8,
+    "cx": 0.0,
+    "cy": 0.0
   },
   "groups": {
-    "g-脑图-冯诺依曼体系": {
-      "name": "冯诺依曼体系（15）",
-      "x": 158.0,
-      "y": 1934.0,
-      "w": 2128.0,
-      "h": 884.0,
-      "parent": null,
-      "collapsed": false,
-      "pinned": null,
-      "color": "#eef2f8",
-      "doc": null
-    },
-    "g-脑图-编译原理": {
-      "name": "编译原理（14）",
-      "x": 264.0,
-      "y": 984.0,
-      "w": 1816.0,
-      "h": 508.0,
-      "parent": null,
-      "collapsed": false,
-      "pinned": null,
-      "color": "#eef2f8",
-      "doc": null
-    },
-    "g-脑图-计算机硬件": {
-      "name": "计算机硬件（10）",
-      "x": -994.0,
-      "y": -373.0,
-      "w": 1504.0,
-      "h": 602.0,
-      "parent": null,
-      "collapsed": false,
-      "pinned": null,
-      "color": "#eef2f8",
-      "doc": null
-    },
-    "g-脑图-长程Agent最小架构": {
-      "name": "长程 Agent 最小架构（8）",
-      "x": 4054.0,
-      "y": -3288.0,
-      "w": 880.0,
-      "h": 414.0,
-      "parent": null,
-      "collapsed": false,
-      "pinned": null,
-      "color": "#eef2f8",
-      "doc": null
-    },
-    "g-脑图-ISA": {
-      "name": "ISA（4）",
-      "x": 478.0,
-      "y": 1683.0,
-      "w": 1200.0,
-      "h": 216.0,
-      "parent": null,
-      "collapsed": false,
-      "pinned": "collapsed",
-      "color": "#eef2f8",
-      "doc": null
-    },
-    "g-脑图-计算机组成原理": {
-      "name": "计算机组成原理（3）",
-      "x": 768.0,
-      "y": -171.0,
-      "w": 880.0,
-      "h": 132.0,
-      "parent": null,
-      "collapsed": false,
-      "pinned": null,
-      "color": "#eef2f8",
-      "doc": null
-    },
-    "g-脑图-JVM": {
-      "name": "JVM（2）",
-      "x": 2103.0,
-      "y": -171.0,
-      "w": 568.0,
-      "h": 132.0,
-      "parent": null,
-      "collapsed": false,
-      "pinned": null,
-      "color": "#eef2f8",
-      "doc": null
-    },
-    "g-脑图-汇编语言": {
-      "name": "汇编语言（2）",
-      "x": 831.0,
-      "y": -699.0,
-      "w": 568.0,
-      "h": 132.0,
-      "parent": null,
-      "collapsed": false,
-      "pinned": null,
-      "color": "#eef2f8",
-      "doc": null
-    },
-    "g-脑图-harness": {
-      "name": "Agent Harness（1）",
-      "x": 4366.0,
-      "y": -2610.0,
-      "w": 256.0,
-      "h": 132.0,
-      "parent": null,
-      "collapsed": false,
-      "pinned": null,
-      "color": "#eef2f8",
-      "doc": null
-    },
-    "g-脑图-数字逻辑": {
-      "name": "数字逻辑（1）",
-      "x": 3771.0,
-      "y": 1989.0,
-      "w": 288.0,
-      "h": 147.0,
-      "parent": null,
-      "collapsed": false,
-      "pinned": null,
-      "color": "#eef2f8",
-      "doc": null
-    },
-    "g-脑图-程序": {
-      "name": "程序（1）",
-      "x": 3238.0,
-      "y": 270.0,
-      "w": 256.0,
-      "h": 132.0,
-      "parent": null,
-      "collapsed": false,
-      "pinned": null,
-      "color": "#eef2f8",
-      "doc": null
-    },
-    "g-脑图-未归入层级": {
-      "name": "未归入层级（20）",
-      "x": -2410.0,
-      "y": 1179.0,
-      "w": 1120.0,
-      "h": 378.0,
-      "parent": null,
-      "collapsed": false,
-      "pinned": null,
-      "color": "#f6f7f9",
-      "doc": null
-    },
-    "g-mu1dzljg": {
-      "name": "LLM",
-      "x": -1296.0,
-      "y": 1904.0,
-      "w": 640.0,
-      "h": 320.0,
-      "parent": null,
-      "collapsed": false,
-      "pinned": "collapsed",
-      "color": null,
-      "doc": null
-    },
-    "g-mu1e1pjm": {
+    "g-Agent": {
       "name": "Agent",
-      "x": 2831.0,
-      "y": -2661.0,
-      "w": 312.0,
-      "h": 168.0,
+      "x": 0.0,
+      "y": 0.0,
+      "w": 1104.0,
+      "h": 396.0,
       "parent": null,
       "collapsed": false,
       "pinned": null,
-      "color": null,
-      "doc": null
+      "color": "#eef2f8"
     },
-    "g-mu2mnvxi": {
-      "name": "java",
-      "x": 795.0,
-      "y": 368.0,
-      "w": 640.0,
-      "h": 320.0,
+    "g-Agent--AI应用": {
+      "name": "AI应用",
+      "x": 24.0,
+      "y": 44.0,
+      "w": 728.0,
+      "h": 328.0,
+      "parent": "g-Agent",
+      "collapsed": false,
+      "pinned": null,
+      "color": null
+    },
+    "g-Agent--未分层": {
+      "name": "未分层",
+      "x": 832.0,
+      "y": 44.0,
+      "w": 248.0,
+      "h": 128.0,
+      "parent": "g-Agent",
+      "collapsed": false,
+      "pinned": null,
+      "color": null
+    },
+    "g-计算机系统": {
+      "name": "计算机系统",
+      "x": 0.0,
+      "y": 596.0,
+      "w": 2392.0,
+      "h": 1512.0,
       "parent": null,
       "collapsed": false,
       "pinned": null,
-      "color": null,
-      "doc": null
+      "color": "#eef2f8"
+    },
+    "g-计算机系统--理论": {
+      "name": "理论",
+      "x": 24.0,
+      "y": 640.0,
+      "w": 728.0,
+      "h": 228.0,
+      "parent": "g-计算机系统",
+      "collapsed": false,
+      "pinned": null,
+      "color": null
+    },
+    "g-计算机系统--硬件": {
+      "name": "硬件",
+      "x": 832.0,
+      "y": 640.0,
+      "w": 1208.0,
+      "h": 428.0,
+      "parent": "g-计算机系统",
+      "collapsed": false,
+      "pinned": null,
+      "color": null
+    },
+    "g-计算机系统--体系结构": {
+      "name": "体系结构",
+      "x": 24.0,
+      "y": 1148.0,
+      "w": 728.0,
+      "h": 328.0,
+      "parent": "g-计算机系统",
+      "collapsed": false,
+      "pinned": null,
+      "color": null
+    },
+    "g-计算机系统--汇编接口": {
+      "name": "汇编接口",
+      "x": 832.0,
+      "y": 1148.0,
+      "w": 728.0,
+      "h": 228.0,
+      "parent": "g-计算机系统",
+      "collapsed": false,
+      "pinned": null,
+      "color": null
+    },
+    "g-计算机系统--系统软件": {
+      "name": "系统软件",
+      "x": 24.0,
+      "y": 1556.0,
+      "w": 1208.0,
+      "h": 528.0,
+      "parent": "g-计算机系统",
+      "collapsed": false,
+      "pinned": null,
+      "color": null
+    },
+    "g-计算机系统--高级语言": {
+      "name": "高级语言",
+      "x": 1312.0,
+      "y": 1556.0,
+      "w": 488.0,
+      "h": 128.0,
+      "parent": "g-计算机系统",
+      "collapsed": false,
+      "pinned": null,
+      "color": null
+    },
+    "g-计算机系统--未分层": {
+      "name": "未分层",
+      "x": 1880.0,
+      "y": 1556.0,
+      "w": 488.0,
+      "h": 128.0,
+      "parent": "g-计算机系统",
+      "collapsed": false,
+      "pinned": null,
+      "color": null
+    },
+    "g-AI": {
+      "name": "AI",
+      "x": 0.0,
+      "y": 2308.0,
+      "w": 952.0,
+      "h": 196.0,
+      "parent": null,
+      "collapsed": false,
+      "pinned": null,
+      "color": "#eef2f8"
+    },
+    "g-AI--硬件": {
+      "name": "硬件",
+      "x": 24.0,
+      "y": 2352.0,
+      "w": 248.0,
+      "h": 128.0,
+      "parent": "g-AI",
+      "collapsed": false,
+      "pinned": null,
+      "color": null
+    },
+    "g-AI--系统软件": {
+      "name": "系统软件",
+      "x": 352.0,
+      "y": 2352.0,
+      "w": 248.0,
+      "h": 128.0,
+      "parent": "g-AI",
+      "collapsed": false,
+      "pinned": null,
+      "color": null
+    },
+    "g-AI--AI应用": {
+      "name": "AI应用",
+      "x": 680.0,
+      "y": 2352.0,
+      "w": 248.0,
+      "h": 128.0,
+      "parent": "g-AI",
+      "collapsed": false,
+      "pinned": null,
+      "color": null
     }
   },
   "nodes": {
     "Agent事件日志": {
-      "x": 4718.0,
-      "y": -3248.0,
-      "w": 160.0,
-      "h": 60.0,
-      "group": "g-脑图-长程Agent最小架构",
-      "state": "final",
-      "placedAt": null,
-      "anchor": null
+      "x": 48.0,
+      "y": 88.0,
+      "w": 196.0,
+      "h": 64.0,
+      "group": "g-Agent--AI应用",
+      "state": "final"
     },
     "任务取消语义": {
-      "x": 4414.0,
-      "y": -3168.0,
-      "w": 160.0,
-      "h": 60.0,
-      "group": "g-脑图-长程Agent最小架构",
-      "state": "final",
-      "placedAt": null,
-      "anchor": null
+      "x": 288.0,
+      "y": 88.0,
+      "w": 196.0,
+      "h": 64.0,
+      "group": "g-Agent--AI应用",
+      "state": "final"
     },
     "任务暂停与恢复": {
-      "x": 4718.0,
-      "y": -3060.0,
-      "w": 160.0,
-      "h": 60.0,
-      "group": "g-脑图-长程Agent最小架构",
-      "state": "final",
-      "placedAt": null,
-      "anchor": null
+      "x": 528.0,
+      "y": 88.0,
+      "w": 196.0,
+      "h": 64.0,
+      "group": "g-Agent--AI应用",
+      "state": "final"
     },
     "取消检查点": {
-      "x": 4718.0,
-      "y": -2966.0,
-      "w": 160.0,
-      "h": 60.0,
-      "group": "g-脑图-长程Agent最小架构",
-      "state": "final",
-      "placedAt": null,
-      "anchor": null
+      "x": 48.0,
+      "y": 188.0,
+      "w": 196.0,
+      "h": 64.0,
+      "group": "g-Agent--AI应用",
+      "state": "final"
     },
     "外部副作用与幂等键": {
-      "x": 4094.0,
-      "y": -3201.0,
-      "w": 160.0,
-      "h": 60.0,
-      "group": "g-脑图-长程Agent最小架构",
-      "state": "final",
-      "placedAt": null,
-      "anchor": null
+      "x": 288.0,
+      "y": 188.0,
+      "w": 196.0,
+      "h": 64.0,
+      "group": "g-Agent--AI应用",
+      "state": "final"
     },
     "崩溃恢复": {
-      "x": 4094.0,
-      "y": -3107.0,
-      "w": 160.0,
-      "h": 60.0,
-      "group": "g-脑图-长程Agent最小架构",
-      "state": "final",
-      "placedAt": null,
-      "anchor": null
+      "x": 528.0,
+      "y": 188.0,
+      "w": 196.0,
+      "h": 64.0,
+      "group": "g-Agent--AI应用",
+      "state": "final"
     },
     "长程Agent最小架构": {
-      "x": 4390.0,
-      "y": -2976.0,
-      "w": 160.0,
-      "h": 60.0,
-      "group": "g-脑图-长程Agent最小架构",
-      "state": "final",
-      "placedAt": null,
-      "anchor": null
+      "x": 48.0,
+      "y": 288.0,
+      "w": 196.0,
+      "h": 64.0,
+      "group": "g-Agent--AI应用",
+      "state": "final"
     },
     "长程任务生命周期": {
-      "x": 4094.0,
-      "y": -3013.0,
-      "w": 160.0,
-      "h": 60.0,
-      "group": "g-脑图-长程Agent最小架构",
-      "state": "final",
-      "placedAt": null,
-      "anchor": null
+      "x": 288.0,
+      "y": 288.0,
+      "w": 196.0,
+      "h": 64.0,
+      "group": "g-Agent--AI应用",
+      "state": "final"
     },
     "harness": {
-      "x": 4416.0,
-      "y": -2543.0,
-      "w": 160.0,
-      "h": 60.0,
-      "group": "g-脑图-harness",
-      "state": "final",
-      "placedAt": null,
-      "anchor": null
-    },
-    "乐观锁": {
-      "x": -1722.0,
-      "y": 1219.0,
-      "w": 160.0,
-      "h": 60.0,
-      "group": "g-脑图-未归入层级",
-      "state": "final",
-      "placedAt": null,
-      "anchor": null
-    },
-    "计算机体系结构": {
-      "x": -2370.0,
-      "y": 1383.0,
-      "w": 160.0,
-      "h": 60.0,
-      "group": "g-脑图-未归入层级",
-      "state": "final",
-      "placedAt": null,
-      "anchor": null
+      "x": 856.0,
+      "y": 88.0,
+      "w": 196.0,
+      "h": 64.0,
+      "group": "g-Agent--未分层",
+      "state": "final"
     },
     "二进制与香农定理": {
-      "x": -1506.0,
-      "y": 1219.0,
-      "w": 160.0,
-      "h": 60.0,
-      "group": "g-脑图-未归入层级",
-      "state": "final",
-      "placedAt": null,
-      "anchor": null
-    },
-    "冯诺依曼体系": {
-      "x": 822.0,
-      "y": 2256.0,
-      "w": 160.0,
-      "h": 60.0,
-      "group": "g-脑图-冯诺依曼体系",
-      "state": "final",
-      "placedAt": null,
-      "anchor": null
-    },
-    "哈佛架构": {
-      "x": -2370.0,
-      "y": 1301.0,
-      "w": 160.0,
-      "h": 60.0,
-      "group": "g-脑图-未归入层级",
-      "state": "final",
-      "placedAt": null,
-      "anchor": null
+      "x": 48.0,
+      "y": 684.0,
+      "w": 196.0,
+      "h": 64.0,
+      "group": "g-计算机系统--理论",
+      "state": "final"
     },
     "图灵机": {
-      "x": -2154.0,
-      "y": 1301.0,
-      "w": 160.0,
-      "h": 60.0,
-      "group": "g-脑图-未归入层级",
-      "state": "final",
-      "placedAt": null,
-      "anchor": null
+      "x": 288.0,
+      "y": 684.0,
+      "w": 196.0,
+      "h": 64.0,
+      "group": "g-计算机系统--理论",
+      "state": "final"
+    },
+    "图灵测试": {
+      "x": 528.0,
+      "y": 684.0,
+      "w": 196.0,
+      "h": 64.0,
+      "group": "g-计算机系统--理论",
+      "state": "final"
     },
     "数字逻辑": {
-      "x": 3816.0,
-      "y": 2088.0,
-      "w": 160.0,
-      "h": 60.0,
-      "group": "g-脑图-数字逻辑",
-      "state": "final",
-      "placedAt": null,
-      "anchor": null
+      "x": 48.0,
+      "y": 784.0,
+      "w": 196.0,
+      "h": 64.0,
+      "group": "g-计算机系统--理论",
+      "state": "final"
     },
     "数论": {
-      "x": -1938.0,
-      "y": 1301.0,
-      "w": 160.0,
-      "h": 60.0,
-      "group": "g-脑图-未归入层级",
-      "state": "final",
-      "placedAt": null,
-      "anchor": null
+      "x": 288.0,
+      "y": 784.0,
+      "w": 196.0,
+      "h": 64.0,
+      "group": "g-计算机系统--理论",
+      "state": "final"
     },
     "物理-电学": {
-      "x": -1506.0,
-      "y": 1301.0,
-      "w": 160.0,
-      "h": 60.0,
-      "group": "g-脑图-未归入层级",
-      "state": "final",
-      "placedAt": null,
-      "anchor": null
+      "x": 528.0,
+      "y": 784.0,
+      "w": 196.0,
+      "h": 64.0,
+      "group": "g-计算机系统--理论",
+      "state": "final"
     },
     "CPU": {
-      "x": -330.0,
-      "y": -98.0,
-      "w": 160.0,
-      "h": 60.0,
-      "group": "g-脑图-计算机硬件",
-      "state": "final",
-      "placedAt": null,
-      "anchor": null
+      "x": 856.0,
+      "y": 684.0,
+      "w": 196.0,
+      "h": 64.0,
+      "group": "g-计算机系统--硬件",
+      "state": "final"
     },
     "EPROM": {
-      "x": 1440.0,
-      "y": 1992.0,
-      "w": 160.0,
-      "h": 60.0,
-      "group": "g-脑图-冯诺依曼体系",
-      "state": "final",
-      "placedAt": null,
-      "anchor": null
+      "x": 1096.0,
+      "y": 684.0,
+      "w": 196.0,
+      "h": 64.0,
+      "group": "g-计算机系统--硬件",
+      "state": "final"
+    },
+    "GPU": {
+      "x": 1336.0,
+      "y": 684.0,
+      "w": 196.0,
+      "h": 64.0,
+      "group": "g-计算机系统--硬件",
+      "state": "final"
     },
     "IO接口": {
-      "x": 198.0,
-      "y": 2256.0,
-      "w": 160.0,
-      "h": 60.0,
-      "group": "g-脑图-冯诺依曼体系",
-      "state": "final",
-      "placedAt": null,
-      "anchor": null
+      "x": 1576.0,
+      "y": 684.0,
+      "w": 196.0,
+      "h": 64.0,
+      "group": "g-计算机系统--硬件",
+      "state": "final"
     },
     "Intel平台": {
-      "x": -18.0,
-      "y": -333.0,
-      "w": 160.0,
-      "h": 60.0,
-      "group": "g-脑图-计算机硬件",
-      "state": "final",
-      "placedAt": null,
-      "anchor": null
+      "x": 1816.0,
+      "y": 684.0,
+      "w": 196.0,
+      "h": 64.0,
+      "group": "g-计算机系统--硬件",
+      "state": "final"
     },
     "Intel手册": {
-      "x": -1938.0,
-      "y": 1219.0,
-      "w": 160.0,
-      "h": 60.0,
-      "group": "g-脑图-未归入层级",
-      "state": "final",
-      "placedAt": null,
-      "anchor": null
+      "x": 856.0,
+      "y": 784.0,
+      "w": 196.0,
+      "h": 64.0,
+      "group": "g-计算机系统--硬件",
+      "state": "final"
     },
     "RAM": {
-      "x": 1440.0,
-      "y": 2088.0,
-      "w": 160.0,
-      "h": 60.0,
-      "group": "g-脑图-冯诺依曼体系",
-      "state": "final",
-      "placedAt": null,
-      "anchor": null
+      "x": 1096.0,
+      "y": 784.0,
+      "w": 196.0,
+      "h": 64.0,
+      "group": "g-计算机系统--硬件",
+      "state": "final"
     },
     "ROM": {
-      "x": 1440.0,
-      "y": 2208.0,
-      "w": 160.0,
-      "h": 60.0,
-      "group": "g-脑图-冯诺依曼体系",
-      "state": "final",
-      "placedAt": null,
-      "anchor": null
+      "x": 1336.0,
+      "y": 784.0,
+      "w": 196.0,
+      "h": 64.0,
+      "group": "g-计算机系统--硬件",
+      "state": "final"
     },
     "专用寄存器": {
-      "x": 294.0,
-      "y": -239.0,
-      "w": 160.0,
-      "h": 60.0,
-      "group": "g-脑图-计算机硬件",
-      "state": "final",
-      "placedAt": null,
-      "anchor": null
+      "x": 1576.0,
+      "y": 784.0,
+      "w": 196.0,
+      "h": 64.0,
+      "group": "g-计算机系统--硬件",
+      "state": "final"
     },
     "内存": {
-      "x": 1118.0,
-      "y": 2270.0,
-      "w": 160.0,
-      "h": 60.0,
-      "group": "g-脑图-冯诺依曼体系",
-      "state": "final",
-      "placedAt": null,
-      "anchor": null
+      "x": 1816.0,
+      "y": 784.0,
+      "w": 196.0,
+      "h": 64.0,
+      "group": "g-计算机系统--硬件",
+      "state": "final"
     },
     "内存地址": {
-      "x": 1440.0,
-      "y": 2352.0,
-      "w": 160.0,
-      "h": 60.0,
-      "group": "g-脑图-冯诺依曼体系",
-      "state": "final",
-      "placedAt": null,
-      "anchor": null
-    },
-    "存储器层次结构": {
-      "x": 1432.0,
-      "y": -131.0,
-      "w": 160.0,
-      "h": 60.0,
-      "group": "g-脑图-计算机组成原理",
-      "state": "final",
-      "placedAt": null,
-      "anchor": null
+      "x": 856.0,
+      "y": 884.0,
+      "w": 196.0,
+      "h": 64.0,
+      "group": "g-计算机系统--硬件",
+      "state": "final"
     },
     "寄存器": {
-      "x": -18.0,
-      "y": -192.0,
-      "w": 160.0,
-      "h": 60.0,
-      "group": "g-脑图-计算机硬件",
-      "state": "final",
-      "placedAt": null,
-      "anchor": null
+      "x": 1096.0,
+      "y": 884.0,
+      "w": 196.0,
+      "h": 64.0,
+      "group": "g-计算机系统--硬件",
+      "state": "final"
     },
     "总线": {
-      "x": 808.0,
-      "y": -131.0,
-      "w": 160.0,
-      "h": 60.0,
-      "group": "g-脑图-计算机组成原理",
-      "state": "final",
-      "placedAt": null,
-      "anchor": null
+      "x": 1336.0,
+      "y": 884.0,
+      "w": 196.0,
+      "h": 64.0,
+      "group": "g-计算机系统--硬件",
+      "state": "final"
     },
     "控制器": {
-      "x": -18.0,
-      "y": -51.0,
-      "w": 160.0,
-      "h": 60.0,
-      "group": "g-脑图-计算机硬件",
-      "state": "final",
-      "placedAt": null,
-      "anchor": null
+      "x": 1576.0,
+      "y": 884.0,
+      "w": 196.0,
+      "h": 64.0,
+      "group": "g-计算机系统--硬件",
+      "state": "final"
     },
     "硬盘": {
-      "x": -954.0,
-      "y": -98.0,
-      "w": 160.0,
-      "h": 60.0,
-      "group": "g-脑图-计算机硬件",
-      "state": "final",
-      "placedAt": null,
-      "anchor": null
+      "x": 1816.0,
+      "y": 884.0,
+      "w": 196.0,
+      "h": 64.0,
+      "group": "g-计算机系统--硬件",
+      "state": "final"
     },
     "计算机硬件": {
-      "x": -642.0,
-      "y": -98.0,
-      "w": 160.0,
-      "h": 60.0,
-      "group": "g-脑图-计算机硬件",
-      "state": "final",
-      "placedAt": null,
-      "anchor": null
-    },
-    "计算机组成原理": {
-      "x": 1128.0,
-      "y": -123.0,
-      "w": 160.0,
-      "h": 60.0,
-      "group": "g-脑图-计算机组成原理",
-      "state": "final",
-      "placedAt": null,
-      "anchor": null
+      "x": 856.0,
+      "y": 984.0,
+      "w": 196.0,
+      "h": 64.0,
+      "group": "g-计算机系统--硬件",
+      "state": "final"
     },
     "输入输出": {
-      "x": 510.0,
-      "y": 2256.0,
-      "w": 160.0,
-      "h": 60.0,
-      "group": "g-脑图-冯诺依曼体系",
-      "state": "final",
-      "placedAt": null,
-      "anchor": null
+      "x": 1096.0,
+      "y": 984.0,
+      "w": 196.0,
+      "h": 64.0,
+      "group": "g-计算机系统--硬件",
+      "state": "final"
     },
     "运算器": {
-      "x": -18.0,
-      "y": 43.0,
-      "w": 160.0,
-      "h": 60.0,
-      "group": "g-脑图-计算机硬件",
-      "state": "final",
-      "placedAt": null,
-      "anchor": null
+      "x": 1336.0,
+      "y": 984.0,
+      "w": 196.0,
+      "h": 64.0,
+      "group": "g-计算机系统--硬件",
+      "state": "final"
     },
     "通用寄存器": {
-      "x": 294.0,
-      "y": -145.0,
-      "w": 160.0,
-      "h": 60.0,
-      "group": "g-脑图-计算机硬件",
-      "state": "final",
-      "placedAt": null,
-      "anchor": null
-    },
-    "高速缓存": {
-      "x": -18.0,
-      "y": 137.0,
-      "w": 160.0,
-      "h": 60.0,
-      "group": "g-脑图-计算机硬件",
-      "state": "final",
-      "placedAt": null,
-      "anchor": null
+      "x": 1576.0,
+      "y": 984.0,
+      "w": 196.0,
+      "h": 64.0,
+      "group": "g-计算机系统--硬件",
+      "state": "final"
     },
     "CISC": {
-      "x": 980.0,
-      "y": 1686.0,
-      "w": 160.0,
-      "h": 60.0,
-      "group": "g-脑图-ISA",
-      "state": "final",
-      "placedAt": null,
-      "anchor": null
+      "x": 48.0,
+      "y": 1192.0,
+      "w": 196.0,
+      "h": 64.0,
+      "group": "g-计算机系统--体系结构",
+      "state": "final"
     },
     "ISA": {
-      "x": 936.0,
-      "y": 1803.0,
-      "w": 160.0,
-      "h": 60.0,
-      "group": "g-脑图-ISA",
-      "state": "final",
-      "placedAt": null,
-      "anchor": null
+      "x": 288.0,
+      "y": 1192.0,
+      "w": 196.0,
+      "h": 64.0,
+      "group": "g-计算机系统--体系结构",
+      "state": "final"
     },
     "RISC": {
-      "x": 598.0,
-      "y": 1731.0,
-      "w": 160.0,
-      "h": 60.0,
-      "group": "g-脑图-ISA",
-      "state": "final",
-      "placedAt": null,
-      "anchor": null
+      "x": 528.0,
+      "y": 1192.0,
+      "w": 196.0,
+      "h": 64.0,
+      "group": "g-计算机系统--体系结构",
+      "state": "final"
+    },
+    "冯诺依曼体系": {
+      "x": 48.0,
+      "y": 1292.0,
+      "w": 196.0,
+      "h": 64.0,
+      "group": "g-计算机系统--体系结构",
+      "state": "final"
+    },
+    "哈佛架构": {
+      "x": 288.0,
+      "y": 1292.0,
+      "w": 196.0,
+      "h": 64.0,
+      "group": "g-计算机系统--体系结构",
+      "state": "final"
+    },
+    "存储器层次结构": {
+      "x": 528.0,
+      "y": 1292.0,
+      "w": 196.0,
+      "h": 64.0,
+      "group": "g-计算机系统--体系结构",
+      "state": "final"
     },
     "现代Intel微架构": {
-      "x": 1344.0,
-      "y": 1787.0,
-      "w": 160.0,
-      "h": 60.0,
-      "group": "g-脑图-ISA",
-      "state": "final",
-      "placedAt": null,
-      "anchor": null
+      "x": 48.0,
+      "y": 1392.0,
+      "w": 196.0,
+      "h": 64.0,
+      "group": "g-计算机系统--体系结构",
+      "state": "final"
     },
-    "汇编到机器码执行过程": {
-      "x": -1722.0,
-      "y": 1301.0,
-      "w": 160.0,
-      "h": 60.0,
-      "group": "g-脑图-未归入层级",
-      "state": "final",
-      "placedAt": null,
-      "anchor": null
+    "计算机组成原理": {
+      "x": 288.0,
+      "y": 1392.0,
+      "w": 196.0,
+      "h": 64.0,
+      "group": "g-计算机系统--体系结构",
+      "state": "final"
     },
-    "汇编器": {
-      "x": 304.0,
-      "y": 1236.0,
-      "w": 160.0,
-      "h": 60.0,
-      "group": "g-脑图-编译原理",
-      "state": "final",
-      "placedAt": null,
-      "anchor": null
-    },
-    "汇编指令": {
-      "x": 1183.0,
-      "y": -659.0,
-      "w": 160.0,
-      "h": 60.0,
-      "group": "g-脑图-汇编语言",
-      "state": "final",
-      "placedAt": null,
-      "anchor": null
-    },
-    "汇编语言": {
-      "x": 871.0,
-      "y": -659.0,
-      "w": 160.0,
-      "h": 60.0,
-      "group": "g-脑图-汇编语言",
-      "state": "final",
-      "placedAt": null,
-      "anchor": null
-    },
-    "CPU实模式与平坦模式": {
-      "x": -2370.0,
-      "y": 1219.0,
-      "w": 160.0,
-      "h": 60.0,
-      "group": "g-脑图-未归入层级",
-      "state": "final",
-      "placedAt": null,
-      "anchor": null
-    },
-    "代码段": {
-      "x": 1758.0,
-      "y": 2444.0,
-      "w": 160.0,
-      "h": 60.0,
-      "group": "g-脑图-冯诺依曼体系",
-      "state": "final",
-      "placedAt": null,
-      "anchor": null
-    },
-    "堆内存": {
-      "x": 1758.0,
-      "y": 2538.0,
-      "w": 160.0,
-      "h": 60.0,
-      "group": "g-脑图-冯诺依曼体系",
-      "state": "final",
-      "placedAt": null,
-      "anchor": null
-    },
-    "数据段": {
-      "x": 1758.0,
-      "y": 2632.0,
-      "w": 160.0,
-      "h": 60.0,
-      "group": "g-脑图-冯诺依曼体系",
-      "state": "final",
-      "placedAt": null,
-      "anchor": null
-    },
-    "栈内存": {
-      "x": 1758.0,
-      "y": 2726.0,
-      "w": 160.0,
-      "h": 60.0,
-      "group": "g-脑图-冯诺依曼体系",
-      "state": "final",
-      "placedAt": null,
-      "anchor": null
-    },
-    "栈帧": {
-      "x": 2070.0,
-      "y": 2726.0,
-      "w": 160.0,
-      "h": 60.0,
-      "group": "g-脑图-冯诺依曼体系",
-      "state": "final",
-      "placedAt": null,
-      "anchor": null
-    },
-    "程序": {
-      "x": 3278.0,
-      "y": 310.0,
-      "w": 160.0,
-      "h": 60.0,
-      "group": "g-脑图-程序",
-      "state": "final",
-      "placedAt": null,
-      "anchor": null
-    },
-    "程序的内存布局": {
-      "x": 1446.0,
-      "y": 2538.0,
-      "w": 160.0,
-      "h": 60.0,
-      "group": "g-脑图-冯诺依曼体系",
-      "state": "final",
-      "placedAt": null,
-      "anchor": null
-    },
-    "Clang": {
-      "x": 1552.0,
-      "y": 1306.0,
-      "w": 160.0,
-      "h": 60.0,
-      "group": "g-脑图-编译原理",
-      "state": "final",
-      "placedAt": null,
-      "anchor": null
-    },
-    "GCC": {
-      "x": 1240.0,
-      "y": 1024.0,
-      "w": 160.0,
-      "h": 60.0,
-      "group": "g-脑图-编译原理",
-      "state": "final",
-      "placedAt": null,
-      "anchor": null
-    },
-    "GraalVM": {
-      "x": 1240.0,
-      "y": 1118.0,
-      "w": 160.0,
-      "h": 60.0,
-      "group": "g-脑图-编译原理",
-      "state": "final",
-      "placedAt": null,
-      "anchor": null
-    },
-    "IR": {
-      "x": 1552.0,
-      "y": 1400.0,
-      "w": 160.0,
-      "h": 60.0,
-      "group": "g-脑图-编译原理",
-      "state": "final",
-      "placedAt": null,
-      "anchor": null
-    },
-    "JIT": {
-      "x": 1240.0,
-      "y": 1212.0,
-      "w": 160.0,
-      "h": 60.0,
-      "group": "g-脑图-编译原理",
-      "state": "final",
-      "placedAt": null,
-      "anchor": null
-    },
-    "JVM": {
-      "x": 2136.0,
-      "y": -120.0,
-      "w": 160.0,
-      "h": 60.0,
-      "group": "g-脑图-JVM",
-      "state": "final",
-      "placedAt": null,
-      "anchor": null
-    },
-    "LLVM": {
-      "x": 1240.0,
-      "y": 1353.0,
-      "w": 160.0,
-      "h": 60.0,
-      "group": "g-脑图-编译原理",
-      "state": "final",
-      "placedAt": null,
-      "anchor": null
-    },
-    "OS": {
-      "x": 1758.0,
-      "y": 2350.0,
-      "w": 160.0,
-      "h": 60.0,
-      "group": "g-脑图-冯诺依曼体系",
-      "state": "final",
-      "placedAt": null,
-      "anchor": null
+    "高速缓存": {
+      "x": 528.0,
+      "y": 1392.0,
+      "w": 196.0,
+      "h": 64.0,
+      "group": "g-计算机系统--体系结构",
+      "state": "final"
     },
     "eBPF": {
-      "x": 1864.0,
-      "y": 1400.0,
-      "w": 160.0,
-      "h": 60.0,
-      "group": "g-脑图-编译原理",
-      "state": "final",
-      "placedAt": null,
-      "anchor": null
+      "x": 856.0,
+      "y": 1192.0,
+      "w": 196.0,
+      "h": 64.0,
+      "group": "g-计算机系统--汇编接口",
+      "state": "final"
+    },
+    "汇编到机器码执行过程": {
+      "x": 1096.0,
+      "y": 1192.0,
+      "w": 196.0,
+      "h": 64.0,
+      "group": "g-计算机系统--汇编接口",
+      "state": "final"
+    },
+    "汇编器": {
+      "x": 1336.0,
+      "y": 1192.0,
+      "w": 196.0,
+      "h": 64.0,
+      "group": "g-计算机系统--汇编接口",
+      "state": "final"
+    },
+    "汇编指令": {
+      "x": 856.0,
+      "y": 1292.0,
+      "w": 196.0,
+      "h": 64.0,
+      "group": "g-计算机系统--汇编接口",
+      "state": "final"
+    },
+    "汇编语言": {
+      "x": 1096.0,
+      "y": 1292.0,
+      "w": 196.0,
+      "h": 64.0,
+      "group": "g-计算机系统--汇编接口",
+      "state": "final"
+    },
+    "CPU实模式与平坦模式": {
+      "x": 48.0,
+      "y": 1600.0,
+      "w": 196.0,
+      "h": 64.0,
+      "group": "g-计算机系统--系统软件",
+      "state": "final"
+    },
+    "Clang": {
+      "x": 288.0,
+      "y": 1600.0,
+      "w": 196.0,
+      "h": 64.0,
+      "group": "g-计算机系统--系统软件",
+      "state": "final"
+    },
+    "GCC": {
+      "x": 528.0,
+      "y": 1600.0,
+      "w": 196.0,
+      "h": 64.0,
+      "group": "g-计算机系统--系统软件",
+      "state": "final"
+    },
+    "GraalVM": {
+      "x": 768.0,
+      "y": 1600.0,
+      "w": 196.0,
+      "h": 64.0,
+      "group": "g-计算机系统--系统软件",
+      "state": "final"
+    },
+    "IR": {
+      "x": 1008.0,
+      "y": 1600.0,
+      "w": 196.0,
+      "h": 64.0,
+      "group": "g-计算机系统--系统软件",
+      "state": "final"
+    },
+    "JIT": {
+      "x": 48.0,
+      "y": 1700.0,
+      "w": 196.0,
+      "h": 64.0,
+      "group": "g-计算机系统--系统软件",
+      "state": "final"
+    },
+    "JVM": {
+      "x": 288.0,
+      "y": 1700.0,
+      "w": 196.0,
+      "h": 64.0,
+      "group": "g-计算机系统--系统软件",
+      "state": "final"
+    },
+    "LLVM": {
+      "x": 528.0,
+      "y": 1700.0,
+      "w": 196.0,
+      "h": 64.0,
+      "group": "g-计算机系统--系统软件",
+      "state": "final"
+    },
+    "OS": {
+      "x": 768.0,
+      "y": 1700.0,
+      "w": 196.0,
+      "h": 64.0,
+      "group": "g-计算机系统--系统软件",
+      "state": "final"
+    },
+    "代码段": {
+      "x": 1008.0,
+      "y": 1700.0,
+      "w": 196.0,
+      "h": 64.0,
+      "group": "g-计算机系统--系统软件",
+      "state": "final"
+    },
+    "堆内存": {
+      "x": 48.0,
+      "y": 1800.0,
+      "w": 196.0,
+      "h": 64.0,
+      "group": "g-计算机系统--系统软件",
+      "state": "final"
     },
     "字节码": {
-      "x": 1552.0,
-      "y": 1118.0,
-      "w": 160.0,
-      "h": 60.0,
-      "group": "g-脑图-编译原理",
-      "state": "final",
-      "placedAt": null,
-      "anchor": null
+      "x": 288.0,
+      "y": 1800.0,
+      "w": 196.0,
+      "h": 64.0,
+      "group": "g-计算机系统--系统软件",
+      "state": "final"
+    },
+    "数据段": {
+      "x": 528.0,
+      "y": 1800.0,
+      "w": 196.0,
+      "h": 64.0,
+      "group": "g-计算机系统--系统软件",
+      "state": "final"
+    },
+    "栈内存": {
+      "x": 768.0,
+      "y": 1800.0,
+      "w": 196.0,
+      "h": 64.0,
+      "group": "g-计算机系统--系统软件",
+      "state": "final"
+    },
+    "栈帧": {
+      "x": 1008.0,
+      "y": 1800.0,
+      "w": 196.0,
+      "h": 64.0,
+      "group": "g-计算机系统--系统软件",
+      "state": "final"
+    },
+    "程序": {
+      "x": 48.0,
+      "y": 1900.0,
+      "w": 196.0,
+      "h": 64.0,
+      "group": "g-计算机系统--系统软件",
+      "state": "final"
+    },
+    "程序的内存布局": {
+      "x": 288.0,
+      "y": 1900.0,
+      "w": 196.0,
+      "h": 64.0,
+      "group": "g-计算机系统--系统软件",
+      "state": "final"
     },
     "编译原理": {
-      "x": 928.0,
-      "y": 1189.0,
-      "w": 160.0,
-      "h": 60.0,
-      "group": "g-脑图-编译原理",
-      "state": "final",
-      "placedAt": null,
-      "anchor": null
+      "x": 528.0,
+      "y": 1900.0,
+      "w": 196.0,
+      "h": 64.0,
+      "group": "g-计算机系统--系统软件",
+      "state": "final"
     },
     "编译器": {
-      "x": 616.0,
-      "y": 1048.0,
-      "w": 160.0,
-      "h": 60.0,
-      "group": "g-脑图-编译原理",
-      "state": "final",
-      "placedAt": null,
-      "anchor": null
+      "x": 768.0,
+      "y": 1900.0,
+      "w": 196.0,
+      "h": 64.0,
+      "group": "g-计算机系统--系统软件",
+      "state": "final"
     },
     "编译器前端": {
-      "x": 616.0,
-      "y": 1142.0,
-      "w": 160.0,
-      "h": 60.0,
-      "group": "g-脑图-编译原理",
-      "state": "final",
-      "placedAt": null,
-      "anchor": null
+      "x": 1008.0,
+      "y": 1900.0,
+      "w": 196.0,
+      "h": 64.0,
+      "group": "g-计算机系统--系统软件",
+      "state": "final"
     },
     "编译器后端": {
-      "x": 616.0,
-      "y": 1236.0,
-      "w": 160.0,
-      "h": 60.0,
-      "group": "g-脑图-编译原理",
-      "state": "final",
-      "placedAt": null,
-      "anchor": null
-    },
-    "解释器": {
-      "x": 616.0,
-      "y": 1330.0,
-      "w": 160.0,
-      "h": 60.0,
-      "group": "g-脑图-编译原理",
-      "state": "final",
-      "placedAt": null,
-      "anchor": null
-    },
-    "C语言": {
-      "x": -2154.0,
-      "y": 1219.0,
-      "w": 160.0,
-      "h": 60.0,
-      "group": "g-脑图-未归入层级",
-      "state": "final",
-      "placedAt": null,
-      "anchor": null
-    },
-    "JVM语言": {
-      "x": 2328.0,
-      "y": -120.0,
-      "w": 160.0,
-      "h": 60.0,
-      "group": "g-脑图-JVM",
-      "state": "final",
-      "placedAt": null,
-      "anchor": null
-    },
-    "Transformer": {
-      "x": -1248.0,
+      "x": 48.0,
       "y": 2000.0,
       "w": 196.0,
       "h": 64.0,
-      "group": "g-mu1dzljg",
-      "state": "final",
-      "placedAt": "2026-09-14",
-      "anchor": null
+      "group": "g-计算机系统--系统软件",
+      "state": "final"
     },
-    "TPU": {
-      "x": -1054.0,
-      "y": 2064.0,
+    "解释器": {
+      "x": 288.0,
+      "y": 2000.0,
       "w": 196.0,
       "h": 64.0,
-      "group": "g-mu1dzljg",
-      "state": "draft",
-      "placedAt": "2026-09-15",
-      "anchor": null
+      "group": "g-计算机系统--系统软件",
+      "state": "final"
+    },
+    "C语言": {
+      "x": 1336.0,
+      "y": 1600.0,
+      "w": 196.0,
+      "h": 64.0,
+      "group": "g-计算机系统--高级语言",
+      "state": "final"
+    },
+    "JVM语言": {
+      "x": 1576.0,
+      "y": 1600.0,
+      "w": 196.0,
+      "h": 64.0,
+      "group": "g-计算机系统--高级语言",
+      "state": "final"
+    },
+    "乐观锁": {
+      "x": 1904.0,
+      "y": 1600.0,
+      "w": 196.0,
+      "h": 64.0,
+      "group": "g-计算机系统--未分层",
+      "state": "final"
+    },
+    "计算机系统": {
+      "x": 2144.0,
+      "y": 1600.0,
+      "w": 196.0,
+      "h": 64.0,
+      "group": "g-计算机系统--未分层",
+      "state": "final"
+    },
+    "TPU": {
+      "x": 48.0,
+      "y": 2396.0,
+      "w": 196.0,
+      "h": 64.0,
+      "group": "g-AI--硬件",
+      "state": "final"
+    },
+    "CUDA": {
+      "x": 376.0,
+      "y": 2396.0,
+      "w": 196.0,
+      "h": 64.0,
+      "group": "g-AI--系统软件",
+      "state": "final"
+    },
+    "Transformer": {
+      "x": 704.0,
+      "y": 2396.0,
+      "w": 196.0,
+      "h": 64.0,
+      "group": "g-AI--AI应用",
+      "state": "final"
     }
   },
   "refs": [],

@@ -1082,6 +1082,45 @@ def projects_领域是第三种口径而不是第二个功能():
 
 
 @case
+def projects_拆解知道别的项目已经列过哪些点():
+    """建 MHA 项目时，「自注意力」大概率已经在 Transformer 项目里——
+    不喂给模型就会每个项目各拆一遍近义词；标出来之后由人决定复用还是不列。"""
+    c, _, _ = with_inbox_node()
+    c.put("/api/projects", json={"base_revision": 0, "projects": {"transformer": {
+        "name": "Transformer", "lists": [{"kind": "学习", "name": "主线", "stages": [
+            {"name": "一", "points": [{"id": "自注意力"}, {"id": "位置编码"}]}]}]}}})
+    seen = {}
+    from server import projects as projects_mod
+    original = projects_mod.ask
+
+    def spy(vault_, role, prompt, op="?"):
+        seen[op] = prompt
+        return json.dumps({"stages": [{"name": "一", "points": [
+            {"id": "自注意力"}, {"id": "多头注意力"}]}]}, ensure_ascii=False)
+
+    projects_mod.ask = spy
+    try:
+        r = c.post("/api/projects/propose", json={"goal": "吃透多头注意力", "project": "mha"})
+    finally:
+        projects_mod.ask = original
+
+    assert "别的项目已经列过的点" in seen["plan-propose"], seen["plan-propose"][:400]
+    assert "自注意力（在Transformer里）" in seen["plan-propose"].replace(" ", ""), "没告诉模型哪个项目列过"
+    # 提议回来时标出来——**只标不拦**，重叠是合法的
+    got = r.json()["in_projects"]
+    assert got == {"自注意力": ["Transformer"]}, got
+    assert [p["id"] for st in r.json()["stages"] for p in st["points"]] == ["自注意力", "多头注意力"]
+
+    # 拆给 transformer 自己时，不该把自己算成"别的项目"
+    projects_mod.ask = spy
+    try:
+        r2 = c.post("/api/projects/propose", json={"goal": "x", "project": "transformer"})
+    finally:
+        projects_mod.ask = original
+    assert r2.json()["in_projects"] == {}, r2.json()["in_projects"]
+
+
+@case
 def projects_拆解知道这份计划里已经有什么():
     """不喂已有的点，模型就会把同一个目标再拆一遍近义词——靠 id 去重是拦不住的。"""
     c, _, _ = with_inbox_node()
@@ -1315,6 +1354,31 @@ def usage_失败的调用也要记一笔():
 
 
 @case
+def llm_报错里带着是哪个角色哪个provider():
+    """配了多个 provider 时，"到底是谁炸了"应该一眼看见，而不是从 url 去猜。"""
+    c, vault, _ = with_inbox_node()
+    import llm_backend
+    real = llm_backend.chat
+
+    def boom(messages, provider, model_override=None, on_delta=None):
+        raise SystemExit("LLM 请求失败 HTTP 503（https://api.example.com/v1/chat/completions）："
+                         "{\"error\":{\"code\":\"model_not_found\"}}")
+
+    llm_backend.chat = boom
+    try:
+        r = c.post("/api/chat", json={"messages": [{"role": "user", "content": "在吗"}]})
+    finally:
+        llm_backend.chat = real
+    err = [e for e in sse_events(r) if e["type"] == "error"]
+    assert err, [e["type"] for e in sse_events(r)]
+    msg = err[0]["message"]
+    assert "learn 角色" in msg and "provider" in msg, msg
+    assert "model_not_found" in msg, msg          # provider 原话要留着，别包掉
+    # 失败也要记进用量账本：它一样烧了时间、也可能已经计费
+    assert c.get("/api/llm/usage").json()["today"]["errors"] >= 1
+
+
+@case
 def usage_没调用过时返回全零而不是报错():
     c, vault, _ = with_inbox_node()
     assert not (vault / ".knowrary" / "llm-usage.json").exists()
@@ -1440,11 +1504,11 @@ def projects_重叠_同一个点在两个项目里只出现一次且掌握度共
     assert len(ids) == len(set(ids)), f"同一个点出现了不止一次：{ids}"
     assert len(today["projects"]) == 2, today["projects"]
 
-    # 按项目过滤：只剩这个项目的建设项，但到期复习照旧（保鲜是全局的）
+    # 按项目过滤：**整屏都只看这个项目**，包括到期复习
     only = c.get("/api/coach/today?project=nlp").json()
     assert {i["project"] for i in only["items"] if i["kind"] in ("unbuilt", "shell")} == {"nlp"}
-    assert [i["id"] for i in only["items"] if i["kind"] == "due"] == \
-           [i["id"] for i in today["items"] if i["kind"] == "due"], "复习被项目过滤掉了"
+    mine = {"a", "没建的", "另一个没建的"}
+    assert all(i["id"] in mine for i in only["items"]), only["items"]
     assert "本项目" in only["pools"] and "本项目" not in today["pools"], only["pools"]
 
 
@@ -1464,6 +1528,25 @@ def projects_在一个项目里复习另一个项目也看得见():
     assert after["a1"]["all"]["points"]["a"] == "已掌握", after["a1"]["all"]["points"]
     assert after["b2"]["all"]["points"]["a"] == "已掌握", "在 a1 里复习的，b2 里没看见"
     assert before["b2"]["all"]["points"]["a"] == "学过", before["b2"]["all"]["points"]
+
+
+@case
+def coach_项目视角下只摆这个项目的_但别的欠账要如实报():
+    """过滤可以，藏起来不行——藏起来的复习等于没有复习。"""
+    c, vault, _ = with_inbox_node()
+    c.post("/api/quiz/grade", json={"answers": [{**q("A 是什么", ["a"]), "grade": "忘了"}]})
+    c.put("/api/projects", json={"base_revision": 0, "projects": {
+        "p1": {"name": "项目一", "lists": [{"stages": [{"name": "一", "points": [{"id": "b"}]}]}]}}})
+
+    glob = c.get("/api/coach/today").json()
+    assert any(i["id"] == "a" for i in glob["items"]), glob["items"]     # 全局下 a 在
+    assert glob["elsewhere"] == {"wrong": 0, "due": 0}, glob["elsewhere"]   # 全局没有"别处"
+
+    only = c.get("/api/coach/today?project=p1").json()
+    assert not any(i["id"] == "a" for i in only["items"]), "别的项目的错题还摆在这一屏"
+    assert only["elsewhere"]["wrong"] >= 1, only["elsewhere"]            # 但要如实报出来
+    # 复习调度本身没变：过滤的只是"今天摆谁"，next_due 仍然只有一份
+    assert c.get("/api/review/due").json()["count"] >= 1
 
 
 @case
@@ -1896,6 +1979,125 @@ def chat_能提议建项目但不落盘():
         restore_chat(original)
     assert not [e for e in sse_events(r2) if e["type"] == "project"], "中文 id 也放过去了"
     assert "ASCII" in [e for e in sse_events(r2) if e["type"] == "tool"][0]["summary"]
+
+
+@case
+def chat_建项目时会看见已有的项目():
+    """"我有 Transformer 了，又建一个 MHA"——这件事模型得看得见，人也得在按下创建前看见。"""
+    c, _, _ = with_inbox_node()
+    c.put("/api/projects", json={"base_revision": 0, "projects": {"transformer": {
+        "name": "Transformer", "lists": [{"kind": "学习", "name": "主线", "goal": "吃透 Transformer",
+        "stages": [{"name": "一", "points": [{"id": "自注意力"}]}]}]}}})
+
+    seen = {}
+    from server import chat as chat_mod
+    original = chat_mod.llm_chat
+
+    def spy(vault, role, messages, op="chat", on_delta=None):
+        seen[op] = messages[0]["content"]
+        if on_delta:
+            on_delta("好")
+        return "好", {}
+
+    chat_mod.llm_chat = spy
+    try:
+        c.post("/api/chat", json={"messages": [{"role": "user", "content": "在吗"}]})
+    finally:
+        chat_mod.llm_chat = original
+    brief = seen["chat-教练"]
+    assert "我已经有的项目" in brief and "`transformer`" in brief, brief[-400:]
+    assert "1 个点" in brief, brief[-400:]
+
+    # 建一个名字接近的：服务端算出"跟已有的撞车"，卡片上带着，话术里也要提
+    args = {"id": "transformer-mha", "name": "Transformer MHA", "lists": [{"kind": "学习"}]}
+    original2, _ = stub_chat([tool_block("propose_project", args), "你已经有 Transformer 了，确定要另起吗"])
+    try:
+        r = c.post("/api/chat", json={"messages": [{"role": "user", "content": "建个 MHA 项目"}]})
+    finally:
+        restore_chat(original2)
+    card = [e for e in sse_events(r) if e["type"] == "project"][0]["project"]
+    assert [n["id"] for n in card["near"]] == ["transformer"], card["near"]
+    tool = [e for e in sse_events(r) if e["type"] == "tool"][0]
+    assert "他已经有" in tool["summary"] or "注意" in tool["summary"], tool["summary"]
+
+
+@case
+def chat_能在对话里把清单拆成点():
+    """"帮我建个项目"是一串动作：看已有 → 搜图 → 建项目 → 拆点。
+    以前拆点只能去面板，对话里走到一半就断了。"""
+    c, _, _ = with_inbox_node()
+    c.put("/api/projects", json={"base_revision": 0, "projects": {"mha": {
+        "name": "多头注意力", "weekly_hours": 10,
+        "lists": [{"kind": "学习", "name": "主线", "goal": "吃透 MHA", "target_date": "2099-01-01"}]}}})
+
+    from server import projects as projects_mod
+    seen = {}
+    real = projects_mod.ask
+
+    def spy(vault_, role, prompt, op="?"):
+        seen[op] = prompt
+        return json.dumps({"stages": [{"name": "一", "points": [
+            {"id": "自注意力", "load": "重"}, {"id": "多头注意力"}]}]}, ensure_ascii=False)
+
+    projects_mod.ask = spy
+    original, _ = stub_chat([tool_block("propose_points", {"project": "mha", "list": "主线"}),
+                             "拆好了，看看卡片"])
+    try:
+        r = c.post("/api/chat", json={"messages": [{"role": "user", "content": "帮我把主线拆一下"}]})
+    finally:
+        restore_chat(original)
+        projects_mod.ask = real
+
+    cards = [e for e in sse_events(r) if e["type"] == "points"]
+    assert len(cards) == 1, [e["type"] for e in sse_events(r)]
+    card = cards[0]["points"]
+    assert card["project"] == "mha" and card["list"] == 0, card
+    assert [p["id"] for st in card["stages"] for p in st["points"]] == ["自注意力", "多头注意力"]
+    # 走的是面板同一条链路：时间账、负荷、阶段截止日一个不少
+    assert card["stages"][0]["deadline"], card["stages"][0]
+    assert card["schedule"]["total_hours"] == 7.5, card["schedule"]
+    # 项目的每周投入被带进去了（10 小时，不是默认 7）
+    assert "10 小时" in seen["plan-propose"], seen["plan-propose"][:300]
+    # **没落盘**
+    got = c.get("/api/projects").json()["doc"]["projects"]["mha"]["lists"][0]["stages"]
+    assert got == [], "提议就写进清单了"
+
+
+@case
+def chat_搜索也能搜到计划里还没建的点():
+    """一个项目常常 40 个点里 39 个还没建——只搜索引会零命中，然后又建一个重复的。"""
+    c, vault, _ = with_inbox_node()
+    c.put("/api/projects", json={"base_revision": 0, "projects": {"transformer": {
+        "name": "Transformer", "lists": [{"kind": "学习", "name": "主线", "stages": [
+            {"name": "一", "points": [{"id": "多头注意力", "why": "核心机制"}]}]}]}}})
+    from server import chat as chat_mod
+    body, meta = chat_mod._tool_search(vault, {"q": "多头注意力"})
+    assert meta["hits"] == 1, body
+    assert "计划里列过" in body and "Transformer" in body, body
+    assert "还没建" in body, body
+    # 已经建成节点的仍然走"已建"那一档，不会重复出现在计划那一档里
+    body2, _ = chat_mod._tool_search(vault, {"q": "A"})
+    assert "已建的节点" in body2 and "计划里列过" not in body2, body2
+
+
+@case
+def chat_这一轮炸了留档里也有记号():
+    """只记提问不记结果的话，失败五次就攒出五条没人答的问题，下次全被读回去当上下文。"""
+    c, vault, _ = with_inbox_node()
+    import llm_backend
+    real = llm_backend.chat
+
+    def boom(messages, provider, model_override=None, on_delta=None):
+        raise SystemExit("HTTP 503")
+
+    llm_backend.chat = boom
+    try:
+        c.post("/api/chat", json={"messages": [{"role": "user", "content": "在吗"}]})
+    finally:
+        llm_backend.chat = real
+    rows = c.get("/api/chat/history").json()["messages"]
+    assert [m["role"] for m in rows] == ["user", "assistant"], rows
+    assert "没答成" in rows[1]["content"] and "503" in rows[1]["content"], rows[1]
 
 
 @case

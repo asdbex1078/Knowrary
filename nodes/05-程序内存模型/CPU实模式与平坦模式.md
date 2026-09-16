@@ -1,6 +1,7 @@
 ---
 name: CPU实模式与平坦模式
-field: 计算机体系结构
+field: 计算机系统
+layer: 系统软件
 status: stub
 tags:
   - 内存模型

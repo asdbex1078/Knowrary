@@ -27,6 +27,7 @@ const props = defineProps({
   proposal: { type: Object, default: null },   // AI 拆出来的清单，纯提议，人点了才进 draft
   proposing: { type: Boolean, default: false },
   fields: { type: Array, default: () => [] },   // 已有领域，建点时的落脚点从这里选
+  project: { type: String, default: '' },      // 顶栏选中的项目；非空 = 只看这一个
 })
 const emit = defineEmits(['save', 'goto', 'build', 'quiz', 'propose', 'refresh', 'switch', 'close'])
 
@@ -90,6 +91,12 @@ watch(() => props.doc, (d) => {
 
 watch(pick, (id) => { li.value = 0; emit('switch', id) })
 
+// 在某个项目下时，这一屏就是**这个项目的清单**——别的项目去「🌐 全局」看。
+// 一屏里既列本项目的任务、又能翻到别的项目，等于每次都要先确认"我在看谁"。
+const scoped = computed(() => !!props.project)
+watch(() => props.project, (id) => { if (id && draft.value[id]) pick.value = id },
+      { immediate: true })
+
 const ids = computed(() => Object.keys(draft.value))
 const project = computed(() => draft.value[pick.value] || null)
 const lists = computed(() => project.value?.lists || [])
@@ -102,6 +109,7 @@ const proposeReq = computed(() => ({ goal: plan.value?.goal, plan_name: project.
                                      kind: plan.value?.kind, coach: plan.value?.coach,
                                      target_date: plan.value?.target_date,
                                      weekly_hours: project.value?.weekly_hours,
+                                     project: pick.value,
                                      known_points: (plan.value?.stages || []).flatMap(
                                        (st) => st.points.map((p) => (p.name && p.name !== p.id)
                                          ? `${p.id}（${p.name}）` : p.id)) }))
@@ -206,10 +214,13 @@ function dropPoint(si, pi) {
 
 <template>
   <!-- storage-key 保持 plans：改了会把你已经拖好的抽屉宽度丢掉 -->
-  <Drawer side="left" title="项目" icon="checklist" storage-key="plans" :default-width="380"
+  <!-- 清单一行里有双态、名字、负荷、动作、why，380px 必然挤；
+       和对话那条用同一套机制：可拖宽、上限跟着视口走、「展宽」一键顶到底，宽度记得住 -->
+  <Drawer side="left" :title="scoped ? '清单' : '项目'" icon="checklist" storage-key="plans"
+          :default-width="420" :min="320" :max="1100" expandable
           @close="emit('close')">
     <template #head-actions>
-      <button class="icon-btn ghost tiny" title="新建一个项目" @click="newProject">
+      <button v-if="!scoped" class="icon-btn ghost tiny" title="新建一个项目" @click="newProject">
         <Icon name="plus" :size="14" />
       </button>
       <button class="btn tiny" :class="{ primary: dirty }" :disabled="busy || !dirty"
@@ -233,7 +244,8 @@ function dropPoint(si, pi) {
       </div>
 
       <template v-else-if="project">
-        <select v-if="ids.length > 1" v-model="pick" class="plan-switch">
+        <!-- 项目下不给切换器：要看别的项目，去顶栏切到「🌐 全局」 -->
+        <select v-if="!scoped && ids.length > 1" v-model="pick" class="plan-switch">
           <option v-for="id in ids" :key="id" :value="id">{{ draft[id].name || id }}</option>
         </select>
 
@@ -244,7 +256,8 @@ function dropPoint(si, pi) {
         <div class="list-tabs">
           <button v-for="(ls, i) in lists" :key="i" class="btn tiny" :class="{ primary: i === li }"
                   :title="`${ls.kind}口径`" @click="li = i">
-            {{ ls.name || `清单 ${i + 1}` }}
+            <span class="tab-name" :title="`${ls.name || ''}｜${ls.goal || '（还没写目标）'}`">
+              {{ ls.name || `清单 ${i + 1}` }}</span>
             <span class="kind-dot" :class="`k-${ls.kind}`">{{ ls.kind }}</span>
           </button>
           <button class="icon-btn ghost tiny" title="加一份清单（面试方案 / 领域地图…）" @click="addList">
@@ -315,6 +328,12 @@ function dropPoint(si, pi) {
               {{ proposal.schedule.capacity_hours }} 小时（{{ proposal.schedule.days_left }} 天）</template>；
               按现在的投入要学到 <b>{{ proposal.schedule.suggested_target_date }}</b></span>
           </div>
+          <p v-if="Object.keys(proposal.in_projects || {}).length" class="dim"
+             style="font-size: 11.5px; line-height: 1.6">
+            其中 <b>{{ Object.keys(proposal.in_projects).length }}</b> 个点别的项目里也列了——
+            <b>这不是问题</b>：项目是视角不是容器，同一个点属于两个项目，掌握度还是同一个，
+            今日清单里也只会出现一次。想精简就划掉，想各自成篇就留着。
+          </p>
           <p v-if="proposal.duplicates?.length" class="dim" style="font-size: 11.5px; line-height: 1.6">
             其中 <b>{{ proposal.duplicates.length }}</b> 个这份计划里已经有了，已经默认划掉——
             想重新表述就点回来。
@@ -331,9 +350,14 @@ function dropPoint(si, pi) {
                   :class="{ struck: dropped.has(p.id) }">
                 <span class="chip" :class="proposal.duplicates?.includes(p.id) ? 'm-shell'
                                             : proposal.existing.includes(p.id) ? 'm-learned' : 'm-unbuilt'"
-                      :title="proposal.duplicates?.includes(p.id) ? '这份计划里已经有了，默认不再加一遍' : ''">
-                  {{ proposal.duplicates?.includes(p.id) ? '计划里有'
+                      :title="proposal.duplicates?.includes(p.id) ? '这份清单里已经有了，默认不再加一遍' : ''">
+                  {{ proposal.duplicates?.includes(p.id) ? '清单里有'
                      : proposal.existing.includes(p.id) ? '图里有' : '要新建' }}
+                </span>
+                <!-- 项目之间重叠是合法的（同一个点掌握度还是同一个），所以只标不拦 -->
+                <span v-if="proposal.in_projects?.[p.id]" class="chip m-due"
+                      :title="`「${proposal.in_projects[p.id].join('」「')}」里也列了这个点。\n重叠没问题——掌握度是同一个；只是让你知道它不是全新的`">
+                  {{ proposal.in_projects[p.id].join('/') }} 里有
                 </span>
                 <span class="to">{{ p.name || p.id }}</span>
                 <span class="load" :title="`学习负荷：${p.load}`">{{ p.load }}</span>
@@ -438,7 +462,7 @@ function dropPoint(si, pi) {
 
         <section v-for="(stage, si) in plan.stages" :key="si" class="section stage">
           <div class="section-head">
-            <input v-model="stage.name" class="stage-name" @input="touch" />
+            <input v-model="stage.name" class="stage-name" :title="stage.name" @input="touch" />
             <span v-if="sched?.stages?.[si]?.remaining_hours" class="dim" style="font-size: 11px"
                   :title="`这个阶段还剩 ${sched.stages[si].remaining_points} 个点没建`">
               {{ sched.stages[si].remaining_hours }}h
@@ -459,16 +483,21 @@ function dropPoint(si, pi) {
                    class="sq" :class="`s-${stateOf(pt.id).exam}`">考</i>
               </span>
               <span class="to" :class="{ link: masteryOf(pt.id) !== '未建' }"
+                    :title="pt.why || pt.id"
                     @click="masteryOf(pt.id) !== '未建' && emit('goto', pt.id)">{{ pt.name || pt.id }}</span>
               <select v-model="pt.load" class="load-pick" title="学习负荷：排时间表的依据" @change="touch">
                 <option v-for="l in LOADS" :key="l" :value="l">{{ l }}</option>
               </select>
-              <span v-if="pt.why" class="yr why">{{ pt.why }}</span>
-              <button v-if="masteryOf(pt.id) === '未建'" class="btn subtle tiny" title="现在就建这个知识点"
-                      @click="emit('build', { ...pt, plan: pick, field: plan.field })">建</button>
-              <button class="icon-btn ghost tiny" title="从计划里移除" @click="dropPoint(si, pi)">
-                <Icon name="x" :size="13" />
-              </button>
+              <!-- 动作钉在最右边：`why` 一长就会把它们挤出可视区，那时「建」按钮等于不存在 -->
+              <span class="row-acts">
+                <button v-if="masteryOf(pt.id) === '未建'" class="btn subtle tiny" title="现在就建这个知识点"
+                        @click="emit('build', { ...pt, plan: pick, field: plan.field })">建</button>
+                <button class="icon-btn ghost tiny" title="从清单里移除" @click="dropPoint(si, pi)">
+                  <Icon name="x" :size="13" />
+                </button>
+              </span>
+              <!-- why 换行占满一行：它常常是一整句话，挤在同一行只会把别的都压扁 -->
+              <span v-if="pt.why" class="why-line">{{ pt.why }}</span>
             </li>
           </ul>
 
@@ -498,7 +527,9 @@ function dropPoint(si, pi) {
           <button v-if="lists.length > 1" class="btn subtle" @click="dropList">
             <Icon name="trash" :size="14" />删掉这份清单
           </button>
-          <button class="btn subtle" @click="dropProject"><Icon name="trash" :size="14" />删掉项目</button>
+          <button v-if="!scoped" class="btn subtle" @click="dropProject">
+            <Icon name="trash" :size="14" />删掉项目
+          </button>
         </div>
 
         <p class="dim" style="font-size: 11px; margin-top: 14px; line-height: 1.7">

@@ -140,10 +140,14 @@ def quiz_pools(index: dict, log: dict, items: list[dict], doc: dict,
 
 def build_today(vault: Path, index: dict, layout: dict, doc: dict,
                 today: dt.date | None = None, project: str | None = None) -> dict:
-    """今天干什么。`project` 给了就只看这个项目的建设项（保鲜项仍然是全局的）。
+    """今天干什么。`project` 给了就**整屏都只看这个项目**：建设项、到期复习、错题。
 
-    **保鲜不按项目过滤**：到期就是到期，不会因为今天在看别的项目就不用复习——
-    同一个大脑，复习调度全局唯一（重构方案 §1）。
+    这**不违反**"复习调度全局唯一"（重构方案 §1）：间隔、掌握度、next_due 仍然只有一份，
+    同一个点在哪个项目里看都是同一个状态。这里过滤的只是**今天这一屏摆谁**——
+    在 A 项目里学的时候，摆一堆 B 项目的到期项只会让人无从下手。
+
+    但**不能把它们藏得无影无踪**：别的项目还欠着多少，用 `elsewhere` 如实报出来，
+    面板上写一句"另有 N 个在别的项目"。藏起来的复习等于没有复习。
     """
     today = today or dt.date.today()
     log = load_log(vault)
@@ -151,14 +155,24 @@ def build_today(vault: Path, index: dict, layout: dict, doc: dict,
     wrong_ids = {w["id"] for w in wrong_nodes(load_quiz_log(vault), 999) if w["wrong"]}
     lines, progress = project_lines(doc, index, log, today)
 
+    wrong_items = _wrong_items(vault, by_id)
+    due_items = _due_items(index, log, today)
+    elsewhere = {"wrong": 0, "due": 0}
+    if project:
+        mine = set(point_ids(doc, project))
+        elsewhere = {"wrong": sum(1 for i in wrong_items if i["id"] not in mine),
+                     "due": sum(1 for i in due_items if i["id"] not in mine)}
+        wrong_items = [i for i in wrong_items if i["id"] in mine]
+        due_items = [i for i in due_items if i["id"] in mine]
+
     ordered: list[dict] = []
-    ordered += _wrong_items(vault, by_id)
-    ordered += _due_items(index, log, today)
+    ordered += wrong_items
+    ordered += due_items
     for pid, pr in (doc.get("projects") or {}).items():
         if project and pid != project:
             continue
         ordered += _stage_items(pid, pr, progress[pid])
-    ordered += _inbox_items(index, layout, by_id)
+    ordered += _inbox_items(index, layout, by_id) if not project else []
 
     items, seen = [], set()
     for it in ordered:                      # 同一个节点只留优先级最高的那一次
@@ -175,6 +189,7 @@ def build_today(vault: Path, index: dict, layout: dict, doc: dict,
     return {"generated_at": today.isoformat(), "items": items, "counts": counts,
             "projects": [ln for ln in lines if not project or ln["id"] == project],
             "pools": quiz_pools(index, log, items, doc, project),
+            "elsewhere": elsewhere,
             "estimate_hours": _estimate(items, doc)}
 
 

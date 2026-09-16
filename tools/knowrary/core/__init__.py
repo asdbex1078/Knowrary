@@ -12,7 +12,8 @@ from .layout import (CELL_H, LAYOUT_SCHEMA_VERSION, NODE_H, NODE_W, build_initia
 from .mdio import (NODE_DIRS, RE_LINK, RE_REL_HEADER, dump_frontmatter, first_paragraph, json_safe,
                    load_json, read, split_frontmatter, strip_md, walk_md, write, write_json_atomic,
                    yaml_scalar)
-from .parser import Node, digest_of, load_node, load_vault, validate_frontmatter
+from .parser import (LAYERS, UNLAYERED, Node, digest_of, load_node, load_vault,
+                     validate_frontmatter)
 from .placement import inbox_ids, place_node, place_or_grow, plan_growth, target_group
 from .projects import (DEFAULT_LOAD, ID_OK, KINDS, exam_state, states_of, study_state, LOAD_HOURS, LOADS, MASTERY_ORDER, all_progress,
                        all_schedules, as_date, ascii_id, done_ids, empty_projects, legacy_plans_path,
@@ -31,7 +32,7 @@ from .schema import validate_index
 
 __all__ = [
     "ChangeRejected", "Diagnostic", "Diagnostics", "Edge", "FileEdit", "INDEX_SCHEMA_VERSION",
-    "DEFAULT_LOAD", "GRADES", "ID_OK", "KINDS", "exam_state", "states_of", "study_state", "LOADS", "LOAD_HOURS", "MASTERY_ORDER", "all_progress",
+    "DEFAULT_LOAD", "GRADES", "ID_OK", "KINDS", "LAYERS", "UNLAYERED", "exam_state", "states_of", "study_state", "LOADS", "LOAD_HOURS", "MASTERY_ORDER", "all_progress",
     "all_schedules", "as_date", "ascii_id", "CALENDAR_MAX_DAYS", "append_answers", "build_calendar", "build_digest", "duplicates", "streak", "build_today",
     "current_stage", "done_ids", "project_lines", "due_nodes", "legacy_plans_path", "list_field", "lists_of",
     "empty_projects", "inbox_ids", "load_log", "load_projects", "load_quiz_log", "mastery_of",
