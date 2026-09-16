@@ -120,6 +120,8 @@ export function registerShapes() {
       { tagName: 'text', selector: 'title' },
       { tagName: 'text', selector: 'desc' },
       { tagName: 'circle', selector: 'due' },
+      { tagName: 'rect', selector: 'sqStudy' },
+      { tagName: 'rect', selector: 'sqExam' },
     ],
     attrs: {
       body: { rx: 12, ry: 12, fill: '#fff', stroke: '#c6d0da', strokeWidth: 1.2, class: 'kg-card' },
@@ -130,6 +132,9 @@ export function registerShapes() {
               textWrap: { width: -26, ellipsis: true } },
       // 到期复习的小圆点：默认透明，due 时才点亮（不占布局，缩小后仍看得见）
       due: { r: 4.5, refX: '100%', refX2: -11, refY: 11, fill: 'transparent', stroke: 'none' },
+      // 学 / 考双态：左下角两个小方块。默认透明，缩小到只剩标题时不画（性能守则）
+      sqStudy: { x: 12, refY: '100%', refY2: -11, width: 7, height: 7, rx: 2, ry: 2, fill: 'transparent' },
+      sqExam: { x: 22, refY: '100%', refY2: -11, width: 7, height: 7, rx: 2, ry: 2, fill: 'transparent' },
     },
   }, true)
 
@@ -299,8 +304,15 @@ export function activationAttrs() {
   }
 }
 
-export function nodeAttrs(indexNode, layoutNode, color = NEUTRAL, due = false) {
+// 双态的四个颜色。和面板上的 .sq.s-* 是同一套语义，只是这里画在 SVG 上。
+const STATE_FILL = { 灰: 'transparent', 红: '#d9534f', 黄: '#e0891f', 绿: '#3f9e5d' }
+
+export function nodeAttrs(indexNode, layoutNode, color = NEUTRAL, due = false, state = null,
+                          ghost = false) {
   const draft = layoutNode?.state === 'draft'
+  // 幽灵：计划里有、图里还没建。比 stub 更淡——stub 是"建了个壳"，幽灵是"压根还没有"。
+  // 只活在项目画布上，不进全局 layout、不进 vault。
+  // **由调用方判定**：这里为了显示标题会收到一个合成的 indexNode，光看它有没有是判不出来的。
   const stub = !!indexNode?.stub
   const size = sizeFor(indexNode)
   const tone = stub ? NEUTRAL : color
@@ -309,12 +321,14 @@ export function nodeAttrs(indexNode, layoutNode, color = NEUTRAL, due = false) {
     body: {
       rx: size.rx, ry: size.rx,
       class: size.shape === 'pill' ? 'kg-pill' : 'kg-card',
-      fill: draft ? '#fffdf4' : size.shape === 'pill' ? tokens().pill : tone.fill,
-      stroke: draft ? '#d9a53b' : tone.line,
-      strokeWidth: stub ? 1 : size.shape === 'pill' ? 1.1 : 1.3,
-      strokeDasharray: draft ? '5 3' : stub ? '3 3' : null,
+      fill: ghost ? 'transparent' : draft ? '#fffdf4' : size.shape === 'pill' ? tokens().pill : tone.fill,
+      stroke: ghost ? '#c3cbd4' : draft ? '#d9a53b' : tone.line,
+      strokeWidth: ghost || stub ? 1 : size.shape === 'pill' ? 1.1 : 1.3,
+      strokeDasharray: ghost ? '2 5' : draft ? '5 3' : stub ? '3 3' : null,
+      strokeOpacity: ghost ? 0.7 : 1,
     },
     title: {
+      opacity: ghost ? 0.55 : 1,
       text: (size.shape === 'pill' ? '' : `${iconFor(indexNode)} `).trimStart()
         ? `${iconFor(indexNode)} ${indexNode?.name || indexNode?.id || ''}`.trim()
         : indexNode?.name || indexNode?.id || '',
@@ -337,6 +351,9 @@ export function nodeAttrs(indexNode, layoutNode, color = NEUTRAL, due = false) {
       textWrap: { width: size.accent ? -32 : -26, ellipsis: true },
     },
     due: { fill: due ? '#e0891f' : 'transparent', r: size.shape === 'pill' ? 3.5 : 4.5 },
+    // 只在卡片形态（有 desc 的尺寸）上画：缩小成一行标题时这两个点只会变成噪声
+    sqStudy: { fill: size.desc && state ? (STATE_FILL[state.study] || 'transparent') : 'transparent' },
+    sqExam: { fill: size.desc && state ? (STATE_FILL[state.exam] || 'transparent') : 'transparent' },
   }
 }
 

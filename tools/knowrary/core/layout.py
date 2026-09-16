@@ -21,8 +21,11 @@ MAX_COLS = 6
 MAX_ROW_W = 2600.0                             # 二级分组换行的行宽上限
 
 
-def layout_path(vault: Path) -> Path:
-    return vault / ".knowrary" / "layout.json"
+def layout_path(vault: Path, name: str = "layout") -> Path:
+    """全局图是 `.knowrary/layout.json`；项目画布各自一份 `.knowrary/layouts/<项目>.json`。
+    与 `server/paths.py` 的同名函数保持一致——两边算出不同路径是最难查的那类 bug。"""
+    root = vault / ".knowrary"
+    return root / "layout.json" if name == "layout" else root / "layouts" / f"{name}.json"
 
 
 def empty_layout() -> dict:
@@ -110,12 +113,50 @@ def build_initial_layout(index: dict) -> dict:
     return doc
 
 
+def build_project_layout(project: dict, index: dict) -> dict:
+    """项目画布的初始布局：**一份清单一个分组框**，还没建的点画成幽灵占位。
+
+    和全局图的初始布局是两套铺法，因为要回答的问题不同：全局图回答"这个领域里有什么"，
+    项目画布回答"我这个项目还差哪几块"。所以这里按清单分组，而不是按 field。
+
+    幽灵占位（`state: "ghost"`）**只活在项目画布**：不进全局 layout，也不进 vault
+    （沿用"推测出来的东西不进真值源"）。节点真建出来之后，它就在原地变成普通节点。
+    """
+    real = {n["id"] for n in index["nodes"] if not n.get("virtual")}
+    groups: dict[str, dict] = {}
+    nodes: dict[str, dict] = {}
+    x0 = 80.0
+    for li, ls in enumerate(project.get("lists") or []):
+        seen: list[str] = []
+        for stage in ls.get("stages") or []:
+            for pt in stage.get("points") or []:
+                if pt.get("id") and pt["id"] not in nodes:
+                    seen.append(pt["id"])
+        if not seen:
+            continue
+        cols = max(1, min(4, round(len(seen) ** 0.5)))
+        rows = -(-len(seen) // cols)
+        gid = f"g-list-{li}"
+        w = cols * CELL_W + PAD_X * 2
+        h = rows * CELL_H + PAD_TOP + PAD_BOT
+        groups[gid] = {"name": ls.get("name") or f"清单 {li + 1}", "x": x0, "y": 80.0, "w": w, "h": h}
+        for i, nid in enumerate(seen):
+            nodes[nid] = {"x": x0 + PAD_X + (i % cols) * CELL_W, "y": 80.0 + PAD_TOP + (i // cols) * CELL_H,
+                          "w": NODE_W, "h": NODE_H, "group": gid,
+                          "state": "final" if nid in real else "ghost"}
+        x0 += w + 60
+    return stamp({**empty_layout(), "groups": groups, "nodes": nodes})
+
+
 def find_orphans(doc: dict, index: dict, vault: Path) -> list[dict]:
     """layout 里引用不到的记录：只报告，不删除（md 删了节点也要留住用户的位置数据）。"""
     real = {n["id"] for n in index["nodes"] if not n.get("virtual")}
     edges = {e["id"] for e in index["edges"]}
     out: list[dict] = []
     for nid in sorted(set(doc.get("nodes", {})) - real):
+        # 幽灵占位本来就不在索引里——那正是它的含义（"计划里有、还没建"），不是孤立记录
+        if (doc["nodes"][nid] or {}).get("state") == "ghost":
+            continue
         out.append({"kind": "node", "id": nid, "reason": "索引里没有这个节点（md 可能已删除或改名）"})
     for ref in doc.get("refs", []):
         if ref.get("target") not in real:

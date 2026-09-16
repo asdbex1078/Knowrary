@@ -7,7 +7,7 @@ import { Transform } from '@antv/x6-plugin-transform'
 import { clusterSummary, containerOf } from './lod'
 import { CLUSTER_H, CLUSTER_W, FAMILY_STYLE, clusterBox, NODE_H, NODE_W, aggregateAttrs, aggregateLabel, clusterAttrs,
          activationAttrs, edgeAttrs, groupAttrs, imageAttrs, laneAttrs, nodeAttrs, noteAttrs, paletteFor,
-         refAttrs, registerShapes, sizeFor, tickAttrs, tokens } from './shapes'
+         NEUTRAL, refAttrs, registerShapes, sizeFor, tickAttrs, tokens } from './shapes'
 import { AXIS_H, buildTimeline } from './timeline'
 
 /**
@@ -189,7 +189,7 @@ function groupDepth(groups, id, seen = new Set()) {
 
 export function buildCells(index, layout, options = {}) {
   const { families = null, showLabels = false, collapsed = new Set(), zoom = 1, due = new Set(),
-          only = null } = options
+          states = {}, only = null } = options
   // only：「只看某个节点的邻居」模式，画布上只留这一小撮节点与它们之间的边。
   // 做成投影层的过滤而不是把别的元素调暗——网状图里"调暗"照样挡视线。
   const keepGroup = only
@@ -251,8 +251,13 @@ export function buildCells(index, layout, options = {}) {
       id: nid, shape: 'kg-node', x: n.x, y: n.y,
       width: meta ? size.w : (n.w || NODE_W), height: meta ? size.h : (n.h || NODE_H),
       zIndex: 10,
-      attrs: meta ? nodeAttrs(meta, n, colorOf(n.group, meta.field), due.has(nid)) : orphanAttrs(nid),
-      data: { kind: 'node', group: n.group || null, orphan: !meta, field: meta?.field || null },
+      attrs: meta
+        ? nodeAttrs(meta, n, colorOf(n.group, meta.field), due.has(nid), states[nid] || null)
+        : n.state === 'ghost'
+          ? nodeAttrs({ id: nid, name: nid }, n, NEUTRAL, false, null, true)   // 幽灵占位，不是孤立记录
+          : orphanAttrs(nid),
+      data: { kind: 'node', group: n.group || null, orphan: !meta && n.state !== 'ghost',
+              ghost: !meta && n.state === 'ghost', field: meta?.field || null },
     })
   }
   // 便签与引用卡：只存在 layout.json 里，不参与关系与索引

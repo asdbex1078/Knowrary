@@ -9,12 +9,12 @@
  *
  * **这一屏不调 LLM。** "今天干什么"是排序不是生成，模型只在制定计划、出题、批改时出场。
  */
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import Drawer from '../ui/Drawer.vue'
 import Icon from '../ui/Icon.vue'
 
 const props = defineProps({
-  today: { type: Object, default: null },    // { items, counts, plans, generated_at }
+  today: { type: Object, default: null },    // { items, counts, projects, pools, generated_at }
   busy: { type: Boolean, default: false },   // 出题中
 })
 const emit = defineEmits(['goto', 'quiz', 'review', 'build', 'write', 'place', 'plans', 'refresh', 'close'])
@@ -35,8 +35,10 @@ const groups = computed(() =>
        .filter((g) => g.rows.length))
 // 出题范围。默认「今日」＝错题+到期；范围里只会有已经建出来的点，
 // 「未建」「只有壳」没有正文，出不了题，服务端已经过滤过了。
-const POOLS = ['今日', '没考过', '已建全部']
+// 范围跟着服务端给的来：「本项目」只有选中了项目才有（项目是视角，这一档就是那个视角的考试范围）
+const POOLS = computed(() => Object.keys(props.today?.pools || {}))
 const pool = ref('今日')
+watch(POOLS, (ks) => { if (!ks.includes(pool.value)) pool.value = ks[0] || '今日' })
 const quizable = computed(() => props.today?.pools?.[pool.value] || [])
 const poolCount = (k) => (props.today?.pools?.[k] || []).length
 </script>
@@ -56,9 +58,12 @@ const poolCount = (k) => (props.today?.pools?.[k] || []).length
 
       <template v-else>
         <!-- 计划进度：一行一个计划，点了进计划面板 -->
-        <div v-if="today.plans.length" class="plan-lines">
-          <div v-for="p in today.plans" :key="p.id" class="plan-line link" @click="emit('plans', p.id)">
-            <span class="nm">{{ p.name }}</span>
+        <!-- 一行一份清单：同一个项目里「学习主线」和「面试清单」的进度是两回事 -->
+        <div v-if="today.projects.length" class="plan-lines">
+          <div v-for="(p, i) in today.projects" :key="`${p.id}-${i}`" class="plan-line link"
+               @click="emit('plans', p.id)">
+            <span class="nm">{{ p.name }}<span v-if="p.list && today.projects.length > 1"
+                                               class="dim"> · {{ p.list }}</span></span>
             <span class="dim">{{ p.done ? '这份建完了' : p.stage || '还没排阶段' }}</span>
             <!-- 落后 = 已经过了阶段截止日、却还没建出来的点。只看计划里写着的 deadline，
                  建议日不参与判定，否则天天变脸。 -->

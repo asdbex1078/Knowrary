@@ -1059,3 +1059,92 @@ kbd.key {
   font: inherit; font-size: 12.5px; line-height: 1.6;
 }
 .chat-input textarea:focus { outline: none; border-color: var(--accent); }
+
+/* 一期：项目下的多份清单 */
+.list-tabs { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; margin: 2px 0 10px; }
+.kind-dot { font-size: 9.5px; opacity: 0.7; margin-left: 4px; }
+
+/* 二期：学 / 考双态。「学」=建出来了没有，「考」=记没记住，两条线分开看 */
+.duo { display: inline-flex; gap: 2px; flex: none; }
+.duo .sq {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 15px; height: 15px; border-radius: 4px; font-size: 9px; font-style: normal;
+  line-height: 1; border: 1px solid transparent;
+}
+.sq.s-灰 { background: var(--bg-2); color: var(--text-3); border-color: var(--line); }
+.sq.s-红 { background: var(--danger-soft, #f8dcdc); color: var(--danger, #a33); }
+.sq.s-黄 { background: var(--gold-soft, #f6e6c4); color: var(--gold-text, #7a5410); }
+.sq.s-绿 { background: var(--ok-soft, #d8efdc); color: var(--ok-text, #1f6b35); }
+
+/* 二期：晨间简报 */
+.brief-mask {
+  position: fixed; inset: 0; z-index: 60; display: flex; align-items: center; justify-content: center;
+  background: rgba(20, 26, 33, 0.28); backdrop-filter: blur(2px);
+}
+.brief {
+  width: min(520px, calc(100vw - 32px)); padding: 16px 18px; border-radius: 14px;
+  background: var(--bg-1); border: 1px solid var(--line); box-shadow: 0 18px 46px rgba(0, 0, 0, 0.22);
+}
+.brief-head { display: flex; align-items: center; gap: 7px; margin-bottom: 12px; font-size: 13.5px; }
+.brief-nums { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-bottom: 12px;
+  font-size: 11.5px; }
+.brief-line { display: flex; gap: 9px; margin-bottom: 9px; font-size: 12.5px; line-height: 1.75; }
+.brief-line .lb { flex: none; width: 30px; color: var(--text-3); font-size: 11.5px; }
+.brief-line .path { min-width: 0; }
+.brief-acts { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
+.resumed-hint { font-size: 11px; text-align: center; padding: 2px 0 4px; }
+.resumed-hint code { font-size: 10.5px; }
+
+/* 三期：顶栏项目切换器 */
+.proj-switch {
+  max-width: 170px; padding: 5px 8px; border-radius: 8px; border: 1px solid var(--line);
+  background: var(--bg-1); color: var(--text-1); font: inherit; font-size: 12px;
+}
+
+/* 三期：对话全屏视图。对话不是工具面板，是主界面 */
+.chat-view {
+  display: flex; flex-direction: column; min-width: 0; min-height: 0; height: 100%;
+  background: var(--bg-1); border-right: 1px solid var(--line);
+}
+.chat-bar {
+  display: flex; align-items: center; gap: 7px; padding: 8px 12px;
+  border-bottom: 1px solid var(--line); flex: none;
+}
+.chat-bar .grow { flex: 1; }
+.sess-pick {
+  max-width: 230px; padding: 4px 7px; border-radius: 7px; border: 1px solid var(--line);
+  background: var(--bg-1); color: var(--text-1); font: inherit; font-size: 11.5px;
+}
+.chat-view .chat-wrap { flex: 1; min-height: 0; padding: 14px 16px 12px; }
+.focus-chip {
+  display: flex; align-items: center; gap: 5px; margin-top: 8px; padding: 4px 8px;
+  border-radius: 7px; font-size: 11px; background: var(--accent-soft); color: var(--accent-text);
+}
+.stage-split { display: flex; min-width: 0; min-height: 0; flex: 1; }
+.stage-split .chat-view { width: min(62%, 900px); }
+.stage-split.solo .chat-view { width: 100%; }
+
+/* 四期：项目画布的同步条 */
+.sync-bar {
+  position: absolute; top: 12px; left: 50%; transform: translateX(-50%); z-index: 12;
+  display: flex; align-items: center; gap: 10px; padding: 6px 10px; border-radius: 10px;
+  background: var(--bg-1); border: 1px solid var(--line); box-shadow: 0 6px 18px rgba(0, 0, 0, 0.08);
+  font-size: 11.5px; max-width: calc(100% - 40px);
+}
+
+/* 五期：学习日历热力图 */
+.cal-sum { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; margin-bottom: 12px;
+  font-size: 11.5px; }
+.heat { display: flex; gap: 3px; overflow-x: auto; padding-bottom: 4px; }
+.heat-col { display: flex; flex-direction: column; gap: 3px; }
+.heat-cell {
+  width: 11px; height: 11px; border-radius: 2px; background: var(--bg-2); cursor: pointer;
+  border: 1px solid transparent;
+}
+.heat-cell.void { visibility: hidden; cursor: default; }
+.heat-cell.lv-1 { background: var(--ok-soft, #d8efdc); }
+.heat-cell.lv-2 { background: #a8ddb5; }
+.heat-cell.lv-3 { background: #62c07f; }
+.heat-cell.lv-4 { background: #2f9e52; }
+.heat-cell.on { border-color: var(--accent); }
+.cal-day { margin-top: 14px; border-top: 1px solid var(--line); padding-top: 10px; }

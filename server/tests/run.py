@@ -7,6 +7,7 @@
 """
 from __future__ import annotations
 
+import datetime as dt
 import hashlib
 import json
 import os
@@ -642,94 +643,96 @@ def review_三档反馈走body():
 
 # ---------------------------------------------------------------- 阶段 10：学习计划
 
-def one_plan(points):
-    return {"名字暂定": {"name": "大模型方向", "goal": "吃透 Transformer",
-                         "stages": [{"name": "第一阶段", "points": points}]}}
+def one_project(points, **list_kw):
+    """一个项目 + 一份清单。项目 id 只允许 ASCII（它会成为对话留档的目录名）。"""
+    ls = {"kind": "学习", "name": "主线", "goal": "吃透 Transformer",
+          "stages": [{"name": "第一阶段", "points": points}], **list_kw}
+    return {"llm": {"name": "大模型方向", "lists": [ls]}}
 
 
 @case
-def plans_计划里的点可以指向还不存在的节点():
+def projects_计划里的点可以指向还不存在的节点():
     c, vault, _ = with_inbox_node()
-    r = c.put("/api/plans", json={"base_revision": 0, "plans": one_plan([
+    r = c.put("/api/projects", json={"base_revision": 0, "projects": one_project([
         {"id": "a", "name": "A", "why": "已经建好了"},
         {"id": "还没建的点", "name": "还没建的点", "why": "这正是计划的用途"},
     ])})
     assert r.status_code == 200, r.text
     assert r.json()["revision"] == 1, r.json()
 
-    data = c.get("/api/plans").json()
-    pts = data["progress"]["名字暂定"]["points"]
+    data = c.get("/api/projects").json()
+    pts = data["progress"]["llm"]["all"]["points"]
     assert pts["还没建的点"] == "未建", pts        # 图里没有 → 未建，而不是报错
     assert pts["a"] in ("学过", "已掌握", "待复习"), pts
-    assert data["progress"]["名字暂定"]["total"] == 2, data["progress"]
+    assert data["progress"]["llm"]["all"]["total"] == 2, data["progress"]
     # 待建的点绝不能在 vault 里凭空生出空壳来
     assert not (vault / "nodes" / "_stubs" / "还没建的点.md").exists()
     assert not [p for p in vault.rglob("*.md") if "还没建的点" in p.name]
 
 
 @case
-def plans_stub节点算只有壳():
+def projects_stub节点算只有壳():
     c, vault, _ = with_inbox_node()
     core.write(vault / "nodes/组A/空壳.md",
                "---\nname: 空壳\nfield: 测试\nstatus: stub\ndesc: 还没写\n---\n# 空壳\n")
     index_service.invalidate()
-    c.put("/api/plans", json={"base_revision": 0, "plans": one_plan([{"id": "空壳", "name": "空壳"}])})
-    pts = c.get("/api/plans").json()["progress"]["名字暂定"]["points"]
+    c.put("/api/projects", json={"base_revision": 0, "projects": one_project([{"id": "空壳", "name": "空壳"}])})
+    pts = c.get("/api/projects").json()["progress"]["llm"]["all"]["points"]
     assert pts["空壳"] == "只有壳", pts
 
 
 @case
-def plans_旧revision被拒且不写盘():
+def projects_旧revision被拒且不写盘():
     c, vault, _ = with_inbox_node()
-    c.put("/api/plans", json={"base_revision": 0, "plans": one_plan([{"id": "a"}])})
-    before = (vault / ".knowrary" / "plans.json").read_text("utf-8")
-    r = c.put("/api/plans", json={"base_revision": 0, "plans": one_plan([{"id": "b"}])})
+    c.put("/api/projects", json={"base_revision": 0, "projects": one_project([{"id": "a"}])})
+    before = (vault / ".knowrary" / "projects.json").read_text("utf-8")
+    r = c.put("/api/projects", json={"base_revision": 0, "projects": one_project([{"id": "b"}])})
     assert r.status_code == 409, r.text
     assert r.json()["detail"]["current_revision"] == 1, r.json()
-    assert (vault / ".knowrary" / "plans.json").read_text("utf-8") == before, "冲突后还是写了盘"
+    assert (vault / ".knowrary" / "projects.json").read_text("utf-8") == before, "冲突后还是写了盘"
 
 
 @case
-def plans_非法输入被拒():
+def projects_非法输入被拒():
     c, _, _ = with_inbox_node()
     # 同一个计划里重复的知识点
-    r = c.put("/api/plans", json={"base_revision": 0,
-                                  "plans": one_plan([{"id": "a"}, {"id": "a"}])})
+    r = c.put("/api/projects", json={"base_revision": 0,
+                                  "projects": one_project([{"id": "a"}, {"id": "a"}])})
     assert r.status_code == 422 and "两次" in r.json()["detail"], r.text
     # id 里有空格 / 斜杠（它将来是 md 的文件名）
     for bad in ("有 空格", "a/b"):
-        assert c.put("/api/plans", json={"base_revision": 0,
-                                         "plans": one_plan([{"id": bad}])}).status_code == 422, bad
+        assert c.put("/api/projects", json={"base_revision": 0,
+                                         "projects": one_project([{"id": bad}])}).status_code == 422, bad
 
 
 @case
-def plans_编排不碰md也不碰layout():
+def projects_编排不碰md也不碰layout():
     c, vault, _ = with_inbox_node()
     before = md_digest(vault)
     lay = c.get("/api/layout").json()["layout"]["revision"]
-    c.put("/api/plans", json={"base_revision": 0, "plans": one_plan([{"id": "a"}, {"id": "没建的"}])})
+    c.put("/api/projects", json={"base_revision": 0, "projects": one_project([{"id": "a"}, {"id": "没建的"}])})
     assert md_digest(vault) == before, "编排计划改了 md"
     assert c.get("/api/layout").json()["layout"]["revision"] == lay, "编排计划改了 layout"
 
 
 @case
-def plans_没有文件时返回空而不是报错():
+def projects_没有文件时返回空而不是报错():
     c, vault, _ = with_inbox_node()
-    assert not (vault / ".knowrary" / "plans.json").exists()
-    data = c.get("/api/plans").json()
-    assert data["doc"]["plans"] == {} and data["doc"]["revision"] == 0, data
+    assert not (vault / ".knowrary" / "projects.json").exists()
+    data = c.get("/api/projects").json()
+    assert data["doc"]["projects"] == {} and data["doc"]["revision"] == 0, data
 
 
-def stub_plan_llm(payload: str):
-    from server import plans as plans_mod
-    original = plans_mod.ask
-    plans_mod.ask = lambda vault, role, prompt, op="?": payload
+def stub_project_llm(payload: str):
+    from server import projects as projects_mod
+    original = projects_mod.ask
+    projects_mod.ask = lambda vault, role, prompt, op="?": payload
     return original
 
 
-def restore_plan_llm(original) -> None:
-    from server import plans as plans_mod
-    plans_mod.ask = original
+def restore_project_llm(original) -> None:
+    from server import projects as projects_mod
+    projects_mod.ask = original
 
 
 # ---------------------------------------------------------------- 合并重复节点
@@ -819,8 +822,8 @@ def merge_落盘前备份两边():
     rev = c.get("/api/index").json()["revision"]
     c.post("/api/merge", json={"keep_id": "a", "drop_id": "甲", "base_revision": rev,
                                "dry_run": False})
-    dirs = list((vault / ".knowrary" / "backup").glob("rename-*"))
-    assert dirs, "没有留备份"
+    dirs = list((vault / ".knowrary" / "backup").glob("merge-*"))
+    assert dirs, "没有留备份"                                    # 目录名要认得出是哪种操作
     kept = {str(p.relative_to(dirs[0])) for p in dirs[0].rglob("*") if p.is_file()}
     assert "nodes/组A/甲.md" in kept and "nodes/组A/a.md" in kept, kept   # 被删的和被改的都要留档
 
@@ -834,15 +837,15 @@ def rename_把四类引用一起迁走():
     c.patch("/api/layout", json={"base_revision": lay["revision"],
                                  "edges": {"a->b#部件": {"vertices": [{"x": 1, "y": 2}], "router": None}}})
     c.post("/api/quiz/grade", json={"answers": [{**q("A 是什么", ["a"]), "grade": "忘了"}]})
-    c.put("/api/plans", json={"base_revision": 0, "plans": {"p": {
-        "name": "p", "stages": [{"name": "一", "points": [{"id": "a", "name": "a"}]}]}}})
+    c.put("/api/projects", json={"base_revision": 0, "projects": {"p": {
+        "name": "p", "lists": [{"stages": [{"name": "一", "points": [{"id": "a", "name": "a"}]}]}]}}})
 
     rev = c.get("/api/index").json()["revision"]
     prev = c.post("/api/rename", json={"old_id": "a", "new_id": "甲", "base_revision": rev})
     imp = prev.json()["impact"]
     assert prev.json()["applied"] is False, "dry_run 不该落盘"
     assert imp["layout"] and imp["layout_edges"] == 1 and imp["reviews"] == 1, imp
-    assert imp["quiz"] == 1 and imp["plans"] == ["p"], imp
+    assert imp["quiz"] == 1 and imp["projects"] == ["p"], imp
     assert (vault / "nodes/组A/a.md").exists(), "预览阶段不许动文件"
 
     r = c.post("/api/rename", json={"old_id": "a", "new_id": "甲", "base_revision": rev,
@@ -857,7 +860,7 @@ def rename_把四类引用一起迁走():
     assert json.loads((vault / ".knowrary/review-log.json").read_text("utf-8"))["nodes"].get("甲")
     ans = json.loads((vault / ".knowrary/quiz-log.json").read_text("utf-8"))["answers"][0]
     assert ans["points"] == ["甲"], ans
-    pt = c.get("/api/plans").json()["doc"]["plans"]["p"]["stages"][0]["points"][0]
+    pt = c.get("/api/projects").json()["doc"]["projects"]["p"]["lists"][0]["stages"][0]["points"][0]
     assert pt["id"] == "甲" and pt["name"] == "甲", pt
     # 迁完画布上不该留下指向旧 id 的孤立记录
     assert not [o for o in c.get("/api/layout").json()["orphans"] if o.get("id") == "a"]
@@ -973,26 +976,26 @@ def create_node_越界路径仍然被拒():
 
 
 @case
-def plans_计划带领域且拆解会建议一个():
+def projects_计划带领域且拆解会建议一个():
     c, _, _ = with_inbox_node()
-    original = stub_plan_llm(json.dumps({"field": "深度学习", "stages": [
+    original = stub_project_llm(json.dumps({"field": "深度学习", "stages": [
         {"name": "一", "points": [{"id": "自注意力"}]}]}, ensure_ascii=False))
     try:
-        assert c.post("/api/plans/propose", json={"goal": "x"}).json()["suggested_field"] == "深度学习"
+        assert c.post("/api/projects/propose", json={"goal": "x"}).json()["suggested_field"] == "深度学习"
     finally:
-        restore_plan_llm(original)
-    r = c.put("/api/plans", json={"base_revision": 0, "plans": {"p": {
-        "name": "大模型方向", "field": "深度学习", "stages": []}}})
+        restore_project_llm(original)
+    r = c.put("/api/projects", json={"base_revision": 0, "projects": {"p": {
+        "name": "大模型方向", "field": "深度学习", "lists": []}}})
     assert r.status_code == 200, r.text
-    assert c.get("/api/plans").json()["doc"]["plans"]["p"]["field"] == "深度学习"
+    assert c.get("/api/projects").json()["doc"]["projects"]["p"]["field"] == "深度学习"
 
 
 @case
-def plans_拆解把时间预算发给模型并排出阶段截止日():
+def projects_拆解把时间预算发给模型并排出阶段截止日():
     c, _, _ = with_inbox_node()
     seen = {}
-    from server import plans as plans_mod
-    original = plans_mod.ask
+    from server import projects as projects_mod
+    original = projects_mod.ask
 
     def spy(vault_, role, prompt, op="?"):
         seen[op] = prompt
@@ -1000,12 +1003,12 @@ def plans_拆解把时间预算发给模型并排出阶段截止日():
             {"name": "一", "points": [{"id": "自注意力", "load": "重"}, {"id": "位置编码"}]},
             {"name": "二", "points": [{"id": "多头注意力", "load": "轻"}]}]}, ensure_ascii=False)
 
-    plans_mod.ask = spy
+    projects_mod.ask = spy
     try:
-        r = c.post("/api/plans/propose", json={"goal": "吃透 Transformer",
+        r = c.post("/api/projects/propose", json={"goal": "吃透 Transformer",
                                                "target_date": "2099-01-01", "weekly_hours": 14})
     finally:
-        plans_mod.ask = original
+        projects_mod.ask = original
     assert "2099-01-01" in seen["plan-propose"] and "14 小时" in seen["plan-propose"], seen["plan-propose"][:400]
 
     data = r.json()
@@ -1019,24 +1022,24 @@ def plans_拆解把时间预算发给模型并排出阶段截止日():
 
 
 @case
-def plans_速学模式砍点且被砍的留痕():
+def projects_速学模式砍点且被砍的留痕():
     c, _, _ = with_inbox_node()
     seen = {}
-    from server import plans as plans_mod
-    original = plans_mod.ask
+    from server import projects as projects_mod
+    original = projects_mod.ask
 
     def spy(vault_, role, prompt, op="?"):
         seen[op] = prompt
         return json.dumps({"stages": [{"name": "一", "points": [{"id": "自注意力", "load": "重"}]}],
                            "dropped": [{"id": "位置编码", "why": "这次先不学"}]}, ensure_ascii=False)
 
-    plans_mod.ask = spy
+    projects_mod.ask = spy
     try:
-        std = c.post("/api/plans/propose", json={"goal": "x"}).json()
-        fast = c.post("/api/plans/propose", json={"goal": "x", "mode": "速学",
+        std = c.post("/api/projects/propose", json={"goal": "x"}).json()
+        fast = c.post("/api/projects/propose", json={"goal": "x", "mode": "速学",
                                                   "target_date": "2026-09-20"}).json()
     finally:
-        plans_mod.ask = original
+        projects_mod.ask = original
     assert "速学版" in seen["plan-propose-fast"], seen["plan-propose-fast"][-500:]
     assert "速学版" not in seen["plan-propose"]                    # 标准模式不带压缩块
     assert [p["id"] for p in fast["dropped"]] == ["位置编码"], fast["dropped"]
@@ -1046,84 +1049,87 @@ def plans_速学模式砍点且被砍的留痕():
 
 
 @case
-def plans_领域是第三种口径而不是第二个功能():
+def projects_领域是第三种口径而不是第二个功能():
     """「初始化一个领域的所有点」并进学习计划：换模板换文案，数据与链路完全共用。"""
     c, _, _ = with_inbox_node()
     seen = {}
-    from server import plans as plans_mod
-    original = plans_mod.ask
+    from server import projects as projects_mod
+    original = projects_mod.ask
 
     def spy(vault_, role, prompt, op="?"):
         seen[op] = prompt
         return json.dumps({"field": "深度学习", "stages": [
             {"name": "注意力结构", "points": [{"id": "自注意力", "load": "重"}]}]}, ensure_ascii=False)
 
-    plans_mod.ask = spy
+    projects_mod.ask = spy
     try:
-        r = c.post("/api/plans/propose", json={"goal": "大模型推理", "kind": "领域"})
+        r = c.post("/api/projects/propose", json={"goal": "大模型推理", "kind": "领域"})
     finally:
-        plans_mod.ask = original
+        projects_mod.ask = original
     assert list(seen) == ["plan-map"], list(seen)                  # 单独记账，也用单独的模板
     assert "这是地图，不是学习路线" in seen["plan-map"], seen["plan-map"][:300]
     assert r.json()["stages"][0]["name"] == "注意力结构"
 
-    # 存下来的仍然是同一份 plans.json，进度和时间账一个都不少
-    body = {"base_revision": 0, "plans": {"m": {"name": "大模型地图", "kind": "领域", "stages": [
-        {"name": "注意力结构", "points": [{"id": "自注意力", "load": "重"}, {"id": "a"}]}]}}}
-    assert c.put("/api/plans", json=body).status_code == 200
-    got = c.get("/api/plans").json()
-    assert got["doc"]["plans"]["m"]["kind"] == "领域"
-    assert got["progress"]["m"]["total"] == 2 and got["schedules"]["m"]["total_hours"] == 7.5, got
+    # 存下来的仍然是同一份 projects.json，进度和时间账一个都不少
+    body = {"base_revision": 0, "projects": {"m": {"name": "大模型地图", "lists": [
+        {"kind": "领域", "name": "全景",
+         "stages": [{"name": "注意力结构", "points": [{"id": "自注意力", "load": "重"}, {"id": "a"}]}]}]}}}
+    assert c.put("/api/projects", json=body).status_code == 200
+    got = c.get("/api/projects").json()
+    assert got["doc"]["projects"]["m"]["lists"][0]["kind"] == "领域"
+    assert got["progress"]["m"]["all"]["total"] == 2, got["progress"]
+    assert got["schedules"]["m"]["lists"][0]["total_hours"] == 7.5, got["schedules"]
 
 
 @case
-def plans_拆解知道这份计划里已经有什么():
+def projects_拆解知道这份计划里已经有什么():
     """不喂已有的点，模型就会把同一个目标再拆一遍近义词——靠 id 去重是拦不住的。"""
     c, _, _ = with_inbox_node()
     seen = {}
-    from server import plans as plans_mod
-    original = plans_mod.ask
+    from server import projects as projects_mod
+    original = projects_mod.ask
 
     def spy(vault_, role, prompt, op="?"):
         seen[op] = prompt
         return json.dumps({"stages": [{"name": "一", "points": [
             {"id": "自注意力"}, {"id": "位置编码"}]}]}, ensure_ascii=False)
 
-    plans_mod.ask = spy
+    projects_mod.ask = spy
     try:
-        r = c.post("/api/plans/propose", json={"goal": "x", "known_points": ["自注意力（自注意力机制）"]})
+        r = c.post("/api/projects/propose", json={"goal": "x", "known_points": ["自注意力（自注意力机制）"]})
     finally:
-        plans_mod.ask = original
+        projects_mod.ask = original
     assert "自注意力（自注意力机制）" in seen["plan-propose"], seen["plan-propose"][:400]
     # 同名的仍然被标出来：面板上默认划掉，不用人一个个点
     assert r.json()["duplicates"] == ["自注意力"], r.json()["duplicates"]
 
 
 @case
-def plans_时间账随进度现算且不落盘():
+def projects_时间账随进度现算且不落盘():
     c, vault, _ = with_inbox_node()
-    body = {"base_revision": 0, "plans": {"p": {
-        "name": "大模型方向", "target_date": "2099-01-01", "weekly_hours": 7,
-        "stages": [{"name": "一", "deadline": "2020-01-01",
-                    "points": [{"id": "a", "load": "重"}, {"id": "没建的"}]}]}}}
-    r = c.put("/api/plans", json=body)
+    body = {"base_revision": 0, "projects": {"p": {
+        "name": "大模型方向", "weekly_hours": 7, "lists": [
+            {"kind": "学习", "name": "主线", "target_date": "2099-01-01",
+             "stages": [{"name": "一", "deadline": "2020-01-01",
+                         "points": [{"id": "a", "load": "重"}, {"id": "没建的"}]}]}]}}}
+    r = c.put("/api/projects", json=body)
     assert r.status_code == 200, r.text
-    saved = r.json()["schedules"]["p"]
+    saved = r.json()["schedules"]["p"]["lists"][0]
     assert saved["total_hours"] == 7.5 and saved["remaining_hours"] == 2.5, saved   # a 已经建出来了
     assert saved["behind"] == 1, saved                            # 逾期阶段里「没建的」还欠着
-    read = c.get("/api/plans").json()
-    assert read["schedules"]["p"] == saved, (read["schedules"]["p"], saved)
-    # 派生结果不落盘：plans.json 里只有编排，没有小时数也没有 behind
-    raw = json.loads((vault / ".knowrary" / "plans.json").read_text("utf-8"))
+    read = c.get("/api/projects").json()
+    assert read["schedules"]["p"]["lists"][0] == saved, read["schedules"]["p"]
+    # 派生结果不落盘：projects.json 里只有编排，没有小时数也没有 behind
+    raw = json.loads((vault / ".knowrary" / "projects.json").read_text("utf-8"))
     assert "schedules" not in raw and "behind" not in json.dumps(raw), raw
 
 
 @case
-def plans_面试与学习用两套拆解口径():
+def projects_面试与学习用两套拆解口径():
     c, _, _ = with_inbox_node()
     seen = {}
-    from server import plans as plans_mod
-    original = plans_mod.ask
+    from server import projects as projects_mod
+    original = projects_mod.ask
 
     def spy(vault_, role, prompt, op="?"):
         seen[op] = prompt
@@ -1131,12 +1137,12 @@ def plans_面试与学习用两套拆解口径():
             {"name": "第一轮：八股必问", "points": [{"id": "垃圾回收器选择", "why": "几乎必问"}]}]},
             ensure_ascii=False)
 
-    plans_mod.ask = spy
+    projects_mod.ask = spy
     try:
-        c.post("/api/plans/propose", json={"goal": "吃透 Transformer", "coach": "大模型"})
-        c.post("/api/plans/propose", json={"goal": "JD 原文", "kind": "面试", "coach": "Java 后端开发"})
+        c.post("/api/projects/propose", json={"goal": "吃透 Transformer", "coach": "大模型"})
+        c.post("/api/projects/propose", json={"goal": "JD 原文", "kind": "面试", "coach": "Java 后端开发"})
     finally:
-        plans_mod.ask = original
+        projects_mod.ask = original
 
     assert set(seen) == {"plan-propose", "plan-interview"}, list(seen)   # op 分得开，账本才算得清
     assert "学习教练" in seen["plan-propose"] and "方向是大模型" in seen["plan-propose"]
@@ -1145,17 +1151,25 @@ def plans_面试与学习用两套拆解口径():
 
 
 @case
-def plans_教练侧写与类型存得住():
+def projects_教练侧写与口径存在清单上():
+    """kind 属于清单不属于项目：一个项目下可以同时有学习主线和面试清单。"""
     c, _, _ = with_inbox_node()
-    r = c.put("/api/plans", json={"base_revision": 0, "plans": {"p": {
-        "name": "Java 面试", "kind": "面试", "coach": "Java 后端开发",
-        "field": "Java面试", "goal": "JD 原文", "stages": []}}})
+    r = c.put("/api/projects", json={"base_revision": 0, "projects": {"java": {
+        "name": "Java 求职", "field": "Java", "lists": [
+            {"kind": "学习", "name": "主线", "goal": "补并发"},
+            {"kind": "面试", "name": "字节一面", "coach": "Java 后端开发",
+             "field": "Java面试", "goal": "JD 原文"}]}}})
     assert r.status_code == 200, r.text
-    got = c.get("/api/plans").json()["doc"]["plans"]["p"]
-    assert got["kind"] == "面试" and got["coach"] == "Java 后端开发", got
-    # 类型只有两种，别的一律拒
-    assert c.put("/api/plans", json={"base_revision": 1, "plans": {"p": {
-        "name": "x", "kind": "考研"}}}).status_code == 422
+    got = c.get("/api/projects").json()["doc"]["projects"]["java"]
+    assert [ls["kind"] for ls in got["lists"]] == ["学习", "面试"], got["lists"]
+    assert got["lists"][1]["coach"] == "Java 后端开发"
+    assert got["lists"][1]["field"] == "Java面试", "清单的领域要能和项目的分开"
+    # 口径只有三种，别的一律拒
+    assert c.put("/api/projects", json={"base_revision": 1, "projects": {"java": {
+        "name": "x", "lists": [{"kind": "考研"}]}}}).status_code == 422
+    # 项目 id 必须是 ASCII：它会成为对话留档的目录名
+    assert c.put("/api/projects", json={"base_revision": 1, "projects": {"计组": {
+        "name": "计组"}}}).status_code == 422
 
 
 @case
@@ -1183,11 +1197,11 @@ def quiz_面试口径换题面与考法():
 
 
 @case
-def plans_拆解走learn角色且只提议不落盘():
+def projects_拆解走learn角色且只提议不落盘():
     c, vault, _ = with_inbox_node()
     seen = {}
-    from server import plans as plans_mod
-    original = plans_mod.ask
+    from server import projects as projects_mod
+    original = projects_mod.ask
 
     def spy(vault_, role, prompt, op="?"):
         seen["role"] = role
@@ -1197,10 +1211,10 @@ def plans_拆解走learn角色且只提议不落盘():
             {"id": "自注意力", "name": "自注意力", "why": "还得建"},
         ]}], "notes": "两个点"}, ensure_ascii=False)
 
-    plans_mod.ask = spy
+    projects_mod.ask = spy
     try:
         before = md_digest(vault)
-        r = c.post("/api/plans/propose", json={"goal": "吃透 Transformer"})
+        r = c.post("/api/projects/propose", json={"goal": "吃透 Transformer"})
         assert r.status_code == 200, r.text
         data = r.json()
         assert seen["role"] == "learn", seen["role"]          # 拆大纲是"生成"，不是 review 的审校
@@ -1209,39 +1223,39 @@ def plans_拆解走learn角色且只提议不落盘():
         assert [p["id"] for p in data["stages"][0]["points"]] == ["a", "自注意力"], data
         assert data["existing"] == ["a"], data                # 标出哪些图里已经有
         # 只提议：既不写 plans.json，也不碰 md
-        assert not (vault / ".knowrary" / "plans.json").exists()
+        assert not (vault / ".knowrary" / "projects.json").exists()
         assert md_digest(vault) == before
     finally:
-        plans_mod.ask = original
+        projects_mod.ask = original
 
 
 @case
-def plans_拆解丢弃非法id与重复点():
+def projects_拆解丢弃非法id与重复点():
     c, _, _ = with_inbox_node()
-    original = stub_plan_llm(json.dumps({"stages": [
+    original = stub_project_llm(json.dumps({"stages": [
         {"name": "一", "points": [{"id": "自注意力"}, {"id": "有 空格"}, {"id": "a/b"}]},
         {"name": "二", "points": [{"id": "自注意力"}, {"id": "位置编码"}]},
         {"name": "三", "points": []},                          # 空阶段不生成
     ]}, ensure_ascii=False))
     try:
-        data = c.post("/api/plans/propose", json={"goal": "x"}).json()
+        data = c.post("/api/projects/propose", json={"goal": "x"}).json()
         got = [[p["id"] for p in st["points"]] for st in data["stages"]]
         assert got == [["自注意力"], ["位置编码"]], got
         assert sum("非法" in w for w in data["warnings"]) == 2, data["warnings"]
         assert any("重复" in w for w in data["warnings"]), data["warnings"]
     finally:
-        restore_plan_llm(original)
+        restore_project_llm(original)
 
 
 @case
-def plans_拆解乱答时返回空而不是500():
+def projects_拆解乱答时返回空而不是500():
     c, _, _ = with_inbox_node()
-    original = stub_plan_llm("我拒绝拆解。")
+    original = stub_project_llm("我拒绝拆解。")
     try:
-        r = c.post("/api/plans/propose", json={"goal": "x"})
+        r = c.post("/api/projects/propose", json={"goal": "x"})
         assert r.status_code == 200 and r.json()["stages"] == [], r.text
     finally:
-        restore_plan_llm(original)
+        restore_project_llm(original)
 
 
 # ---------------------------------------------------------------- 模型用量账本
@@ -1315,16 +1329,141 @@ def usage_没调用过时返回全零而不是报错():
 def coach_空图也排得出清单():
     """计划不依赖图里先有节点——这正是它的用途，所以空计划 + 空复习也要有事可做。"""
     c, _, _ = with_inbox_node()
-    c.put("/api/plans", json={"base_revision": 0, "plans": {"p": {
-        "name": "大模型方向", "daily_quota": 5,
+    c.put("/api/projects", json={"base_revision": 0, "projects": {"p": {
+        "name": "大模型方向", "daily_quota": 5, "lists": [{"kind": "学习", "name": "主线",
         "stages": [{"name": "第一阶段", "points": [
-            {"id": "自注意力", "why": "核心机制"}, {"id": "位置编码", "why": "顺序信息"}]}]}}})
+            {"id": "自注意力", "why": "核心机制"}, {"id": "位置编码", "why": "顺序信息"}]}]}]}}})
     data = c.get("/api/coach/today").json()
     unbuilt = [i for i in data["items"] if i["kind"] == "unbuilt"]
     assert [i["id"] for i in unbuilt] == ["自注意力", "位置编码"], unbuilt
     assert unbuilt[0]["why"] == "核心机制" and unbuilt[0]["stage"] == "第一阶段", unbuilt[0]
-    assert data["plans"][0]["stage"] == "第一阶段", data["plans"]
-    assert data["plans"][0]["built"] == 0 and data["plans"][0]["total"] == 2, data["plans"]
+    assert data["projects"][0]["stage"] == "第一阶段", data["projects"]
+    assert data["projects"][0]["built"] == 0 and data["projects"][0]["total"] == 2, data["projects"]
+
+
+@case
+def layout_项目画布与全局图互不影响():
+    """项目画布是工作台，全局图是成品图：**在项目画布上拖节点，全局 layout 的 revision 不变。**"""
+    c, vault, _ = with_inbox_node()
+    c.put("/api/projects", json={"base_revision": 0, "projects": {"demo": {
+        "name": "演示", "lists": [{"kind": "学习", "name": "主线", "stages": [
+            {"name": "一", "points": [{"id": "a"}, {"id": "还没建的"}]}]}]}}})
+
+    before = c.get("/api/layout").json()["layout"]["revision"]
+    proj = c.get("/api/layout?layout=demo").json()
+    assert proj["generated"] is True, "项目画布没有自动生成"
+    assert set(proj["layout"]["nodes"]) == {"a", "还没建的"}, proj["layout"]["nodes"]
+    # 还没建的点是幽灵占位，**不算孤立记录**——那正是它的含义
+    assert proj["layout"]["nodes"]["还没建的"]["state"] == "ghost"
+    assert proj["orphans"] == [], proj["orphans"]
+    assert len(proj["layout"]["groups"]) == 1, "一份清单一个分组框"
+
+    r = c.patch("/api/layout?layout=demo", json={"base_revision": proj["layout"]["revision"],
+                                                 "nodes": {"a": {"x": 999, "y": 888}}})
+    assert r.status_code == 200, r.text
+    assert c.get("/api/layout").json()["layout"]["revision"] == before, "动项目画布把全局图的 revision 碰了"
+    assert c.get("/api/layout?layout=demo").json()["layout"]["nodes"]["a"]["x"] == 999
+    # 文件真的分开了
+    assert (vault / ".knowrary" / "layouts" / "demo.json").exists()
+    assert "999" not in (vault / ".knowrary" / "layout.json").read_text("utf-8")
+
+    # 认不出的 layout 名一律拒，绝不让它拼出路径
+    assert c.get("/api/layout?layout=../../etc").status_code == 422
+    assert c.get("/api/layout?layout=nosuch").status_code == 404
+
+
+@case
+def projects_同步到全局只放该放的且不搬坐标():
+    c, vault, _ = with_inbox_node()
+    c.put("/api/projects", json={"base_revision": 0, "projects": {"demo": {
+        "name": "演示", "lists": [{"kind": "学习", "name": "主线", "stages": [
+            {"name": "一", "points": [{"id": "a"}, {"id": "d"}, {"id": "还没建的"}]}]}]}}})
+    # 在项目画布上把 a 拖到一个很远的位置
+    proj = c.get("/api/layout?layout=demo").json()["layout"]
+    c.patch("/api/layout?layout=demo", json={"base_revision": proj["revision"],
+                                             "nodes": {"a": {"x": 4321, "y": 1234}}})
+
+    rev = c.get("/api/layout").json()["layout"]["revision"]
+    out = c.post("/api/projects/demo/sync", json={"base_revision": rev}).json()
+    reasons = {x["id"]: x["reason"] for x in out["skipped"]}
+    assert "a" in reasons and "已经在全局图上了" in reasons["a"], out["skipped"]
+    assert "还没建的" in reasons and "还没建出来" in reasons["还没建的"], out["skipped"]
+    ids = [p["id"] for p in out["placed"]]
+    assert ids == ["d"], out                                   # 只放建好了、还没上图的那个（d 在 Inbox 里）
+    assert all(p["state"] == "draft" for p in out["placed"]), out["placed"]
+
+    # **坐标不搬**：项目画布里的排版是你为了想清楚而摆的，全局图有自己的结构
+    glob = c.get("/api/layout").json()["layout"]["nodes"]
+    assert glob["a"]["x"] != 4321, "把项目画布的坐标搬到全局图了"
+
+
+@case
+def projects_同步前先把重复候选摆出来():
+    """去重要发生在写入之前：只按 id 比对拦不住近义词，而"回头去欠账里清"最容易不做。"""
+    c, vault, _ = with_inbox_node()
+    # 两个名字高度相似的节点：一个已经在图上，一个在项目里等着同步
+    for nid, name in (("自注意力", "自注意力"), ("自注意力机制", "自注意力机制")):
+        core.write(vault / f"nodes/组A/{nid}.md",
+                   f"---\nname: {name}\nfield: 测试\ndesc: 说明\n---\n# {name}\n\n正文\n")
+    index_service.invalidate()
+    rev0 = c.get("/api/layout").json()["layout"]["revision"]
+    c.post("/api/place", json={"base_revision": rev0, "ids": ["自注意力"]})   # 先让一个上图
+    c.put("/api/projects", json={"base_revision": 0, "projects": {"demo": {
+        "name": "演示", "lists": [{"kind": "学习", "name": "主线",
+        "stages": [{"name": "一", "points": [{"id": "自注意力机制"}]}]}]}}})
+    rev = c.get("/api/layout").json()["layout"]["revision"]
+    out = c.post("/api/projects/demo/sync", json={"base_revision": rev}).json()
+    hit = [d for d in out["duplicates"] if d["id"] == "自注意力机制"]
+    assert hit and hit[0]["candidates"], out
+    assert hit[0]["candidates"][0]["id"] == "自注意力", hit
+    assert not [p for p in out["placed"] if p["id"] == "自注意力机制"], "命中重复候选还是直接放上去了"
+
+
+@case
+def projects_重叠_同一个点在两个项目里只出现一次且掌握度共用():
+    """项目是视角不是容器：NLP ⊃ Transformer 不需要任何父子字段，重叠自动成立。"""
+    c, vault, _ = with_inbox_node()
+    c.put("/api/projects", json={"base_revision": 0, "projects": {
+        "transformer": {"name": "Transformer", "lists": [{"stages": [
+            {"name": "一", "points": [{"id": "a"}, {"id": "没建的"}]}]}]},
+        "nlp": {"name": "NLP", "lists": [{"stages": [
+            {"name": "一", "points": [{"id": "a"}, {"id": "没建的"}, {"id": "另一个没建的"}]}]}]}}})
+    data = c.get("/api/projects").json()
+    # 两个项目各自算各自的总数，但同一个点的掌握度是同一个——同一个大脑
+    assert data["progress"]["transformer"]["all"]["total"] == 2
+    assert data["progress"]["nlp"]["all"]["total"] == 3
+    assert (data["progress"]["transformer"]["all"]["points"]["a"]
+            == data["progress"]["nlp"]["all"]["points"]["a"])
+
+    today = c.get("/api/coach/today").json()
+    ids = [i["id"] for i in today["items"]]
+    assert len(ids) == len(set(ids)), f"同一个点出现了不止一次：{ids}"
+    assert len(today["projects"]) == 2, today["projects"]
+
+    # 按项目过滤：只剩这个项目的建设项，但到期复习照旧（保鲜是全局的）
+    only = c.get("/api/coach/today?project=nlp").json()
+    assert {i["project"] for i in only["items"] if i["kind"] in ("unbuilt", "shell")} == {"nlp"}
+    assert [i["id"] for i in only["items"] if i["kind"] == "due"] == \
+           [i["id"] for i in today["items"] if i["kind"] == "due"], "复习被项目过滤掉了"
+    assert "本项目" in only["pools"] and "本项目" not in today["pools"], only["pools"]
+
+
+@case
+def projects_在一个项目里复习另一个项目也看得见():
+    """在 A 项目里复习了某个点，B 项目里它也是"已复习"。这是对的——同一个大脑。"""
+    c, vault, _ = with_inbox_node()
+    c.put("/api/projects", json={"base_revision": 0, "projects": {
+        "a1": {"name": "项目一", "lists": [{"stages": [{"name": "一", "points": [{"id": "a"}]}]}]},
+        "b2": {"name": "项目二", "lists": [{"stages": [{"name": "一", "points": [{"id": "a"}]}]}]}}})
+    before = c.get("/api/projects").json()["progress"]
+    assert before["a1"]["all"]["points"]["a"] == before["b2"]["all"]["points"]["a"]
+
+    for _ in range(4):                      # 连记 4 次「记得」，间隔序号推到「已掌握」那一档
+        c.post("/api/review/a", json={"grade": "记得"})
+    after = c.get("/api/projects").json()["progress"]
+    assert after["a1"]["all"]["points"]["a"] == "已掌握", after["a1"]["all"]["points"]
+    assert after["b2"]["all"]["points"]["a"] == "已掌握", "在 a1 里复习的，b2 里没看见"
+    assert before["b2"]["all"]["points"]["a"] == "学过", before["b2"]["all"]["points"]
 
 
 @case
@@ -1342,8 +1481,8 @@ def coach_同一个点只出现一次():
     c, vault, _ = with_inbox_node()
     c.post("/api/quiz/grade", json={"answers": [{**q("A 是什么", ["a"]), "grade": "忘了"}]})
     # a 同时是错题、到期、还被写进计划——只能按最高优先级出现一次
-    c.put("/api/plans", json={"base_revision": 0, "plans": {"p": {
-        "name": "p", "stages": [{"name": "一", "points": [{"id": "a"}, {"id": "没建的"}]}]}}})
+    c.put("/api/projects", json={"base_revision": 0, "projects": {"p": {
+        "name": "p", "lists": [{"stages": [{"name": "一", "points": [{"id": "a"}, {"id": "没建的"}]}]}]}}})
     items = c.get("/api/coach/today").json()["items"]
     hits = [i for i in items if i["id"] == "a"]
     assert len(hits) == 1 and hits[0]["kind"] == "wrong", hits
@@ -1356,10 +1495,9 @@ def coach_只有壳排在未建之后且按配额截断():
     core.write(vault / "nodes/组A/空壳.md",
                "---\nname: 空壳\nfield: 测试\nstatus: stub\ndesc: 还没写\n---\n# 空壳\n")
     index_service.invalidate()
-    c.put("/api/plans", json={"base_revision": 0, "plans": {"p": {
-        "name": "p", "daily_quota": 2,
-        "stages": [{"name": "一", "points": [
-            {"id": "空壳"}, {"id": "没建1"}, {"id": "没建2"}, {"id": "没建3"}]}]}}})
+    c.put("/api/projects", json={"base_revision": 0, "projects": {"p": {
+        "name": "p", "daily_quota": 2, "lists": [{"stages": [{"name": "一", "points": [
+            {"id": "空壳"}, {"id": "没建1"}, {"id": "没建2"}, {"id": "没建3"}]}]}]}}})
     picked = [(i["kind"], i["id"]) for i in c.get("/api/coach/today").json()["items"]
               if i["kind"] in ("unbuilt", "shell")]
     assert picked == [("unbuilt", "没建1"), ("unbuilt", "没建2")], picked   # 配额 2，未建优先
@@ -1368,11 +1506,11 @@ def coach_只有壳排在未建之后且按配额截断():
 @case
 def coach_建完的阶段就不再出现在清单里():
     c, vault, _ = with_inbox_node()
-    c.put("/api/plans", json={"base_revision": 0, "plans": {"p": {
-        "name": "p", "stages": [{"name": "一", "points": [{"id": "a"}, {"id": "b"}]}]}}})
+    c.put("/api/projects", json={"base_revision": 0, "projects": {"p": {
+        "name": "p", "lists": [{"stages": [{"name": "一", "points": [{"id": "a"}, {"id": "b"}]}]}]}}})
     data = c.get("/api/coach/today").json()
     assert not [i for i in data["items"] if i["kind"] in ("unbuilt", "shell")], data["items"]
-    assert data["plans"][0]["done"] is True and data["plans"][0]["stage"] == "", data["plans"]
+    assert data["projects"][0]["done"] is True and data["projects"][0]["stage"] == "", data["projects"]
 
 
 @case
@@ -1450,6 +1588,23 @@ def 边拐点存进layout并可删除():
     r = patch(c, {"base_revision": saved and get_layout(c)["layout"]["revision"], "edges": {key: None}})
     assert r.status_code == 200, r.text
     assert key not in get_layout(c)["layout"]["edges"], "删不掉手工拐点"
+
+
+@case
+def calendar_纯读且区间可控():
+    c, vault, _ = with_inbox_node()
+    c.post("/api/quiz/grade", json={"answers": [{**q("A 是什么", ["a"]), "grade": "忘了"}]})
+    before = {str(p): p.read_text("utf-8") for p in vault.rglob("*.md")}
+
+    data = c.get("/api/calendar?days=30").json()
+    assert data["from"] < data["to"], data
+    today = dt.date.today().isoformat()
+    assert data["days"][today]["answers"] == 1, data["days"].get(today)
+    assert data["days"][today]["reviews"] >= 1, data["days"].get(today)
+    assert data["streak"] >= 1, data
+
+    assert {str(p): p.read_text("utf-8") for p in vault.rglob("*.md")} == before, "日历改了 md"
+    assert c.get("/api/calendar?to=昨天").status_code == 422      # 看不懂的日期要拒，不是 500
 
 
 @case
@@ -1560,7 +1715,23 @@ def chat_留档一行一轮且不建索引():
     rows = [json.loads(x) for x in path.read_text("utf-8").splitlines()]
     assert [r["role"] for r in rows] == ["user", "assistant"], rows
     assert rows[1]["node_ids"] == ["a"], rows[1]            # 聊到哪些节点，按 id grep 回得来
-    assert path.parent.name == "chat" and path.suffix == ".jsonl"
+    # 没绑项目的对话落进 _scratch：「对话」是默认入口，冷启动时一个项目都还没有
+    assert path.parent.name == chat_mod.SCRATCH and path.suffix == ".jsonl", path
+
+
+@case
+def chat_留档按项目分目录():
+    c, vault, _ = with_inbox_node()
+    original, _ = stub_chat(["主线的事"])
+    try:
+        c.post("/api/chat", json={"project": "llm", "messages": [{"role": "user", "content": "讲讲 a"}]})
+    finally:
+        restore_chat(original)
+    from server import chat as chat_mod
+    assert chat_mod.chat_log_path(vault, "llm").exists(), "没按项目分目录"
+    assert not chat_mod.chat_log_path(vault).exists(), "绑了项目还往 _scratch 里写"
+    # 认不出的项目名一律归 _scratch，绝不让它拼出路径
+    assert chat_mod.chat_log_path(vault, "../../etc").parent.name == chat_mod.SCRATCH
 
 
 @case
@@ -1574,6 +1745,157 @@ def chat_连着调工具不会无限循环():
     from server import chat as chat_mod
     assert len(seen) == chat_mod.MAX_STEPS, len(seen)
     assert "到此为止" in json.dumps(sse_events(r), ensure_ascii=False)
+
+
+@case
+def chat_刷新后能把最近几轮读回来():
+    """会话状态在前端，刷一下就没了——但留档一直在，读回来就能接着聊。"""
+    c, vault, _ = with_inbox_node()
+    original, _ = stub_chat(["自注意力是这样的…"])
+    try:
+        c.post("/api/chat", json={"project": "llm", "messages": [{"role": "user", "content": "讲讲 a"}]})
+    finally:
+        restore_chat(original)
+    got = c.get("/api/chat/history?project=llm").json()["messages"]
+    assert [m["role"] for m in got] == ["user", "assistant"], got
+    assert got[0]["content"] == "讲讲 a" and "自注意力" in got[1]["content"], got
+    # 项目之间不串：另一个项目读出来是空的
+    assert c.get("/api/chat/history?project=other").json()["messages"] == []
+    assert c.get("/api/chat/history").json()["messages"] == []      # 没绑项目的那条线也是独立的
+
+
+@case
+def chat_多段会话各自独立且列表是聚合出来的():
+    """会话不是一张表：它只是留档行上的一个标签，列表从行里聚合。"""
+    c, vault, _ = with_inbox_node()
+    for sid, q in (("s1", "讲讲 a"), ("s1", "再说说 b"), ("s2", "模拟面试开始")):
+        original, _ = stub_chat([f"回答 {q}"])
+        try:
+            c.post("/api/chat", json={"project": "llm", "session": sid,
+                                      "messages": [{"role": "user", "content": q}]})
+        finally:
+            restore_chat(original)
+
+    rows = c.get("/api/chat/sessions?project=llm").json()["sessions"]
+    assert [r["id"] for r in rows] == ["s2", "s1"], rows        # 最近聊的排前面
+    assert rows[1]["turns"] == 4 and rows[0]["turns"] == 2, rows
+    assert rows[1]["title"] == "讲讲 a", rows[1]                 # 标题取第一句我说的话
+
+    # 不给 session 就取最近那一段——绝大多数时候人想接着的就是它
+    last = c.get("/api/chat/history?project=llm").json()["messages"]
+    assert [m["content"] for m in last] == ["模拟面试开始", "回答 模拟面试开始"], last
+    # 指定了就只读那一段
+    s1 = c.get("/api/chat/history?project=llm&session=s1").json()["messages"]
+    assert len(s1) == 4 and s1[0]["content"] == "讲讲 a", s1
+    # 会话表不存在：留档里只有一行行带标签的记录
+    from server import chat as chat_mod
+    raw = chat_mod.chat_log_path(vault, "llm").read_text("utf-8")
+    assert '"session": "s1"' in raw and "sessions" not in raw
+
+
+@case
+def chat_回答里带回聊到的节点():
+    """node_ids 从调试信息升级成了界面契约：「聊到哪、图上亮哪」靠它。"""
+    c, _, _ = with_inbox_node()
+    original, _ = stub_chat(["a 和 b 是这么回事"])
+    try:
+        r = c.post("/api/chat", json={"messages": [{"role": "user", "content": "讲讲"}]})
+    finally:
+        restore_chat(original)
+    done = [e for e in sse_events(r) if e["type"] == "done"][0]
+    assert set(done["node_ids"]) == {"a", "b"}, done["node_ids"]
+
+
+@case
+def chat_口径决定提示词与工具白名单():
+    """三档口径 ≠ 三个 agent：同一条链路，换的是提示词和能用哪几个工具。"""
+    c, _, _ = with_inbox_node()
+    seen = {}
+    from server import chat as chat_mod
+    original = chat_mod.llm_chat
+
+    def spy(vault, role, messages, op="chat", on_delta=None):
+        seen[op] = messages[0]["content"]
+        if on_delta:
+            on_delta("知道了")
+        return "知道了", {}
+
+    chat_mod.llm_chat = spy
+    try:
+        for stance in ("教练", "面试", "聊天"):
+            c.post("/api/chat", json={"stance": stance,
+                                      "messages": [{"role": "user", "content": "在吗"}]})
+    finally:
+        chat_mod.llm_chat = original
+
+    # 用量按口径分开记，否则算不清面试烧了多少
+    assert set(seen) == {"chat-教练", "chat-面试", "chat-聊天"}, list(seen)
+    assert "学习教练" in seen["chat-教练"] and "面试官" in seen["chat-面试"], "提示词没换"
+    # 工具表是从白名单渲染的：说明书和实际权限是同一份数据
+    assert "propose_changes" in seen["chat-教练"]
+    assert "propose_changes" not in seen["chat-面试"], "面试口径把入库工具写进说明书了"
+    assert "today" not in seen["chat-聊天"], "聊天口径不该有调度类工具"
+    assert "quiz" in seen["chat-面试"] and "quiz" not in seen["chat-聊天"]
+
+
+@case
+def chat_面试口径调不动入库工具():
+    """说明书里没有，实际也必须调不动——只写在提示词里等于没限制。"""
+    c, vault, _ = with_inbox_node()
+    before = {str(p): p.read_text("utf-8") for p in vault.rglob("*.md")}
+    changes = [{"type": "add_edge", "source": "a", "relation": "相关", "target": "b"}]
+    original, _ = stub_chat([tool_block("propose_changes", {"changes": changes}), "那我们继续面"])
+    try:
+        r = c.post("/api/chat", json={"stance": "面试",
+                                      "messages": [{"role": "user", "content": "帮我记一下"}]})
+    finally:
+        restore_chat(original)
+    evs = sse_events(r)
+    assert not [e for e in evs if e["type"] == "card"], "面试口径真的出了变更卡"
+    tool = [e for e in evs if e["type"] == "tool"][0]
+    assert "这一档口径下没有" in tool["summary"], tool["summary"]
+    assert {str(p): p.read_text("utf-8") for p in vault.rglob("*.md")} == before
+
+    # 教练口径下同一个调用照常能用
+    original, _ = stub_chat([tool_block("propose_changes", {"changes": changes}), "卡给你了"])
+    try:
+        r2 = c.post("/api/chat", json={"stance": "教练",
+                                       "messages": [{"role": "user", "content": "帮我记一下"}]})
+    finally:
+        restore_chat(original)
+    assert [e for e in sse_events(r2) if e["type"] == "card"], "教练口径也被挡了"
+
+
+@case
+def chat_能提议建项目但不落盘():
+    """全局对话要能"帮我建个项目"——但仍然只提议，卡片点了才写（4.4）。"""
+    c, vault, _ = with_inbox_node()
+    args = {"id": "nlp", "name": "NLP 方向", "field": "AI", "weekly_hours": 9,
+            "lists": [{"kind": "学习", "name": "主线", "goal": "吃透 Transformer",
+                       "target_date": "2026-12-15"},
+                      {"kind": "面试", "name": "字节一面", "goal": "JD"}]}
+    original, _ = stub_chat([tool_block("propose_project", args), "卡片放你那儿了，点了才建"])
+    try:
+        r = c.post("/api/chat", json={"messages": [{"role": "user", "content": "帮我建个 NLP 项目"}]})
+    finally:
+        restore_chat(original)
+    cards = [e for e in sse_events(r) if e["type"] == "project"]
+    assert len(cards) == 1, [e["type"] for e in sse_events(r)]
+    card = cards[0]["project"]
+    assert card["action"] == "create" and card["id"] == "nlp" and card["weekly_hours"] == 9, card
+    assert [ls["kind"] for ls in card["lists"]] == ["学习", "面试"], card["lists"]
+    assert card["lists"][0]["stages"] == [], "清单该是空的——拆点是另一步"
+    # **没落盘**
+    assert c.get("/api/projects").json()["doc"]["projects"] == {}, "提议就写进去了"
+
+    # 中文 id 会成为文件名和目录名，一律退回去让模型改
+    original, _ = stub_chat([tool_block("propose_project", {"id": "大模型", "name": "x"}), "好的"])
+    try:
+        r2 = c.post("/api/chat", json={"messages": [{"role": "user", "content": "建一个"}]})
+    finally:
+        restore_chat(original)
+    assert not [e for e in sse_events(r2) if e["type"] == "project"], "中文 id 也放过去了"
+    assert "ASCII" in [e for e in sse_events(r2) if e["type"] == "tool"][0]["summary"]
 
 
 @case

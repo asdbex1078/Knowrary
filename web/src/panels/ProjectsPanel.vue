@@ -1,11 +1,18 @@
 <script setup>
 /**
- * 学习计划：目标 → 要掌握的点。**计划是图谱的施工图，不是图谱的选集。**
+ * 项目：一组 node_id 的选集 + N 份清单。**项目是视角，不是容器。**
  *
- * 所以这里的知识点**允许指向图里还不存在的节点**——你要学 Transformer 的时候
- * 这些节点一个都没有，计划就是用来把它们填出来的。没建的点标成「未建」，点一下就去建。
+ * 它不拥有节点——掌握度和复习调度全局唯一（同一个大脑不可能"在 NLP 项目里记得、
+ * 在 Transformer 项目里忘了"）。所以两个项目选中同一个点时，两边看到的档位是同一个，
+ * 这是对的，不是 bug。
  *
- * 不做自动保存：计划是人手编排的文档，不是拖拽手势。边改边存只会把一半想完的东西写进去，
+ * 一个项目下挂 N 份清单，`kind` 属于清单：学习（按依赖顺序）/ 面试（按会怎么问）/
+ * 领域（按覆盖度铺地图）。它只决定用哪份拆解模板、哪套出题口径。
+ *
+ * 清单里的知识点**允许指向图里还不存在的节点**——你要学 Transformer 的时候
+ * 这些节点一个都没有，清单就是用来把它们填出来的。没建的点标成「未建」，点一下就去建。
+ *
+ * 不做自动保存：这是人手编排的文档，不是拖拽手势。边改边存只会把一半想完的东西写进去，
  * 还会和 base_revision 打架。改完点「保存」。
  */
 import { computed, ref, watch } from 'vue'
@@ -13,15 +20,15 @@ import Drawer from '../ui/Drawer.vue'
 import Icon from '../ui/Icon.vue'
 
 const props = defineProps({
-  doc: { type: Object, default: null },        // { revision, plans: {id: plan} }
-  progress: { type: Object, default: () => ({}) },
-  schedules: { type: Object, default: () => ({}) },   // 时间账，服务端现算：装不装得下、每阶段排到哪天
+  doc: { type: Object, default: null },        // { revision, projects: {id: project} }
+  progress: { type: Object, default: () => ({}) },    // { pid: { lists: [...], all: {...} } }
+  schedules: { type: Object, default: () => ({}) },   // { pid: { lists: [时间账] } }，服务端现算
   busy: { type: Boolean, default: false },
   proposal: { type: Object, default: null },   // AI 拆出来的清单，纯提议，人点了才进 draft
   proposing: { type: Boolean, default: false },
   fields: { type: Array, default: () => [] },   // 已有领域，建点时的落脚点从这里选
 })
-const emit = defineEmits(['save', 'goto', 'build', 'quiz', 'propose', 'refresh', 'close'])
+const emit = defineEmits(['save', 'goto', 'build', 'quiz', 'propose', 'refresh', 'switch', 'close'])
 
 // 可行性三档。判定在服务端做（除法而已，不问模型），这里只负责说人话。
 const VERDICT = {
@@ -44,6 +51,15 @@ const KIND = {
 }
 const kindOf = (k) => KIND[k] || KIND.学习
 
+// 学 / 考双态：五档掌握度的另一种编码，更适合一眼扫。
+// 「学」=这个点建出来了没有，「考」=我到底记没记住。两条线分开，一眼看出卡在哪一步。
+const STUDY_TIP = { 灰: '图里还没有这个节点', 红: '节点在，但还是空壳', 绿: '有正文了' }
+const EXAM_TIP = {
+  灰: '还没考过', 红: '错题本里有它，或上次答的是「忘了」',
+  黄: '上次「模糊」，或已经到复习时间了', 绿: '上次「记得」，也还没到期',
+}
+const stateOf = (id) => props.progress?.[pick.value]?.all?.states?.[id] || { study: '灰', exam: '灰' }
+
 // 五档掌握度 → 样式与提示。前两档是"还没建出来"，后三档才轮得到复习说话。
 const MASTERY = {
   未建: { cls: 'm-unbuilt', tip: '图里还没有这个节点，点右边去建' },
@@ -54,7 +70,8 @@ const MASTERY = {
 }
 
 const draft = ref({})          // 本地可编辑副本
-const pick = ref('')           // 当前选中的计划 id
+const pick = ref('')           // 当前选中的项目 id
+const li = ref(0)              // 当前看的是第几份清单
 const dirty = ref(false)
 const adding = ref({})         // { [stageIndex]: { id, why } }
 const dropped = ref(new Set()) // 提议里被我划掉的点
@@ -66,39 +83,63 @@ watch(() => props.proposal, (p) => {
 })
 
 watch(() => props.doc, (d) => {
-  draft.value = JSON.parse(JSON.stringify(d?.plans || {}))
+  draft.value = JSON.parse(JSON.stringify(d?.projects || {}))
   dirty.value = false
   if (!draft.value[pick.value]) pick.value = Object.keys(draft.value)[0] || ''
 }, { immediate: true, deep: false })
 
+watch(pick, (id) => { li.value = 0; emit('switch', id) })
+
 const ids = computed(() => Object.keys(draft.value))
-const plan = computed(() => draft.value[pick.value] || null)
-const stat = computed(() => props.progress?.[pick.value] || null)
-// 时间账跟着**已保存**的计划走：草稿还没提交，服务端算不到。改完存一次就刷新了。
-const sched = computed(() => props.schedules?.[pick.value] || null)
-const proposeReq = computed(() => ({ goal: plan.value?.goal, plan_name: plan.value?.name,
+const project = computed(() => draft.value[pick.value] || null)
+const lists = computed(() => project.value?.lists || [])
+const plan = computed(() => lists.value[li.value] || null)     // 当前这份清单
+const stat = computed(() => props.progress?.[pick.value]?.lists?.[li.value] || null)
+const whole = computed(() => props.progress?.[pick.value]?.all || null)
+// 时间账跟着**已保存**的内容走：草稿还没提交，服务端算不到。改完存一次就刷新了。
+const sched = computed(() => props.schedules?.[pick.value]?.lists?.[li.value] || null)
+const proposeReq = computed(() => ({ goal: plan.value?.goal, plan_name: project.value?.name,
                                      kind: plan.value?.kind, coach: plan.value?.coach,
                                      target_date: plan.value?.target_date,
-                                     weekly_hours: plan.value?.weekly_hours,
+                                     weekly_hours: project.value?.weekly_hours,
                                      known_points: (plan.value?.stages || []).flatMap(
                                        (st) => st.points.map((p) => (p.name && p.name !== p.id)
                                          ? `${p.id}（${p.name}）` : p.id)) }))
 // 编辑中的点还没提交，服务端算不出掌握度，先当「未建」显示
-const masteryOf = (id) => props.progress?.[pick.value]?.points?.[id] || '未建'
+const masteryOf = (id) => props.progress?.[pick.value]?.all?.points?.[id] || '未建'
 
 function touch() { dirty.value = true }
 
-function newPlan() {
-  let id = '新计划'
-  for (let i = 2; draft.value[id]; i += 1) id = `新计划${i}`
-  draft.value = { ...draft.value, [id]: { name: id, goal: '', kind: '学习', coach: '', field: '', daily_quota: 2,
-                                          created: new Date().toISOString().slice(0, 10),
-                                          target_date: null, weekly_hours: 7, stages: [] } }
+/** 项目 id 只允许 ASCII：它会成为对话留档的目录名（服务端也会拒非 ASCII）。 */
+function newProject() {
+  let id = 'p1'
+  for (let i = 2; draft.value[id]; i += 1) id = `p${i}`
+  draft.value = { ...draft.value, [id]: {
+    name: '新项目', field: '', weekly_hours: 7, daily_quota: 2,
+    created: new Date().toISOString().slice(0, 10),
+    lists: [newList('学习', '主线')] } }
   pick.value = id
+  li.value = 0
   touch()
 }
 
-function dropPlan() {
+function newList(kind = '学习', name = '') {
+  return { kind, name: name || `${kind}清单`, goal: '', coach: '', field: '', target_date: null, stages: [] }
+}
+
+function addList() {
+  project.value.lists.push(newList('学习', `清单 ${lists.value.length + 1}`))
+  li.value = lists.value.length - 1
+  touch()
+}
+
+function dropList() {
+  project.value.lists.splice(li.value, 1)
+  li.value = Math.max(0, li.value - 1)
+  touch()
+}
+
+function dropProject() {
   const rest = { ...draft.value }
   delete rest[pick.value]
   draft.value = rest
@@ -164,14 +205,15 @@ function dropPoint(si, pi) {
 </script>
 
 <template>
-  <Drawer side="left" title="学习计划" icon="checklist" storage-key="plans" :default-width="360"
+  <!-- storage-key 保持 plans：改了会把你已经拖好的抽屉宽度丢掉 -->
+  <Drawer side="left" title="项目" icon="checklist" storage-key="plans" :default-width="380"
           @close="emit('close')">
     <template #head-actions>
-      <button class="icon-btn ghost tiny" title="新建一个计划" @click="newPlan">
+      <button class="icon-btn ghost tiny" title="新建一个项目" @click="newProject">
         <Icon name="plus" :size="14" />
       </button>
       <button class="btn tiny" :class="{ primary: dirty }" :disabled="busy || !dirty"
-              :title="dirty ? '把计划写进 plans.json（不碰 md、不碰画布）' : '没有改动'"
+              :title="dirty ? '写进 projects.json（不碰 md、不碰画布）' : '没有改动'"
               @click="emit('save', draft)">
         <Icon name="save" :size="13" />{{ busy ? '保存中…' : dirty ? '保存' : '已保存' }}
       </button>
@@ -182,23 +224,42 @@ function dropPoint(si, pi) {
 
       <div v-else-if="!ids.length" class="empty">
         <Icon name="checklist" :size="30" :width="1.3" />
-        <span class="t">还没有学习计划</span>
-        <span class="s">先定个目标，比如「吃透 Transformer」，再把要掌握的点列出来。<br>
-          这些点**不需要图里已经有**——计划就是用来把它们填出来的。</span>
-        <button class="btn primary" style="margin-top: 12px" @click="newPlan">
-          <Icon name="plus" :size="14" />新建计划
+        <span class="t">还没有项目</span>
+        <span class="s">一个项目 = 一组要掌握的点 + N 份清单（学习主线 / 面试方案 / 领域地图）。<br>
+          清单里的点**不需要图里已经有**——它就是用来把它们填出来的。</span>
+        <button class="btn primary" style="margin-top: 12px" @click="newProject">
+          <Icon name="plus" :size="14" />新建项目
         </button>
       </div>
 
-      <template v-else-if="plan">
+      <template v-else-if="project">
         <select v-if="ids.length > 1" v-model="pick" class="plan-switch">
           <option v-for="id in ids" :key="id" :value="id">{{ draft[id].name || id }}</option>
         </select>
 
-        <label class="fld"><span class="lb">计划名称</span>
+        <label class="fld"><span class="lb">项目名称<i>id {{ pick }}</i></span>
+          <input v-model="project.name" @input="touch" /></label>
+
+        <!-- 清单 tab：学习主线 / 面试方案 / 领域地图并存，各算各的进度 -->
+        <div class="list-tabs">
+          <button v-for="(ls, i) in lists" :key="i" class="btn tiny" :class="{ primary: i === li }"
+                  :title="`${ls.kind}口径`" @click="li = i">
+            {{ ls.name || `清单 ${i + 1}` }}
+            <span class="kind-dot" :class="`k-${ls.kind}`">{{ ls.kind }}</span>
+          </button>
+          <button class="icon-btn ghost tiny" title="加一份清单（面试方案 / 领域地图…）" @click="addList">
+            <Icon name="plus" :size="13" />
+          </button>
+        </div>
+
+        <div v-if="whole && whole.total" class="dim" style="font-size: 11px; margin-bottom: 8px">
+          这个项目一共 {{ whole.total }} 个点（跨清单去重），已建 {{ whole.built }}
+        </div>
+
+        <label v-if="plan" class="fld"><span class="lb">清单名称</span>
           <input v-model="plan.name" @input="touch" /></label>
         <div class="two">
-          <label class="fld"><span class="lb">类型</span>
+          <label class="fld"><span class="lb">口径</span>
             <select v-model="plan.kind" :title="kindOf(plan.kind).hint" @change="touch">
               <option value="学习">学习</option>
               <option value="面试">面试</option>
@@ -220,8 +281,9 @@ function dropPoint(si, pi) {
         <div class="two">
           <label class="fld"><span class="lb">{{ plan.kind === '面试' ? '面试日期' : '目标日期' }}<i>可选</i></span>
             <input v-model="plan.target_date" placeholder="2026-12-15" @input="touch" /></label>
-          <label class="fld"><span class="lb">每周投入<i>小时</i></span>
-            <input v-model.number="plan.weekly_hours" type="number" min="1" max="80" @input="touch" /></label>
+          <label class="fld"><span class="lb">每周投入<i>项目级</i></span>
+            <input v-model.number="project.weekly_hours" type="number" min="1" max="80"
+                   title="你的时间只有一份，不会因为多开一份清单就变多" @input="touch" /></label>
         </div>
         <p class="dim" style="font-size: 11px; margin: -4px 0 8px; line-height: 1.6">
           这两个值是排时间表的依据：拆解时会一起发给模型，回来的每个点带一档负荷，
@@ -304,20 +366,22 @@ function dropPoint(si, pi) {
         </div>
         <label class="fld">
           <span class="lb">领域</span>
-          <input v-model="plan.field" list="kg-plan-fields" placeholder="例如：深度学习（决定知识点建到哪个目录）"
-                 @input="touch" />
+          <input v-model="plan.field" list="kg-plan-fields"
+                 :placeholder="project.field || '例如：深度学习（决定知识点建到哪个目录）'" @input="touch" />
           <datalist id="kg-plan-fields"><option v-for="f in fields" :key="f" :value="f" /></datalist>
-          <span class="hint">这份计划里「未建」的点，会建到 <code>nodes/{{ plan.field || '…' }}/</code> 下</span>
+          <span class="hint">这份清单里「未建」的点建到
+            <code>nodes/{{ plan.field || project.field || '…' }}/</code> 下；
+            留空就用项目的。面试考点建议用单独的领域，别淹掉主线</span>
         </label>
 
         <div class="two">
-          <label class="fld"><span class="lb">每天几个点</span>
-            <input v-model.number="plan.daily_quota" type="number" min="1" max="20" @input="touch" /></label>
+          <label class="fld"><span class="lb">每天几个点<i>项目级</i></span>
+            <input v-model.number="project.daily_quota" type="number" min="1" max="20" @input="touch" /></label>
           <label v-if="sched?.suggested_quota" class="fld"><span class="lb">建议每天</span>
             <button class="btn subtle" style="justify-content: center"
-                    :disabled="plan.daily_quota === sched.suggested_quota"
+                    :disabled="project.daily_quota === sched.suggested_quota"
                     :title="`按剩余 ${sched.remaining_points} 个点、还剩 ${sched.days_left} 天算`"
-                    @click="plan.daily_quota = sched.suggested_quota; touch()">
+                    @click="project.daily_quota = sched.suggested_quota; touch()">
               {{ sched.suggested_quota }} 个 · 采用
             </button>
           </label>
@@ -389,8 +453,11 @@ function dropPoint(si, pi) {
 
           <ul>
             <li v-for="(pt, pi) in stage.points" :key="pt.id" class="edge-row point">
-              <span class="chip" :class="MASTERY[masteryOf(pt.id)]?.cls"
-                    :title="MASTERY[masteryOf(pt.id)]?.tip">{{ masteryOf(pt.id) }}</span>
+              <!-- 学 / 考两个小方块：比一个五档 chip 信息量大，也更省横向空间 -->
+              <span class="duo" :title="`学：${STUDY_TIP[stateOf(pt.id).study]}\n考：${EXAM_TIP[stateOf(pt.id).exam]}`">
+                <i class="sq" :class="`s-${stateOf(pt.id).study}`">学</i><i
+                   class="sq" :class="`s-${stateOf(pt.id).exam}`">考</i>
+              </span>
               <span class="to" :class="{ link: masteryOf(pt.id) !== '未建' }"
                     @click="masteryOf(pt.id) !== '未建' && emit('goto', pt.id)">{{ pt.name || pt.id }}</span>
               <select v-model="pt.load" class="load-pick" title="学习负荷：排时间表的依据" @change="touch">
@@ -428,12 +495,16 @@ function dropPoint(si, pi) {
                                          coach: plan.coach })">
             <Icon name="play" :size="14" />{{ plan.kind === '面试' ? '模拟面试' : '考这个计划' }}
           </button>
-          <button class="btn subtle" @click="dropPlan"><Icon name="trash" :size="14" />删掉计划</button>
+          <button v-if="lists.length > 1" class="btn subtle" @click="dropList">
+            <Icon name="trash" :size="14" />删掉这份清单
+          </button>
+          <button class="btn subtle" @click="dropProject"><Icon name="trash" :size="14" />删掉项目</button>
         </div>
 
         <p class="dim" style="font-size: 11px; margin-top: 14px; line-height: 1.7">
-          计划只写进 <code>.knowrary/plans.json</code>，不碰 md 也不碰画布。
-          「未建」的点不会在 vault 里生出空壳——点「建」才真正创建节点。
+          项目只写进 <code>.knowrary/projects.json</code>，不碰 md 也不碰画布。
+          「未建」的点不会在 vault 里生出空壳——点「建」才真正创建节点。<br>
+          同一个点出现在两个项目里时，两边的掌握度是**同一个**——同一个大脑，这是对的。
         </p>
       </template>
     </template>

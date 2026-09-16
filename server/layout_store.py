@@ -14,9 +14,11 @@ from pathlib import Path
 from typing import Any
 
 from .contracts import LAYOUT_SCHEMA_VERSION, EdgeStyle, GroupBox, LayoutDoc, LayoutPatch, NodeBox
-from .paths import core, layout_path
+from .paths import DEFAULT_LAYOUT, core, layout_path
 
-_LOCK = threading.Lock()   # layout.json 的写串行化（读-改-写必须原子）
+# 所有 layout 共用一把锁。按名字分锁能多一点并发，但写 layout 本来就稀疏
+# （拖一下才写一次），一把锁换来的是"不用想锁表怎么回收"。
+_LOCK = threading.Lock()
 
 
 class LayoutBroken(Exception):
@@ -37,9 +39,9 @@ def _now() -> str:
     return dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
-def read_layout(vault: Path) -> LayoutDoc | None:
-    """读 layout.json；文件不存在返回 None，内容坏了抛 LayoutBroken。"""
-    path = layout_path(vault)
+def read_layout(vault: Path, name: str = DEFAULT_LAYOUT) -> LayoutDoc | None:
+    """读某一份 layout；文件不存在返回 None，内容坏了抛 LayoutBroken。"""
+    path = layout_path(vault, name)
     if not path.exists():
         return None
     try:
@@ -57,22 +59,30 @@ def initial_layout(index: dict) -> LayoutDoc:
     return LayoutDoc.model_validate(core.build_initial_layout(index))
 
 
-def write_layout(vault: Path, doc: LayoutDoc) -> LayoutDoc:
+def write_layout(vault: Path, doc: LayoutDoc, name: str = DEFAULT_LAYOUT) -> LayoutDoc:
     """revision +1、更新时间戳后原子写盘。"""
     doc.schema_version = LAYOUT_SCHEMA_VERSION
     doc.revision += 1
     doc.updated_at = _now()
-    core.write_json_atomic(layout_path(vault), doc.model_dump())
+    core.write_json_atomic(layout_path(vault, name), doc.model_dump())
     return doc
 
 
-def load_or_init(vault: Path, index: dict) -> tuple[LayoutDoc, bool]:
-    """没有 layout.json 时按 field / 子目录生成初始布局并落盘。返回 (布局, 是否刚生成)。"""
+def load_or_init(vault: Path, index: dict, name: str = DEFAULT_LAYOUT,
+                 project: dict | None = None) -> tuple[LayoutDoc, bool]:
+    """没有这份 layout 时生成一份初始的并落盘。返回 (布局, 是否刚生成)。
+
+    全局图按 field / 子目录铺；**项目画布按清单铺**，一份清单一个分组框，
+    还没建出来的点画成幽灵占位——项目画布从第一天就该是完整的施工图，
+    你能看见还没建的东西在哪，而不是一片空白（重构方案 §5A）。
+    """
     with _LOCK:
-        doc = read_layout(vault)
+        doc = read_layout(vault, name)
         if doc is not None:
             return doc, False
-        return write_layout(vault, initial_layout(index)), True
+        fresh = (LayoutDoc.model_validate(core.build_project_layout(project, index))
+                 if project is not None else initial_layout(index))
+        return write_layout(vault, fresh, name), True
 
 
 BACKUP_KEEP = 10
@@ -85,30 +95,31 @@ def is_bulk(patch: LayoutPatch) -> bool:
     return drops_group or many_nodes
 
 
-def backup_layout(vault: Path, doc: LayoutDoc) -> str:
+def backup_layout(vault: Path, doc: LayoutDoc, name: str = DEFAULT_LAYOUT) -> str:
     """把当前 layout 存一份快照再覆盖，只保留最近 BACKUP_KEEP 份。"""
     stamp = dt.datetime.now().strftime("%Y%m%d-%H%M%S")
-    path = vault / ".knowrary" / "backup" / f"layout-r{doc.revision}-{stamp}.json"
+    path = vault / ".knowrary" / "backup" / f"{name}-r{doc.revision}-{stamp}.json"
     core.write_json_atomic(path, doc.model_dump())
-    old = sorted(path.parent.glob("layout-r*.json"))[:-BACKUP_KEEP]
+    old = sorted(path.parent.glob(f"{name}-r*.json"))[:-BACKUP_KEEP]
     for stale in old:
         stale.unlink(missing_ok=True)
     return path.relative_to(vault).as_posix()
 
 
-def apply_patch(vault: Path, patch: LayoutPatch,
-                index: dict) -> tuple[LayoutDoc, list[dict[str, Any]], str | None]:
+def apply_patch(vault: Path, patch: LayoutPatch, index: dict, name: str = DEFAULT_LAYOUT,
+                project: dict | None = None) -> tuple[LayoutDoc, list[dict[str, Any]], str | None]:
     """读-校验-合并-写，全程持锁。返回 (新布局, 孤立引用诊断, 备份路径)。"""
     with _LOCK:
-        doc = read_layout(vault)
+        doc = read_layout(vault, name)
         if doc is None:
-            doc = initial_layout(index)
+            doc = (LayoutDoc.model_validate(core.build_project_layout(project, index))
+                   if project is not None else initial_layout(index))
         if patch.base_revision != doc.revision:
             raise RevisionConflict(doc)
-        backup = backup_layout(vault, doc) if is_bulk(patch) and doc.revision else None
+        backup = backup_layout(vault, doc, name) if is_bulk(patch) and doc.revision else None
         _merge(doc, patch)
         _assert_group_refs(doc)
-        return write_layout(vault, doc), find_orphans(doc, index, vault), backup
+        return write_layout(vault, doc, name), find_orphans(doc, index, vault), backup
 
 
 def _merge(doc: LayoutDoc, patch: LayoutPatch) -> None:

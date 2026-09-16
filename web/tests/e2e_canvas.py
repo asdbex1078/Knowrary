@@ -48,6 +48,14 @@ def get(url: str) -> dict:
         return json.loads(r.read())
 
 
+def send(url: str, body: dict, method: str = "POST") -> dict:
+    """给临时服务打一个写请求（用例里要先造点数据时用）。"""
+    req = urllib.request.Request(url, data=json.dumps(body).encode(), method=method)
+    req.add_header("Content-Type", "application/json")
+    with OPENER.open(req) as r:
+        return json.loads(r.read())
+
+
 def wait_for(url: str, timeout: float = 20.0) -> None:
     deadline = time.time() + timeout
     while time.time() < deadline:
@@ -228,6 +236,31 @@ async def case_initial(page: Page, ck: Check) -> None:
     base = ck.layout()
     ck.add("首次打开自动生成布局", base["revision"] == 1 and len(base["nodes"]) == 4,
            f"revision {base['revision']}，节点 {len(base['nodes'])}")
+
+
+async def case_morning_brief(page: Page, ck: Check) -> None:
+    """晨间简报：当天第一次打开弹一次，关掉之后当天不再弹。
+
+    它有一层全屏遮罩，**必须在别的用例之前关掉**，否则后面所有真鼠标事件都会打在遮罩上。
+    """
+    text = await poll(page, """(() => {
+      const b = document.querySelector('.brief');
+      return b ? b.textContent.replace(/\s+/g, ' ') : '';
+    })()""", lambda v: v and "今天" in v, timeout=12)
+    ck.add("开场自动弹晨间简报", bool(text) and "今天" in (text or ""), (text or "")[:70])
+    ck.add("简报里写了今天要复习什么", "待复习" in (text or "") or "没有到期" in (text or ""),
+           (text or "")[:70])
+
+    await page.ev("""(() => {
+      const b = [...document.querySelectorAll('.brief .btn')].find((x) => x.textContent.includes('待会儿'))
+        || document.querySelector('.brief .icon-btn');
+      b?.click(); return 'ok';
+    })()""")
+    gone = await poll(page, "!document.querySelector('.brief')", lambda v: v, timeout=8)
+    ck.add("关掉简报后遮罩消失", bool(gone), f"still={not gone}")
+
+    day = await page.ev("localStorage.getItem('knowrary-brief-day')")
+    ck.add("当天只弹一次（记的是日期不是布尔）", bool(day) and "-" in str(day), str(day))
 
 
 async def poll(page: Page, expr: str, ok, timeout: float = 8.0):
@@ -624,7 +657,7 @@ async def canvas_add(page: Page, text: str) -> None:
 
 
 async def switch_mode(page: Page, text: str) -> None:
-    """顶栏分段控件：结构 / 历史。"""
+    """顶栏分段控件：对话 / 项目图 / 全局图 / 历史（三期从两个模式扩到四个）。"""
     await click_text(page, ".topbar .seg button", text)
     await asyncio.sleep(0.6)
 
@@ -717,36 +750,192 @@ async def case_due_badge(page: Page, ck: Check) -> None:
     ck.add("复习完圆点熄灭", gone == "transparent", f"circle fill = {gone}")
 
 
-async def case_chat_panel(page: Page, ck: Check) -> None:
-    """聊天面板：开场白点得动、输入框收得住字。**不发消息**——那会真打 LLM。
-
-    这一条守的是"面板渲染不炸"：Vue 里一个模板错就整屏空白，只有真浏览器能发现。
+async def case_modes(page: Page, ck: Check) -> None:
+    """四个模式：对话 / 项目图 / 全局图 / 历史。**默认落在对话**——
+    启动成本最低的入口应该是默认入口。跑完停在全局图，后面的画布用例才有工具条可点。
     """
-    await open_rail(page, "聊天")
+    on = await page.ev("""(() => {
+      const b = document.querySelector('.topbar .seg button.on');
+      return b ? b.textContent.trim() : '';
+    })()""")
+    ck.add("默认落在「对话」", on == "对话", f"当前是「{on}」")
+
+    chat = await poll(page, """(() => {
+      const v = document.querySelector('.chat-view');
+      return v ? v.getBoundingClientRect().width : 0;
+    })()""", lambda v: v and v > 300, timeout=8)
+    ck.add("对话是全屏主体而不是抽屉", (chat or 0) > 300, f"{round(chat or 0)}px")
+    ck.add("对话模式下画布还在（只是让出宽度，不销毁）",
+           await page.ev("!!document.querySelector('.canvas')"), "canvas 仍在 DOM 里")
+
+    # 收起右侧的图 → 对话占满
+    await page.ev("""(() => {
+      const b = [...document.querySelectorAll('.chat-bar .icon-btn')].pop();
+      b?.click(); return 'ok';
+    })()""")
+    solo = await poll(page, """document.querySelector('.stage')?.classList.contains('solo')""",
+                      lambda v: v, timeout=6)
+    ck.add("图 pane 能收起", bool(solo), f"solo={solo}")
+    await page.ev("""(() => { [...document.querySelectorAll('.chat-bar .icon-btn')].pop()?.click(); })()""")
+
+    await switch_mode(page, "历史")
+    ck.add("切得到历史视图",
+           await page.ev("""document.querySelector('.topbar .seg button.on')?.textContent.trim() === '历史'"""),
+           "历史 tab 生效")
+
+    await switch_mode(page, "全局图")
+    left = await page.ev("!document.querySelector('.chat-view')")
+    ck.add("离开对话后全屏对话收起", bool(left), f"chat-view 还在={not left}")
+    await wait_render(page, 4)
+
+
+async def case_project_view(page: Page, ck: Check, api: str) -> None:
+    """项目画布（四期）：**自己一份 layout**，还没建的点画成幽灵占位。
+
+    - 在项目画布上拖节点，全局 layout 的 revision 不变（两份文件各走各的）
+    - 「同步到全局」只放已建成、还没上图的点，落 draft，**坐标不搬**
+    - 顶栏「↗ 全局图」把项目的点在整张图上高亮——两个视角之间唯一需要的桥
+    """
+    send(f"{api}/api/projects", {"base_revision": 0, "projects": {"demo": {
+        "name": "演示项目", "lists": [{"kind": "学习", "name": "主线", "stages": [
+            {"name": "一", "points": [{"id": "甲"}, {"id": "乙"}, {"id": "还没建的"}]}]}]}}},
+         method="PUT")
+    await page.ev("location.reload()")
+    await asyncio.sleep(2.2)
+    await page.ev("""(() => { document.querySelector('.brief .icon-btn')?.click(); })()""")
+
+    picked = await poll(page, """document.querySelector('.topbar .proj-switch')?.value || ''""",
+                        lambda v: v == "demo", timeout=10)
+    ck.add("顶栏有项目切换器且选中了项目", picked == "demo", f"值={picked}")
+
+    opts = await page.ev("""JSON.stringify([...document.querySelectorAll('.proj-switch option')]
+      .map(o => o.value))""")
+    ck.add("切换器里有「全局」那一档（不绑项目的对话落 _scratch）",
+           "" in json.loads(opts or "[]"), str(opts))
+    ck.add("顶栏只有一个「全局图」（tab 自己就是那座桥，不另设按钮）",
+           await page.ev("""[...document.querySelectorAll('.topbar button')]
+             .filter(b => b.textContent.trim() === '全局图').length""") == 1,
+           "两个都叫「全局图」只会让人问为什么有两个")
+
+    glob_rev = get(f"{api}/api/layout")["layout"]["revision"]
+    await switch_mode(page, "项目图")
+    ids = await poll(page, """JSON.stringify([...document.querySelectorAll('[data-shape="kg-node"]')]
+      .map((el) => el.getAttribute('data-cell-id')))""", lambda v: v and v != "[]", timeout=10)
+    only = set(json.loads(ids or "[]"))
+    ck.add("项目画布只画这个项目里的点（含幽灵）", only == {"甲", "乙", "还没建的"}, f"{sorted(only)}")
+
+    ghost = await page.ev("""(() => {
+      const el = document.querySelector('[data-cell-id="还没建的"] rect');
+      return el ? `${el.getAttribute('stroke-dasharray')}|${el.getAttribute('fill')}` : '';
+    })()""")
+    ck.add("还没建的点画成幽灵（更淡的虚线、透明底）", "2 5" in (ghost or ""), str(ghost))
+
+    # 项目画布有自己的一份 layout：拖它不碰全局图
+    proj = get(f"{api}/api/layout?layout=demo")["layout"]
+    send(f"{api}/api/layout?layout=demo", {"base_revision": proj["revision"],
+                                           "nodes": {"甲": {"x": 4321, "y": 1234}}}, method="PATCH")
+    ck.add("动项目画布不碰全局图的 revision",
+           get(f"{api}/api/layout")["layout"]["revision"] == glob_rev,
+           f"全局 revision 仍是 {glob_rev}")
+
+    clicked = await page.ev("""(() => {
+      const bar = document.querySelector('.sync-bar');
+      if (!bar) return 'no-bar';
+      const b = [...bar.querySelectorAll('.btn')].find((x) => x.textContent.includes('同步'));
+      if (!b) return 'no-btn:' + bar.textContent.slice(0, 40);
+      b.click(); return 'ok';
+    })()""")
+    ck.add("项目画布上有「同步到全局」", clicked == "ok", str(clicked))
+    # 这个项目的点本来就都在全局图上，所以正常结果是"N 个本来就在图上"，不是"放上去了 N 个"
+    msg = await poll(page, """(() => {
+      const b = document.querySelector('.banner') || document.querySelector('.toast-text');
+      return b ? b.textContent.trim() : '';
+    })()""", lambda v: v and any(k in v for k in ("图上", "还没建", "草稿", "没有需要", "失败")), timeout=12)
+    ck.add("「同步到全局」给出逐条结果", bool(msg), (msg or "")[:80])
+    ck.add("同步不搬坐标（全局图里的甲不是项目画布那个位置）",
+           get(f"{api}/api/layout")["layout"]["nodes"].get("甲", {}).get("x") != 4321,
+           "全局图有自己的结构")
+
+    # 全局图那座桥就是 tab 本身：选着项目时切过去会顺手高亮那些点（不另设按钮）
+    await switch_mode(page, "全局图")
+    msg = await poll(page, """(() => {
+      const t = [...document.querySelectorAll('.toast-text')].map(x => x.textContent.trim());
+      return JSON.stringify(t);
+    })()""", lambda v: v and "高亮" in v, timeout=8)
+    dim = await page.ev("""document.querySelectorAll('.x6-graph [data-shape="kg-node"]').length""")
+    ck.add("切到全局图会高亮当前项目的点", bool(msg) and "高亮" in msg, (msg or "")[:90] + f" | {dim} 个节点")
+    await wait_render(page, 4)
+
+
+async def case_calendar(page: Page, ck: Check) -> None:
+    """学习日历：热力图画得出来、点某天能看明细。**全派生，点一圈不该写任何文件。**"""
+    await open_rail(page, "日历")
     text = await poll(page, """(() => {
-      const a = document.querySelector('aside.study .chat-wrap');
+      const a = document.querySelector('aside.study');
+      return a ? a.textContent.replace(/\s+/g, ' ') : '';
+    })()""", lambda v: v and "连续" in v, timeout=12)
+    ck.add("日历面板开得出来", "连续" in (text or ""), (text or "")[:60])
+
+    cells = await page.ev("document.querySelectorAll('.heat .heat-cell').length")
+    ck.add("热力图铺出格子", (cells or 0) > 30, f"{cells} 格")
+
+    lit = await page.ev("""document.querySelectorAll('.heat .heat-cell:not(.lv-0):not(.void)').length""")
+    ck.add("有动静的日子被点亮", (lit or 0) >= 1, f"{lit} 天")
+
+    before = ck.layout()["revision"]
+    await page.ev("""(() => {
+      const c = document.querySelector('.heat .heat-cell:not(.lv-0):not(.void)');
+      c?.click(); return 'ok';
+    })()""")
+    day = await poll(page, """(() => {
+      const d = document.querySelector('.cal-day');
+      return d ? d.textContent.replace(/\s+/g, ' ') : '';
+    })()""", lambda v: v and len(v) > 8, timeout=8)
+    ck.add("点某天看得到当天明细", bool(day), (day or "")[:60])
+    ck.add("看日历不写任何文件", ck.layout()["revision"] == before, f"revision 仍是 {before}")
+    # 收拾干净：面板开着会盖住画布，后面右键菜单的落点就点不着了
+    await open_rail(page, "日历")
+
+
+async def case_chat_view(page: Page, ck: Check) -> None:
+    """对话视图：开场白点得动、输入框收得住字、会话条在。**不发消息**——那会真打 LLM。
+
+    这一条守的是"视图渲染不炸"：Vue 里一个模板错就整屏空白，只有真浏览器能发现。
+    """
+    await switch_mode(page, "对话")
+    text = await poll(page, """(() => {
+      const a = document.querySelector('.chat-view .chat-wrap');
       return a ? a.textContent.replace(/\s+/g, ' ') : '';
     })()""", lambda v: v and "聊着学" in v, timeout=12)
-    ck.add("聊天面板开得出来", "聊着学" in (text or ""), (text or "")[:60])
+    ck.add("对话视图渲染出来了", "聊着学" in (text or ""), (text or "")[:60])
 
-    starters = await page.ev("""document.querySelectorAll('aside.study .starters .btn').length""")
+    starters = await page.ev("""document.querySelectorAll('.chat-view .starters .btn').length""")
     ck.add("开场白按钮摆出来了", (starters or 0) >= 4, f"{starters} 个")
+
+    stances = await page.ev("""JSON.stringify([...document.querySelectorAll('.chat-bar select')]
+      .map(s => [...s.options].map(o => o.value)))""")
+    ck.add("会话条上能切口径（教练 / 面试 / 聊天）",
+           "面试" in (stances or ""), str(stances)[:80])
+
+    ck.add("会话条上有「新的一段」",
+           await page.ev("""[...document.querySelectorAll('.chat-bar .btn')]
+             .some((b) => b.textContent.includes('新的一段'))"""), "多段对话切得动")
 
     # 点「讲个概念」只填输入框、不发出去（它以「：」结尾）
     await page.ev("""(() => {
-      const b = [...document.querySelectorAll('aside.study .starters .btn')]
+      const b = [...document.querySelectorAll('.chat-view .starters .btn')]
         .find((x) => x.textContent.includes('讲个概念'));
       if (!b) return 'missing';
       b.click(); return 'ok';
     })()""")
     # Vue 渲染是异步的：点完立刻读 value 会读到空，要等它刷一帧
-    filled = await poll(page, """document.querySelector('aside.study .chat-input textarea')?.value || ''""",
+    filled = await poll(page, """document.querySelector('.chat-view .chat-input textarea')?.value || ''""",
                         lambda v: v and "我想搞懂" in v, timeout=8)
     ck.add("要补话的开场白只填进输入框", "我想搞懂" in (filled or ""), str(filled)[:40])
 
-    sendable = await page.ev("""!document.querySelector('aside.study .chat-input .icon-btn.primary')?.disabled""")
+    sendable = await page.ev("""!document.querySelector('.chat-view .chat-input .icon-btn.primary')?.disabled""")
     ck.add("有字之后发送键才亮", bool(sendable), f"disabled={not sendable}")
-    await open_rail(page, "学习 · 今日")      # 收拾干净，别影响后面的用例
+    await switch_mode(page, "全局图")      # 收拾干净，后面的用例要画布
 
 
 async def case_drag_from_inbox(page: Page, ck: Check, vault: Path) -> None:
@@ -958,7 +1147,7 @@ async def case_history(page: Page, ck: Check, vault: Path) -> None:
     ck.add("历史视图不修改结构布局", ck.layout()["revision"] == before,
            f"revision 仍是 {before}")
 
-    await switch_mode(page, "结构")
+    await switch_mode(page, "全局图")
     back = await poll(page, "document.querySelectorAll('[data-shape=\"kg-node\"]').length",
                       lambda v: (v or 0) >= 4, timeout=15)
     ck.add("切回结构视图恢复原图", (back or 0) >= 4, f"{back} 个节点")
@@ -1332,6 +1521,8 @@ async def case_group_doc(page: Page, ck: Check, vault: Path) -> None:
 async def scenarios(page: Page, api: str, results: list) -> None:
     ck = Check(api)
     await case_initial(page, ck)
+    await case_morning_brief(page, ck)
+    await case_modes(page, ck)
     await case_aggregate(page, ck)
     after_node = await case_drag_node(page, ck)
     after_group = await case_drag_group(page, ck, after_node)
@@ -1346,7 +1537,9 @@ async def scenarios(page: Page, api: str, results: list) -> None:
     await case_rendered(page, ck)
     await case_inbox_place(page, ck, VAULT_HOLDER[0])
     await case_due_badge(page, ck)
-    await case_chat_panel(page, ck)
+    await case_project_view(page, ck, api)
+    await case_calendar(page, ck)
+    await case_chat_view(page, ck)
     await case_drag_from_inbox(page, ck, VAULT_HOLDER[0])
     await case_finalize(page, ck)
     await case_image(page, ck, VAULT_HOLDER[0])

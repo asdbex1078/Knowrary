@@ -597,16 +597,143 @@ def 掌握度五档全部算得出来():
 
 
 @case
-def 计划进度按点汇总且不落盘():
-    plan = {"stages": [{"points": [{"id": "a"}, {"id": "没建的"}]},
-                       {"points": [{"id": "a"}, {"id": "也没建"}]}]}   # a 跨阶段重复出现
+def 清单进度按点汇总且不落盘():
+    stages = [{"points": [{"id": "a"}, {"id": "没建的"}]},
+              {"points": [{"id": "a"}, {"id": "也没建"}]}]            # a 跨阶段重复出现
     index = {"nodes": [{"id": "a", "learned": "2026-09-14"}]}
     log = {"nodes": {"a": {"reviews": [{"date": "2026-09-15", "grade": "记得"}], "step": 1}}}
-    got = core.progress_of(plan, index, log, _dt.date(2026, 9, 15))
+    got = core.progress_of(stages, index, log, _dt.date(2026, 9, 15))
     assert got["total"] == 3 and got["built"] == 1, got               # 去重后 3 个点，建好 1 个
     assert got["counts"]["未建"] == 2, got["counts"]
     assert got["points"]["a"] == "学过", got["points"]
-    assert core.point_ids({"plans": {"p": plan}}) == ["a", "没建的", "也没建"]
+    doc = {"projects": {"p": {"lists": [{"stages": stages}]}}}
+    assert core.point_ids(doc) == ["a", "没建的", "也没建"]
+
+
+@case
+def 日历全部派生且热力不算模型调用():
+    """五期：日历不新增任何记录，四份现有数据拼出来。"""
+    vault = make_vault({"nodes/a.md": node_md("A", extra="learned: 2026-09-15\n"),
+                        "nodes/b.md": node_md("B", extra="learned: 2026-09-15\n"),
+                        "nodes/c.md": node_md("C", extra="learned: 2026-08-01\n")})
+    (vault / ".knowrary").mkdir(exist_ok=True)
+    (vault / ".knowrary" / "review-log.json").write_text(json.dumps({"nodes": {
+        "a": {"reviews": [{"date": "2026-09-15", "grade": "记得"},
+                          {"date": "2026-09-16", "grade": "忘了"}], "step": 1, "lapses": 1}}}), "utf-8")
+    (vault / ".knowrary" / "quiz-log.json").write_text(json.dumps({"answers": [
+        {"ts": "2026-09-16T03:00:00Z", "points": ["a"], "grade": "忘了", "stem": "A 是什么"}]}), "utf-8")
+    (vault / ".knowrary" / "llm-usage.json").write_text(json.dumps({"recent": [], "by_day": {
+        "2026-09-14": {"calls": 9, "cost_usd": 1.5}}}), "utf-8")
+
+    index = core.build_index(vault, None).data
+    cal = core.build_calendar(vault, index, _dt.date(2026, 9, 1), _dt.date(2026, 9, 16))
+    assert cal["days"]["2026-09-15"]["built"] == 2, cal["days"]["2026-09-15"]
+    assert "2026-08-01" not in cal["days"], "区间外的也算进来了"
+    assert cal["days"]["2026-09-16"]["reviews"] == 1 and cal["days"]["2026-09-16"]["lapses"] == 1
+    assert cal["days"]["2026-09-16"]["answers"] == 1 and cal["days"]["2026-09-16"]["wrong"] == 1
+    assert cal["days"]["2026-09-14"]["cost_usd"] == 1.5 and cal["days"]["2026-09-14"]["calls"] == 9
+
+    # 只调了模型、没学东西的那天**不算"有动静"**：那是花销不是学习量
+    assert cal["totals"]["active_days"] == 2, cal["totals"]
+    assert cal["busiest"] == "2026-09-15", cal["busiest"]
+    # 明细能点开看
+    assert {n["id"] for n in cal["detail"]["2026-09-15"]["built"]} == {"a", "b"}
+    assert cal["detail"]["2026-09-16"]["reviews"][0]["grade"] == "忘了"
+
+
+@case
+def 日历的连续天数不把今天算成断档():
+    days = {"2026-09-14": {"built": 1, "reviews": 0, "answers": 0},
+            "2026-09-15": {"built": 0, "reviews": 2, "answers": 0}}
+    # 今天还没动手 ≠ 断了——早上八点打开就显示"断了"太蠢
+    assert core.streak(days, _dt.date(2026, 9, 16)) == 2
+    days["2026-09-16"] = {"built": 1, "reviews": 0, "answers": 0}
+    assert core.streak(days, _dt.date(2026, 9, 16)) == 3
+    assert core.streak({}, _dt.date(2026, 9, 16)) == 0
+
+
+@case
+def 学考双态_错题本压过自评():
+    """两个数据源可以合法地互相矛盾：模型判我答漏了，我自评点了「记得」。
+    这时显示绿就把错题盖住了，而错题本的全部价值恰恰在这里。"""
+    today = _dt.date(2026, 9, 16)
+    node = {"id": "a", "learned": "2026-09-01"}
+    remembered = {"reviews": [{"date": "2026-09-15", "grade": "记得"}], "step": 3}
+    assert core.exam_state(node, remembered, False, today) == "绿"
+    assert core.exam_state(node, remembered, True, today) == "红", "错题本没压过自评"
+    # 各档
+    assert core.exam_state(node, None, False, today) == "灰"            # 没考过
+    assert core.exam_state(None, None, False, today) == "灰"            # 还没建出来，谈不上考
+    assert core.exam_state(node, {"reviews": [{"date": "2026-09-15", "grade": "忘了"}]},
+                           False, today) == "红"
+    assert core.exam_state(node, {"reviews": [{"date": "2026-09-15", "grade": "模糊"}]},
+                           False, today) == "黄"
+    # 记得但已经到期 → 黄（该再考了），不是绿
+    stale = {"reviews": [{"date": "2026-08-01", "grade": "记得"}], "step": 1}
+    assert core.exam_state(node, stale, False, today) == "黄"
+
+
+@case
+def 学考双态_学只看建没建():
+    assert core.study_state(None) == "灰"                               # 图里没有
+    assert core.study_state({"id": "a", "virtual": True}) == "灰"        # 只是被引用的占位
+    assert core.study_state({"id": "a", "stub": True}) == "红"           # 只有壳
+    assert core.study_state({"id": "a"}) == "绿"
+    # 进度里带着双态，和五档掌握度是同一份数据的两种编码
+    index = {"nodes": [{"id": "a", "learned": "2026-09-01"}]}
+    got = core.progress_of([{"points": [{"id": "a"}, {"id": "没建的"}]}], index,
+                           {"nodes": {}}, _dt.date(2026, 9, 16), wrong={"a"})
+    assert got["states"]["a"] == {"study": "绿", "exam": "红"}, got["states"]
+    assert got["states"]["没建的"] == {"study": "灰", "exam": "灰"}, got["states"]
+
+
+@case
+def 项目里多份清单的进度各算各的且合并时去重():
+    """一个项目可以同时有学习主线和面试清单，两者重叠是常态——合并时同一个点只能算一次。"""
+    project = {"lists": [
+        {"kind": "学习", "stages": [{"points": [{"id": "a"}, {"id": "b"}]}]},
+        {"kind": "面试", "stages": [{"points": [{"id": "a"}, {"id": "c"}]}]}]}
+    index = {"nodes": [{"id": "a", "learned": "2026-09-14"}]}
+    log = {"nodes": {}}
+    got = core.progress_of_project(project, index, log, _dt.date(2026, 9, 15))
+    assert [p["total"] for p in got["lists"]] == [2, 2], got["lists"]
+    assert got["all"]["total"] == 3, got["all"]                       # a 只算一次，不是 4
+    assert got["all"]["built"] == 1, got["all"]
+
+
+@case
+def 项目是视角不是容器_重叠自动成立():
+    """同一个点属于两个项目时，掌握度是同一个——复习调度全局唯一，项目只是过滤器。"""
+    index = {"nodes": [{"id": "Transformer", "learned": "2026-09-01"}]}
+    log = {"nodes": {"Transformer": {"reviews": [{"date": "2026-09-14", "grade": "记得"}], "step": 5}}}
+    doc = {"projects": {
+        "transformer": {"lists": [{"stages": [{"points": [{"id": "Transformer"}]}]}]},
+        "nlp": {"lists": [{"stages": [{"points": [{"id": "Transformer"}, {"id": "分词"}]}]}]}}}
+    prog = core.all_progress(doc, index, log, _dt.date(2026, 9, 15))
+    a = prog["transformer"]["all"]["points"]["Transformer"]
+    b = prog["nlp"]["all"]["points"]["Transformer"]
+    assert a == b == "已掌握", (a, b)                                  # 不需要任何父子字段
+    assert prog["nlp"]["all"]["total"] == 2 and prog["transformer"]["all"]["total"] == 1
+
+
+@case
+def v1的plans读成v2的projects且读不写盘():
+    vault = make_vault({"nodes/a.md": node_md("A")})
+    (vault / ".knowrary").mkdir(exist_ok=True)
+    legacy = vault / ".knowrary" / "plans.json"
+    legacy.write_text(json.dumps({"schema_version": 1, "revision": 7, "plans": {"新计划2": {
+        "name": "Transformer", "kind": "面试", "goal": "JD", "coach": "大模型", "field": "AI",
+        "weekly_hours": 10, "daily_quota": 3, "target_date": "2026-12-01",
+        "stages": [{"name": "一", "points": [{"id": "a", "load": "重"}]}]}}}, ensure_ascii=False),
+        encoding="utf-8")
+    doc = core.load_projects(vault)
+    assert list(doc["projects"]) == ["transformer"], list(doc["projects"])   # id 压成 ASCII，取自显示名
+    pr = doc["projects"]["transformer"]
+    assert pr["legacy_id"] == "新计划2" and pr["weekly_hours"] == 10 and pr["daily_quota"] == 3
+    assert len(pr["lists"]) == 1 and pr["lists"][0]["kind"] == "面试"        # kind 降到清单一层
+    assert pr["lists"][0]["target_date"] == "2026-12-01"                     # 截止日跟着清单走
+    assert pr["lists"][0]["stages"][0]["points"][0]["load"] == "重"
+    assert doc["revision"] == 7 and not core.projects_path(vault).exists(), "读了一下就写盘了"
 
 
 @case
@@ -642,15 +769,15 @@ def 用量按本地日期分桶():
 
 @case
 def 时间账按负荷排阶段并判可行性():
-    plan = {"target_date": "2026-10-01", "weekly_hours": 7,      # 16 天 × 1h/天 = 16 小时
-            "stages": [{"name": "一", "points": [{"id": "a", "load": "重"}, {"id": "b", "load": "轻"}]},
-                       {"name": "二", "points": [{"id": "c", "load": "中"}]}]}
+    ls = {"target_date": "2026-10-01",                          # 16 天 × 1h/天 = 16 小时
+          "stages": [{"name": "一", "points": [{"id": "a", "load": "重"}, {"id": "b", "load": "轻"}]},
+                     {"name": "二", "points": [{"id": "c", "load": "中"}]}]}
     today = _dt.date(2026, 9, 15)
-    got = core.schedule_of(plan, set(), today)
+    got = core.schedule_of(ls, set(), 7, today)
     assert got["total_hours"] == 8.5 and got["remaining_hours"] == 8.5, got   # 5 + 1 + 2.5
     assert got["capacity_hours"] == 16.0 and got["verdict"] == "充裕", got
     # 已经建出来的点不再占时间预算，剩余工时和建议日一起往回缩
-    done = core.schedule_of(plan, {"a"}, today)
+    done = core.schedule_of(ls, {"a"}, 7, today)
     assert done["remaining_hours"] == 3.5 and done["total_hours"] == 8.5, done
     assert done["suggested_target_date"] < got["suggested_target_date"], (done, got)
     # 阶段建议截止日按剩余工时摊在窗口里，且逐段递增、不超过目标日
@@ -660,34 +787,34 @@ def 时间账按负荷排阶段并判可行性():
 
 @case
 def 时间账装不下时判不可能并给出现实日期():
-    plan = {"target_date": "2026-09-20", "weekly_hours": 7,      # 5 天 × 1h = 5 小时
-            "stages": [{"name": "一", "points": [{"id": f"p{i}", "load": "重"} for i in range(4)]}]}
+    ls = {"target_date": "2026-09-20",                          # 5 天 × 1h = 5 小时
+          "stages": [{"name": "一", "points": [{"id": f"p{i}", "load": "重"} for i in range(4)]}]}
     today = _dt.date(2026, 9, 15)
-    got = core.schedule_of(plan, set(), today)
+    got = core.schedule_of(ls, set(), 7, today)
     assert got["verdict"] == "不可能", got                        # 20 小时塞进 5 小时
     assert got["suggested_target_date"] == "2026-10-10", got      # 20h × 1.25 缓冲 ÷ 1h/天 = 25 天
     assert got["suggested_quota"] == 1, got                       # 4 个点 / 5 天
     # 目标日已经过去 → 容量为 0，仍然判不可能而不是崩
-    plan["target_date"] = "2026-09-01"
-    assert core.schedule_of(plan, set(), today)["verdict"] == "不可能"
+    ls["target_date"] = "2026-09-01"
+    assert core.schedule_of(ls, set(), 7, today)["verdict"] == "不可能"
     # 日期填成人话不该让整条链路炸，当没填处理
-    plan["target_date"] = "下个月吧"
-    loose = core.schedule_of(plan, set(), today)
+    ls["target_date"] = "下个月吧"
+    loose = core.schedule_of(ls, set(), 7, today)
     assert loose["verdict"] == "" and loose["days_left"] is None, loose
 
 
 @case
 def 落后只认写进计划的截止日():
     today = _dt.date(2026, 9, 15)
-    plan = {"weekly_hours": 7, "stages": [
+    ls = {"stages": [
         {"name": "一", "deadline": "2026-09-10", "points": [{"id": "a"}, {"id": "b"}]},
         {"name": "二", "deadline": "2026-12-01", "points": [{"id": "c"}]}]}
-    assert core.schedule_of(plan, set(), today)["behind"] == 2          # 逾期阶段里两个都没建
-    assert core.schedule_of(plan, {"a"}, today)["behind"] == 1          # 建好一个就少欠一个
-    assert core.schedule_of(plan, {"a", "b"}, today)["behind"] == 0
+    assert core.schedule_of(ls, set(), 7, today)["behind"] == 2          # 逾期阶段里两个都没建
+    assert core.schedule_of(ls, {"a"}, 7, today)["behind"] == 1          # 建好一个就少欠一个
+    assert core.schedule_of(ls, {"a", "b"}, 7, today)["behind"] == 0
     # 没写 deadline 的阶段不算落后——建议日随时会变，拿它判落后会天天变脸
-    bare = {"weekly_hours": 7, "stages": [{"name": "一", "points": [{"id": "a"}]}]}
-    assert core.schedule_of(bare, set(), today)["behind"] == 0
+    bare = {"stages": [{"name": "一", "points": [{"id": "a"}]}]}
+    assert core.schedule_of(bare, set(), 7, today)["behind"] == 0
 
 
 @case

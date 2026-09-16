@@ -18,10 +18,10 @@ const emit = defineEmits(['select', 'toggle-theme'])
 const items = computed(() => {
   const list = [
     { id: 'inbox', icon: 'inbox', tip: 'Inbox · 待上图的知识点', badge: props.inbox, structureOnly: true },
-    { id: 'chat', icon: 'network', tip: '聊天 · 跟教练聊着学，学完一键入库' },
-    { id: 'plans', icon: 'checklist', tip: '学习计划 · 目标与要掌握的点', structureOnly: true },
+    { id: 'plans', icon: 'checklist', tip: '项目 · 学习计划 / 面试方案 / 领域地图', structureOnly: true },
     { id: 'study', icon: 'rotate', tip: '学习 · 今日复习与测验', badge: props.due, gold: true },
     { id: 'digest', icon: 'layers', tip: '欠账 · 草稿 / 桥 / 重复 / stub' },
+    { id: 'calendar', icon: 'clock', tip: '日历 · 每天建了多少、复习了多少（全是算出来的）' },
     { id: 'assets', icon: 'image', tip: '素材 · 贴图与便签', structureOnly: true },
     { id: 'timeline', icon: 'timeline', tip: '时间线 · 分组与过滤', historyOnly: true },
   ]

@@ -1,0 +1,201 @@
+<script setup>
+/**
+ * 对话式教练：聊着学，学完一键入库。
+ *
+ * **聊天是入口，图是产物。** 这一屏解决的是启动成本——想学一个点，原来要在
+ * 计划 / 今日 / 建节点 / 写正文 / 出题几个面板之间跳，现在一句话就够。
+ * 但知识仍然只住在 md 里：模型给的是**变更卡**，看过 diff 点「写入」才落盘（4.4）。
+ *
+ * 会话状态在前端（每次把整段对话发过去），服务端不持有——刷新页面不会丢一半上下文。
+ */
+/**
+ * 对话视图（三期：从 420px 抽屉搬成全屏主体）。
+ *
+ * **对话不是一个工具面板，它是主界面。** 挤在抽屉里既读不下长回答，
+ * 也看不见正在聊的那些点在图上是什么位置——而后者正是这套系统区别于"又一个聊天记录"的地方。
+ *
+ * 右侧留给画布（在 App.vue 里，这里只管让出宽度）。三条交互把对话和图绑在一起：
+ * 聊到哪图上亮哪、点图上的节点带进对话、变更卡写入后新点当场以 draft 出现。
+ *
+ * 知识仍然只住在 md 里：模型给的是**变更卡**，看过 diff 点「写入」才落盘（4.4）。
+ * 会话状态在前端，服务端不持有；每一轮都已经留档在 .knowrary/chat/<项目>/。
+ */
+import { computed, nextTick, ref, watch } from 'vue'
+import Icon from '../ui/Icon.vue'
+
+const props = defineProps({
+  busy: { type: Boolean, default: false },
+  messages: { type: Array, default: () => [] },   // [{ role, content, tools?, cards?, streaming? }]
+  stance: { type: String, default: '教练' },
+  sessions: { type: Array, default: () => [] },   // 从留档聚合出来的会话列表
+  session: { type: String, default: '' },
+  focus: { type: Object, default: null },         // 从图上点过来的节点：带进下一轮上下文
+  graphOpen: { type: Boolean, default: true },
+})
+const emit = defineEmits(['send', 'stop', 'apply', 'apply-project', 'goto', 'new-session',
+                          'pick-session', 'drop-focus', 'toggle-graph', 'stance'])
+
+// 三档口径。**不是三个 agent**：同一条链路、同一张图、同一套复习记录，
+// 换的只是系统提示词和工具白名单。
+const STANCES = {
+  教练: { tip: '盯进度：今天学什么、该复习了、计划来不来得及。工具全开' },
+  面试: { tip: '真的在考你：一次一问、答完追问一层。**不给入库工具**——边考边改图谱等于开卷' },
+  聊天: { tip: '只把事情讲清楚，不催进度不出题。说「这段学完了」才提议入库' },
+}
+
+// 开场白：懒人入口的关键是**不用想第一句说什么**
+const STARTERS = [
+  { t: '今天学什么', q: '看一眼我的今日清单和计划，告诉我今天该动手的是哪几件，按顺序说。' },
+  { t: '考考我', q: '从我到期该复习的节点里挑几个考我，一次一题，我答完你再对答案。' },
+  { t: '讲个概念', q: '我想搞懂：' },
+  { t: '这段学完了', q: '刚才聊的东西帮我整理成知识点，提一张入库的变更卡给我看。' },
+]
+
+const text = ref('')
+const box = ref(null)
+
+const empty = computed(() => !props.messages.length)
+
+/** 新内容进来就贴着底部。人正往回翻时不要抢滚动。 */
+watch(() => props.messages.map((m) => m.content).join('|'), async () => {
+  await nextTick()
+  const el = box.value
+  if (el && el.scrollHeight - el.scrollTop - el.clientHeight < 260) el.scrollTop = el.scrollHeight
+})
+
+function send(q) {
+  const body = (q ?? text.value).trim()
+  if (!body || props.busy) return
+  emit('send', body)
+  text.value = ''
+}
+
+const sessionLabel = computed(() => {
+  const hit = props.sessions.find((s) => s.id === props.session)
+  return hit ? `${hit.title}（${hit.turns} 条）` : '新的一段'
+})
+
+function starter(s) {
+  if (s.q.endsWith('：')) { text.value = s.q; return }   // 要我补一句的，只填进输入框
+  send(s.q)
+}
+
+function onKey(e) {
+  if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); send() }
+}
+</script>
+
+<template>
+  <section class="chat-view">
+    <!-- 会话条：多段对话在这里切。会话不是一张表，是留档行上的一个标签聚合出来的 -->
+    <div class="chat-bar">
+      <select class="sess-pick" :value="session" title="切到另一段对话"
+              @change="emit('pick-session', $event.target.value)">
+        <option v-if="!sessions.some((s) => s.id === session)" :value="session">{{ sessionLabel }}</option>
+        <option v-for="s in sessions" :key="s.id" :value="s.id">
+          {{ s.title }} · {{ s.turns }} 条
+        </option>
+      </select>
+      <select class="sess-pick" style="max-width: 96px" :value="stance"
+              :title="STANCES[stance]?.tip" @change="emit('stance', $event.target.value)">
+        <option v-for="(v, k) in STANCES" :key="k" :value="k">{{ k }}</option>
+      </select>
+      <button class="btn subtle tiny" title="新开一段（旧的还在，随时切回来）" @click="emit('new-session')">
+        <Icon name="plus" :size="13" />新的一段
+      </button>
+      <span class="grow" />
+      <button class="icon-btn ghost tiny" :title="graphOpen ? '收起右侧的图' : '展开右侧的图'"
+              @click="emit('toggle-graph')">
+        <Icon :name="graphOpen ? 'fold' : 'unfold'" :size="14" />
+      </button>
+    </div>
+
+    <!-- 消息区自己滚，输入框钉在底下：聊到第 20 条还要往下翻才能打字是不能接受的 -->
+    <div class="chat-wrap">
+      <div ref="box" class="chat-box">
+        <div v-if="empty" class="empty">
+          <Icon name="network" :size="30" :width="1.3" />
+          <span class="t">聊着学</span>
+          <span class="s">问概念、让我讲、被我考；学完了说一声，我把知识点整理成变更卡，
+            你看过 diff 点一下才写进图谱。</span>
+        </div>
+
+        <div v-if="messages.length && messages[0].resumed" class="resumed-hint dim">
+          下面是之前聊过的（从 <code>.knowrary/chat/</code> 读回来的），直接接着问就行
+        </div>
+
+        <div v-for="(m, i) in messages" :key="i" class="msg" :class="m.role">
+          <div v-if="m.content" class="bubble">{{ m.content }}<span v-if="m.streaming" class="caret">▍</span></div>
+          <div v-else-if="m.streaming" class="bubble dim">想一下…</div>
+
+          <!-- 调了哪些工具：摊开给人看，别让它像黑箱 -->
+          <div v-for="(t, j) in (m.tools || [])" :key="`t${j}`" class="tool-line" :title="t.summary">
+            <Icon name="search" :size="12" />{{ t.label }}
+          </div>
+
+          <!-- 项目卡：建项目 / 加清单。同样只是提议，点了才写 projects.json -->
+          <div v-for="(pj, j) in (m.projects || [])" :key="`p${j}`" class="change-card">
+            <div class="cc-head">
+              <Icon name="checklist" :size="13" />
+              {{ pj.action === 'create' ? '提议新建项目' : '提议加清单' }}「{{ pj.name }}」
+              <span class="dim">id {{ pj.id }}</span>
+              <span v-if="pj.applied" class="chip m-mastered">已创建</span>
+            </div>
+            <ul>
+              <li v-for="(ls, k) in pj.lists" :key="k" class="edge-row point">
+                <span class="chip m-unbuilt">{{ ls.kind }}</span>
+                <span class="to">{{ ls.name }}</span>
+                <span v-if="ls.goal" class="yr why">{{ ls.goal }}</span>
+                <span v-if="ls.target_date" class="dim">→ {{ ls.target_date }}</span>
+              </li>
+            </ul>
+            <div v-if="!pj.applied" class="cc-acts">
+              <button class="btn primary tiny" :disabled="busy" @click="emit('apply-project', { card: pj, i, j })">
+                <Icon name="check" :size="13" />创建
+              </button>
+              <span class="dim" style="font-size: 11px">只写 projects.json，不碰 md、不碰画布</span>
+            </div>
+          </div>
+
+          <!-- 变更卡：**这里是唯一能写 md 的地方，且必须人点** -->
+          <div v-for="(c, j) in (m.cards || [])" :key="`c${j}`" class="change-card">
+            <div class="cc-head">
+              <Icon name="file" :size="13" />提议写入 {{ c.files.length }} 个文件
+              <span v-if="c.applied" class="chip m-mastered">已写入</span>
+            </div>
+            <pre v-for="f in c.files" :key="f.path" class="cc-diff"><b>{{ f.path }}</b>
+{{ f.diff || '（新文件）' }}</pre>
+            <div v-if="!c.applied" class="cc-acts">
+              <button class="btn primary tiny" :disabled="busy" @click="emit('apply', { card: c, i, j })">
+                <Icon name="check" :size="13" />写入
+              </button>
+              <span class="dim" style="font-size: 11px">写前自动备份到 .knowrary/backup/</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div v-if="empty" class="starters">
+        <button v-for="s in STARTERS" :key="s.t" class="btn subtle tiny" @click="starter(s)">{{ s.t }}</button>
+      </div>
+
+      <div v-if="focus" class="focus-chip">
+        <Icon name="target" :size="12" />带上「{{ focus.name || focus.id }}」的摘要和关系
+        <button class="icon-btn ghost tiny" title="不带了" @click="emit('drop-focus')">
+          <Icon name="x" :size="12" />
+        </button>
+      </div>
+
+      <div class="chat-input">
+        <textarea v-model="text" rows="2" placeholder="问点什么…（回车发送，Shift+回车换行）"
+                  @keydown="onKey" />
+        <button v-if="busy" class="icon-btn ghost" title="停" @click="emit('stop')">
+          <Icon name="pause" :size="15" />
+        </button>
+        <button v-else class="icon-btn primary" :disabled="!text.trim()" title="发送（回车）" @click="send()">
+          <Icon name="arrowRight" :size="15" />
+        </button>
+      </div>
+    </div>
+  </section>
+</template>

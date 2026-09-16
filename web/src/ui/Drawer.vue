@@ -15,12 +15,20 @@ const props = defineProps({
   defaultWidth: { type: Number, default: 300 },
   min: { type: Number, default: 240 },
   max: { type: Number, default: 560 },
+  expandable: { type: Boolean, default: false },   // 头上多一个「展宽 / 还原」开关
 })
 const emit = defineEmits(['close'])
 
 const key = computed(() => (props.storageKey ? `knowrary-drawer-${props.storageKey}` : ''))
+
+// 上限跟着视口走：写死 max 的话，宽屏上拖不开、窄屏上又能把画布整个盖掉。
+// 永远给画布留 320px，否则"抽屉"就名不副实了。
+const CANVAS_KEEP = 320
+const vw = ref(window.innerWidth)
+const maxW = computed(() => Math.max(props.min, Math.min(props.max, vw.value - CANVAS_KEEP)))
+
 const stored = key.value ? Number(localStorage.getItem(key.value)) : 0
-const width = ref(stored >= props.min && stored <= props.max ? stored : props.defaultWidth)
+const width = ref(stored >= props.min ? stored : props.defaultWidth)
 
 let startX = 0
 let startW = 0
@@ -37,18 +45,40 @@ function onDown(ev) {
 
 function onMove(ev) {
   const delta = props.side === 'left' ? ev.clientX - startX : startX - ev.clientX
-  width.value = Math.min(props.max, Math.max(props.min, startW + delta))
+  width.value = clamp(startW + delta)
+}
+
+function clamp(w) { return Math.min(maxW.value, Math.max(props.min, w)) }
+
+function onViewport() {
+  vw.value = window.innerWidth
+  width.value = clamp(width.value)          // 窗口变窄时抽屉跟着收，别盖住画布
+}
+window.addEventListener('resize', onViewport)
+onViewport()
+
+/** 展宽 / 还原：不想每次都去拖那条缝。展宽后的宽度照样记进 localStorage。 */
+function toggleWide() {
+  width.value = width.value >= maxW.value - 2 ? props.defaultWidth : maxW.value
+  persist()
+}
+
+function persist() {
+  if (key.value) localStorage.setItem(key.value, String(Math.round(width.value)))
+  window.dispatchEvent(new Event('resize'))
 }
 
 function onUp() {
   dragging.value = false
   document.removeEventListener('mousemove', onMove)
   document.removeEventListener('mouseup', onUp)
-  if (key.value) localStorage.setItem(key.value, String(Math.round(width.value)))
-  window.dispatchEvent(new Event('resize'))   // 画布跟着重新量宽
+  persist()                                  // 画布跟着重新量宽
 }
 
-onBeforeUnmount(onUp)
+onBeforeUnmount(() => {
+  onUp()
+  window.removeEventListener('resize', onViewport)
+})
 </script>
 
 <template>
@@ -57,6 +87,10 @@ onBeforeUnmount(onUp)
       <Icon v-if="icon" :name="icon" :size="15" class="head-icon" />
       <h2>{{ title }}</h2>
       <slot name="head-actions" />
+      <button v-if="expandable" class="icon-btn ghost"
+              :title="width >= maxW - 2 ? '还原宽度' : '展宽（也可以拖右边那条缝）'" @click="toggleWide">
+        <Icon :name="width >= maxW - 2 ? 'fold' : 'unfold'" :size="15" />
+      </button>
       <button class="icon-btn ghost" title="收起（Esc）" @click="emit('close')">
         <Icon name="x" :size="15" />
       </button>

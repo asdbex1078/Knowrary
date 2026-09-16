@@ -104,10 +104,15 @@ def digest(vault: Path) -> dict:
     return core.build_digest(vault, index, layout.model_dump())
 
 
-def coach_today(vault: Path) -> CoachToday:
-    """今日清单：错题 > 到期 > 未建 > 只有壳 > Inbox。纯排序，不调 LLM，不写任何文件。"""
+def coach_today(vault: Path, project: str | None = None) -> CoachToday:
+    """今日清单：错题 > 到期 > 未建 > 只有壳 > Inbox。纯排序，不调 LLM，不写任何文件。
+
+    `project` 只过滤**建设项**：到期复习和错题是全局的——同一个大脑，
+    不会因为今天在看别的项目就不用复习（重构方案 §1）。
+    """
     index, layout = load_pair(vault)
-    return CoachToday(**core.build_today(vault, index, layout.model_dump(), core.load_plans(vault)))
+    return CoachToday(**core.build_today(vault, index, layout.model_dump(),
+                                         core.load_projects(vault), project=project))
 
 
 def review_due(vault: Path) -> dict:
