@@ -64,16 +64,16 @@ def _side_impact(vault: Path, drop_id: str) -> dict:
     layout = _safe(vault / ".knowrary" / "layout.json")
     review = _safe(vault / ".knowrary" / "review-log.json")
     quiz = _safe(vault / ".knowrary" / "quiz-log.json")
-    plans = _safe(vault / ".knowrary" / "plans.json")
+    projects = _safe(vault / ".knowrary" / "projects.json")
     return {
         "layout": drop_id in (layout.get("nodes") or {}),
         "layout_edges": sum(1 for k in (layout.get("edges") or {}) if _edge_touches(k, drop_id)),
         "refs": sum(1 for r in layout.get("refs") or [] if r.get("target") == drop_id),
         "reviews": len(((review.get("nodes") or {}).get(drop_id) or {}).get("reviews") or []),
         "quiz": sum(1 for a in quiz.get("answers") or [] if drop_id in (a.get("points") or [])),
-        "plans": [p.get("name") or pid for pid, p in (plans.get("plans") or {}).items()
-                  if any(pt.get("id") == drop_id for st in p.get("stages") or []
-                         for pt in st.get("points") or [])],
+        "projects": [pr.get("name") or pid for pid, pr in (projects.get("projects") or {}).items()
+                     if any(pt.get("id") == drop_id for ls in pr.get("lists") or []
+                            for st in ls.get("stages") or [] for pt in st.get("points") or [])],
     }
 
 
@@ -166,21 +166,22 @@ def _merge_records(vault: Path, keep_id: str, drop_id: str) -> None:
             ans["points"] = list(dict.fromkeys(pts))
         write_json_atomic(quiz, doc)
 
-    plans = vault / ".knowrary" / "plans.json"
-    doc = _safe(plans)
-    if doc.get("plans"):
-        for plan in doc["plans"].values():
-            for stage in plan.get("stages") or []:
-                seen, kept = set(), []
-                for pt in stage.get("points") or []:
-                    pid = keep_id if pt.get("id") == drop_id else pt.get("id")
-                    if pid in seen:
-                        continue
-                    seen.add(pid)
-                    kept.append({**pt, "id": pid})
-                stage["points"] = kept
+    path = vault / ".knowrary" / "projects.json"
+    doc = _safe(path)
+    if doc.get("projects"):
+        for project in doc["projects"].values():
+            for ls in project.get("lists") or []:
+                for stage in ls.get("stages") or []:
+                    seen, kept = set(), []
+                    for pt in stage.get("points") or []:
+                        pid = keep_id if pt.get("id") == drop_id else pt.get("id")
+                        if pid in seen:
+                            continue
+                        seen.add(pid)
+                        kept.append({**pt, "id": pid})
+                    stage["points"] = kept
         doc["revision"] = int(doc.get("revision") or 0) + 1
-        write_json_atomic(plans, doc)
+        write_json_atomic(path, doc)
 
 
 def apply_merge(vault: Path, impact: dict) -> dict:

@@ -19,7 +19,7 @@ from .mdio import load_json, read, walk_md, write, write_json_atomic
 
 # 改名会动到的四份机器数据：位置、复习、答题、计划。备份必须把它们一起带上——
 # 只备份 md 的话，一旦迁移出错，画布位置和复习进度是找不回来的。
-SIDE_FILES = ("layout.json", "review-log.json", "quiz-log.json", "plans.json")
+SIDE_FILES = ("layout.json", "review-log.json", "quiz-log.json", "projects.json")
 
 ID_BAD = re.compile(r'[\\/:*?"<>|\s]')
 
@@ -66,19 +66,19 @@ def _json_impact(vault: Path, old_id: str) -> dict:
     layout = _safe(vault / ".knowrary" / "layout.json")
     review = _safe(vault / ".knowrary" / "review-log.json")
     quiz = _safe(vault / ".knowrary" / "quiz-log.json")
-    plans = _safe(vault / ".knowrary" / "plans.json")
+    projects = _safe(vault / ".knowrary" / "projects.json")
     edge_keys = [k for k in (layout.get("edges") or {}) if _edge_touches(k, old_id)]
     refs = [r for r in (layout.get("refs") or []) if r.get("target") == old_id]
     docs = [g for g, v in (layout.get("groups") or {}).items() if v.get("doc") == old_id]
-    hit_plans = [p.get("name") or pid for pid, p in (plans.get("plans") or {}).items()
-                 if any(pt.get("id") == old_id for st in p.get("stages") or []
-                        for pt in st.get("points") or [])]
+    hit_projects = [pr.get("name") or pid for pid, pr in (projects.get("projects") or {}).items()
+                    if any(pt.get("id") == old_id for ls in pr.get("lists") or []
+                           for st in ls.get("stages") or [] for pt in st.get("points") or [])]
     return {
         "layout": old_id in (layout.get("nodes") or {}),
         "layout_edges": len(edge_keys), "refs": len(refs), "docs": len(docs),
         "reviews": len(((review.get("nodes") or {}).get(old_id) or {}).get("reviews") or []),
         "quiz": sum(1 for a in quiz.get("answers") or [] if old_id in (a.get("points") or [])),
-        "plans": hit_plans,
+        "projects": hit_projects,
     }
 
 
@@ -154,24 +154,29 @@ def _rewrite_records(vault: Path, old_id: str, new_id: str) -> None:
             ans["points"] = [new_id if p == old_id else p for p in ans.get("points") or []]
         write_json_atomic(quiz, doc)
 
-    plans = vault / ".knowrary" / "plans.json"
-    doc = _safe(plans)
-    if doc.get("plans"):
-        for plan in doc["plans"].values():
-            for stage in plan.get("stages") or []:
-                for point in stage.get("points") or []:
-                    if point.get("id") == old_id:
-                        point["id"] = new_id
-                        if point.get("name") == old_id:
-                            point["name"] = new_id
+    path = vault / ".knowrary" / "projects.json"
+    doc = _safe(path)
+    if doc.get("projects"):
+        for project in doc["projects"].values():
+            for ls in project.get("lists") or []:
+                for stage in ls.get("stages") or []:
+                    for point in stage.get("points") or []:
+                        if point.get("id") == old_id:
+                            point["id"] = new_id
+                            if point.get("name") == old_id:
+                                point["name"] = new_id
         doc["revision"] = int(doc.get("revision") or 0) + 1
-        write_json_atomic(plans, doc)
+        write_json_atomic(path, doc)
 
 
-def backup_rename(vault: Path, impact: dict) -> str:
-    """改名前整份快照：涉及的 md + 四份机器数据。"""
+def backup_rename(vault: Path, impact: dict, op: str = "rename") -> str:
+    """改名 / 合并前整份快照：涉及的 md + 四份机器数据。
+
+    merge 复用这一份（它的影响面形状一样），`op` 只决定目录名——
+    一堆 `rename-*` 里混着其实是合并的快照，出事时最不需要的就是猜。
+    """
     stamp = dt.datetime.now().strftime("%Y%m%d-%H%M%S")
-    root = vault / ".knowrary" / "backup" / f"rename-{stamp}"
+    root = vault / ".knowrary" / "backup" / f"{op}-{stamp}"
     rels = [impact["path"], *impact["files"], *(f".knowrary/{n}" for n in SIDE_FILES)]
     for rel in dict.fromkeys(rels):                  # 去重且保持顺序
         src = vault / rel

@@ -31,6 +31,8 @@ from core import (Diagnostics, Edge, Node, RelationTypes, build_digest, build_in
                   build_initial_layout, due_nodes, dump_frontmatter, find_orphans, first_paragraph,
                   index_path, layout_path, load_json, load_log, load_previous, load_relation_types,
                   load_vault, read, record_review, stamp, validate_index, write, write_json_atomic)
+from core import (build_project_layout, legacy_plans_path, load_projects, projects_path,
+                  save_projects, upgrade_v1)
 from core.mdio import RE_ID_OK, RE_LINK
 
 HERE = Path(__file__).resolve().parent
@@ -273,14 +275,24 @@ def cmd_index(args: argparse.Namespace) -> None:
 
 
 def cmd_layout(args: argparse.Namespace) -> None:
-    """layout init：按 field / 子目录生成初始布局；layout check：校验引用列出孤立记录。"""
+    """layout init：按 field / 子目录生成初始布局；layout check：校验引用列出孤立记录。
+
+    `--layout <项目 id>` 查项目画布（`.knowrary/layouts/<项目>.json`），不给就是全局图。
+    """
     vault = Path(args.vault).resolve()
-    path = layout_path(vault)
+    name = getattr(args, "layout", None) or "layout"
+    path = layout_path(vault, name)
     index = build_index(vault, load_previous(index_path(vault))).data
     if args.action == "init":
         if path.exists() and not args.force:
             raise SystemExit(f"{path.relative_to(vault)} 已存在（加 --force 重新生成，会丢弃现有位置）")
-        doc = stamp(build_initial_layout(index))
+        if name != "layout":
+            project = (load_projects(vault).get("projects") or {}).get(name)
+            if project is None:
+                raise SystemExit(f"没有 `{name}` 这个项目")
+            doc = build_project_layout(project, index)
+        else:
+            doc = stamp(build_initial_layout(index))
         write_json_atomic(path, doc)
         print(f"已生成 {path.relative_to(vault)}：分组 {len(doc['groups'])}，节点 {len(doc['nodes'])}，"
               f"revision {doc['revision']}")
@@ -289,9 +301,12 @@ def cmd_layout(args: argparse.Namespace) -> None:
         raise SystemExit(f"{path.relative_to(vault)} 不存在，先跑 `layout init` 或启动服务")
     doc = load_json(path)
     orphans = find_orphans(doc, index, vault)
-    inbox = sorted({n["id"] for n in index["nodes"] if not n.get("virtual")} - set(doc.get("nodes", {})))
-    print(f"revision {doc.get('revision')}，分组 {len(doc.get('groups', {}))}，"
-          f"已放置节点 {len(doc.get('nodes', {}))}，Inbox {len(inbox)}，孤立记录 {len(orphans)}")
+    ghosts = [k for k, v in (doc.get("nodes") or {}).items() if (v or {}).get("state") == "ghost"]
+    inbox = ([] if name != "layout"
+             else sorted({n["id"] for n in index["nodes"] if not n.get("virtual")} - set(doc.get("nodes", {}))))
+    print(f"[{name}] revision {doc.get('revision')}，分组 {len(doc.get('groups', {}))}，"
+          f"已放置节点 {len(doc.get('nodes', {}))}，幽灵占位 {len(ghosts)}，"
+          f"Inbox {len(inbox)}，孤立记录 {len(orphans)}")
     for o in orphans[: args.max_warn]:
         print(f"  ⚠ [{o['kind']}] {o['id']}：{o['reason']}")
     for nid in inbox[:10]:
@@ -565,6 +580,57 @@ def print_import_report(res: ImportResult, outputs: list, vault: Path, dry: bool
 
 # ---------------------------------------------------------------- llm
 
+def cmd_projects(args: argparse.Namespace) -> None:
+    """plans.json（v1，学习计划）→ projects.json（v2，项目）。
+
+    一份计划升成"一个项目 + 一份清单"。**先备份再写**，`--dry-run` 只看不动。
+    id 压成 ASCII（它会成为对话留档的目录名），旧 id 记在 `legacy_id` 里，
+    对话目录跟着迁。
+    """
+    vault = Path(args.vault).resolve()
+    legacy = legacy_plans_path(vault)
+    target = projects_path(vault)
+    if target.exists() and not args.force:
+        raise SystemExit(f"{target.relative_to(vault)} 已存在（加 --force 覆盖）")
+    if not legacy.exists():
+        raise SystemExit(f"没有 {legacy.relative_to(vault)}，没什么可迁的")
+
+    doc = upgrade_v1(load_json(legacy))
+    index = build_index(vault, load_previous(index_path(vault))).data
+    fields = {n.get("field") for n in index["nodes"] if n.get("field")}
+
+    print(f"{len(doc['projects'])} 个项目：")
+    for pid, pr in doc["projects"].items():
+        n = sum(len(st.get("points") or []) for ls in pr["lists"] for st in ls["stages"])
+        old = pr.get("legacy_id")
+        tag = f"（原 id `{old}`）" if old != pid else ""
+        print(f"  {pid:<14} {pr['name']:<16} {len(pr['lists'])} 份清单 · {n} 个点{tag}")
+        if pr.get("field") and pr["field"] not in fields:
+            print(f"    ⚠ 领域 `{pr['field']}` 在图里已经不存在了——"
+                  f"「建」按钮会算错落脚点，迁完自己改一下（脚本不擅自改）")
+    if args.dry_run:
+        print("\n--dry-run：什么都没写")
+        return
+
+    stamp = dt.datetime.now().strftime("%Y%m%d-%H%M%S")
+    root = vault / ".knowrary" / "backup" / f"migrate-projects-{stamp}"
+    root.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(legacy, root / legacy.name)
+    chat_root = vault / ".knowrary" / "chat"
+    moved = []
+    for pid, pr in doc["projects"].items():                 # 对话留档跟着 id 迁
+        old = pr.get("legacy_id")
+        src = chat_root / old if old else None
+        if src and src.is_dir() and old != pid and not (chat_root / pid).exists():
+            src.rename(chat_root / pid)
+            moved.append(f"{old} → {pid}")
+    save_projects(vault, doc)
+    print(f"\n已写入 {target.relative_to(vault)}（备份在 {root.relative_to(vault)}）")
+    if moved:
+        print("对话目录迁移：" + "、".join(moved))
+    print(f"旧的 {legacy.relative_to(vault)} 没有删——确认无误后自己删")
+
+
 def cmd_llm(args: argparse.Namespace) -> None:
     vault = Path(args.vault).resolve()
     cfg, path = llm_backend.load_config(vault)
@@ -614,6 +680,7 @@ def add_data_parsers(sub: argparse._SubParsersAction) -> None:
     y = sub.add_parser("layout", help="初始布局生成 / 引用校验")
     y.add_argument("action", choices=["init", "check"], nargs="?", default="check")
     y.add_argument("--vault", required=True)
+    y.add_argument("--layout", help="项目 id：查那个项目的画布；不给就是全局图")
     y.add_argument("--force", action="store_true", help="init 时覆盖已有 layout.json")
     y.add_argument("--max-warn", type=int, default=20)
     y.set_defaults(fn=cmd_layout)
@@ -662,6 +729,13 @@ def add_llm_parsers(sub: argparse._SubParsersAction) -> None:
     p.add_argument("--source", help="写入 frontmatter source 字段，如文章名")
     p.add_argument("--dry-run", action="store_true")
     p.set_defaults(fn=cmd_apply)
+
+    pj = sub.add_parser("projects", help="plans.json → projects.json 迁移")
+    pj.add_argument("action", choices=["migrate"], nargs="?", default="migrate")
+    pj.add_argument("--vault", required=True)
+    pj.add_argument("--dry-run", action="store_true", help="只打印迁成什么样，不写盘")
+    pj.add_argument("--force", action="store_true", help="projects.json 已存在也覆盖")
+    pj.set_defaults(fn=cmd_projects)
 
     l = sub.add_parser("llm", help="查看 / 测试 LLM 配置")
     l.add_argument("action", choices=["list", "test"], nargs="?", default="list")

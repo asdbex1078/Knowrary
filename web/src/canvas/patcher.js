@@ -5,7 +5,9 @@ import { fetchLayout, patchLayout } from '../api'
 const DELAY = 300
 const VIEWPORT_DELAY = 1000
 
-export function createPatcher({ getRevision, setRevision, onStatus, onConflict }) {
+/** `getLayoutName()` 说这份补丁该写去哪一份 layout（全局图 = null，项目画布 = 项目 id）。
+ *  队列本身不区分 layout——**切画布前必须先 flush**，否则会把上一份的改动写到下一份去。 */
+export function createPatcher({ getRevision, setRevision, onStatus, onConflict, getLayoutName }) {
   let pending = { nodes: {}, groups: {}, edges: {}, viewport: null, lists: {} }
   let timer = null
   let inflight = false
@@ -74,13 +76,13 @@ export function createPatcher({ getRevision, setRevision, onStatus, onConflict }
     if (snapshot.viewport) body.viewport = snapshot.viewport
     onStatus?.('saving')
     try {
-      const saved = await patchLayout(body)
+      const saved = await patchLayout(body, getLayoutName?.() || null)
       setRevision(saved.revision)
       onStatus?.(empty(pending) ? 'saved' : 'dirty', saved)
     } catch (err) {
       mergeBack(snapshot)
       if (err.status === 409) {
-        const fresh = await fetchLayout()
+        const fresh = await fetchLayout(getLayoutName?.() || null)
         setRevision(fresh.layout.revision)
         onConflict?.(fresh)
         onStatus?.('retry')

@@ -1,0 +1,330 @@
+{
+  "schema_version": 2,
+  "revision": 2,
+  "updated_at": "2026-09-16T03:57:56Z",
+  "viewport": {
+    "zoom": 0.8,
+    "cx": 0.0,
+    "cy": 0.0
+  },
+  "groups": {
+    "g-list-0": {
+      "name": "AI技术发展史",
+      "x": 80.0,
+      "y": 80.0,
+      "w": 1008.0,
+      "h": 868.0,
+      "parent": null,
+      "collapsed": false,
+      "pinned": null,
+      "color": null,
+      "doc": null
+    }
+  },
+  "nodes": {
+    "GPU": {
+      "x": 104.0,
+      "y": 124.0,
+      "w": 196.0,
+      "h": 64.0,
+      "group": "g-list-0",
+      "state": "final",
+      "placedAt": null,
+      "anchor": null
+    },
+    "CUDA": {
+      "x": 344.0,
+      "y": 124.0,
+      "w": 196.0,
+      "h": 64.0,
+      "group": "g-list-0",
+      "state": "final",
+      "placedAt": null,
+      "anchor": null
+    },
+    "TPU": {
+      "x": 584.0,
+      "y": 124.0,
+      "w": 196.0,
+      "h": 64.0,
+      "group": "g-list-0",
+      "state": "final",
+      "placedAt": null,
+      "anchor": null
+    },
+    "NPU": {
+      "x": 824.0,
+      "y": 124.0,
+      "w": 196.0,
+      "h": 64.0,
+      "group": "g-list-0",
+      "state": "ghost",
+      "placedAt": null,
+      "anchor": null
+    },
+    "内存墙": {
+      "x": 104.0,
+      "y": 224.0,
+      "w": 196.0,
+      "h": 64.0,
+      "group": "g-list-0",
+      "state": "ghost",
+      "placedAt": null,
+      "anchor": null
+    },
+    "混合精度与量化": {
+      "x": 344.0,
+      "y": 224.0,
+      "w": 196.0,
+      "h": 64.0,
+      "group": "g-list-0",
+      "state": "ghost",
+      "placedAt": null,
+      "anchor": null
+    },
+    "符号主义与连接主义": {
+      "x": 584.0,
+      "y": 224.0,
+      "w": 196.0,
+      "h": 64.0,
+      "group": "g-list-0",
+      "state": "ghost",
+      "placedAt": null,
+      "anchor": null
+    },
+    "多层感知机": {
+      "x": 824.0,
+      "y": 224.0,
+      "w": 196.0,
+      "h": 64.0,
+      "group": "g-list-0",
+      "state": "ghost",
+      "placedAt": null,
+      "anchor": null
+    },
+    "反向传播": {
+      "x": 104.0,
+      "y": 324.0,
+      "w": 196.0,
+      "h": 64.0,
+      "group": "g-list-0",
+      "state": "ghost",
+      "placedAt": null,
+      "anchor": null
+    },
+    "n-gram语言模型": {
+      "x": 344.0,
+      "y": 324.0,
+      "w": 196.0,
+      "h": 64.0,
+      "group": "g-list-0",
+      "state": "ghost",
+      "placedAt": null,
+      "anchor": null
+    },
+    "词袋模型": {
+      "x": 584.0,
+      "y": 324.0,
+      "w": 196.0,
+      "h": 64.0,
+      "group": "g-list-0",
+      "state": "ghost",
+      "placedAt": null,
+      "anchor": null
+    },
+    "word2vec": {
+      "x": 824.0,
+      "y": 324.0,
+      "w": 196.0,
+      "h": 64.0,
+      "group": "g-list-0",
+      "state": "ghost",
+      "placedAt": null,
+      "anchor": null
+    },
+    "RNN": {
+      "x": 104.0,
+      "y": 424.0,
+      "w": 196.0,
+      "h": 64.0,
+      "group": "g-list-0",
+      "state": "ghost",
+      "placedAt": null,
+      "anchor": null
+    },
+    "LSTM": {
+      "x": 344.0,
+      "y": 424.0,
+      "w": 196.0,
+      "h": 64.0,
+      "group": "g-list-0",
+      "state": "ghost",
+      "placedAt": null,
+      "anchor": null
+    },
+    "seq2seq": {
+      "x": 584.0,
+      "y": 424.0,
+      "w": 196.0,
+      "h": 64.0,
+      "group": "g-list-0",
+      "state": "ghost",
+      "placedAt": null,
+      "anchor": null
+    },
+    "注意力机制": {
+      "x": 824.0,
+      "y": 424.0,
+      "w": 196.0,
+      "h": 64.0,
+      "group": "g-list-0",
+      "state": "ghost",
+      "placedAt": null,
+      "anchor": null
+    },
+    "Transformer": {
+      "x": 104.0,
+      "y": 524.0,
+      "w": 196.0,
+      "h": 64.0,
+      "group": "g-list-0",
+      "state": "final",
+      "placedAt": null,
+      "anchor": null
+    },
+    "自注意力": {
+      "x": 344.0,
+      "y": 524.0,
+      "w": 196.0,
+      "h": 64.0,
+      "group": "g-list-0",
+      "state": "ghost",
+      "placedAt": null,
+      "anchor": null
+    },
+    "positional-encoding": {
+      "x": 584.0,
+      "y": 524.0,
+      "w": 196.0,
+      "h": 64.0,
+      "group": "g-list-0",
+      "state": "ghost",
+      "placedAt": null,
+      "anchor": null
+    },
+    "MHA": {
+      "x": 824.0,
+      "y": 524.0,
+      "w": 196.0,
+      "h": 64.0,
+      "group": "g-list-0",
+      "state": "ghost",
+      "placedAt": null,
+      "anchor": null
+    },
+    "KV-Cache": {
+      "x": 104.0,
+      "y": 624.0,
+      "w": 196.0,
+      "h": 64.0,
+      "group": "g-list-0",
+      "state": "ghost",
+      "placedAt": null,
+      "anchor": null
+    },
+    "MQA": {
+      "x": 344.0,
+      "y": 624.0,
+      "w": 196.0,
+      "h": 64.0,
+      "group": "g-list-0",
+      "state": "ghost",
+      "placedAt": null,
+      "anchor": null
+    },
+    "GQA": {
+      "x": 584.0,
+      "y": 624.0,
+      "w": 196.0,
+      "h": 64.0,
+      "group": "g-list-0",
+      "state": "ghost",
+      "placedAt": null,
+      "anchor": null
+    },
+    "MLA": {
+      "x": 824.0,
+      "y": 624.0,
+      "w": 196.0,
+      "h": 64.0,
+      "group": "g-list-0",
+      "state": "ghost",
+      "placedAt": null,
+      "anchor": null
+    },
+    "卷积神经网络": {
+      "x": 104.0,
+      "y": 724.0,
+      "w": 196.0,
+      "h": 64.0,
+      "group": "g-list-0",
+      "state": "ghost",
+      "placedAt": null,
+      "anchor": null
+    },
+    "语音识别演进": {
+      "x": 344.0,
+      "y": 724.0,
+      "w": 196.0,
+      "h": 64.0,
+      "group": "g-list-0",
+      "state": "ghost",
+      "placedAt": null,
+      "anchor": null
+    },
+    "预训练与微调范式": {
+      "x": 584.0,
+      "y": 724.0,
+      "w": 196.0,
+      "h": 64.0,
+      "group": "g-list-0",
+      "state": "ghost",
+      "placedAt": null,
+      "anchor": null
+    },
+    "Scaling-Law": {
+      "x": 824.0,
+      "y": 724.0,
+      "w": 196.0,
+      "h": 64.0,
+      "group": "g-list-0",
+      "state": "ghost",
+      "placedAt": null,
+      "anchor": null
+    },
+    "MoE": {
+      "x": 104.0,
+      "y": 824.0,
+      "w": 196.0,
+      "h": 64.0,
+      "group": "g-list-0",
+      "state": "ghost",
+      "placedAt": null,
+      "anchor": null
+    },
+    "多模态模型": {
+      "x": 344.0,
+      "y": 824.0,
+      "w": 196.0,
+      "h": 64.0,
+      "group": "g-list-0",
+      "state": "ghost",
+      "placedAt": null,
+      "anchor": null
+    }
+  },
+  "refs": [],
+  "notes": [],
+  "images": [],
+  "edges": {}
+}

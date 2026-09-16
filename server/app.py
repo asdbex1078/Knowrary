@@ -4,6 +4,7 @@
 """
 from __future__ import annotations
 
+import datetime as dt
 import json
 import logging
 
@@ -14,19 +15,20 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import assets, chat as chat_svc, curation, plans as plans_svc
-from .contracts import (ChangeResult, ChangeSet, ChatRequest, CoachToday, FileDiff, InboxRead,
+from . import assets, chat as chat_svc, curation, projects as projects_svc
+from .contracts import (CalendarRead, ChangeResult, ChangeSet, ChatRequest, CoachToday, FileDiff,
+                        InboxRead,
                         LayoutPatch, LayoutRead,
                         LayoutSaved, MergeImpact, MergeRequest, MergeResult, NodeDetail,
                         PlanProposal, PlanProposeRequest, PlaceRequest,
-                        PlaceResult, PlansRead, PlansSaved, PlansWrite, QuizDiagnoseRequest,
+                        PlaceResult, ProjectsRead, ProjectsSaved, ProjectsWrite, QuizDiagnoseRequest,
                         QuizDiagnosis, QuizGradeRequest, QuizGraded, QuizRequest, QuizSet, RenameImpact,
                         RenameRequest, RenameResult, ReviewDone, ReviewRequest, SuggestRequest,
                         SuggestResult, UsageRead)
 from .index_service import current_index, invalidate
 from .layout_store import (LayoutBroken, PatchRejected, RevisionConflict, apply_patch, find_orphans,
                            load_or_init)
-from .paths import WEB3D_DIST, WEB_DIST, core, vault_path
+from .paths import DEFAULT_LAYOUT, WEB3D_DIST, WEB_DIST, core, vault_path
 
 log = logging.getLogger(__name__)
 
@@ -60,22 +62,40 @@ def get_index() -> dict:
     return current_index(vault_path())
 
 
+def _layout_target(vault, layout: str | None) -> tuple[str, dict | None]:
+    """`?layout=<项目 id>` 指到项目画布；不给就是全局图。
+
+    项目 id 走 `core.ID_OK`（只允许 ASCII）——它直接当文件名用，认不出的一律拒，
+    绝不让它拼出路径。
+    """
+    if not layout or layout == DEFAULT_LAYOUT:
+        return DEFAULT_LAYOUT, None
+    if not core.ID_OK.match(layout):
+        raise HTTPException(status_code=422, detail=f"非法的 layout 名 `{layout}`")
+    project = (core.load_projects(vault).get("projects") or {}).get(layout)
+    if project is None:
+        raise HTTPException(status_code=404, detail=f"没有 `{layout}` 这个项目")
+    return layout, project
+
+
 @app.get("/api/layout", response_model=LayoutRead)
-def get_layout() -> LayoutRead:
+def get_layout(layout: str | None = None) -> LayoutRead:
     vault = vault_path()
     index = current_index(vault)
-    layout, generated = load_or_init(vault, index)
-    return LayoutRead(layout=layout, orphans=find_orphans(layout, index, vault),
+    name, project = _layout_target(vault, layout)
+    doc, generated = load_or_init(vault, index, name, project)
+    return LayoutRead(layout=doc, orphans=find_orphans(doc, index, vault),
                       index_revision=index["revision"], generated=generated)
 
 
 @app.patch("/api/layout", response_model=LayoutSaved)
-def patch_layout(patch: LayoutPatch) -> LayoutSaved:
-    """高频写入口：拖拽、折叠、便签。只改 layout.json，不进确认流程。"""
+def patch_layout(patch: LayoutPatch, layout: str | None = None) -> LayoutSaved:
+    """高频写入口：拖拽、折叠、便签。只改 layout 文件，不进确认流程。"""
     vault = vault_path()
     index = current_index(vault)
+    name, project = _layout_target(vault, layout)
     try:
-        doc, orphans, backup = apply_patch(vault, patch, index)
+        doc, orphans, backup = apply_patch(vault, patch, index, name, project)
     except RevisionConflict as exc:
         raise HTTPException(status_code=409, detail={
             "message": str(exc), "current_revision": exc.current.revision,
@@ -144,20 +164,20 @@ def post_suggest(req: SuggestRequest) -> SuggestResult:
     return sug.suggest(vault, req.node_id)
 
 
-@app.get("/api/plans", response_model=PlansRead)
-def get_plans() -> PlansRead:
+@app.get("/api/projects", response_model=ProjectsRead)
+def get_projects() -> ProjectsRead:
     """学习计划 + 每个知识点的掌握度（五档，现算不落盘）。"""
-    return plans_svc.read(vault_path())
+    return projects_svc.read(vault_path())
 
 
-@app.put("/api/plans", response_model=PlansSaved)
-def put_plans(req: PlansWrite) -> PlansSaved:
+@app.put("/api/projects", response_model=ProjectsSaved)
+def put_projects(req: ProjectsWrite) -> ProjectsSaved:
     """整份替换计划。base_revision 对不上返回 409，客户端重新拉取后再提交。"""
     try:
-        return plans_svc.write(vault_path(), req)
-    except plans_svc.PlansConflict as exc:
+        return projects_svc.write(vault_path(), req)
+    except projects_svc.PlansConflict as exc:
         raise HTTPException(status_code=409, detail={"error": str(exc), "current_revision": exc.current}) from exc
-    except plans_svc.PlansRejected as exc:
+    except projects_svc.PlansRejected as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
@@ -179,6 +199,33 @@ def post_chat(req: ChatRequest) -> StreamingResponse:
 
     return StreamingResponse(events(), media_type="text/event-stream",
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+@app.get("/api/calendar", response_model=CalendarRead)
+def get_calendar(days: int = 120, to: str | None = None) -> CalendarRead:
+    """学习日历：每天建了几个、复习了几次、答了几道、烧了多少钱。纯读，不写任何文件。"""
+    vault = vault_path()
+    try:
+        end = dt.date.fromisoformat(to) if to else dt.date.today()
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=f"看不懂的日期 `{to}`") from exc
+    start = end - dt.timedelta(days=max(1, min(days, core.CALENDAR_MAX_DAYS)))
+    data = core.build_calendar(vault, current_index(vault), start, end)
+    return CalendarRead(**{**data, "from": data.pop("from")})
+
+
+@app.get("/api/chat/history")
+def get_chat_history(project: str | None = None, limit: int = 40,
+                     session: str | None = None) -> dict:
+    """某一段对话，刷新页面后接着聊；不给 session 就取最近那一段。纯读留档，不调 LLM。"""
+    rows = chat_svc.history(vault_path(), project, max(1, min(limit, 200)), session)
+    return {"messages": rows, "project": project, "session": session}
+
+
+@app.get("/api/chat/sessions")
+def get_chat_sessions(project: str | None = None) -> dict:
+    """这个项目下聊过几段。**从留档行聚合，不存会话表。**"""
+    return {"sessions": chat_svc.sessions(vault_path(), project)}
 
 
 @app.get("/api/llm/usage", response_model=UsageRead)
@@ -205,15 +252,27 @@ def _reports_cost(cfg: dict, roles: dict) -> bool:
 
 
 @app.get("/api/coach/today", response_model=CoachToday)
-def get_coach_today() -> CoachToday:
+def get_coach_today(project: str | None = None) -> CoachToday:
     """今天可以动手的事，按固定优先级排。不调 LLM——"今天干什么"是排序不是生成。"""
-    return curation.coach_today(vault_path())
+    return curation.coach_today(vault_path(), project)
 
 
-@app.post("/api/plans/propose", response_model=PlanProposal)
-def post_plans_propose(req: PlanProposeRequest) -> PlanProposal:
+@app.post("/api/projects/{project_id}/sync")
+def post_project_sync(project_id: str, body: dict) -> dict:
+    """把项目里已建成、还没上全局图的点放到全局图上（落 draft）。**坐标不搬。**"""
+    try:
+        return projects_svc.sync_to_global(vault_path(), project_id,
+                                           int(body.get("base_revision") or 0))
+    except projects_svc.PlansRejected as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except curation.PlaceRejected as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.post("/api/projects/propose", response_model=PlanProposal)
+def post_projects_propose(req: PlanProposeRequest) -> PlanProposal:
     """目标 → 分阶段知识点清单（LLM，learn 角色）。只提议，不写任何文件。"""
-    return plans_svc.propose(vault_path(), req)
+    return projects_svc.propose(vault_path(), req)
 
 
 @app.get("/api/review/due")
@@ -325,7 +384,7 @@ def post_merge(req: MergeRequest) -> MergeResult:
     if req.dry_run:
         return MergeResult(impact=MergeImpact(**impact), index_revision=index["revision"])
     core.backup_rename(vault, {"path": impact["drop_path"],
-                               "files": [impact["keep_path"], *impact["files"]]})
+                               "files": [impact["keep_path"], *impact["files"]]}, op="merge")
     core.apply_merge(vault, impact)
     invalidate(vault)
     return MergeResult(impact=MergeImpact(**impact), applied=True,

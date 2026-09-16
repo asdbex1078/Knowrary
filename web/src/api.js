@@ -12,7 +12,17 @@ async function request(url, options) {
 }
 
 export const fetchIndex = () => request('/api/index')
-export const fetchLayout = () => request('/api/layout')
+/** layout 有多份：不给 name 就是全局图，给项目 id 就是那个项目的画布。 */
+export const fetchLayout = (name = null) =>
+  request(`/api/layout${name ? `?layout=${encodeURIComponent(name)}` : ''}`)
+
+/** 把项目里已建成、还没上全局图的点同步过去（落 draft，坐标不搬）。 */
+export const postSyncToGlobal = (project, baseRevision) =>
+  request(`/api/projects/${encodeURIComponent(project)}/sync`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ base_revision: baseRevision }),
+  })
 export const fetchHealth = () => request('/api/health')
 
 export const fetchNode = (id) => request(`/api/node/${encodeURIComponent(id)}`)
@@ -24,7 +34,8 @@ export const postChanges = (body) => request('/api/changes', {
   body: JSON.stringify(body),
 })
 
-export const patchLayout = (body) => request('/api/layout', {
+export const patchLayout = (body, name = null) =>
+  request(`/api/layout${name ? `?layout=${encodeURIComponent(name)}` : ''}`, {
   method: 'PATCH',
   headers: { 'Content-Type': 'application/json' },
   body: JSON.stringify(body),
@@ -95,21 +106,22 @@ export const postMerge = (body) => request('/api/merge', {
 /** 模型调用账本：今天 / 累计 / 分功能 + 最近明细。只读。 */
 export const fetchUsage = () => request('/api/llm/usage')
 
-// —— 阶段 10：今日清单 + 学习计划 ——
+// —— 阶段 10 / 一期：今日清单 + 项目 ——
 /** 今天可以动手的事，按固定优先级排。纯排序，不调 LLM。 */
-export const fetchToday = () => request('/api/coach/today')
+export const fetchToday = (project) =>
+  request(`/api/coach/today${project ? `?project=${encodeURIComponent(project)}` : ''}`)
 
-export const fetchPlans = () => request('/api/plans')
+export const fetchProjects = () => request('/api/projects')
 
 /** 整份替换。base_revision 对不上会 409，拿 current_revision 重新拉取后再提交。 */
-export const putPlans = (body) => request('/api/plans', {
+export const putProjects = (body) => request('/api/projects', {
   method: 'PUT',
   headers: { 'Content-Type': 'application/json' },
   body: JSON.stringify(body),
 })
 
 /** 目标 → 知识点清单（LLM，learn 角色，可能耗时数秒）。只提议，不写盘。 */
-export const postPlanPropose = (body) => request('/api/plans/propose', {
+export const postPlanPropose = (body) => request('/api/projects/propose', {
   method: 'POST',
   headers: { 'Content-Type': 'application/json' },
   body: JSON.stringify(body),
@@ -124,13 +136,29 @@ export const uploadAsset = (name, file) => request(
   { method: 'POST', headers: { 'Content-Type': file.type || 'application/octet-stream' }, body: file },
 )
 
+/** 学习日历：每天建了几个、复习了几次、答了几道、烧了多少钱。纯读。 */
+export const fetchCalendar = (days = 120) => request(`/api/calendar?days=${days}`)
+
+/** 最近几轮对话：刷新页面后接着聊（纯读 .knowrary/chat/ 的留档）。 */
+export const fetchChatHistory = (project, session = null) => {
+  const q = new URLSearchParams()
+  if (project) q.set('project', project)
+  if (session) q.set('session', session)
+  return request(`/api/chat/history${q.toString() ? `?${q}` : ''}`)
+}
+
+/** 聊过几段：从留档行聚合，不存会话表。 */
+export const fetchChatSessions = (project) =>
+  request(`/api/chat/sessions${project ? `?project=${encodeURIComponent(project)}` : ''}`)
+
 /** 对话式教练：SSE 流式。事件形状见 server/chat.py，onEvent 每收到一条就调一次。
  *  用 fetch + ReadableStream 而不是 EventSource：EventSource 只能 GET，发不了整段对话。 */
-export async function streamChat(messages, onEvent, signal) {
+export async function streamChat(messages, onEvent, signal, project = null, session = null,
+                                 stance = '教练') {
   const res = await fetch('/api/chat', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ messages }),
+    body: JSON.stringify({ messages, project, session, stance }),
     signal,
   })
   if (!res.ok || !res.body) {

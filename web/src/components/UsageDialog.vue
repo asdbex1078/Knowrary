@@ -13,7 +13,10 @@ const emit = defineEmits(['close', 'refresh'])
 
 const OP_NAME = {
   suggest: '关系建议', quiz: '出题', 'quiz-diagnose': '答题比对',
-  'plan-propose': '拆学习计划', '?': '其它',
+  'plan-propose': '拆学习清单', 'plan-propose-fast': '速学版拆解',
+  'plan-interview': '拆面试考点', 'plan-interview-fast': '速学版面试拆解',
+  'plan-map': '铺领域地图', 'plan-map-fast': '速学版领域地图',
+  chat: '对话教练', '?': '其它',
 }
 const money = (n) => (n >= 0.01 ? `$${n.toFixed(2)}` : n > 0 ? '<$0.01' : '$0.00')
 const kilo = (n) => (n >= 1000 ? `${(n / 1000).toFixed(1)}k` : `${n}`)

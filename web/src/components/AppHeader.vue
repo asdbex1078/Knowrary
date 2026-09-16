@@ -8,7 +8,9 @@ import Icon from '../ui/Icon.vue'
 import Popover from '../ui/Popover.vue'
 
 const props = defineProps({
-  mode: { type: String, default: 'structure' },
+  mode: { type: String, default: 'chat' },
+  projects: { type: Object, default: () => ({}) },   // { id: {name} }，顶栏最左的切换器
+  project: { type: String, default: '' },
   hits: { type: Array, default: () => [] },
   status: { type: String, default: 'saved' },
   statusText: { type: String, default: '' },
@@ -16,7 +18,7 @@ const props = defineProps({
   has3d: { type: Boolean, default: false },
   busy: { type: Boolean, default: false },
 })
-const emit = defineEmits(['switch-mode', 'search', 'goto', 'toggle-theme', 'reload', 'rebuild', 'open-3d', 'help'])
+const emit = defineEmits(['switch-mode', 'switch-project', 'search', 'goto', 'toggle-theme', 'reload', 'rebuild', 'open-3d', 'help'])
 
 const q = ref('')
 const cursor = ref(0)
@@ -54,11 +56,34 @@ defineExpose({ focus: () => inputEl.value?.focus() })
       Knowrary
     </div>
 
+    <!-- 项目切换器放最左：**它决定了后面三个模式看到的范围**，不该藏在某个面板里 -->
+    <!-- 「全局」是一条真线，不是占位：不属于任何项目的对话落在 _scratch，
+         随手问一句不用先建项目。没有这一项的话那条线在界面上根本没有入口。 -->
+    <select class="proj-switch" :value="project"
+            title="当前项目：决定对话、项目图、今日清单和出题范围；选「全局」就是不绑项目"
+            @change="emit('switch-project', $event.target.value)">
+      <option value="">🌐 全局（不绑项目）</option>
+      <option v-for="(p, id) in projects" :key="id" :value="id">{{ p.name || id }}</option>
+    </select>
+
     <div class="seg" role="tablist">
-      <button :class="{ on: mode === 'structure' }" role="tab" @click="emit('switch-mode', 'structure')">
-        <Icon name="network" :size="14" />结构
+      <button :class="{ on: mode === 'chat' }" role="tab" title="聊着学（1）——启动成本最低的入口"
+              @click="emit('switch-mode', 'chat')">
+        <Icon name="network" :size="14" />对话
       </button>
-      <button :class="{ on: mode === 'history' }" role="tab" title="只看有 year 的节点，X 轴是年份"
+      <button :class="{ on: mode === 'project' }" role="tab" title="只看当前项目的点（2）"
+              @click="emit('switch-mode', 'project')">
+        <Icon name="checklist" :size="14" />项目图
+      </button>
+      <!-- 项目视角与全局视角之间的桥就是这一个 tab：选着项目时切过去会顺手高亮那些点，
+           回答"我学的这些东西在整张图里是什么位置"。**不再另设一个按钮**——
+           两个控件都叫「全局图」只会让人问"为什么有两个"。 -->
+      <button :class="{ on: mode === 'structure' }" role="tab"
+              :title="project ? '整张图（3）——会高亮当前项目的点' : '整张图（3）'"
+              @click="emit('switch-mode', 'structure')">
+        <Icon name="map" :size="14" />全局图
+      </button>
+      <button :class="{ on: mode === 'history' }" role="tab" title="只看有 year 的节点，X 轴是年份（4）"
               @click="emit('switch-mode', 'history')">
         <Icon name="clock" :size="14" />历史
       </button>

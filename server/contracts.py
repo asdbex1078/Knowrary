@@ -54,7 +54,8 @@ class NodeBox(Strict):
     w: float = NODE_W
     h: float = NODE_H
     group: str | None = None
-    state: Literal["final", "draft"] = "final"
+    state: Literal["final", "draft", "ghost"] = "final"
+    """ghost = 计划里有、图里还没建的占位。**只出现在项目画布**，不进全局 layout、不进 vault。"""
     placedAt: str | None = None   # noqa: N815  （layout.json 里就是这个键名）
     anchor: str | None = None
 
@@ -133,7 +134,7 @@ class NodePatch(Strict):
     w: float | None = None
     h: float | None = None
     group: str | None = None
-    state: Literal["final", "draft"] | None = None
+    state: Literal["final", "draft", "ghost"] | None = None
     placedAt: str | None = None   # noqa: N815
     anchor: str | None = None
 
@@ -427,12 +428,18 @@ ID_PATTERN = r'^[^\\/:*?"<>|\s]+$'
 
 PointLoad = Literal["轻", "中", "重"]
 
+# 三种拆解口径，不是三套架构（F10.3b）：模板与出题口径不同，数据结构和链路完全共用。
+#   学习 = 按依赖顺序拆   面试 = 按会怎么问拆   领域 = 按覆盖度铺一张地图
+# **kind 属于「清单」，不属于「项目」**——它说的是"这份清单怎么拆出来的"，
+# 不是"项目的类型"；一个项目下可以同时有主线、面试清单和领域地图（重构方案 §3）。
+ListKind = Literal["学习", "面试", "领域"]
+
 
 class PlanPoint(Strict):
-    """计划里的一个知识点。
+    """清单里的一个知识点。
 
-    **id 允许指向图里还不存在的节点**——这正是学习计划的用途：你要学 Transformer 的时候
-    这些节点一个都还没有。`name` / `why` 让计划在节点建出来之前也读得懂。
+    **id 允许指向图里还不存在的节点**——这正是它的用途：你要学 Transformer 的时候
+    这些节点一个都还没有。`name` / `why` 让清单在节点建出来之前也读得懂。
     """
 
     id: str = Field(min_length=1, max_length=200, pattern=ID_PATTERN)
@@ -447,47 +454,61 @@ class PlanStage(Strict):
     points: list[PlanPoint] = Field(default_factory=list)
 
 
-# 三种口径，不是三套架构（F10.3b）：拆解模板与出题口径不同，数据结构和链路完全共用。
-#   学习 = 按依赖顺序（先学的在前）  面试 = 按会怎么问  领域 = 按覆盖度铺一张地图
-PlanKind = Literal["学习", "面试", "领域"]
+class ProjectList(Strict):
+    """项目下的一份清单：学习主线 / 某一家的面试方案 / 某个领域的全景图。
 
+    截止日在这里（面试有面试的日子），**每周投入在项目上**——你的时间只有一份，
+    不会因为多开一份清单就变多。
+    """
 
-class Plan(Strict):
-    name: str = Field(min_length=1, max_length=120)
-    goal: str = ""                     # 面试计划里这里放岗位要求原文
-    kind: PlanKind = "学习"
-    coach: str = ""                    # 教练侧写，例如「Java 后端开发」「SRE 运维」；注入拆解与出题
-    field: str = ""                    # 这份计划的顶层领域；建知识点时的落脚点由它决定
-    created: str | None = None
+    kind: ListKind = "学习"
+    name: str = Field(default="主线", max_length=120)
+    goal: str = ""                     # 面试清单里这里放岗位要求原文
+    coach: str = ""                    # 教练侧写，例如「Java 后端开发」；注入拆解与出题
+    field: str = ""                    # 这份清单的落脚领域；空则用项目的
     target_date: str | None = None
-    weekly_hours: int = Field(default=7, ge=1, le=80)   # 每周能投入几小时；时间账的分母
-    daily_quota: int = Field(default=2, ge=1, le=20)
     stages: list[PlanStage] = Field(default_factory=list)
 
 
-class PlansDoc(Strict):
-    schema_version: int = 1
+class Project(Strict):
+    """项目是**视角**，不是容器：它不拥有节点，只引用一组 node_id。
+
+    掌握度、复习调度、错题本一律全局唯一——同一个大脑不可能"在 NLP 项目里记得、
+    在 Transformer 项目里忘了"。项目只是过滤器（重构方案 §1）。
+    """
+
+    name: str = Field(min_length=1, max_length=120)
+    created: str | None = None
+    field: str = ""                    # 默认落脚领域，清单没写自己的就用它
+    weekly_hours: int = Field(default=7, ge=1, le=80)   # 每周能投入几小时；时间账的分母
+    daily_quota: int = Field(default=2, ge=1, le=20)    # 今日清单一次摆几个建设项
+    legacy_id: str | None = None       # 从 plans.json 迁来的旧 id，对话目录迁移用
+    lists: list[ProjectList] = Field(default_factory=list)
+
+
+class ProjectsDoc(Strict):
+    schema_version: int = 2
     revision: int = 0
     updated_at: str | None = None
-    plans: dict[str, Plan] = Field(default_factory=dict)
+    projects: dict[str, Project] = Field(default_factory=dict)
 
 
-class PlansRead(Strict):
-    doc: PlansDoc
-    progress: dict[str, Any] = Field(default_factory=dict)   # {plan_id: {points, counts, total, built}}
-    schedules: dict[str, Any] = Field(default_factory=dict)  # {plan_id: 时间账}，同样现算不落盘
+class ProjectsRead(Strict):
+    doc: ProjectsDoc
+    progress: dict[str, Any] = Field(default_factory=dict)   # {project_id: {lists: [...], all: {...}}}
+    schedules: dict[str, Any] = Field(default_factory=dict)  # {project_id: {lists: [时间账]}}
     index_revision: int = 0
 
 
-class PlansWrite(Strict):
-    """整份替换。计划是人手编排的小文档，没必要上 Merge Patch——
+class ProjectsWrite(Strict):
+    """整份替换。项目是人手编排的小文档，没必要上 Merge Patch——
     但 revision 仍然要挡并发，语义与 layout 的 base_revision 一致。"""
 
     base_revision: int
-    plans: dict[str, Plan]
+    projects: dict[str, Project]
 
 
-class PlansSaved(Strict):
+class ProjectsSaved(Strict):
     revision: int
     progress: dict[str, Any] = Field(default_factory=dict)
     schedules: dict[str, Any] = Field(default_factory=dict)
@@ -497,17 +518,17 @@ ProposeMode = Literal["标准", "速学"]
 
 
 class PlanProposeRequest(Strict):
-    """目标 → 知识点清单。只提议，不落盘；人在面板上逐条增删后才进 plans.json。"""
+    """目标 → 知识点清单。只提议，不落盘；人在面板上逐条增删后才进 projects.json。"""
 
-    goal: str = Field(min_length=1, max_length=8000)   # 面试计划要塞得下一整份 JD
+    goal: str = Field(min_length=1, max_length=8000)   # 面试清单要塞得下一整份 JD
     plan_name: str = ""
-    kind: PlanKind = "学习"
+    kind: ListKind = "学习"
     coach: str = ""
     target_date: str | None = None                    # 有它模型才排得出阶段截止日
     weekly_hours: int = Field(default=7, ge=1, le=80)
     mode: ProposeMode = "标准"                         # 速学＝时间装不下时，砍到最精炼的一份
     known_points: list[str] = Field(default_factory=list, max_length=200)
-    """这份计划里已经有的点（`id` 或 `id（名字）`）。不喂给模型，它就会把同一个目标
+    """这份清单里已经有的点（`id` 或 `id（名字）`）。不喂给模型，它就会把同一个目标
     再拆一遍近义词——`RNN` / `RNN与长程依赖` 这种，靠 id 去重是拦不住的。"""
 
 
@@ -515,8 +536,8 @@ class PlanProposal(Strict):
     stages: list[PlanStage] = Field(default_factory=list)
     schedule: dict[str, Any] = Field(default_factory=dict)   # 这份提议排进给定时间后的时间账
     dropped: list[PlanPoint] = Field(default_factory=list)   # 速学模式砍掉的点，必须留痕
-    duplicates: list[str] = Field(default_factory=list)      # 这份计划里已经有的点，面板上默认划掉
-    suggested_field: str = ""          # 这份计划该落在哪个领域，采纳时填进计划
+    duplicates: list[str] = Field(default_factory=list)      # 这份清单里已经有的点，面板上默认划掉
+    suggested_field: str = ""          # 这份清单该落在哪个领域，采纳时填进项目
     notes: str = ""
     existing: list[str] = Field(default_factory=list)    # 提议里已经在图谱中的 id，面板上标出来
     warnings: list[str] = Field(default_factory=list)
@@ -530,16 +551,22 @@ class CoachItem(Strict):
     kind: Literal["wrong", "due", "unbuilt", "shell", "inbox"]
     id: str
     name: str
-    why: str = ""                      # 计划里写的"为什么要学它"
+    why: str = ""                      # 清单里写的"为什么要学它"
     detail: str = ""                   # 「逾期 3 天」「错过 2 次」「放进某某组」
-    plan: str | None = None
-    plan_name: str | None = None
+    project: str | None = None
+    project_name: str | None = None
+    list: str | None = None
     stage: str | None = None
+    state: dict[str, str] = Field(default_factory=dict)   # {study, exam}，学/考双态，现算
 
 
 class CoachPlanLine(Strict):
-    id: str
-    name: str
+    """一行一份**清单**，不是一行一个项目——同一个项目里学习主线和面试清单是两回事。"""
+
+    id: str                            # 项目 id
+    name: str                          # 项目名
+    list: str = ""                     # 清单名
+    kind: str = "学习"
     stage: str = ""                    # 当前阶段；全建完了是空串
     done: bool = False
     built: int = 0
@@ -555,8 +582,9 @@ class CoachToday(Strict):
     generated_at: str
     items: list[CoachItem] = Field(default_factory=list)
     counts: dict[str, int] = Field(default_factory=dict)
-    plans: list[CoachPlanLine] = Field(default_factory=list)
-    pools: dict[str, list[str]] = Field(default_factory=dict)   # 出题范围：今日 / 没考过 / 已建全部
+    projects: list[CoachPlanLine] = Field(default_factory=list)
+    pools: dict[str, list[str]] = Field(default_factory=dict)   # 出题范围：今日 / 没考过 / 本项目 / 已建全部
+    estimate_hours: float = 0.0        # 今天这一屏大概要多久（建设按负荷、复习按每个几分钟）
 
 
 # ---------------------------------------------------------------- 对话式教练（阶段 12）
@@ -571,6 +599,31 @@ class ChatRequest(Strict):
     刷新页面不会"丢一半上下文"，也不用管会话过期。"""
 
     messages: list[ChatMessage] = Field(min_length=1, max_length=200)
+    stance: Literal["教练", "面试", "聊天"] = "教练"
+    """口径：决定用哪套系统提示词、开哪几个工具。**不是三个 agent**——
+    同一条链路、同一份图、同一套复习记录，只是提示词和工具白名单不同（重构方案 §4 之后的补记）。"""
+    session: str | None = Field(default=None, max_length=64)
+    """这一段对话的标签。前端生成，服务端只是记在留档行上——
+    **不建会话表**，会话列表是从这些行聚合出来的（同"进度不落盘"那条纪律）。"""
+    project: str | None = None
+    """聊的是哪个项目。留档按它分目录；没给就落进 `_scratch/`——
+    「对话」是默认入口，冷启动时一个项目都还没有，随手问一句也得有地方落（重构方案 §8）。"""
+
+
+# ---------------------------------------------------------------- 学习日历（五期）
+
+class CalendarRead(Strict):
+    """每天一格的热力图 + 某天的明细。**全部派生，不新增任何记录**（重构方案 §6）。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    from_: str = Field(alias="from")
+    to: str
+    days: dict[str, Any] = Field(default_factory=dict)      # {日期: {built, reviews, answers, …}}
+    detail: dict[str, Any] = Field(default_factory=dict)    # {日期: {built: [...], reviews: [...]}}
+    totals: dict[str, Any] = Field(default_factory=dict)
+    streak: int = 0                                          # 连续学习天数
+    busiest: str | None = None
 
 
 # ---------------------------------------------------------------- LLM 用量
@@ -621,7 +674,7 @@ class RenameImpact(Strict):
     docs: int = 0                      # 有几个分组把它当总览文档
     reviews: int = 0
     quiz: int = 0
-    plans: list[str] = Field(default_factory=list)
+    projects: list[str] = Field(default_factory=list)
 
 
 class RenameResult(Strict):
@@ -656,7 +709,7 @@ class MergeImpact(Strict):
     refs: int = 0
     reviews: int = 0
     quiz: int = 0
-    plans: list[str] = Field(default_factory=list)
+    projects: list[str] = Field(default_factory=list)
 
 
 class MergeResult(Strict):

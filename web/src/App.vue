@@ -1,7 +1,7 @@
 <script setup>
-import { computed, onBeforeUnmount, onMounted, reactive, ref, shallowRef, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, shallowRef, watch } from 'vue'
 import {
-  fetchDigest, fetchDue, fetchPlans, putPlans, postPlanPropose, fetchToday, fetchUsage, postMerge, postRename, postQuiz, postQuizDiagnose, postQuizGrade, fetchHealth, fetchIndex, fetchInbox, fetchLayout, fetchNode,
+  fetchCalendar, fetchChatHistory, fetchChatSessions, fetchDigest, postSyncToGlobal, fetchDue, fetchProjects, putProjects, postPlanPropose, fetchToday, fetchUsage, postMerge, postRename, postQuiz, postQuizDiagnose, postQuizGrade, fetchHealth, fetchIndex, fetchInbox, fetchLayout, fetchNode,
   patchLayout, postChanges, postPlace, postReview, postSuggest, streamChat,
 } from './api'
 import AppHeader from './components/AppHeader.vue'
@@ -26,8 +26,10 @@ import Icon from './ui/Icon.vue'
 import InboxTray from './panels/InboxTray.vue'
 import DigestPanel from './panels/DigestPanel.vue'
 import StudyPanel from './panels/StudyPanel.vue'
-import ChatPanel from './panels/ChatPanel.vue'
-import PlansPanel from './panels/PlansPanel.vue'
+import CalendarPanel from './panels/CalendarPanel.vue'
+import ChatView from './views/ChatView.vue'
+import MorningBrief from './components/MorningBrief.vue'
+import ProjectsPanel from './panels/ProjectsPanel.vue'
 import ImagePicker from './panels/ImagePicker.vue'
 import TimelinePanel from './panels/TimelinePanel.vue'
 import { clone, createHistory, diffPatch, isEmptyPatch } from './canvas/history'
@@ -89,7 +91,9 @@ const digest = shallowRef(null)          // GET /api/digest：欠账清单
 const dueIds = shallowRef(new Set())     // 今天该复习的节点，画布上点一个金色小圆点
 const placing = ref(false)
 // 历史视图（阶段 6）：X 轴锁在年份上，坐标不持久化，进来一次算一次
-const mode = ref('structure')
+// 四个模式（三期）：对话 / 项目图 / 全局图 / 历史。
+// **默认落在「对话」**——启动成本最低的入口应该是默认入口。
+const mode = ref(localStorage.getItem('knowrary-mode') || 'chat')
 const hist = reactive({ compact: false, validity: false, upto: null, trunk: false,
                         演化: true, 依赖: false, 对照: false })
 const histPlan = shallowRef(null)
@@ -136,7 +140,112 @@ const viewBox = ref({ cx: 0, cy: 0, w: 0, h: 0 })   // 当前视口（图坐标�
 
 // —— 界面状态：左侧工具窗口、右侧检查器、浮层提示、帮助 ——
 const panel = ref('')                    // '' | inbox | plans | study | digest | assets | timeline
-const plansDoc = shallowRef(null)        // 学习计划；只写 plans.json，不碰 md 也不碰 layout
+const plansDoc = shallowRef(null)        // 项目；只写 projects.json，不碰 md 也不碰 layout
+const currentProject = ref('')           // 当前项目：今日清单、出题范围、对话留档都按它过滤；空串 = 全局
+let projectPicked = false                // 是否已经定过当前项目（避免每次刷新都被首个项目顶掉）
+
+// 学 / 考双态，画布上画成左下角两个小方块。**只覆盖当前项目里的点**——
+// 全图每个节点都算一遍没有意义：双态是"我正在推进的东西卡在哪一步"，不是节点属性。
+// 晨间简报：当天第一次打开弹一次。**只记日期，不记"看过没有"**——
+// 换成布尔值的话，跨天要靠别的机制去重置，日期本身就是最简单的那把钥匙。
+const BRIEF_KEY = 'knowrary-brief-day'
+const briefOn = ref(false)
+
+const syncing = ref(false)
+const calendar = shallowRef(null)     // 学习日历：全派生，每次打开重算
+
+async function refreshCalendar() {
+  try {
+    calendar.value = await fetchCalendar(120)
+  } catch (err) {
+    setBanner(`日历加载失败：${err.message}`, 'error')
+  }
+}
+const nodeStates = computed(() => plansProgress.value?.[currentProject.value]?.all?.states || {})
+
+/** 对话里提议的项目卡：点「创建」才写 projects.json。整份替换，沿用 base_revision 乐观锁。 */
+async function applyProjectCard({ card, i, j }) {
+  chatBusy.value = true
+  try {
+    const doc = await fetchProjects()
+    const next = JSON.parse(JSON.stringify(doc.doc.projects || {}))
+    const old = next[card.id]
+    next[card.id] = old
+      ? { ...old, lists: [...(old.lists || []), ...card.lists] }      // 已有项目：加清单，不覆盖
+      : { name: card.name, field: card.field, weekly_hours: card.weekly_hours,
+          daily_quota: card.daily_quota, created: new Date().toISOString().slice(0, 10),
+          lists: card.lists }
+    await putProjects({ base_revision: doc.doc.revision, projects: next })
+    chatLog.value[i].projects[j].applied = true
+    await refreshPlans()
+    switchProject(card.id)
+    setBanner(old ? `已往「${card.name}」加了 ${card.lists.length} 份清单`
+                  : `已创建项目「${card.name}」，去项目面板点「让 AI 拆一份」把点填进来`, 'success')
+  } catch (err) {
+    setBanner(`创建失败：${err.body?.detail || err.message}`, 'error')
+  } finally {
+    chatBusy.value = false
+  }
+}
+
+/** 在当前项目的清单里找这个点（幽灵节点要用它的 name / why）。 */
+function projectPoint(id) {
+  const lists = plansDoc.value?.projects?.[currentProject.value]?.lists || []
+  for (const ls of lists) {
+    for (const stage of ls.stages || []) {
+      const hit = (stage.points || []).find((p) => p.id === id)
+      if (hit) return hit
+    }
+  }
+  return null
+}
+
+/** 同步到全局：只放"已经建出来、还没上全局图"的点，落 draft。**坐标不搬**——
+ *  项目画布里的排版是你为了想清楚而摆的，全局图有自己的结构，搬过去只会打乱主图。 */
+async function syncToGlobal() {
+  if (!currentProject.value || syncing.value) return
+  syncing.value = true
+  try {
+    await patcher.value.flush()
+    const glob = await fetchLayout()            // 同步动的是全局图，要拿它的 revision
+    const out = await postSyncToGlobal(currentProject.value, glob.layout.revision)
+    const parts = []
+    if (out.placed.length) parts.push(`${out.placed.length} 个点已放到全局图（金色虚线的草稿，确认位置后定稿）`)
+    if (out.duplicates.length) {
+      parts.push(`${out.duplicates.length} 个点疑似和图里已有的重复，先没放：`
+        + out.duplicates.map((d) => `${d.id} ↔ ${d.candidates.map((c) => c.id).join('/')}`).join('；'))
+    }
+    const already = out.skipped.filter((x) => x.reason.includes('已经在')).length
+    const unbuilt = out.skipped.length - already
+    if (already) parts.push(`${already} 个本来就在图上`)
+    if (unbuilt) parts.push(`${unbuilt} 个还没建出来`)
+    setBanner(parts.join('；') || '没有需要同步的点', out.duplicates.length ? 'error' : 'success')
+  } catch (err) {
+    setBanner(`同步失败：${err.body?.detail || err.message}`, 'error')
+  } finally {
+    syncing.value = false
+  }
+}
+
+function projectField() {
+  return plansDoc.value?.projects?.[currentProject.value]?.field || ''
+}
+
+/** 重新拉当前这份 layout（换画布时用）。 */
+async function reloadLayout() {
+  const fresh = await fetchLayout(layoutName())
+  layoutDoc.value = fresh.layout
+  revision.value = fresh.layout.revision
+}
+
+/** 当前这块画布写去哪一份 layout：项目图写项目自己的，其余都写全局图。 */
+function layoutName() {
+  return mode.value === 'project' && currentProject.value ? currentProject.value : null
+}
+
+// 当前项目里的点。项目图有**自己的一份 layout**（四期），里面还带着「未建」的幽灵占位。
+const projectIds = computed(() =>
+  new Set(Object.keys(plansProgress.value?.[currentProject.value]?.all?.points || {})))
 const plansProgress = shallowRef({})     // 每个知识点的掌握度，服务端现算
 const plansSchedules = shallowRef({})     // 时间账：装不装得下、每阶段排到哪天、落后几个；同样现算
 
@@ -145,7 +254,32 @@ const plansSchedules = shallowRef({})     // 时间账：装不装得下、每�
 // 但每一轮都已经留档在 .knowrary/chat/YYYY-MM.jsonl（F10.7）。
 const chatLog = ref([])                  // [{ role, content, tools?, cards?, streaming? }]
 const chatBusy = ref(false)
+const chatSessions = ref([])             // 会话列表：从留档行聚合出来的，不是一张表
+const chatSession = ref(newSessionId())
+// 口径：教练 / 面试 / 聊天。**不是三个 agent**，是三套提示词 + 三份工具白名单。
+const chatStance = ref(localStorage.getItem('knowrary-stance') || '教练')
+
+/** 换口径就新开一段。混在同一段里，前半截是面试后半截是闲聊，模型会被自己的历史带跑。 */
+function setStance(next) {
+  if (!next || next === chatStance.value) return
+  chatStance.value = next
+  try { localStorage.setItem('knowrary-stance', next) } catch { /* 无痕模式 */ }
+  if (chatLog.value.length) newChatSession()
+  setBanner(`切到「${next}」口径`)
+}
+const chatFocus = shallowRef(null)       // 从图上点过来的节点，带进下一轮上下文
+const graphPane = ref(localStorage.getItem('knowrary-chat-graph') !== 'off')
 let chatAbort = null
+
+function newSessionId() {
+  return `s${Date.now().toString(36)}`
+}
+
+function toggleGraphPane() {
+  graphPane.value = !graphPane.value
+  try { localStorage.setItem('knowrary-chat-graph', graphPane.value ? 'on' : 'off') } catch { /* 无痕模式 */ }
+  nextTick(() => window.dispatchEvent(new Event('resize')))   // 画布跟着重新量宽
+}
 const plansBusy = ref(false)
 const planProposal = shallowRef(null)    // AI 拆出的要点；纯提议，人采纳了才进 draft
 const planProposing = ref(false)
@@ -175,6 +309,7 @@ function openPanel(id) {
   if (panel.value === 'inbox') refreshInbox()
   if (panel.value === 'study') { refreshToday(); refreshDue() }
   if (panel.value === 'plans') refreshPlans()
+  if (panel.value === 'calendar') refreshCalendar()
 }
 
 const statusText = computed(() => ({
@@ -220,7 +355,7 @@ function setBanner(text, kind = '') {
 }
 
 async function load() {
-  const [index, layout] = await Promise.all([fetchIndex(), fetchLayout()])
+  const [index, layout] = await Promise.all([fetchIndex(), fetchLayout(layoutName())])
   fetchHealth().then((h) => { has3d.value = !!h.web3d }).catch(() => {})
   indexDoc.value = index
   layoutDoc.value = layout.layout
@@ -251,7 +386,8 @@ function render({ view = 'keep' } = {}) {
   const cells = buildCells(indexDoc.value, layoutDoc.value, {
     families: visibleFamilies(), showLabels: labelsOn.value,
     aggregate: aggregate.value, expanded: expanded.value, collapsed: collapsedIds.value, zoom: g.zoom(),
-    due: dueIds.value, only: neighborSet.value,
+    due: dueIds.value, states: nodeStates.value,
+    only: neighborSet.value || (mode.value === 'project' && projectIds.value.size ? projectIds.value : null),
   })
   edgesShown.value = cells.edges.filter((e) => e.data.kind === 'edge').length
   aggShown.value = cells.edges.length - edgesShown.value
@@ -368,21 +504,51 @@ function renderHistory({ view = 'fit' } = {}) {
 }
 
 async function switchMode(next) {
+  // 切到全局图时，如果正选着项目，顺手把它的点高亮出来——
+  // 回答"我学的这些东西，在整张图里是什么位置"。这就是项目视角与全局视角之间的桥，
+  // 不另设按钮（两个控件都叫「全局图」只会让人问"为什么有两个"）。
+  const focusProject = next === 'structure' && !!currentProject.value && mode.value !== 'structure'
   if (mode.value === next) return
   stopPlay()
-  await patcher.value.flush()           // 离开结构视图前先把手上的改动落盘
+  await patcher.value.flush()           // 离开画布前先把手上的改动落盘
+  const wasLayout = layoutName()
   mode.value = next
+  try { localStorage.setItem('knowrary-mode', next) } catch { /* 无痕模式 */ }
   markHistoryContainer(next)
   // 左侧工具窗口是分模式的：切过去之后原来开着的那个可能不适用了
-  if ((next === 'history' && panel.value !== 'digest') || (next === 'structure' && panel.value === 'timeline')) {
+  if ((next === 'history' && panel.value !== 'digest') || (next !== 'history' && panel.value === 'timeline')) {
     panel.value = ''
   }
-  if (next === 'structure') {
-    expanded.value = new Set()
-    render({ view: 'stored' })
-    setBanner('')
-  } else {
+  // **换了一份 layout 就得重新拉，并且把撤销栈清掉。**
+  // 撤销栈里存的是"某一份 layout 的前后两个快照"，跨画布撤销会把补丁打到错的文件上——
+  // 这是多份 layout 带来的真风险，不是体验问题。
+  if (layoutName() !== wasLayout) {
+    history.reset()
+    histVer.value++
+    await reloadLayout()
+  }
+  if (next === 'chat') {
+    loadChatHistory()
+    render({ view: 'stored' })          // 右侧那块图照常画
+  } else if (next === 'history') {
     renderHistory({ view: 'fit' })
+  } else {
+    expanded.value = new Set()
+    render({ view: next === 'project' ? 'fit' : 'stored' })
+    setBanner('')
+  }
+  // 换模式会改画布宽度（对话模式左边被占走大半），X6 要重新量一次。
+  // **不能让这里的异常把后面的高亮吞掉**：渲染期一个报错就再也走不到那一步了。
+  try {
+    await nextTick()
+    window.dispatchEvent(new Event('resize'))
+  } catch (err) {
+    reportCrash(err)
+  }
+  if (focusProject && projectIds.value.size) {
+    highlightPath(graph.value, projectIds.value, new Set())
+    setBanner(`已高亮「${plansDoc.value?.projects?.[currentProject.value]?.name || currentProject.value}」的 `
+      + `${projectIds.value.size} 个点（Esc 取消）`)
   }
 }
 
@@ -563,6 +729,17 @@ function bindEvents(g) {
     if (node.shape === 'kg-cluster') enterGroup(node.id)
     else if (node.shape === 'kg-group') setActiveGroup(node.id)
     if (node.shape === 'kg-ref') gotoNode(node.getData()?.target)
+    // 项目画布上的幽灵占位：点一下就去建它——那正是它摆在那儿的意义
+    if (node.shape === 'kg-node' && node.getData()?.ghost) {
+      const pt = projectPoint(node.id)
+      buildPoint({ id: node.id, name: pt?.name || node.id, why: pt?.why || '',
+                   project: currentProject.value, field: projectField() })
+      return
+    }
+    // 对话模式下点图上的节点 → 把它带进下一轮上下文，省掉"我想问 XX"这句打字
+    if (mode.value === 'chat' && node.shape === 'kg-node' && !node.getData()?.orphan) {
+      chatFocus.value = describe(node.id)
+    }
   }))
   g.on('node:dblclick', safe(({ node }) => {
     if (node.shape === 'kg-note') editNote(node.id.slice(5))
@@ -1215,7 +1392,7 @@ async function createNode(form) {
                 ...(form.year ? { year: form.year } : {}),
                 learned: new Date().toISOString().slice(0, 10) },
     }] })
-    await placeNew(form.id, spot)
+    await placeNew([form.id], spot)
     await reloadIndex()
     if (spot?.asDoc) bindDoc(spot.asDoc, form.id)
     status.value = 'saved'
@@ -1229,10 +1406,14 @@ async function createNode(form) {
   }
 }
 
-/** 新节点落到右键的那个点上；不在任何域里就交给服务端按领域找位置。 */
-async function placeNew(id, spot) {
+/** 新节点落到右键的那个点上；不在任何域里就交给服务端按领域找位置。
+ *  **一律落 draft（金色虚线），不直接 final**：位置是机器按邻居投票猜的，得由人确认
+ *  （设计文档 4.1「程序只写 draft、只在分组内、不动 final」）。 */
+async function placeNew(ids, spot) {
+  const list = Array.isArray(ids) ? ids : [ids]
+  if (!list.length) return
   await patcher.value.flush()
-  const body = { base_revision: revision.value, ids: [id], state: 'draft' }
+  const body = { base_revision: revision.value, ids: list, state: 'draft' }
   if (spot?.group) {
     body.group = spot.group
     body.at = { x: Math.round(spot.at.x - 80), y: Math.round(spot.at.y - 26) }
@@ -1772,6 +1953,51 @@ async function refreshUsage() {
 /** 调完模型就刷一次账本——"实时关注"的实时就靠这个。 */
 const llmBusy = computed(() => quizBusy.value || planProposing.value || suggesting.value)
 
+/** 换当前项目：今日清单、出题范围、对话留档都跟着换。 */
+/** 换当前项目。**项目画布是另一份文件，必须重新拉**——
+ *  只 render 一下的话画的还是上一个项目的 layout（看起来就是"空白/少了一半点"），
+ *  而且接下来的拖拽会拿着旧 revision 去写新文件，必 409。 */
+async function switchProject(id) {
+  if (id === currentProject.value) return          // 空串是合法值：「全局」那一条线
+  await patcher.value?.flush()              // 上一个项目的改动先落盘，别带到下一份去
+  currentProject.value = id
+  try { localStorage.setItem('knowrary-project', id) } catch { /* 无痕模式 */ }
+  if (panel.value === 'study') refreshToday()
+  if (panel.value === 'calendar') refreshCalendar()
+  if (mode.value === 'project') {
+    history.reset()                         // 撤销栈是跟着某一份 layout 的，换了就作废
+    histVer.value++
+    await reloadLayout()
+    render({ view: 'fit' })
+    if (!id) setBanner('「全局」没有项目画布——这一屏现在是全局图。选一个项目才有自己的画布')
+  }
+  if (mode.value === 'chat') {
+    // 对话按项目分线：换项目等于换一条线。上一段没丢——它一直在 .knowrary/chat/<项目>/ 里
+    chatLog.value = []
+    chatSession.value = newSessionId()
+    loadChatHistory()
+  }
+}
+
+/** 一天弹一次。没东西可做的日子也弹——"今天没有到期的"本身就是有用的信息。 */
+function maybeBrief() {
+  const day = todayList.value?.generated_at
+  if (!day || briefOn.value) return
+  try {
+    if (localStorage.getItem(BRIEF_KEY) === day) return
+    localStorage.setItem(BRIEF_KEY, day)
+  } catch { /* 无痕模式读不到 localStorage：那就每次都弹，总比不弹好 */ }
+  briefOn.value = true
+}
+
+/** 简报上点一条：直接进到能动手的那一步，不用再自己找面板。 */
+function briefStart(item) {
+  briefOn.value = false
+  if (item.kind === 'unbuilt') buildPoint(item)
+  else if (item.kind === 'shell') writeBody(item)
+  else gotoNode(item.id)
+}
+
 // —— 阶段 12：对话式教练 ——
 
 const TOOL_LABEL = {
@@ -1780,11 +2006,47 @@ const TOOL_LABEL = {
   record_review: '记了一次复习', propose_changes: '拟了一张变更卡',
 }
 
+/** 刷新页面后接着聊：把留档里最近几轮读回来。**不是多会话**——
+ *  只是别把上下文弄丢。变更卡和工具痕迹不恢复（它们是当时那一刻的东西，过期了）。 */
+async function loadChatHistory(session = null) {
+  if (chatBusy.value) return
+  try {
+    const [hist, list] = await Promise.all([
+      fetchChatHistory(currentProject.value || null, session),
+      fetchChatSessions(currentProject.value || null),
+    ])
+    chatSessions.value = list.sessions
+    chatLog.value = hist.messages.map((m) => ({ ...m, tools: [], cards: [], resumed: true }))
+    // 接着最近那一段聊：服务端不给 session 时返回的就是它，这里把 id 对上
+    if (!session && hist.messages.length) chatSession.value = list.sessions[0]?.id || chatSession.value
+    else if (session) chatSession.value = session
+  } catch { /* 读不到就当新开一段，不值得为此报错 */ }
+}
+
+/** 新开一段：旧的还在留档里，随时切回来。 */
+function newChatSession() {
+  chatSession.value = newSessionId()
+  chatLog.value = []
+  chatFocus.value = null
+}
+
+function pickChatSession(id) {
+  if (!id || id === chatSession.value) return
+  chatLog.value = []
+  loadChatHistory(id)
+}
+
 /** 发一句话。服务端流式回，边收边渲染；工具调用和变更卡挂在这条回复下面。 */
 async function sendChat(body) {
   if (chatBusy.value) return
-  chatLog.value = [...chatLog.value, { role: 'user', content: body }]
-  const reply = reactive({ role: 'assistant', content: '', tools: [], cards: [], streaming: true })
+  // 从图上点过来的节点：把摘要和出入边拼进这一轮。模型不用再自己 search 一次。
+  const focus = chatFocus.value
+  const text = focus
+    ? `${body}\n\n（我正在看图上的「${focus.name || focus.id}」：${focus.desc || '没写摘要'}）`
+    : body
+  chatLog.value = [...chatLog.value, { role: 'user', content: text }]
+  const reply = reactive({ role: 'assistant', content: '', tools: [], cards: [], projects: [],
+                           streaming: true })
   chatLog.value = [...chatLog.value, reply]
   chatBusy.value = true
   chatAbort = new AbortController()
@@ -1792,15 +2054,23 @@ async function sendChat(body) {
   const wire = chatLog.value.filter((m) => m.content || m.role === 'user')
                             .map((m) => ({ role: m.role, content: m.content }))
                             .filter((m) => m.content.trim())
+  chatFocus.value = null
   try {
     await streamChat(wire, (ev) => {
       if (ev.type === 'delta') reply.content = stripToolBlocks(reply.content + ev.text)
       else if (ev.type === 'tool') reply.tools.push({ label: TOOL_LABEL[ev.name] || ev.name, summary: ev.summary })
       else if (ev.type === 'card') reply.cards.push({ ...ev.card, applied: false })
+      else if (ev.type === 'project') reply.projects.push({ ...ev.project, applied: false })
       else if (ev.type === 'review') { refreshDue(); pushToast(`已记一次「忘了」：${ev.id}`, 'info') }
-      else if (ev.type === 'done') reply.content = stripToolBlocks(ev.text) || reply.content
+      else if (ev.type === 'done') {
+        reply.content = stripToolBlocks(ev.text) || reply.content
+        // 聊到哪，图上亮哪（重构方案 §5.2）。走已有的 highlightPath，不新写高亮逻辑。
+        if (ev.node_ids?.length && graph.value) {
+          highlightPath(graph.value, new Set(ev.node_ids), new Set())
+        }
+      }
       else if (ev.type === 'error') setBanner(`对话失败：${ev.message}`, 'error')
-    }, chatAbort.signal)
+    }, chatAbort.signal, currentProject.value || null, chatSession.value, chatStance.value)
   } catch (err) {
     if (err.name !== 'AbortError') setBanner(`对话失败：${err.body?.detail || err.message}`, 'error')
   } finally {
@@ -1826,7 +2096,12 @@ async function applyChatCard({ card, i, j }) {
                                     changes: card.changes })
     chatLog.value[i].cards[j].applied = true
     await load()
-    setBanner(`已写回 ${res.files.length} 个文件，原文备份在 ${res.backup}`, 'success')
+    // 学完之后图谱自动长出来（重构方案 §4）：新建的点自动上画布，落 draft 等人定稿。
+    // 不这么做的话它只会掉进 Inbox，还得自己去点「放进去」。
+    const born = card.changes.filter((c) => c.type === 'create_node').map((c) => c.source)
+    if (born.length) await placeNew(born, null)
+    setBanner(`已写回 ${res.files.length} 个文件${born.length ? `，${born.length} 个新点已落到画布上（草稿）` : ''}，`
+              + `原文备份在 ${res.backup}`, 'success')
   } catch (err) {
     setBanner(`写回失败：${err.body?.detail?.message || err.body?.detail || err.message}`, 'error')
   } finally {
@@ -1838,7 +2113,8 @@ async function applyChatCard({ card, i, j }) {
 
 async function refreshToday() {
   try {
-    todayList.value = await fetchToday()
+    todayList.value = await fetchToday(currentProject.value || null)
+    maybeBrief()
   } catch (err) {
     setBanner(`今日清单加载失败：${err.message}`, 'error')
   }
@@ -1860,30 +2136,42 @@ async function placeFromToday(item) {
 
 async function refreshPlans() {
   try {
-    const data = await fetchPlans()
+    const data = await fetchProjects()
     plansDoc.value = data.doc
+    // 记住上次看的项目：这是个界面偏好，localStorage 就够了（不需要第二份存储）
+    // 记住上次看的项目：这是个界面偏好，localStorage 就够了（不需要第二份存储）。
+    // **空串是合法值**（「全局」那条线），所以用 null 区分"没存过"，不能拿 || 兜底。
+    if (!projectPicked) {
+      let want = null
+      try { want = localStorage.getItem('knowrary-project') } catch { /* 无痕模式 */ }
+      currentProject.value = want !== null && (want === '' || data.doc.projects?.[want])
+        ? want : (Object.keys(data.doc.projects || {})[0] || '')
+      projectPicked = true
+    } else if (currentProject.value && !data.doc.projects?.[currentProject.value]) {
+      currentProject.value = ''                    // 项目被删了就退回全局
+    }
     plansProgress.value = data.progress
     plansSchedules.value = data.schedules || {}
   } catch (err) {
-    setBanner(`学习计划加载失败：${err.message}`, 'error')
+    setBanner(`项目加载失败：${err.message}`, 'error')
   }
 }
 
 /** 整份提交。base_revision 对不上就重新拉取——本地改动还在面板里，不会丢。 */
-async function savePlans(plans) {
+async function savePlans(projects) {
   plansBusy.value = true
   try {
-    const res = await putPlans({ base_revision: plansDoc.value?.revision ?? 0, plans })
-    plansDoc.value = { ...plansDoc.value, revision: res.revision, plans }
+    const res = await putProjects({ base_revision: plansDoc.value?.revision ?? 0, projects })
+    plansDoc.value = { ...plansDoc.value, revision: res.revision, projects }
     plansProgress.value = res.progress
     plansSchedules.value = res.schedules || {}
-    setBanner('学习计划已保存', 'success')
+    setBanner('项目已保存', 'success')
   } catch (err) {
     if (err.status === 409) {
-      setBanner('计划在别处被改过了，已重新拉取，请再存一次', 'error')
+      setBanner('项目在别处被改过了，已重新拉取，请再存一次', 'error')
       refreshPlans()
     } else {
-      setBanner(`保存计划失败：${err.body?.detail || err.message}`, 'error')
+      setBanner(`保存项目失败：${err.body?.detail || err.message}`, 'error')
     }
   } finally {
     plansBusy.value = false
@@ -1936,7 +2224,7 @@ function dirForField(field) {
  * 计划自己知道它属于哪个领域，就该由它说了算；它也说不出时宁可留空让人选，不硬塞。
  */
 function buildPoint(point) {
-  const field = point.field || plansDoc.value?.plans?.[point.plan]?.field || ''
+  const field = point.field || plansDoc.value?.projects?.[point.project]?.field || ''
   const box = layoutDoc.value?.viewport
   openNodeDialog({ x: (box?.cx ?? 0) - 80, y: (box?.cy ?? 0) - 30 }, null)
   creating.value = { ...creating.value, name: point.id, field, dir: dirForField(field),
@@ -2212,8 +2500,10 @@ function onKeydown(e) {
   // 单键快捷键：只在焦点不在输入框时生效
   if (e.key === '/') { e.preventDefault(); headerEl.value?.focus() }
   else if (e.key === '?') { e.preventDefault(); showHelp.value = !showHelp.value }
-  else if (e.key === '1') switchMode('structure')
-  else if (e.key === '2') switchMode('history')
+  else if (e.key === '1') switchMode('chat')
+  else if (e.key === '2') switchMode('project')
+  else if (e.key === '3') switchMode('structure')
+  else if (e.key === '4') switchMode('history')
   else if (e.key.toLowerCase() === 'f') fit()
   else if (e.key.toLowerCase() === 'i' && mode.value === 'structure') openPanel('inbox')
   else if (e.key.toLowerCase() === 'd') openPanel('digest')
@@ -2297,6 +2587,7 @@ onMounted(async () => {
   graph.value = g
   setSnap(g, snap.value)
   patcher.value = createPatcher({
+    getLayoutName: layoutName,
     getRevision: () => revision.value,
     setRevision: (r) => { revision.value = r },
     onStatus: (s, payload) => {
@@ -2318,9 +2609,22 @@ onMounted(async () => {
   window.addEventListener('error', onGlobalError)
   window.addEventListener('unhandledrejection', onGlobalError)
   // 本地个人工具：暴露一个调试句柄，排查渲染问题时能在控制台直接看模型
-  window.__kg = { graph: g, get layout() { return layoutDoc.value }, get index() { return indexDoc.value } }
+  window.__kg = {
+    graph: g,
+    get layout() { return layoutDoc.value },
+    get index() { return indexDoc.value },
+    // 排查"为什么没高亮 / 为什么画布是空的"这类问题时，没有这几个就只能靠猜
+    get mode() { return mode.value },
+    get project() { return currentProject.value },
+    get projectIds() { return [...projectIds.value] },
+    get progress() { return plansProgress.value },
+  }
   try {
     await load()
+    // 开场就把这两份拉回来：双态要项目进度，晨间简报要今日清单。
+    // 都是本地接口、都不调 LLM，不 await 是为了不挡首屏。
+    refreshPlans()
+    refreshToday()
     // 从 3D 总览跳回来时带着 ?focus=<id>：定位到那个节点，然后把参数抹掉
     const wanted = new URLSearchParams(window.location.search).get('focus')
     if (wanted) {
@@ -2351,29 +2655,34 @@ onBeforeUnmount(() => {
   <div class="app">
     <AppHeader ref="headerEl" :mode="mode" :hits="searchHits" :status="status" :status-text="statusText"
                :theme="theme" :has3d="has3d" :busy="placing"
-               @switch-mode="switchMode" @search="search = $event" @goto="gotoNode"
+               :projects="plansDoc?.projects || {}" :project="currentProject"
+               @switch-mode="switchMode" @switch-project="switchProject"
+               @search="search = $event" @goto="gotoNode"
                @toggle-theme="toggleTheme" @reload="reload" @rebuild="rebuildGraph('手动重建')"
                @open-3d="open3d" @help="showHelp = true" />
 
     <div class="workbench">
+      <MorningBrief v-if="briefOn" :today="todayList" @close="briefOn = false"
+                    @start="briefStart" @quiz="briefOn = false; startQuiz($event)" />
+
       <ActivityBar :active="panel" :mode="mode" :inbox="inboxCount" :due="dueIds.size" :theme="theme"
                    @select="openPanel" @toggle-theme="toggleTheme" />
 
       <InboxTray v-if="panel === 'inbox'" class="inbox" :items="inboxItems" :busy="placing"
                  @place="placeOne" @place-all="placeAll" @close="panel = ''" />
-      <ChatPanel v-else-if="panel === 'chat'" class="study" :messages="chatLog" :busy="chatBusy"
-                 @send="sendChat" @stop="stopChat" @apply="applyChatCard" @goto="gotoNode"
-                 @clear="chatLog = []" @close="panel = ''" />
-      <PlansPanel v-else-if="panel === 'plans'" class="study" :doc="plansDoc" :progress="plansProgress"
-                  :schedules="plansSchedules" :fields="fieldNames"
-                  :busy="plansBusy" :proposal="planProposal" :proposing="planProposing"
-                  @save="savePlans" @goto="gotoNode" @build="buildPoint" @propose="proposePlan"
-                  @quiz="startQuiz" @refresh="refreshPlans" @close="panel = ''" />
+      <ProjectsPanel v-else-if="panel === 'plans'" class="study" :doc="plansDoc" :progress="plansProgress"
+                     :schedules="plansSchedules" :fields="fieldNames"
+                     :busy="plansBusy" :proposal="planProposal" :proposing="planProposing"
+                     @save="savePlans" @goto="gotoNode" @build="buildPoint" @propose="proposePlan"
+                     @quiz="startQuiz" @switch="switchProject" @refresh="refreshPlans"
+                     @close="panel = ''" />
       <StudyPanel v-else-if="panel === 'study'" class="study" :today="todayList" :busy="quizBusy"
                   @goto="gotoNode" @quiz="startQuiz($event.id ? [$event.id] : $event)"
                   @build="buildPoint" @write="writeBody" @place="placeFromToday"
                   @plans="panel = 'plans'; refreshPlans()"
                   @refresh="refreshToday" @close="panel = ''" />
+      <CalendarPanel v-else-if="panel === 'calendar'" class="study" :data="calendar"
+                     @goto="gotoNode" @refresh="refreshCalendar" @close="panel = ''" />
       <DigestPanel v-else-if="panel === 'digest'" class="digest" :digest="digest"
                    @goto="gotoNode" @refresh="refreshDigest" @merge="openMerge" @close="panel = ''" />
       <ImagePicker v-else-if="panel === 'assets'" class="picker" @pick="addImage" @add-note="addNote"
@@ -2384,10 +2693,31 @@ onBeforeUnmount(() => {
                      @toggle-trunk="hist.trunk = !hist.trunk; renderHistory({ view: 'fit' })"
                      @select-all="timelines = []; renderHistory({ view: 'fit' })" @close="panel = ''" />
 
-      <div class="stage">
-        <div ref="canvasEl" class="canvas" @dragover.prevent @drop="onCanvasDrop" />
+      <div class="stage stage-split" :class="{ solo: mode === 'chat' && !graphPane }">
+        <!-- 对话模式：左边全屏对话，右边留给画布（可收起）。
+             画布**不用 v-if 销毁**——重建 X6 既慢又会丢掉视口和选中态，只是让出宽度。 -->
+        <ChatView v-if="mode === 'chat'" :messages="chatLog" :busy="chatBusy"
+                  :sessions="chatSessions" :session="chatSession" :focus="chatFocus"
+                  :stance="chatStance" @stance="setStance"
+                  :graph-open="graphPane"
+                  @send="sendChat" @stop="stopChat" @apply="applyChatCard"
+                  @apply-project="applyProjectCard" @goto="gotoNode"
+                  @new-session="newChatSession" @pick-session="pickChatSession"
+                  @drop-focus="chatFocus = null" @toggle-graph="toggleGraphPane" />
 
-        <CanvasTools v-if="mode === 'structure'" :visible="visible" :shown-families="shownFamilies"
+        <div v-show="mode !== 'chat' || graphPane" ref="canvasEl" class="canvas"
+             @dragover.prevent @drop="onCanvasDrop" />
+
+        <!-- 项目画布是工作台，全局图才是成品图：成熟了再并进主图 -->
+        <div v-if="mode === 'project' && currentProject" class="sync-bar">
+          <span class="dim">项目画布 · 只有这个项目的点，还没建的画成幽灵（点一下就去建）</span>
+          <button class="btn primary tiny" :disabled="syncing" title="把已建成、还没上全局图的点放过去（落草稿；坐标不搬）"
+                  @click="syncToGlobal">
+            <Icon name="arrowRight" :size="13" />{{ syncing ? '同步中…' : '同步到全局' }}
+          </button>
+        </div>
+
+        <CanvasTools v-if="mode === 'structure' || mode === 'project'" :visible="visible" :shown-families="shownFamilies"
                      :collapsed="collapsedIds.size" :aggregate="aggregate" :auto-lod="autoLod" :snap="snap"
                      :layouts="LAYOUTS" :can-undo="canUndo" :can-redo="canRedo" :locked="!!preview"
                      @toggle-family="visible[$event] = !visible[$event]; render()"
@@ -2397,7 +2727,7 @@ onBeforeUnmount(() => {
                      @pick-layout="runLayout" @add-note="addNote" @add-image="panel = 'assets'"
                      @undo="undo" @redo="redo" />
 
-        <ZoomBar :zoom="zoom" :map="showMap && mode === 'structure'" @zoom-in="stepZoom(1.25)"
+        <ZoomBar :zoom="zoom" :map="showMap && mode !== 'history'" @zoom-in="stepZoom(1.25)"
                  @zoom-out="stepZoom(0.8)" @reset="resetZoom" @fit="fit" @toggle-map="toggleMap" />
 
         <HistoryPlayer v-if="mode === 'history'" :playing="isPlaying" :upto="hist.upto" :range="yearRange"

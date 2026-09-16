@@ -26,9 +26,10 @@ KNOWRARY_VAULT=/别的/vault ./server/dev.sh 9000
 | GET | `/api/node/:id` | md 原文 + 元数据 + 出入边 + Obsidian 链接 |
 | GET | `/api/inbox` · POST `/api/place` | 未上画布的节点 / 放上画布（只写 layout） |
 | GET | `/api/digest` | 欠账清单：草稿 / 桥 / 重复 / stub / 环 |
-| GET / PUT | `/api/plans` | 学习计划：整份替换 + `base_revision`；进度五档现算不落盘 |
-| POST | `/api/plans/propose` | 目标 → 知识点清单（LLM **learn** 角色），只提议不落盘 |
-| GET | `/api/coach/today` | 今日清单：错题 > 到期 > 未建 > 只有壳 > Inbox，**不调 LLM** |
+| GET / PUT | `/api/projects` | 项目（一组 node_id + N 份清单）：整份替换 + `base_revision`；进度五档与时间账现算不落盘 |
+| POST | `/api/projects/propose` | 目标 → 知识点清单（LLM **learn** 角色，三种口径），只提议不落盘 |
+| GET | `/api/calendar` | 学习日历：每天建了多少 / 复习多少 / 答题多少 / 花了多少，**纯读、全派生** |
+| GET | `/api/coach/today` | 今日清单：错题 > 到期 > 未建 > 只有壳 > Inbox，**不调 LLM**；`?project=` 只过滤建设项，复习仍是全局的 |
 | POST | `/api/changes` | **Markdown 写回唯一入口**，默认 `dry_run=true` 只出 diff |
 | POST | `/api/suggest` | AI 建议关系 / 去重 / 分类，走 LLM review 角色 |
 | GET | `/api/review/due` · POST `/api/review/:id` | 到期复习 / 记一次复习（body 可选 `grade` 三档） |
@@ -61,7 +62,7 @@ KNOWRARY_VAULT=/别的/vault ./server/dev.sh 9000
 | `paths.py` | vault 解析（`KNOWRARY_VAULT`）与 `tools/knowrary/core` 注入 |
 | `contracts.py` | 契约的 pydantic v2 模型：index（只读）、layout + LayoutPatch、ChangeSet、Suggest、Quiz |
 | `llm_call.py` | 按角色取 provider + 解析回答 JSON，suggest / quiz 共用 |
-| `suggest.py` · `quiz.py` · `plans.py` | AI 建议 / 出题与交卷 / 学习计划，都只提议或只写自己的记录 |
+| `suggest.py` · `quiz.py` · `projects.py` · `chat.py` | AI 建议 / 出题与交卷 / 项目编排 / 对话教练，都只提议或只写自己的记录 |
 | `index_service.py` | 按 md 文件指纹缓存索引，变化即重建并写 `.knowrary/index.json` |
 | `layout_store.py` | layout 读写：初始生成、部分合并、revision 校验、原子写、孤立引用 |
 | `app.py` | FastAPI 路由与静态托管 |

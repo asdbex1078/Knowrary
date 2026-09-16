@@ -30,7 +30,7 @@ const rows = computed(() => {
     { n: i.refs, text: '张引用卡', show: i.refs > 0 },
     { n: i.reviews, text: '次复习记录并进来', show: i.reviews > 0 },
     { n: i.quiz, text: '条答题记录', show: i.quiz > 0 },
-    { n: i.plans.length, text: `个学习计划（${i.plans.join('、')}）`, show: i.plans.length > 0 },
+    { n: i.projects.length, text: `个项目（${i.projects.join('、')}）`, show: i.projects.length > 0 },
   ].filter((r) => r.show)
 })
 

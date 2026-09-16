@@ -1,7 +1,10 @@
-"""学习计划读写（F10）：整份替换 + base_revision 乐观并发，进度一律现算。
+"""项目读写（重构方案 一期）：整份替换 + base_revision 乐观并发，进度与时间账一律现算。
 
-为什么不像 layout 那样上 JSON Merge Patch：计划是人手编排的小文档（一个计划几十个点），
+为什么不像 layout 那样上 JSON Merge Patch：项目是人手编排的小文档（一个项目几十个点），
 整份发过来最直白；而 layout 是高频拖拽、必须增量。并发仍然用同一套 base_revision 挡住。
+
+**项目是视角不是容器**：它只引用 node_id，掌握度与复习调度全局唯一（重构方案 §1）。
+一个项目下挂 N 份清单，`kind` 属于清单（决定拆解模板与出题口径），不属于项目。
 """
 from __future__ import annotations
 
@@ -11,8 +14,8 @@ import re
 
 from pathlib import Path
 
-from .contracts import (ID_PATTERN, Plan, PlanPoint, PlanProposal, PlanProposeRequest, PlansDoc,
-                        PlansRead, PlansSaved, PlanStage, PlansWrite)
+from .contracts import (ID_PATTERN, PlanPoint, PlanProposal, PlanProposeRequest, PlanStage,
+                        Project, ProjectsDoc, ProjectsRead, ProjectsSaved, ProjectsWrite)
 from .index_service import current_index
 from .llm_call import ask, parse_json
 from .paths import core
@@ -32,44 +35,53 @@ class PlansConflict(Exception):
     """base_revision 与服务端不一致，客户端要重新拉取后再提交。"""
 
     def __init__(self, current: int) -> None:
-        super().__init__(f"计划已被改过（当前 revision {current}）")
+        super().__init__(f"项目已被改过（当前 revision {current}）")
         self.current = current
 
 
 def _derived(vault: Path, doc: dict) -> tuple[dict, dict]:
-    """进度和时间账全部现算：存下来就是第二份真值，必然与复习记录漂移。"""
-    progress = core.all_progress(doc, current_index(vault), core.load_log(vault))
+    """进度、学/考双态、时间账全部现算：存下来就是第二份真值，必然与复习记录漂移。
+
+    双态里的「考」要错题本参与判定（错题压过自评，重构方案 §4），所以这里要多读一份 quiz-log。
+    """
+    wrong = {w["id"] for w in core.wrong_nodes(core.load_quiz_log(vault), 999) if w["wrong"]}
+    progress = core.all_progress(doc, current_index(vault), core.load_log(vault), wrong=wrong)
     return progress, core.all_schedules(doc, progress)
 
 
-def read(vault: Path) -> PlansRead:
-    doc = core.load_plans(vault)
+def read(vault: Path) -> ProjectsRead:
+    doc = core.load_projects(vault)
     progress, schedules = _derived(vault, doc)
-    return PlansRead(doc=PlansDoc(**doc), progress=progress, schedules=schedules,
-                     index_revision=current_index(vault)["revision"])
+    return ProjectsRead(doc=ProjectsDoc(**doc), progress=progress, schedules=schedules,
+                        index_revision=current_index(vault)["revision"])
 
 
-def _check(plans: dict[str, Plan]) -> None:
-    for pid, plan in plans.items():
-        if not pid.strip():
-            raise PlansRejected("计划 id 不能为空")
-        seen: set[str] = set()
-        for stage in plan.stages:
-            for point in stage.points:
-                if point.id in seen:
-                    raise PlansRejected(f"计划「{plan.name}」里的知识点 `{point.id}` 出现了两次")
-                seen.add(point.id)
+def _check(projects: dict[str, Project]) -> None:
+    """重复点**按清单逐份查**：同一个点在「学习主线」和「面试清单」里各出现一次是合法的
+    （项目是视角，两份清单本来就会重叠），只有同一份清单内重复才算错。"""
+    for pid, project in projects.items():
+        if not core.ID_OK.match(pid or ""):
+            raise PlansRejected(f"项目 id `{pid}` 不合法：只允许 ASCII 字母、数字、`_`、`-`"
+                                f"（它会成为对话留档的目录名）")
+        for ls in project.lists:
+            seen: set[str] = set()
+            for stage in ls.stages:
+                for point in stage.points:
+                    if point.id in seen:
+                        raise PlansRejected(
+                            f"项目「{project.name}」的清单「{ls.name}」里，知识点 `{point.id}` 出现了两次")
+                    seen.add(point.id)
 
 
-def write(vault: Path, req: PlansWrite) -> PlansSaved:
-    _check(req.plans)
-    doc = core.load_plans(vault)
+def write(vault: Path, req: ProjectsWrite) -> ProjectsSaved:
+    _check(req.projects)
+    doc = core.load_projects(vault)
     if req.base_revision != doc.get("revision", 0):
         raise PlansConflict(doc.get("revision", 0))
-    doc["plans"] = {pid: plan.model_dump() for pid, plan in req.plans.items()}
-    doc = core.save_plans(vault, doc)
+    doc["projects"] = {pid: pr.model_dump() for pid, pr in req.projects.items()}
+    doc = core.save_projects(vault, doc)
     progress, schedules = _derived(vault, doc)
-    return PlansSaved(revision=doc["revision"], progress=progress, schedules=schedules)
+    return ProjectsSaved(revision=doc["revision"], progress=progress, schedules=schedules)
 
 
 # ---------------------------------------------------------------- 目标 → 知识点清单（LLM）
@@ -216,15 +228,70 @@ def _parse_proposal(data: dict, known: set[str], built: set[str],
 
 def _schedule_for(stages: list[PlanStage], built: set[str],
                   req: PlanProposeRequest, today: dt.date) -> dict:
-    """给提议算一份时间账，顺手把建议截止日**写进阶段**——采纳时就带着日期进计划。
+    """给提议算一份时间账，顺手把建议截止日**写进阶段**——采纳时就带着日期进清单。
 
     **可行性判断在这里做完，不问模型。** 模型估负荷（生成），除法归服务端（确定性计算），
     与 F10.3「调度不用 LLM」是同一条分工。
     """
-    plan = {"target_date": req.target_date, "weekly_hours": req.weekly_hours,
-            "stages": [st.model_dump() for st in stages]}
-    schedule = core.schedule_of(plan, built, today)
+    ls = {"target_date": req.target_date, "stages": [st.model_dump() for st in stages]}
+    schedule = core.schedule_of(ls, built, req.weekly_hours, today)
     for st, row in zip(stages, schedule["stages"]):
         st.deadline = row["suggested_deadline"]
         row["deadline"] = st.deadline
     return schedule
+
+
+# ---------------------------------------------------------------- 同步到全局（重构方案 §5A）
+
+def sync_to_global(vault: Path, project_id: str, base_revision: int) -> dict:
+    """把项目里已经建出来、但还没上全局图的点放到全局图上，**落 draft**。
+
+    三条纪律：
+
+    1. **不搬坐标。** 项目画布里的排版是你为了想清楚而摆的，全局图有自己的结构；
+       搬过去只会打乱主图。所以这里调的是 `/api/place`（按邻居投票找位置），
+       而不是把项目画布的 x/y 复制过去。
+    2. **已经在全局里的跳过**，不重复放。
+    3. **命中重复候选的不静默跳过，列出来让人选**——去重要发生在写入之前，不是之后。
+       只按 id 精确比对拦不住近义词（`RNN` / `RNN与长程依赖` 这种），
+       而"回头去欠账里清"正是最容易不做的那件事。这里只提议，绝不自动合并：
+       自动并掉两个看起来像的节点，比多一个重复节点严重得多——前者会悄悄吃掉一份正文。
+    """
+    from . import curation                      # 延迟导入：curation 也要用到本模块的 read
+    from .contracts import PlaceRequest
+
+    doc = core.load_projects(vault)
+    project = (doc.get("projects") or {}).get(project_id)
+    if project is None:
+        raise PlansRejected(f"没有 `{project_id}` 这个项目")
+
+    index = current_index(vault)
+    _, layout = curation.load_pair(vault)          # load_pair 返回 (index, layout)
+    on_canvas = set(layout.model_dump()["nodes"])
+    built = {n["id"] for n in index["nodes"]
+             if not n.get("virtual") and not n.get("stub") and n.get("path")}
+
+    dup_of: dict[str, list[dict]] = {}
+    for pair in core.duplicates(index):
+        dup_of.setdefault(pair["a"], []).append({"id": pair["b"], "reason": pair["reason"]})
+        dup_of.setdefault(pair["b"], []).append({"id": pair["a"], "reason": pair["reason"]})
+
+    todo, skipped, dups = [], [], []
+    for nid in core.point_ids(doc, project_id):
+        if nid in on_canvas:
+            skipped.append({"id": nid, "reason": "已经在全局图上了"})
+        elif nid not in built:
+            skipped.append({"id": nid, "reason": "还没建出来（或只有壳），先把它建了"})
+        elif nid in dup_of:
+            dups.append({"id": nid, "candidates": dup_of[nid][:3]})
+        else:
+            todo.append(nid)
+
+    placed = []
+    if todo:
+        result = curation.place(vault, PlaceRequest(base_revision=base_revision, ids=todo,
+                                                    state="draft"))
+        placed = [p.model_dump() for p in result.placed]
+        skipped += result.skipped
+    return {"placed": placed, "skipped": skipped, "duplicates": dups,
+            "layout_revision": base_revision + (1 if placed else 0)}

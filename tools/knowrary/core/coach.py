@@ -17,17 +17,23 @@ import datetime as dt
 from pathlib import Path
 
 from .placement import inbox_ids, target_group
-from .plans import SHELL, UNBUILT, progress_of, schedule_of
+from .projects import (SHELL, UNBUILT, done_ids, load_hours, lists_of, point_ids,
+                       progress_of_project, schedule_of, states_of)
 from .quiz import load_quiz_log, wrong_nodes
 from .review import due_nodes, load_log
 
 WRONG_TOP = 5        # 错题一次最多摆出几个：一屏看得完才会真去做
 INBOX_TOP = 5
+REVIEW_MINUTES = 3   # 复习一个点大致几分钟：晨间简报要给个"今天大概多久"的数
 
 
-def current_stage(plan: dict, points: dict[str, str]) -> tuple[int, dict] | None:
-    """当前阶段 = 第一个还没全部建出来的阶段。全建完了就没有"当前阶段"了。"""
-    for i, stage in enumerate(plan.get("stages") or []):
+def current_stage(ls: dict, points: dict[str, str]) -> tuple[int, dict] | None:
+    """当前阶段 = 第一个还没全部建出来的阶段。全建完了就没有"当前阶段"了。
+
+    收一份**清单**（学习主线 / 面试清单 / 领域地图都一样），不收整个项目——
+    一个项目可以同时有好几份清单，各自有各自的进度。
+    """
+    for i, stage in enumerate(ls.get("stages") or []):
         if any(points.get(p.get("id")) in (UNBUILT, SHELL) for p in stage.get("points") or []):
             return i, stage
     return None
@@ -49,22 +55,29 @@ def _due_items(index: dict, log: dict, today: dt.date) -> list[dict]:
     return out
 
 
-def _stage_items(plan_id: str, plan: dict, points: dict[str, str]) -> list[dict]:
-    """当前阶段里还没建好的点，「未建」排在「只有壳」前面，按 daily_quota 截断。"""
-    found = current_stage(plan, points)
-    if not found:
-        return []
-    _, stage = found
+def _stage_items(pid: str, project: dict, prog: dict) -> list[dict]:
+    """这个项目当前该动手建的点：各份清单的当前阶段里还没建好的，「未建」排在「只有壳」前面。
+
+    **按项目截断，不按清单截断。** 一个项目开三份清单不代表你一天能学三倍，
+    `daily_quota` 是项目的（你的时间只有一份）。
+    """
     picked = []
-    for kind in (UNBUILT, SHELL):
-        for p in stage.get("points") or []:
-            if points.get(p.get("id")) == kind:
-                picked.append({"kind": "unbuilt" if kind == UNBUILT else "shell",
-                               "id": p["id"], "name": p.get("name") or p["id"],
-                               "why": p.get("why") or "", "plan": plan_id,
-                               "plan_name": plan.get("name") or plan_id, "stage": stage.get("name") or "",
-                               "detail": "图里还没有，先把它建出来" if kind == UNBUILT else "只有壳，去写正文"})
-    return picked[: max(1, int(plan.get("daily_quota") or 2))]
+    for li, ls in enumerate(lists_of(project)):
+        points = (prog.get("lists") or [{}])[li]["points"] if li < len(prog.get("lists") or []) else {}
+        found = current_stage(ls, points)
+        if not found:
+            continue
+        _, stage = found
+        for kind in (UNBUILT, SHELL):
+            for p in stage.get("points") or []:
+                if points.get(p.get("id")) == kind:
+                    picked.append({"kind": "unbuilt" if kind == UNBUILT else "shell",
+                                   "id": p["id"], "name": p.get("name") or p["id"],
+                                   "why": p.get("why") or "", "project": pid,
+                                   "project_name": project.get("name") or pid,
+                                   "list": ls.get("name") or "", "stage": stage.get("name") or "",
+                                   "detail": "图里还没有，先把它建出来" if kind == UNBUILT else "只有壳，去写正文"})
+    return picked[: max(1, int(project.get("daily_quota") or 2))]
 
 
 def _inbox_items(index: dict, layout: dict, by_id: dict) -> list[dict]:
@@ -77,58 +90,74 @@ def _inbox_items(index: dict, layout: dict, by_id: dict) -> list[dict]:
     return out
 
 
-def plan_lines(doc: dict, index: dict, log: dict, today: dt.date) -> tuple[list[dict], dict[str, dict]]:
-    """每个计划一行进度 + 时间账，外加各自的掌握度表（后面排清单要用，不重算第二遍）。
+def project_lines(doc: dict, index: dict, log: dict, today: dt.date) -> tuple[list[dict], dict[str, dict]]:
+    """每份清单一行进度 + 时间账，外加各项目的掌握度表（后面排清单要用，不重算第二遍）。
 
-    时间账在这里一并算：清单要回答的是"今天干什么"，而"我是不是已经落后了"是同一个问题的另一半。
-    仍然不调 LLM——除法而已。
+    一行一份清单而不是一行一个项目：一个项目里「学习主线」和「面试清单」的进度是两回事，
+    并成一行只会两边都看不清。
     """
     lines, progress = [], {}
-    for pid, plan in (doc.get("plans") or {}).items():
-        prog = progress_of(plan, index, log, today)
+    for pid, project in (doc.get("projects") or {}).items():
+        prog = progress_of_project(project, index, log, today)
         progress[pid] = prog
-        found = current_stage(plan, prog["points"])
-        done = {nid for nid, m in prog["points"].items() if m not in (UNBUILT, SHELL)}
-        sched = schedule_of(plan, done, today)
-        row = sched["stages"][found[0]] if found else None
-        lines.append({"id": pid, "name": plan.get("name") or pid,
-                      "stage": found[1].get("name") if found else "",
-                      "done": not found and prog["total"] > 0,
-                      "built": prog["built"], "total": prog["total"],
-                      "behind": sched["behind"], "verdict": sched["verdict"],
-                      "days_left": sched["days_left"], "suggested_quota": sched["suggested_quota"],
-                      "stage_deadline": (row.get("deadline") or row.get("suggested_deadline")) if row else None})
+        for li, ls in enumerate(lists_of(project)):
+            points = prog["lists"][li]["points"] if li < len(prog["lists"]) else {}
+            part = prog["lists"][li] if li < len(prog["lists"]) else {"built": 0, "total": 0}
+            found = current_stage(ls, points)
+            sched = schedule_of(ls, done_ids(points), project.get("weekly_hours"), today)
+            row = sched["stages"][found[0]] if found else None
+            lines.append({"id": pid, "name": project.get("name") or pid,
+                          "list": ls.get("name") or "", "kind": ls.get("kind") or "学习",
+                          "stage": found[1].get("name") if found else "",
+                          "done": not found and part["total"] > 0,
+                          "built": part["built"], "total": part["total"],
+                          "behind": sched["behind"], "verdict": sched["verdict"],
+                          "days_left": sched["days_left"], "suggested_quota": sched["suggested_quota"],
+                          "stage_deadline": (row.get("deadline") or row.get("suggested_deadline")) if row else None})
     return lines, progress
 
 
-def quiz_pools(index: dict, log: dict, items: list[dict]) -> dict[str, list[str]]:
-    """出题范围三档。**只收已经建出来的节点**——「未建」和「只有壳」没有正文，出不了题。
+def quiz_pools(index: dict, log: dict, items: list[dict], doc: dict,
+               project: str | None = None) -> dict[str, list[str]]:
+    """出题范围。**只收已经建出来的节点**——「未建」和「只有壳」没有正文，出不了题。
 
     - 今日：错题 + 到期，也就是清单里那两类，默认就考这些
     - 没考过：有正文但复习记录是空的，新学的东西第一次自测
+    - 本项目：当前项目里已经建出来的点（项目是视角，这一档就是那个视角的考试范围）
     - 已建全部：想通考一遍时用
     """
     built = [n["id"] for n in index["nodes"]
              if not n.get("virtual") and not n.get("stub") and n.get("path")]
+    built_set = set(built)
     reviewed = {nid for nid, e in (log.get("nodes") or {}).items() if (e or {}).get("reviews")}
-    today = [it["id"] for it in items if it["kind"] in ("wrong", "due")]
-    return {"今日": today,
-            "没考过": [nid for nid in built if nid not in reviewed],
-            "已建全部": built}
+    pools = {"今日": [it["id"] for it in items if it["kind"] in ("wrong", "due")],
+             "没考过": [nid for nid in built if nid not in reviewed]}
+    if project:
+        pools["本项目"] = [nid for nid in point_ids(doc, project) if nid in built_set]
+    pools["已建全部"] = built
+    return pools
 
 
 def build_today(vault: Path, index: dict, layout: dict, doc: dict,
-                today: dt.date | None = None) -> dict:
+                today: dt.date | None = None, project: str | None = None) -> dict:
+    """今天干什么。`project` 给了就只看这个项目的建设项（保鲜项仍然是全局的）。
+
+    **保鲜不按项目过滤**：到期就是到期，不会因为今天在看别的项目就不用复习——
+    同一个大脑，复习调度全局唯一（重构方案 §1）。
+    """
     today = today or dt.date.today()
     log = load_log(vault)
     by_id = {n["id"]: n for n in index["nodes"] if not n.get("virtual")}
-    lines, progress = plan_lines(doc, index, log, today)
+    wrong_ids = {w["id"] for w in wrong_nodes(load_quiz_log(vault), 999) if w["wrong"]}
+    lines, progress = project_lines(doc, index, log, today)
 
     ordered: list[dict] = []
     ordered += _wrong_items(vault, by_id)
     ordered += _due_items(index, log, today)
-    for pid, plan in (doc.get("plans") or {}).items():
-        ordered += _stage_items(pid, plan, progress[pid]["points"])
+    for pid, pr in (doc.get("projects") or {}).items():
+        if project and pid != project:
+            continue
+        ordered += _stage_items(pid, pr, progress[pid])
     ordered += _inbox_items(index, layout, by_id)
 
     items, seen = [], set()
@@ -140,5 +169,31 @@ def build_today(vault: Path, index: dict, layout: dict, doc: dict,
     counts: dict[str, int] = {}
     for it in items:
         counts[it["kind"]] = counts.get(it["kind"], 0) + 1
-    return {"generated_at": today.isoformat(), "items": items, "counts": counts, "plans": lines,
-            "pools": quiz_pools(index, log, items)}
+    states = states_of([it["id"] for it in items], index, log, wrong_ids, today)
+    for it in items:
+        it["state"] = states.get(it["id"]) or {}
+    return {"generated_at": today.isoformat(), "items": items, "counts": counts,
+            "projects": [ln for ln in lines if not project or ln["id"] == project],
+            "pools": quiz_pools(index, log, items, doc, project),
+            "estimate_hours": _estimate(items, doc)}
+
+
+def _estimate(items: list[dict], doc: dict) -> float:
+    """今天大概要多久：建设项按负荷档折算，复习按每个 REVIEW_MINUTES 分钟。
+
+    **只是个量级**，不是承诺——但"今天 3 个新点"看不出是一小时还是一下午，
+    而这正是早上决定做不做的那个判断（重构方案 §4 晨间简报）。
+    """
+    loads = {}
+    for pr in (doc.get("projects") or {}).values():
+        for ls in lists_of(pr):
+            for stage in ls.get("stages") or []:
+                for pt in stage.get("points") or []:
+                    loads.setdefault(pt.get("id"), pt)
+    hours = 0.0
+    for it in items:
+        if it["kind"] in ("unbuilt", "shell"):
+            hours += load_hours(loads.get(it["id"]) or {})
+        elif it["kind"] in ("due", "wrong"):
+            hours += REVIEW_MINUTES / 60
+    return round(hours, 1)

@@ -28,8 +28,17 @@ def vault_path() -> Path:
     return Path(os.environ.get("KNOWRARY_VAULT", str(REPO))).resolve()
 
 
-def layout_path(vault: Path | None = None) -> Path:
-    return (vault or vault_path()) / ".knowrary" / "layout.json"
+DEFAULT_LAYOUT = "layout"
 
 
-__all__ = ["REPO", "WEB3D_DIST", "WEB_DIST", "core", "layout_path", "vault_path"]
+def layout_path(vault: Path | None = None, name: str = DEFAULT_LAYOUT) -> Path:
+    """全局图仍然是 `.knowrary/layout.json`；项目画布各自一份 `.knowrary/layouts/<项目>.json`。
+
+    **契约是同一个 `LayoutDoc`**，只是文件不同——项目画布是工作台，全局图才是成品图，
+    但它们的形状没有理由不一样（重构方案 §5A）。
+    """
+    root = (vault or vault_path()) / ".knowrary"
+    return root / "layout.json" if name == DEFAULT_LAYOUT else root / "layouts" / f"{name}.json"
+
+
+__all__ = ["DEFAULT_LAYOUT", "REPO", "WEB3D_DIST", "WEB_DIST", "core", "layout_path", "vault_path"]

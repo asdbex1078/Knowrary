@@ -57,6 +57,13 @@ export function createHistory() {
       undoStack.push(step)
       return step.after
     },
+    /** 换了一份 layout 就把栈清空。
+     *  栈里存的是"某一份 layout 的前后两个快照"，跨画布撤销会把补丁打到错的文件上——
+     *  多份 layout（四期）带来的真风险，不是体验问题。 */
+    reset() {
+      undoStack.length = 0
+      redoStack.length = 0
+    },
     depth: () => [undoStack.length, redoStack.length],
     lastLabel: () => undoStack[undoStack.length - 1]?.label || '',
   }
