@@ -42,7 +42,10 @@ log = logging.getLogger(__name__)
 # 看已有项目 → 搜图谱 → 读几个节点 → 提议项目 → 拆点，4 步根本走不完，
 # 到头来只能让人自己去面板上接着干。同参调用会被短路（`seen_calls`），所以放宽不会变成原地打转。
 MAX_STEPS = 8
-MAX_MESSAGES = 60        # 往回带几轮对话：更早的自己去 grep chat/*.jsonl
+# 往回带多少上下文。两道闸都要过：条数和字数。
+# 字数那道是必须的——20 条里夹着几段长正文，光看条数会把 prompt 撑爆。
+MAX_MESSAGES = 60
+MAX_HISTORY_CHARS = 24000
 SEARCH_TOP = 8
 BODY_CHARS = 1200
 _PROMPTS: dict[str, str] = {}
@@ -162,9 +165,17 @@ def _tool_overview(vault: Path, args: dict) -> tuple[str, dict]:
 
 
 def _tool_today(vault: Path, args: dict) -> tuple[str, dict]:
-    today = curation.coach_today(vault).model_dump()
+    """今日清单。**跟着当前项目走**——在某个项目里聊天，就该看这个项目的今天。
+
+    `today["projects"]`（一期把 `plans` 改成了这个名字；这里曾经漏改，
+    表现是工具直接抛 KeyError，模型只能说一句"today 挂了"接着聊）。
+    """
+    today = curation.coach_today(vault, args.get("_project") or None).model_dump()
     rows = [{"类型": it["kind"], "id": it["id"], "说明": it.get("detail")} for it in today["items"]]
-    return json.dumps({"清单": rows, "计划": today["plans"]}, ensure_ascii=False), {"items": len(rows)}
+    out = {"清单": rows, "项目进度": today["projects"], "大概要花": f"{today['estimate_hours']} 小时"}
+    if any((today.get("elsewhere") or {}).values()):
+        out["别的项目还欠着"] = today["elsewhere"]
+    return json.dumps(out, ensure_ascii=False), {"items": len(rows)}
 
 
 def _tool_projects(vault: Path, args: dict) -> tuple[str, dict]:
@@ -338,10 +349,35 @@ def _tool_propose(vault: Path, args: dict) -> tuple[str, dict]:
         files = curation.preview(vault, changes, index)
     except (core.ChangeRejected, core.WriteConflict) as exc:
         return f"这组变更过不了校验：{exc}", {}
+    # 在某个项目下聊天时，新建的点顺手补进这个项目的清单——**服务端算，不问模型**。
+    # 不补的话：节点建出来了、项目进度却不认它（清单只按 id 引用，没列就不算数）。
+    # 仍然是同一次点击：写 md 和加进清单一起落，人看得见卡上写着要加到哪。
+    born = [str(c.get("source") or "") for c in changes
+            if isinstance(c, dict) and c.get("type") == "create_node" and c.get("source")]
+    into = _into_list(vault, args.get("_project"), born)
     card = {"changes": changes, "base_revision": index["revision"],
-            "files": [f.model_dump() for f in files]}
+            "files": [f.model_dump() for f in files], "into": into}
+    tail = (f"写入时会顺手把 {'、'.join(into['points'])} 加进「{into['project_name']}·{into['list_name']}」清单。"
+            if into else "")
     return (f"变更卡已经摆在他面前了（{len(files)} 个文件）。**还没有写盘**，"
-            f"等他点「写入」。你不要再说已经存好了。"), {"card": card}
+            f"等他点「写入」。{tail}你不要再说已经存好了。"), {"card": card}
+
+
+def _into_list(vault: Path, project: str | None, born: list[str]) -> dict | None:
+    """新建的点该补进哪份清单：当前项目的第一份。已经列过的不重复加。"""
+    if not project or not born:
+        return None
+    pr = (core.load_projects(vault).get("projects") or {}).get(project)
+    lists = core.lists_of(pr or {})
+    if not lists:
+        return None
+    listed = set(core.point_ids(core.load_projects(vault), project))
+    fresh = [nid for nid in born if nid not in listed]
+    if not fresh:
+        return None
+    return {"project": project, "project_name": pr.get("name") or project,
+            "list": 0, "list_name": lists[0].get("name") or lists[0].get("kind") or "清单",
+            "points": fresh}
 
 
 # 工具表：名字 → (实现, 给模型看的一行说明)。口径只决定**给它看见哪几行**——
@@ -375,16 +411,25 @@ FORMAT_DOC = {
 
 一个项目下可以有好几份清单，`kind` 决定怎么拆：`学习`（按依赖顺序）/ `面试`（按会怎么问）/
 `领域`（按覆盖度铺地图）。**先建项目，再拆点**——拆点是另一步，别在同一条消息里全干完。""",
-    "propose_changes": """`propose_changes` 的 `changes` 和图谱的 ChangeSet 同一个形状：
+    "propose_changes": """`propose_changes` 的 `changes` 和图谱的 ChangeSet 同一个形状，三种改动：
 
 ```knowrary
 {"tool": "propose_changes", "args": {"changes": [
-  {"type": "create_node", "source": "自注意力", "path": "nodes/深度学习/自注意力.md",
-   "fields": {"name": "自注意力", "field": "深度学习", "desc": "一句话摘要"},
-   "body": "正文，讲清楚这个概念"},
-  {"type": "add_edge", "source": "自注意力", "relation": "部件", "target": "Transformer"}
+  {"type": "create_node", "source": "NPU", "path": "nodes/02-计算机硬件/NPU.md",
+   "fields": {"name": "NPU", "field": "计算机系统", "layer": "硬件", "year": 2017,
+              "desc": "一句话摘要"},
+   "body": "正文：讲清楚这个概念"},
+  {"type": "update_body", "source": "GPU", "body": "（这个节点的**完整**新正文）"},
+  {"type": "add_edge", "source": "NPU", "relation": "对比", "target": "GPU"}
 ]}}
-```""",
+```
+
+**`update_body` 会整段替换正文，不是追加。** 所以改之前**必须先 `read_node`**，
+把原文一字不落地带上，再把这次聊出来的东西补进去——直接写一段新的会把我以前记的东西抹掉。
+改哪儿也要克制：只补真正聊清楚了的那一点，别顺手重写整篇。
+
+`create_node` 的 `fields` 里带上 `layer`（`理论 / 硬件 / 体系结构 / 汇编接口 / 系统软件 /
+高级语言 / AI应用`）和 `year`（有确切年份的技术才填），这两个字段决定它在历史视图里站哪儿。""",
 }
 
 # 三档口径。**这不是三个 agent**，是同一套链路上的三套提示词 + 三份工具白名单
@@ -518,6 +563,66 @@ def history(vault: Path, project: str | None = None, limit: int = 40,
 
 # ---------------------------------------------------------------- 编排
 
+COACH_FILE = "coach.md"            # 全局侧写
+COACH_DIR = "coaches"              # 项目级：.knowrary/coaches/<项目 id>.md
+
+
+def _me_brief(vault: Path, project: str | None) -> str:
+    """"我是谁、要什么口气、笔记怎么写"——**人可以改的那部分，放在 vault 里，不在代码里**。
+
+    分界是故意的：`prompts/chat*.md` 是**程序行为**（工具协议、纪律、卡片规则），
+    改了要跟代码一起测；`.knowrary/coach.md` 是**你的数据**，随便改，坏了也只影响口气。
+    这是"md 是真值源、程序是程序"那条纪律的延伸。
+
+    **每次现读，不缓存**：你会在服务跑着的时候改它，改完下一句话就该生效。
+    项目级接在全局之后——后面的话语气更近，自然覆盖前面的。
+    """
+    parts = []
+    for path in (vault / ".knowrary" / COACH_FILE,
+                 (vault / ".knowrary" / COACH_DIR / f"{project}.md") if project else None):
+        if path is None or not path.exists():
+            continue
+        try:
+            text = path.read_text(encoding="utf-8").strip()
+        except OSError:
+            continue
+        if text:
+            parts.append(f"（来自 `.knowrary/{path.relative_to(vault / '.knowrary')}`）\n{text}")
+    if project:
+        pr = (core.load_projects(vault).get("projects") or {}).get(project) or {}
+        hints = [ls.get("coach") for ls in core.lists_of(pr) if (ls.get("coach") or "").strip()]
+        if hints:
+            parts.append("这个项目的教练方向：" + "、".join(dict.fromkeys(hints)))
+    return "\n\n".join(parts) or (
+        f"（还没写。想让我知道点什么——你是谁、要什么口气、笔记想长成什么样——"
+        f"就写进 `.knowrary/{COACH_FILE}`；某个项目单独的规矩写 "
+        f"`.knowrary/{COACH_DIR}/<项目 id>.md`，它会盖过全局那份。）")
+
+
+def _relations_brief(vault: Path) -> str:
+    """登记过的关系类型，按族列出来。
+
+    §8 契约 2 早就定了要给，一直漏着——后果是模型只能**猜类型名**：
+    真实对话里它写过 `提出者::`，那个类型没登记，解析时落进「弱关联」还带一条警告。
+    "发展方向"这件事全靠 `演化` 那一族（演化为 / 源自 / 被激活），不给表就连不对。
+    """
+    try:
+        table = core.load_relation_types(vault)
+    except Exception:                            # 表读不出来不该拖垮对话
+        return "（关系类型表读不到，连边时用「相关」最稳）"
+    by_family: dict[str, list[str]] = {}
+    for name, spec in (table.types or {}).items():
+        # canonical 的是"会被归一掉的反向写法"，给模型看正向那个就够了
+        if spec.get("canonical"):
+            continue
+        by_family.setdefault(spec.get("family") or table.default_family, []).append(name)
+    if not by_family:
+        return "（关系类型表是空的）"
+    lines = [f"- **{fam}**：{'、'.join(f'`{t}`' for t in by_family[fam])}"
+             for fam in table.families if by_family.get(fam)]
+    return "\n".join(lines)
+
+
 def _prompt_file(name: str) -> str:
     if name not in _PROMPTS:
         path = Path(__file__).resolve().parents[1] / "tools" / "knowrary" / "prompts" / f"{name}.md"
@@ -529,7 +634,7 @@ def stance_of(name: str | None) -> dict:
     return STANCES.get(name or DEFAULT_STANCE, STANCES[DEFAULT_STANCE])
 
 
-def _system_prompt(vault: Path, stance: str | None) -> str:
+def _system_prompt(vault: Path, stance: str | None, project: str | None = None) -> str:
     """基底一份 + 口径一份。工具表从白名单渲染——**说明书和实际权限是同一份数据**，
     两边各写一遍迟早对不上（"表里写着能用、调了却说没有"是最让人发火的那种 bug）。"""
     conf = stance_of(stance)
@@ -541,6 +646,8 @@ def _system_prompt(vault: Path, stance: str | None) -> str:
             .replace("{{overview}}", _overview(vault))
             .replace("{{tools}}", table)
             .replace("{{formats}}", formats)
+            .replace("{{relations}}", _relations_brief(vault))
+            .replace("{{me}}", _me_brief(vault, project))
             .replace("{{stance_intro}}", intro.strip())
             .replace("{{stance_rules}}", rules.strip() or "（没有额外规矩）"))
 
@@ -552,6 +659,19 @@ def strip_tools(text: str) -> str:
     否则会出现"聊天记录里没有、屏幕上闪过一段 JSON"这种事。
     """
     return _TOOL_RE.sub("", text or "").strip()
+
+
+def _fit_history(msgs: list[dict]) -> tuple[list[dict], int]:
+    """按条数和字数两道闸裁上下文，返回 (留下的, 丢掉几轮)。
+
+    **从最早的开始丢**，末尾那几轮一定留着——正在说的话比开头重要。
+    """
+    kept = msgs[-MAX_MESSAGES:]
+    total = sum(len(m.get("content") or "") for m in kept)
+    while len(kept) > 1 and total > MAX_HISTORY_CHARS:
+        total -= len(kept[0].get("content") or "")
+        kept = kept[1:]
+    return kept, len(msgs) - len(kept)
 
 
 def _parse_tool(text: str) -> tuple[str, dict] | None:
@@ -610,11 +730,13 @@ def run(vault: Path, req: ChatRequest):
     except BaseException as exc:
         append_log(vault, "assistant", f"（这一轮没答成：{str(exc)[:200]}）",
                    project=req.project, session=req.session, stance=req.stance or DEFAULT_STANCE)
+        core.record_issue(vault, "llm", str(exc), where="chat",
+                          detail={"stance": req.stance or DEFAULT_STANCE})
         raise
 
 
 def _run(vault: Path, req: ChatRequest):
-    history = [m.model_dump() for m in req.messages][-MAX_MESSAGES:]
+    history, dropped = _fit_history([m.model_dump() for m in req.messages])
     if not history or history[-1]["role"] != "user":
         raise ChatRejected("最后一条必须是我说的话")
     append_log(vault, "user", history[-1]["content"], project=req.project, session=req.session,
@@ -622,7 +744,16 @@ def _run(vault: Path, req: ChatRequest):
 
     conf = stance_of(req.stance)
     allowed = set(conf["tools"])
-    messages = [{"role": "system", "content": _system_prompt(vault, req.stance)}] + history
+    messages = [{"role": "system",
+                 "content": _system_prompt(vault, req.stance, req.project)}] + history
+    if dropped:
+        # **截断要说出来**，不能让它默默失忆：模型不知道自己少了上下文时，
+        # 会拿半截记忆当完整的用，比直接说"我没看到"糟得多。
+        # 真正的长期记忆本来就不该是上下文窗口——聊清楚的东西应该已经进 md 了，
+        # 所以这里顺便告诉它：缺的部分去图里查，或者问我。
+        messages.insert(1, {"role": "user", "content":
+            f"（提醒：这一段之前还有 {dropped} 轮没带过来。你缺的上下文别猜——"
+            f"先 `search_nodes` / `read_node` 去图里找，找不到就直接问我。）"})
     said: list[str] = []
     # 同一轮里同参数的工具调用只真跑一次：模型确实会连着用一模一样的参数再搜一遍
     # （真实对话里观察到的），每重复一次就白烧一个来回。
@@ -642,6 +773,9 @@ def _run(vault: Path, req: ChatRequest):
 
         name, args = call
         key = f"{name}:{json.dumps(args, ensure_ascii=False, sort_keys=True)}"
+        # 当前项目跟着一起传进工具：在某个项目里聊天，today / 出题范围都该是这个项目的。
+        # 放在 key 之后算，免得它进了去重键。
+        args = {**args, "_project": req.project or ""}
         fn = TOOLS.get(name) if name in allowed else None
         if key in seen_calls:
             result, extra = (f"这次调用和刚才那次一模一样，结果没变，不再跑一遍：\n{seen_calls[key]}"
@@ -654,6 +788,10 @@ def _run(vault: Path, req: ChatRequest):
                 result, extra = fn(vault, args)
             except Exception as exc:             # 工具炸了也要让对话继续，把错误告诉模型
                 log.warning("工具 %s 失败：%s", name, exc)
+                # 记一笔：工具出错原来只在那一轮对话里闪一下，
+                # "这东西为什么老出问题"没有任何地方能回答（layer 那个白名单 bug 就是这么藏了一阵）
+                core.record_issue(vault, "tool", f"{type(exc).__name__}: {exc}", where=name,
+                                  detail={"args": json.dumps(args, ensure_ascii=False)[:200]})
                 result, extra = f"工具 `{name}` 执行失败：{exc}", {}
         seen_calls.setdefault(key, result)
         yield {"type": "tool", "name": name, "args": args,

@@ -10,6 +10,7 @@ from collections import defaultdict
 from difflib import SequenceMatcher
 
 from .placement import inbox_ids
+from .issues import summary as issues_summary
 from .review import due_nodes, load_log
 
 DRAFT_STALE_DAYS = 7        # 草稿放这么多天还没定稿就提醒
@@ -86,6 +87,10 @@ def build_digest(vault, index: dict, layout: dict, today: dt.date | None = None)
     cycles = [w for w in index.get("warnings", []) if w.get("code") == "relation_cycle"]
     bridge_list = bridges(index, layout)
     dup_list = duplicates(index)
+    # 年份可疑：演化边两端倒挂、或者年份落在未来。**它们是 index 算出来的结构性矛盾**，
+    # 不依赖任何外部知识——口述一句"year 填 2017"没人能核，但"它比它的前身还早"能算。
+    bad_years = [w["message"] for w in index.get("warnings", [])
+                 if w.get("code") in ("year_inverted", "year_in_future")][:MAX_ITEMS]
     return {
         "generated_at": today.isoformat(),
         "inbox": inbox,
@@ -95,8 +100,12 @@ def build_digest(vault, index: dict, layout: dict, today: dt.date | None = None)
         "bridges": bridge_list,
         "duplicates": dup_list,
         "cycles": [w["message"] for w in cycles][:MAX_ITEMS],
+        "bad_years": bad_years,
+        "issues": issues_summary(vault),
         "counts": {"inbox": len(inbox), "drafts": len(draft_list),
                    "stale_drafts": sum(1 for d in draft_list if d["stale"]),
                    "due": len(due), "stubs": len(stubs), "bridges": len(bridge_list),
-                   "duplicates": len(dup_list), "cycles": len(cycles)},
+                   "duplicates": len(dup_list), "cycles": len(cycles),
+                   "bad_years": len(bad_years),
+                   "issues": issues_summary(vault)["count"]},
     }

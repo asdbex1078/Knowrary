@@ -168,6 +168,23 @@ async function refreshCalendar() {
 }
 const nodeStates = computed(() => plansProgress.value?.[currentProject.value]?.all?.states || {})
 
+/** 把刚建好的点补进某份清单（变更卡上写明了要加到哪）。 */
+async function addToList({ project, list, points }) {
+  const doc = await fetchProjects()
+  const next = JSON.parse(JSON.stringify(doc.doc.projects || {}))
+  const ls = next[project]?.lists?.[list]
+  if (!ls) return
+  const mine = new Set(ls.stages.flatMap((st) => st.points.map((p) => p.id)))
+  const fresh = points.filter((id) => !mine.has(id)).map((id) => ({ id, name: id, load: '中',
+                                                                    why: '聊出来的' }))
+  if (!fresh.length) return
+  const hit = ls.stages.find((st) => st.name === '聊出来的')
+  if (hit) hit.points.push(...fresh)
+  else ls.stages.push({ name: '聊出来的', deadline: null, points: fresh })
+  await putProjects({ base_revision: doc.doc.revision, projects: next })
+  await refreshPlans()
+}
+
 /** 对话里提议的项目卡：点「创建」才写 projects.json。整份替换，沿用 base_revision 乐观锁。 */
 async function applyProjectCard({ card, i, j }) {
   chatBusy.value = true
@@ -681,8 +698,10 @@ function showProblems() {
 }
 
 // 与本地镜像（= 服务端最新状态）比对，值没变就不发；mount() 建父子关系触发的事件天然被过滤掉
-// 写盘总闸：预览布局时画布是"草稿"；历史视图是浏览视图，坐标本来就不持久化
-const writable = () => !preview.value && mode.value === 'structure'
+// 写盘总闸：预览布局时画布是"草稿"；历史视图是浏览视图，坐标本来就不持久化。
+// **项目画布同样可写**（四期之后它是一份真 layout）——只认 structure 的话，
+// 在项目画布上拖节点、右键、连边全部静默失效，看着像"这块画布是只读的"。
+const writable = () => !preview.value && (mode.value === 'structure' || mode.value === 'project')
 
 function queueIfChanged(kind, id, patch) {
   if (!writable()) return
@@ -1075,7 +1094,10 @@ function nodeName(id) {
 // ---- 右键菜单：画布上每类元素一套动作 ----
 
 function openMenu(kind, id, ev) {
-  if (mode.value !== 'structure') return        // 历史视图是只读浏览视图
+  // 历史视图是只读浏览视图；项目画布和全局图一样可操作。
+  // （这里和 `writable()` 是同一个判据，必须一起改——只改一处的话
+  //   会出现"拖得动却右键不出菜单"这种半瘫状态。）
+  if (!writable()) return
   ctxTarget = { kind, id, at: graph.value.clientToLocal(ev.clientX, ev.clientY) }
   const build = { node: nodeMenu, group: groupMenu, cluster: groupMenu, edge: edgeMenu,
                   deco: decoMenu, blank: blankMenu }[kind]
@@ -1085,6 +1107,14 @@ function openMenu(kind, id, ev) {
 function nodeMenu(id) {
   const meta = indexDoc.value?.nodes.find((n) => n.id === id)
   const place = layoutDoc.value?.nodes?.[id]
+  // 幽灵占位（计划里有、还没建）：能建、能**被**连到，但不能从它出发连边——
+  // 关系行要写进源节点的 md，而它连 md 都还没有。
+  if (!meta && place?.state === 'ghost') {
+    return { title: id, subtitle: '计划里的点，还没建出来',
+             items: [{ id: 'build-ghost', label: '现在把它建出来…', icon: 'plus', hint: '写 md' },
+                     { id: 'drop-ghost', label: '从这块画布上去掉', icon: 'x',
+                       hint: '不动清单' }] }
+  }
   const items = [{ id: 'relate', label: '建立关系…', icon: 'link', hint: '⌘L' },
                  { id: 'ref', label: '放引用卡', icon: 'bookmark' }]
   if (place?.state === 'draft') items.push({ id: 'finalize', label: '定稿', icon: 'check' })
@@ -1185,6 +1215,20 @@ function blankMenu() {
 
 const MENU_ACTIONS = {
   relate: (id) => { relating.value = describe(id) },
+  'build-ghost': (id) => {
+    const pt = projectPoint(id)
+    buildPoint({ id, name: pt?.name || id, why: pt?.why || '',
+                 project: currentProject.value, field: projectField() })
+  },
+  'drop-ghost': (id) => {
+    // 只从这块画布上拿掉，**不动清单**：清单是"要学什么"，画布是"怎么摆"，两回事
+    patcher.value.queueNode(id, null)
+    layoutDoc.value = { ...layoutDoc.value,
+                        nodes: Object.fromEntries(
+                          Object.entries(layoutDoc.value.nodes).filter(([k]) => k !== id)) }
+    render()
+    setBanner(`已从画布上去掉「${id}」——清单里还留着它`)
+  },
   ref: (id) => { selected.value = describe(id); addRef() },
   finalize: (id) => finalize(id),
   draft: (id) => { queueIfChanged('node', id, { state: 'draft' }); render(); setBanner(`「${id}」已标记为草稿`) },
@@ -1463,6 +1507,12 @@ async function createNode(form) {
                 learned: new Date().toISOString().slice(0, 10) },
     }] })
     await placeNew([form.id], spot)
+    // 在项目画布 / 项目对话下新建的点，**自动归到这个项目的清单**——
+    // 不加的话节点建出来了、项目进度却不认它（清单只按 id 引用）。
+    // 比"建完再校验它属不属于本项目"直接：建的时候就归属。
+    if (currentProject.value && layoutName() === currentProject.value) {
+      await addToList({ project: currentProject.value, list: 0, points: [form.id] })
+    }
     await reloadIndex()
     if (spot?.asDoc) bindDoc(spot.asDoc, form.id)
     status.value = 'saved'
@@ -2179,6 +2229,9 @@ async function applyChatCard({ card, i, j }) {
     // 不这么做的话它只会掉进 Inbox，还得自己去点「放进去」。
     const born = card.changes.filter((c) => c.type === 'create_node').map((c) => c.source)
     if (born.length) await placeNew(born, null)
+    // 顺手补进项目清单：**一次点击两件事一起落**。节点建出来了、清单却没列它的话，
+    // 项目进度不认它，今日清单也不会再提它。
+    if (card.into?.points?.length) await addToList(card.into)
     setBanner(`已写回 ${res.files.length} 个文件${born.length ? `，${born.length} 个新点已落到画布上（草稿）` : ''}，`
               + `原文备份在 ${res.backup}`, 'success')
   } catch (err) {
@@ -2786,7 +2839,8 @@ onBeforeUnmount(() => {
                   @send="sendChat" @stop="stopChat" @apply="applyChatCard"
                   @apply-project="applyProjectCard" @apply-points="applyPointsCard" @goto="gotoNode"
                   @new-session="newChatSession" @pick-session="pickChatSession"
-                  @drop-focus="chatFocus = null" @toggle-graph="toggleGraphPane" />
+                  @drop-focus="chatFocus = null" @toggle-graph="toggleGraphPane"
+                  @close="switchMode(currentProject ? 'project' : 'structure')" />
 
         <div v-show="mode !== 'chat' || graphPane" ref="canvasEl" class="canvas"
              @dragover.prevent @drop="onCanvasDrop" />

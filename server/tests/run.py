@@ -2101,6 +2101,206 @@ def chat_这一轮炸了留档里也有记号():
 
 
 @case
+def chat_能往已有节点补正文而不是只会新建():
+    """边聊边完善：聊到图里已有的东西，该往那篇 md 里补，而不是另建一个。
+
+    `update_body` 是**整段替换**，所以模型必须先 read_node 把原文带上——
+    这条只能靠 prompt 约束，但"卡片里的 diff 会不会把原文抹掉"是人点之前看得见的。
+    """
+    c, vault, _ = with_inbox_node()
+    body = "正文\n\n补充：这次聊出来的新理解。"
+    original, _ = stub_chat([tool_block("propose_changes", {"changes": [
+        {"type": "update_body", "source": "a", "body": body}]}), "补在 a 里了，你看一眼 diff"])
+    try:
+        r = c.post("/api/chat", json={"messages": [{"role": "user", "content": "刚才聊的补进去"}]})
+    finally:
+        restore_chat(original)
+    cards = [e for e in sse_events(r) if e["type"] == "card"]
+    assert cards, [e["type"] for e in sse_events(r)]
+    diff = json.dumps(cards[0]["card"], ensure_ascii=False)
+    assert "这次聊出来的新理解" in diff and "nodes/组A/a.md" in diff, diff[:300]
+    # 仍然没落盘
+    assert "这次聊出来的新理解" not in core.read(vault / "nodes/组A/a.md")
+
+    # 三种改动都写进了说明书，模型才可能用得上
+    from server import chat as chat_mod
+    prompt = chat_mod._system_prompt(vault, "教练")
+    for kind in ("create_node", "update_body", "add_edge"):
+        assert kind in prompt, kind
+    assert "整段替换" in prompt, "没告诉模型 update_body 会覆盖，它迟早把我的笔记抹掉"
+
+
+@case
+def chat_today工具跟着当前项目走():
+    """一期把 `plans` 改名成 `projects` 时漏了这一处，`today` 工具直接抛 KeyError——
+    真拿模型跑一次才发现（它只好说一句"today 挂了"接着聊）。"""
+    c, vault, _ = with_inbox_node()
+    c.put("/api/projects", json={"base_revision": 0, "projects": {"p1": {
+        "name": "项目一", "lists": [{"stages": [{"name": "一", "points": [{"id": "没建的"}]}]}]}}})
+    from server import chat as chat_mod
+    body, meta = chat_mod._tool_today(vault, {})
+    got = json.loads(body)
+    assert "项目进度" in got and "大概要花" in got, got            # 不再是 KeyError
+    assert any(i["id"] == "d" for i in got["清单"]), got["清单"]   # 全局能看到 Inbox 里的 d
+
+    scoped = json.loads(chat_mod._tool_today(vault, {"_project": "p1"})[0])
+    assert [i["id"] for i in scoped["清单"]] == ["没建的"], scoped["清单"]
+
+    # 请求里的项目要真的传到工具里（不是靠模型自己填参数）
+    seen = {}
+    original = chat_mod.TOOLS["today"]
+    chat_mod.TOOLS["today"] = lambda v, a: (seen.setdefault("args", a), "ok")[1]
+    orig_llm, _ = stub_chat([tool_block("today", {}), "看完了"])
+    try:
+        c.post("/api/chat", json={"project": "p1", "messages": [{"role": "user", "content": "今天学啥"}]})
+    finally:
+        restore_chat(orig_llm)
+        chat_mod.TOOLS["today"] = original
+    assert seen["args"].get("_project") == "p1", seen
+
+
+@case
+def chat_新建的点顺手补进当前项目的清单():
+    """节点建出来了、清单却没列它的话，项目进度不认它，今日清单也不会再提它。"""
+    c, vault, _ = with_inbox_node()
+    c.put("/api/projects", json={"base_revision": 0, "projects": {"ai": {
+        "name": "AI技术发展史", "field": "AI",
+        "lists": [{"kind": "学习", "name": "主线",
+                   "stages": [{"name": "一", "points": [{"id": "已经列过的"}]}]}]}}})
+    changes = [{"type": "create_node", "source": "NPU", "path": "nodes/组A/NPU.md",
+                "fields": {"name": "NPU", "field": "AI", "layer": "硬件", "year": 2017,
+                           "desc": "专用推理电路"}},
+               {"type": "add_edge", "source": "NPU", "relation": "对比", "target": "a"}]
+    original, _ = stub_chat([tool_block("propose_changes", {"changes": changes}), "卡给你了"])
+    try:
+        r = c.post("/api/chat", json={"project": "ai",
+                                      "messages": [{"role": "user", "content": "把 NPU 记下来"}]})
+    finally:
+        restore_chat(original)
+    card = [e for e in sse_events(r) if e["type"] == "card"][0]["card"]
+    assert card["into"] == {"project": "ai", "project_name": "AI技术发展史", "list": 0,
+                            "list_name": "主线", "points": ["NPU"]}, card["into"]
+    # 已经在清单里的点不重复加
+    changes2 = [{"type": "create_node", "source": "已经列过的", "path": "nodes/组A/已经列过的.md",
+                 "fields": {"name": "x", "field": "AI", "desc": "d"}}]
+    original, _ = stub_chat([tool_block("propose_changes", {"changes": changes2}), "好"])
+    try:
+        r2 = c.post("/api/chat", json={"project": "ai",
+                                       "messages": [{"role": "user", "content": "再记一个"}]})
+    finally:
+        restore_chat(original)
+    assert [e for e in sse_events(r2) if e["type"] == "card"][0]["card"]["into"] is None
+
+    # 不在项目下（全局那条线）就不往任何清单里塞
+    original, _ = stub_chat([tool_block("propose_changes", {"changes": changes}), "好"])
+    try:
+        r3 = c.post("/api/chat", json={"messages": [{"role": "user", "content": "记一下"}]})
+    finally:
+        restore_chat(original)
+    assert [e for e in sse_events(r3) if e["type"] == "card"][0]["card"]["into"] is None
+
+
+@case
+def chat_侧写来自vault且项目级覆盖全局():
+    """"我是谁、要什么口气"属于**我的数据**，放 .knowrary/ 里随便改；
+    工具协议和纪律属于**程序行为**，留在 tools/prompts/ 里跟代码一起测。"""
+    c, vault, _ = with_inbox_node()
+    from server import chat as chat_mod
+    empty = chat_mod._system_prompt(vault, "教练")
+    assert "还没写" in empty and "coach.md" in empty, "没告诉人该去哪写"
+
+    (vault / ".knowrary" / "coach.md").write_text("别夸我，直接说错在哪。", "utf-8")
+    p1 = chat_mod._system_prompt(vault, "教练")
+    assert "别夸我" in p1 and "还没写" not in p1
+
+    c.put("/api/projects", json={"base_revision": 0, "projects": {"ai": {
+        "name": "AI", "lists": [{"kind": "学习", "name": "主线", "coach": "大模型"}]}}})
+    (vault / ".knowrary" / "coaches").mkdir(exist_ok=True)
+    (vault / ".knowrary" / "coaches" / "ai.md").write_text("这个项目只要时间线。", "utf-8")
+    p2 = chat_mod._system_prompt(vault, "教练", "ai")
+    assert "别夸我" in p2 and "只要时间线" in p2, "项目级没接上"
+    assert p2.index("别夸我") < p2.index("只要时间线"), "项目级要排在全局之后才盖得住"
+    assert "大模型" in p2, "清单上的教练方向也该带进来"
+    # 别的项目不串味
+    assert "只要时间线" not in chat_mod._system_prompt(vault, "教练", "other")
+
+    # **现读不缓存**：服务跑着的时候改，下一句话就该生效
+    (vault / ".knowrary" / "coach.md").write_text("改了。", "utf-8")
+    assert "改了。" in chat_mod._system_prompt(vault, "教练")
+
+
+@case
+def chat_长对话按条数和字数两道闸裁_并且说出来():
+    """产品本身是把**整段历史**发过去的（不是每句话单发）；超长时从最早的开始丢，
+    但**必须告诉模型丢了**——它不知道自己少了上下文时，会拿半截记忆当完整的用。"""
+    c, vault, _ = with_inbox_node()
+    from server import chat as chat_mod
+    kept, dropped = chat_mod._fit_history(
+        [{"role": "user", "content": "x" * 2000} for _ in range(30)])
+    assert dropped == 18 and sum(len(m["content"]) for m in kept) <= chat_mod.MAX_HISTORY_CHARS
+    assert chat_mod._fit_history([{"role": "user", "content": "短"}] * 5)[1] == 0
+
+    long_talk = [{"role": "user" if i % 2 == 0 else "assistant", "content": "y" * 3000}
+                 for i in range(20)] + [{"role": "user", "content": "接着说"}]
+    original, seen = stub_chat(["好"])
+    try:
+        c.post("/api/chat", json={"messages": long_talk})
+    finally:
+        restore_chat(original)
+    sent = seen[0]
+    assert any("没带过来" in (m.get("content") or "") for m in sent), \
+        "截断了却没告诉模型，它会默默失忆"
+    assert sent[-1]["content"] == "接着说", "最后一轮必须留着"
+    # 短对话不插提醒
+    original, seen2 = stub_chat(["好"])
+    try:
+        c.post("/api/chat", json={"messages": [{"role": "user", "content": "在吗"}]})
+    finally:
+        restore_chat(original)
+    assert not any("没带过来" in (m.get("content") or "") for m in seen2[0])
+
+
+@case
+def chat_出错会记进流水():
+    """工具失败 / LLM 挂了原来只在那一轮闪一下，"为什么老出问题"没地方回答。"""
+    c, vault, _ = with_inbox_node()
+    original, _ = stub_chat([tool_block("read_node", {"id": None}), "读不到"])
+    from server import chat as chat_mod
+    real = chat_mod.TOOLS["read_node"]
+
+    def boom(v, a):
+        raise RuntimeError("故意炸一个")
+
+    chat_mod.TOOLS["read_node"] = boom
+    try:
+        c.post("/api/chat", json={"messages": [{"role": "user", "content": "看看 a"}]})
+    finally:
+        restore_chat(original)
+        chat_mod.TOOLS["read_node"] = real
+
+    rows = core.load_issues(vault)
+    assert rows and rows[0]["kind"] == "tool" and "故意炸一个" in rows[0]["message"], rows
+    assert rows[0]["where"] == "read_node", rows[0]
+    # 欠账里能看见
+    d = c.get("/api/digest").json()
+    assert d["counts"]["issues"] >= 1 and d["issues"]["by_kind"].get("tool") >= 1, d["issues"]
+
+
+@case
+def chat_关系类型表要喂给模型():
+    """不给表它只能猜类型名：真实对话里写过 `提出者::`，没登记，落弱关联还带警告。
+    「发展方向」全靠 `演化` 那一族。"""
+    c, vault, _ = with_inbox_node()
+    from server import chat as chat_mod
+    p = chat_mod._system_prompt(vault, "教练")
+    for t in ("演化为", "被激活", "对比", "包含"):
+        assert f"`{t}`" in p, t
+    assert "从早指向晚" in p, "没说方向，边会连反"
+    # canonical（会被归一掉的反向写法）不用给模型看
+    assert "`源自`" not in p and "`属于`" not in p, "把反向写法也喂进去了，模型会两种混用"
+
+
+@case
 def chat_同参工具不重复跑():
     """真实对话里模型会连着用一模一样的参数再搜一遍，每次都白烧一个来回。"""
     c, _, _ = with_inbox_node()

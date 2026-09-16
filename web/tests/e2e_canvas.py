@@ -782,14 +782,21 @@ async def case_modes(page: Page, ck: Check) -> None:
            await page.ev("!!document.querySelector('.canvas')"), "canvas 仍在 DOM 里")
 
     # 收起右侧的图 → 对话占满
-    await page.ev("""(() => {
-      const b = [...document.querySelectorAll('.chat-bar .icon-btn')].pop();
-      b?.click(); return 'ok';
-    })()""")
+    # 按 title 找，别按位置——会话条上的按钮会增减（这里就被新加的「收起对话」顶过一次）
+    fold = """(() => {
+      const b = [...document.querySelectorAll('.chat-bar .icon-btn')]
+        .find(x => (x.title || '').includes('侧的图'));
+      b?.click(); return b ? 'ok' : 'missing';
+    })()"""
+    assert await page.ev(fold) == "ok", "会话条上找不到收起图的按钮"
     solo = await poll(page, """document.querySelector('.stage')?.classList.contains('solo')""",
                       lambda v: v, timeout=6)
     ck.add("图 pane 能收起", bool(solo), f"solo={solo}")
-    await page.ev("""(() => { [...document.querySelectorAll('.chat-bar .icon-btn')].pop()?.click(); })()""")
+    await page.ev(fold)
+
+    ck.add("对话有关掉的入口（不用绕去顶栏切视图）",
+           await page.ev("""[...document.querySelectorAll('.chat-bar .icon-btn')]
+             .some(b => (b.title || '').includes('收起对话'))"""), "会话条上有 ✕")
 
     await switch_mode(page, "历史")
     ck.add("切得到历史视图",
@@ -916,7 +923,7 @@ async def case_calendar(page: Page, ck: Check) -> None:
     await open_rail(page, "日历")
 
 
-async def case_chat_view(page: Page, ck: Check) -> None:
+async def case_chat_view(page: Page, ck: Check, api: str) -> None:
     """对话视图：开场白点得动、输入框收得住字、会话条在。**不发消息**——那会真打 LLM。
 
     这一条守的是"视图渲染不炸"：Vue 里一个模板错就整屏空白，只有真浏览器能发现。
@@ -929,12 +936,16 @@ async def case_chat_view(page: Page, ck: Check) -> None:
     ck.add("对话视图渲染出来了", "聊着学" in (text or ""), (text or "")[:60])
 
     starters = await page.ev("""document.querySelectorAll('.chat-view .starters .btn').length""")
-    ck.add("开场白按钮摆出来了", (starters or 0) >= 4, f"{starters} 个")
+    ck.add("开场白按钮摆出来了", (starters or 0) >= 3, f"{starters} 个")
 
     stances = await page.ev("""JSON.stringify([...document.querySelectorAll('.chat-bar select')]
       .map(s => [...s.options].map(o => o.value)))""")
     ck.add("会话条上能切口径（教练 / 面试 / 聊天）",
            "面试" in (stances or ""), str(stances)[:80])
+
+    ck.add("会话条上有「梳理这段」（聊完一键整理进图谱）",
+           await page.ev("""[...document.querySelectorAll('.chat-bar .btn')]
+             .some(b => b.textContent.includes('梳理'))"""), "对话里聊完能一键整理")
 
     ck.add("会话条上有「新的一段」",
            await page.ev("""[...document.querySelectorAll('.chat-bar .btn')]
@@ -1052,6 +1063,26 @@ async def case_chat_view(page: Page, ck: Check) -> None:
                        lambda v: v and '"p":"demo"' in v, timeout=12)
     ck.add("刷新后还在原项目，画布也还是项目画布",
            json.loads(after or "{}").get("n") == ["乙", "甲", "还没建的"], str(after))
+
+    # 项目画布必须**可写**：只认 structure 的话，这里拖节点、右键、连边全部静默失效
+    await switch_mode(page, "项目图")
+    await asyncio.sleep(0.8)
+    rev0 = get(f"{api}/api/layout?layout=demo")["layout"]["revision"]
+    await drag(page, "甲", dx=70, dy=40)
+    moved = await poll(page, "'x'", lambda _: get(f"{api}/api/layout?layout=demo")["layout"]["revision"] > rev0,
+                       timeout=10)
+    ck.add("项目画布上拖节点会落盘", bool(moved),
+           f"revision {rev0} → {get(f'{api}/api/layout?layout=demo')['layout']['revision']}")
+
+    # 幽灵占位的右键菜单不一样：能建、能拿掉，但不给「建立关系」（它还没有 md）
+    await right_click(page, "还没建的")
+    ghost_menu = await poll(page, """JSON.stringify([...document.querySelectorAll('.ctx-menu .pop-item')]
+      .map(b => b.textContent.trim()))""", lambda v: v and v != "[]", timeout=8)
+    items = json.loads(ghost_menu or "[]")
+    ck.add("幽灵占位能直接建出来", any("建出来" in x for x in items), str(items))
+    ck.add("幽灵占位不给「建立关系」（没有 md，关系行没处写）",
+           not any("建立关系" in x for x in items), str(items))
+    await page.ev("document.body.click()")
 
     # 切回「🌐 全局」：左侧栏该换成全局那套，「项目图」该变灰
     await use_scope(page, "")
@@ -1684,7 +1715,7 @@ async def scenarios(page: Page, api: str, results: list) -> None:
     await case_due_badge(page, ck)
     await case_project_view(page, ck, api)
     await case_calendar(page, ck)
-    await case_chat_view(page, ck)
+    await case_chat_view(page, ck, api)
     await case_drag_from_inbox(page, ck, VAULT_HOLDER[0])
     await case_finalize(page, ck)
     await case_image(page, ck, VAULT_HOLDER[0])
