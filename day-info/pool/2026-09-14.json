@@ -1,15 +1,18 @@
 {
   "date": "2026-09-14",
-  "generated_at": "2026-09-14T19:02:15",
+  "generated_at": "2026-09-14T21:11:27",
   "counts": {
-    "total": 87,
+    "total": 91,
     "must": 5,
-    "worth": 69,
+    "worth": 73,
     "archive": 13,
     "critical": 1
   },
   "errors": [
-    "HN: <urlopen error _ssl.c:1015: The handshake operation timed out>"
+    "arXiv cs.CL: <urlopen error [SSL: UNEXPECTED_EOF_WHILE_READING] EOF occurred in violation of protocol (",
+    "HF models: <urlopen error [SSL: UNEXPECTED_EOF_WHILE_READING] EOF occurred in violation of protocol (",
+    "HN: <urlopen error _ssl.c:1015: The handshake operation timed out>",
+    "LangChain: <urlopen error [SSL: UNEXPECTED_EOF_WHILE_READING] EOF occurred in violation of protocol ("
   ],
   "items": [
     {
@@ -313,6 +316,18 @@
       ]
     },
     {
+      "url": "https://huggingface.co/papers/2609.03502",
+      "title": "Building and Evaluating Fixed-Voice Thai TTS from Synthetic Speech",
+      "source": "HF 每日论文",
+      "published": "2026-09-02",
+      "summary": "In low-resource settings, deploying TTS typically requires choosing between a large voice-cloning model with costly inference or a compact fixed-voice system that requires a speaker-specific corpus. We study a third rout",
+      "tier": "值得看",
+      "critical": false,
+      "reasons": [
+        "论文/工具类"
+      ]
+    },
+    {
       "url": "https://huggingface.co/papers/2609.11682",
       "title": "COBRA-Skills: Contextual Bandit-Guided Evolution for Agent Skill Optimization",
       "source": "HF 每日论文",
@@ -325,11 +340,35 @@
       ]
     },
     {
+      "url": "https://huggingface.co/papers/2609.06107",
+      "title": "DataFlex-RL: An Evaluation Platform for RLVR Data Policies",
+      "source": "HF 每日论文",
+      "published": "2026-09-04",
+      "summary": "Data policies for reinforcement learning with verifiable rewards (RLVR) determine which rollouts are used, how strongly they are weighted, and which domains contribute to subsequent training batches. We introduce DataFle",
+      "tier": "值得看",
+      "critical": false,
+      "reasons": [
+        "论文/工具类"
+      ]
+    },
+    {
       "url": "https://huggingface.co/papers/2609.08418",
       "title": "Feyospace-v1: How the Cyber Mercury Seven Trained Frontier Cyber Models",
       "source": "HF 每日论文",
       "published": "2026-09-07",
       "summary": "Training capable cyber agents is often treated primarily as a problem of model scale, yet open-weight post-training is constrained more directly by the cost of executable environments, reliable multi-turn supervision, an",
+      "tier": "值得看",
+      "critical": false,
+      "reasons": [
+        "论文/工具类"
+      ]
+    },
+    {
+      "url": "https://huggingface.co/papers/2609.03595",
+      "title": "How Far Can Synthetic Data Take Thai OCR?",
+      "source": "HF 每日论文",
+      "published": "2026-09-02",
+      "summary": "We investigate what makes synthetic OCR supervision transfer to real Thai documents and use the resulting insights to build Wayu-Paxa-OCR-Zero, a Thai OCR model adapted without OCR labels from real Thai document pages. S",
       "tier": "值得看",
       "critical": false,
       "reasons": [
@@ -406,6 +445,18 @@
       "critical": false,
       "reasons": [
         "命中:开源"
+      ]
+    },
+    {
+      "url": "https://www.ithome.com/1/002/279.htm",
+      "title": "全国网络安全标准化技术委员会发布《人工智能安全治理框架 3.0》",
+      "source": "IT之家",
+      "published": "2026-09-14",
+      "summary": "IT之家 9 月 14 日消息，据网信办官网消息，9 月 14 日，在 2026 年国家网络安全宣传周开幕式上，全国网络安全标准化技术委员会（以下简称“网安标委”）发布 《人工智能安全治理框架 3.0》 （以下简称《框架 3.0》）。 贯彻落实《全球人工智能治理倡议》，2024 年、2025 年网安标委先后发布了《人工智能安全治理框架 1.0》《人工智能安全治理框架 2.0》，受到各界广泛关注。为应对人工智能发展新趋势、回应安全治理新挑",
+      "tier": "值得看",
+      "critical": false,
+      "reasons": [
+        "命中:框架"
       ]
     },
     {
