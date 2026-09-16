@@ -227,7 +227,58 @@ input[type='text'], input:not([type]), input[type='number'], select, textarea {
   transition: border-color .13s var(--ease), box-shadow .13s var(--ease);
 }
 input::placeholder { color: var(--text-3); }
-select { cursor: pointer; padding-right: 6px; }
+input:hover, select:hover, textarea:hover { border-color: var(--line-2); }
+
+/* 下拉一律自己画箭头：系统原生的那个在两套主题下颜色、大小都不受控，
+   而且没有箭头时下拉框和只读文本长得一模一样，根本看不出这里能点 */
+select {
+  cursor: pointer; appearance: none; -webkit-appearance: none;
+  padding-right: 24px;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='7' viewBox='0 0 10 7' fill='none' stroke='%238a8f98' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M1 1.5 5 5.5 9 1.5'/%3E%3C/svg%3E");
+  background-repeat: no-repeat; background-position: right 8px center;
+}
+select:disabled { cursor: not-allowed; opacity: .5; }
+
+/* ---------- 6b. 表单字段：标签 / 输入 / 说明 ----------
+   这一套原来只在「新建知识点」对话框里有样式，别处（清单、检查器）用同样的 class
+   却没有任何规则——标签和输入框挤在一行、没有字重、没有间距，
+   所以"一眼望上去不知道该填什么、哪个是重点"。现在统一成全局的一套。 */
+.fld { display: block; margin-bottom: 12px; }
+.fld > .lb {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 6px;
+  margin-bottom: 5px; font-size: 11.5px; font-weight: 650; color: var(--text-1);
+}
+/* 补充说明（可选 / 项目级 / id xxx）做成小标签：它们是注解，不是标题的一部分 */
+.fld > .lb i {
+  font-style: normal; font-weight: 500; font-size: 10px; letter-spacing: .02em;
+  padding: 1px 5px; border-radius: 4px;
+  background: var(--surface-2); color: var(--text-3); border: 1px solid var(--line);
+}
+.fld > .lb i.req { background: var(--danger-soft); color: var(--danger);
+  border-color: transparent; }
+.fld > .lb i.hot { background: var(--accent-soft); color: var(--accent-text); border-color: transparent; }
+.fld > input, .fld > select, .fld > textarea, .fld > .fld-box {
+  display: block; width: 100%; padding: 7px 9px; font-size: 12.5px;
+  /* 写 background-color 而不是 background：简写会把下拉那个箭头图一起清掉 */
+  background-color: var(--surface-2); border-color: var(--line-2);
+}
+.fld > select { padding-right: 24px; }
+.fld > textarea { line-height: 1.6; resize: vertical; }
+.fld > input:focus, .fld > select:focus, .fld > textarea:focus {
+  outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-ring);
+  background-color: var(--surface);
+}
+/* 重点字段：决定模型怎么干活的那几个（目标、口径、难度）。
+   标记要克制——全都高亮等于都不高亮，所以只给一条左边线 + 标签变色 */
+.fld.key { padding-left: 9px; border-left: 2px solid var(--accent); }
+.fld.key > .lb { color: var(--accent-text); }
+.fld .hint { display: block; margin-top: 5px; font-size: 11px; line-height: 1.6; color: var(--text-3); }
+.fld .hint code {
+  font-size: 10.5px; padding: 1px 4px; border-radius: 3px; white-space: nowrap;
+  background: var(--surface-2); color: var(--text-2);
+}
+.two { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 12px; align-items: start; }
+@media (max-width: 420px) { .two { grid-template-columns: 1fr; } }
 
 /* ---------- 7. 徽标 / 胶囊 ---------- */
 .badge {
@@ -465,13 +516,18 @@ select { cursor: pointer; padding-right: 6px; }
 
 /* 开关行（关系族过滤等） */
 .switch-row {
+  /* 必须定位：真正的 input 是 absolute 的，没有这行它的包含块会一路找到 .drawer，
+     于是抽屉内容一滚动，input 就留在原地跑到视口外面。点标题触发 input.focus()，
+     浏览器为了"把焦点元素滚进视野"去滚根容器——body / .app 是 overflow: hidden，
+     鼠标滚不回来，表现就是整屏被往上拽、下半截全黑。 */
+  position: relative;
   display: flex; align-items: center; gap: 9px;
   padding: 6px 9px; border-radius: var(--r-xs); cursor: pointer; user-select: none;
 }
 .switch-row:hover { background: var(--surface-2); }
 .switch-row .label { flex: 1; }
 .switch-row .sub { display: block; font-size: 11.5px; color: var(--text-3); }
-.switch-row input { position: absolute; opacity: 0; pointer-events: none; }
+.switch-row input { position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; opacity: 0; pointer-events: none; }
 
 /* 复选：自绘方块 */
 .check {
@@ -540,7 +596,8 @@ select { cursor: pointer; padding-right: 6px; }
   padding: 5px 6px; border-radius: var(--r-sm);
 }
 .edge-row:hover { background: var(--surface-2); }
-.edge-row select { padding: 2px 4px; font-size: 12px; max-width: 116px; }
+.edge-row select { padding: 2px 18px 2px 5px; font-size: 12px; max-width: 124px;
+  background-position: right 4px center; }
 .edge-row .to { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .edge-row .icon-btn { opacity: 0; }
 .edge-row:hover .icon-btn { opacity: 1; }
@@ -856,23 +913,9 @@ kbd.key {
 .mm-view { fill: rgba(59, 111, 224, .1); stroke: var(--accent); stroke-width: 1.2; }
 
 /* 新建知识点对话框：沿用建立关系的外壳，里面是表单 */
-.node-dialog .fld { display: block; margin-bottom: 11px; }
-.node-dialog .lb { display: block; font-size: 11.5px; font-weight: 600; color: var(--text-2); margin-bottom: 4px; }
-.node-dialog .lb i { font-style: normal; font-weight: 400; color: var(--text-3); margin-left: 5px; font-size: 10.5px; }
-.node-dialog input, .node-dialog select {
-  width: 100%; padding: 8px 10px; font: inherit; font-size: 13px;
-  color: var(--text); background: var(--surface-2);
-  border: 1px solid var(--line-2); border-radius: var(--r-sm);
-}
-.node-dialog input:focus, .node-dialog select:focus {
-  outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-ring);
-}
-.node-dialog .hint { display: block; margin-top: 4px; font-size: 11px; color: var(--text-3); }
-.node-dialog .hint code {
-  font-size: 11px; padding: 1px 4px; border-radius: 3px;
-  background: var(--surface-3); color: var(--text-2);
-}
-.node-dialog .two { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+/* 对话框里的表单比面板里的宽松一点，其余全走 6b 那一套全局规则 */
+.node-dialog .fld > input, .node-dialog .fld > select { padding: 8px 10px; font-size: 13px; }
+.node-dialog .fld > select { padding-right: 26px; }
 .node-dialog .warn-text { margin: -6px 0 10px; font-size: 12px; color: var(--danger); }
 
 /* 域工具条：浮在当前这个域的上沿 */
@@ -929,14 +972,27 @@ kbd.key {
   background: var(--bg-2); color: var(--text-3);
 }
 .sum-tag.bad { background: var(--warn-soft, var(--bg-2)); color: var(--warn-text, var(--text-2)); font-weight: 600; }
+/* 「答超了」和「笔记里没有」都不是错，用描边而不是实底，跟「记错」那种红底区分开 */
+.sum-tag.up { background: transparent; border: 1px solid var(--accent, var(--line)); color: var(--accent, var(--text-2)); }
+.sum-tag.new { background: transparent; border: 1px dashed var(--line); color: var(--text-3); }
+.sum-full { margin-top: 7px; }
+.sum-full > summary {
+  cursor: pointer; font-size: 11.5px; color: var(--text-3);
+  list-style: none; user-select: none; padding: 2px 0;
+}
+.sum-full > summary::-webkit-details-marker { display: none; }
+.sum-full > summary::before { content: "▸ "; }
+.sum-full[open] > summary::before { content: "▾ "; }
+.sum-full > summary:hover { color: var(--text-1); }
+.sum-full .quiz-answer { margin-top: 6px; }
 .sum-note { font-size: 11.5px; line-height: 1.7; margin: 14px 0 0; }
 .quiz-grades .btn { justify-content: center; }
 .grade-row { margin-top: 8px; align-items: center; }
 
 /* —— 阶段 10：学习计划 —— */
 .plan-switch {
-  width: 100%; margin-bottom: 12px; padding: 7px 9px; border-radius: 8px;
-  border: 1px solid var(--line); background: var(--bg-1); color: var(--text-1); font: inherit; font-size: 13px;
+  width: 100%; margin-bottom: 12px; padding: 7px 24px 7px 9px; border-radius: 8px;
+  border: 1px solid var(--line); background-color: var(--bg-1); color: var(--text-1); font: inherit; font-size: 13px;
 }
 .plan-stat { margin: 12px 0 4px; }
 .plan-stat .bar {
@@ -952,7 +1008,9 @@ kbd.key {
 .chip.m-learned  { background: var(--accent-soft); color: var(--accent-text); }
 .chip.m-mastered { background: var(--ok-soft, #d8efdc); color: var(--ok-text, #1f6b35); }
 
-.section.stage { border-top: 1px solid var(--line); padding-top: 10px; }
+/* 类名别叫 .stage：画布那个 .stage 是 display:flex + overflow:hidden 的横向容器，
+   撞上之后每个阶段都会被排成一行、超出的部分被裁掉（阶段名挤扁、「建」按钮消失） */
+.section.plan-stage { border-top: 1px solid var(--line); padding-top: 10px; }
 .stage-name { flex: 1; min-width: 0; font: inherit; font-size: 12.5px; font-weight: 600;
   border: none; background: transparent; color: var(--text-1); padding: 2px 0; }
 .stage-due { width: 92px; font: inherit; font-size: 11px; border: none; background: transparent;
@@ -960,7 +1018,9 @@ kbd.key {
 .stage-name:focus, .stage-due:focus { outline: none; border-bottom: 1px solid var(--accent); }
 .edge-row.point { align-items: baseline; gap: 6px; }
 .edge-row.point .why { font-size: 11px; opacity: 0.8; }
-.add-point { display: flex; align-items: center; gap: 5px; margin-top: 7px; }
+.add-point { display: flex; align-items: center; gap: 5px; margin: 6px 0 2px; }
+/* 「加知识点」是阶段头上的开关，展开时标出来，否则看不出输入框归哪个阶段 */
+.section-head .icon-btn.on { background: var(--accent-soft); color: var(--accent-text); }
 .add-point input {
   flex: 1; min-width: 0; padding: 5px 8px; border-radius: 7px; border: 1px dashed var(--line);
   background: transparent; color: var(--text-1); font: inherit; font-size: 11.5px;
@@ -1042,6 +1102,43 @@ kbd.key {
   display: flex; align-items: center; gap: 5px; font-size: 11px; color: var(--text-3);
   padding-left: 2px;
 }
+/* 模型回答里的图文：Markdown + mermaid。气泡里的排版要比正文紧一点，
+   否则一段话的上下留白比内容还高 */
+.md > div > :first-child { margin-top: 0; }
+.md > div > :last-child { margin-bottom: 0; }
+.md p { margin: 0 0 8px; line-height: 1.75; }
+.md h1, .md h2, .md h3, .md h4 { margin: 12px 0 6px; font-size: 13px; font-weight: 650; }
+.md ul, .md ol { margin: 0 0 8px; padding-left: 20px; }
+.md li { margin: 2px 0; line-height: 1.7; }
+.md code { padding: 1px 4px; border-radius: 4px; background: var(--bg-1); font-size: 11.5px; }
+.md pre { margin: 0 0 8px; padding: 8px 10px; border-radius: 7px; background: var(--bg-1);
+  overflow-x: auto; }
+.md pre code { padding: 0; background: none; }
+.md blockquote { margin: 0 0 8px; padding-left: 10px; border-left: 2px solid var(--line);
+  color: var(--text-2); }
+.md table { border-collapse: collapse; margin: 0 0 8px; font-size: 11.5px; display: block;
+  overflow-x: auto; }
+.md th, .md td { border: 1px solid var(--line); padding: 4px 7px; text-align: left; }
+.md hr { border: none; border-top: 1px solid var(--line); margin: 10px 0; }
+.md .mmd { margin: 4px 0 10px; overflow-x: auto; }
+.md .mmd svg { max-width: 100%; height: auto; }
+.md .mmd-raw { margin: 0 0 8px; padding: 8px 10px; border-radius: 7px; background: var(--bg-1);
+  overflow-x: auto; font-size: 11.5px; }
+
+/* 过程折叠条：默认收起，一行就写清这轮动了什么 */
+.trace { font-size: 11px; color: var(--text-3); }
+.trace > summary {
+  display: flex; align-items: center; gap: 5px; cursor: pointer; list-style: none;
+  padding: 2px 0; user-select: none;
+}
+.trace > summary::-webkit-details-marker { display: none; }
+.trace > summary::after { content: '▸'; opacity: .6; }
+.trace[open] > summary::after { content: '▾'; }
+.trace > summary:hover { color: var(--text-2); }
+.trace-row { margin: 3px 0 5px 14px; }
+.trace-say, .trace-sum { white-space: pre-wrap; word-break: break-word; line-height: 1.6; }
+.trace-sum { margin-left: 17px; opacity: .75; }
+
 .change-card {
   border: 1px dashed var(--accent); border-radius: 9px; padding: 8px 10px; background: var(--bg-1);
 }
@@ -1100,8 +1197,8 @@ kbd.key {
 
 /* 三期：顶栏项目切换器 */
 .proj-switch {
-  max-width: 170px; padding: 5px 8px; border-radius: 8px; border: 1px solid var(--line);
-  background: var(--bg-1); color: var(--text-1); font: inherit; font-size: 12px;
+  max-width: 170px; padding: 5px 22px 5px 8px; border-radius: 8px; border: 1px solid var(--line);
+  background-color: var(--bg-1); color: var(--text-1); font: inherit; font-size: 12px;
 }
 
 /* 三期：对话全屏视图。对话不是工具面板，是主界面 */
@@ -1115,8 +1212,8 @@ kbd.key {
 }
 .chat-bar .grow { flex: 1; }
 .sess-pick {
-  max-width: 230px; padding: 4px 7px; border-radius: 7px; border: 1px solid var(--line);
-  background: var(--bg-1); color: var(--text-1); font: inherit; font-size: 11.5px;
+  max-width: 230px; padding: 4px 21px 4px 7px; border-radius: 7px; border: 1px solid var(--line);
+  background-color: var(--bg-1); color: var(--text-1); font: inherit; font-size: 11.5px;
 }
 .chat-view .chat-wrap { flex: 1; min-height: 0; padding: 14px 16px 12px; }
 .focus-chip {
@@ -1180,3 +1277,8 @@ kbd.key {
 .list-tabs .tab-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .edge-row.point .to { max-width: 100%; }
 .stage-name { text-overflow: ellipsis; }
+
+.open-quiz { display: flex; align-items: center; gap: 7px; margin-bottom: 10px; padding: 7px 9px;
+  border-radius: 8px; border: 1px dashed var(--accent); background: var(--accent-soft);
+  font-size: 11.5px; }
+.open-quiz > span { flex: 1; min-width: 0; }

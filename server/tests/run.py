@@ -489,7 +489,7 @@ def restore_llm(original) -> None:
 
 
 def q(stem: str, points: list, qtype: str = "回忆题") -> dict:
-    return {"question": {"type": qtype, "stem": stem, "answer": "标准答案", "points": points, "hint": ""},
+    return {"question": {"type": qtype, "stem": stem, "ref_answer": "标准答案", "points": points, "hint": ""},
             "grade": "记得"}
 
 
@@ -525,6 +525,139 @@ def quiz_LLM乱答时返回空题集而不是500():
         assert r.json()["questions"] == [], r.text
     finally:
         restore_llm(original)
+
+
+@case
+def quiz_没答完的卷子存得住并且交卷后清掉():
+    c, vault, _ = with_inbox_node()
+    original = stub_llm(json.dumps({"questions": [
+        {"type": "回忆题", "stem": "A 是什么", "answer": "甲", "points": ["a"], "hint": ""},
+    ]}, ensure_ascii=False))
+    try:
+        c.post("/api/quiz", json={"node_ids": ["a"], "level": "精通"})
+    finally:
+        restore_llm(original)
+    # 出一次题是花了钱的：关掉对话框、刷新页面都不该让它蒸发
+    saved = c.get("/api/quiz/open").json()["quiz"]
+    assert saved and [x["stem"] for x in saved["questions"]] == ["A 是什么"], saved
+    assert saved["level"] == "精通", saved
+
+    c.post("/api/quiz/grade", json={"answers": [q("A 是什么", ["a"])]})
+    assert c.get("/api/quiz/open").json()["quiz"] is None, "交完卷还留着没答完的卷子"
+
+
+@case
+def quiz_没答完的卷子能主动丢掉():
+    c, vault, _ = with_inbox_node()
+    original = stub_llm(json.dumps({"questions": [
+        {"type": "回忆题", "stem": "A 是什么", "answer": "甲", "points": ["a"]}]}, ensure_ascii=False))
+    try:
+        c.post("/api/quiz", json={"node_ids": ["a"]})
+    finally:
+        restore_llm(original)
+    assert c.get("/api/quiz/open").json()["quiz"]
+    c.delete("/api/quiz/open")
+    assert c.get("/api/quiz/open").json()["quiz"] is None
+
+
+@case
+def quiz_出不来题时留下模型原文而不是只说一句没出来():
+    c, vault, _ = with_inbox_node()
+    original = stub_llm("抱歉，我今天不太想出题。")
+    try:
+        data = c.post("/api/quiz", json={"node_ids": ["a"]}).json()
+    finally:
+        restore_llm(original)
+    assert data["questions"] == []
+    assert any("不太想出题" in w for w in data["warnings"]), data["warnings"]
+    rows = [json.loads(x) for x in
+            (vault / ".knowrary" / "issues.jsonl").read_text("utf-8").splitlines() if x.strip()]
+    assert any("不太想出题" in json.dumps(r, ensure_ascii=False) for r in rows), rows
+    assert c.get("/api/quiz/open").json()["quiz"] is None, "没出来题不该留一份空卷子"
+
+
+@case
+def quiz_难度档决定出题口径():
+    c, _, _ = with_inbox_node()
+    seen = {}
+    from server import quiz as quiz_mod
+    original = quiz_mod.ask
+
+    def spy(vault_, role, prompt, op="?"):
+        seen[len(seen)] = prompt
+        return json.dumps({"questions": []})
+
+    quiz_mod.ask = spy
+    try:
+        c.post("/api/quiz", json={"node_ids": ["a"], "level": "了解"})
+        c.post("/api/quiz", json={"node_ids": ["a"], "level": "精通"})
+        c.post("/api/quiz", json={"node_ids": ["a"]})          # 不填 = 默认档
+    finally:
+        quiz_mod.ask = original
+    assert "只问定义、用途" in seen[0], seen[0][-600:]
+    assert "经得起追问" in seen[1], seen[1][-600:]
+    assert "讲得清机制" in seen[2], "不填难度时要落到默认档，而不是一段空白"
+
+
+@case
+def 模型在JSON前后多说了话也认():
+    from server.llm_call import parse_json
+    got = parse_json('好的，这是题目：\n```json\n{"questions": [{"stem": "带 { 的题面"}]}\n```\n还需要别的吗？')
+    assert got["questions"][0]["stem"] == "带 { 的题面", got
+    assert parse_json("完全不是 JSON") == {}
+
+
+@case
+def 题库_聊天问过的题攒起来再出题时直接用():
+    c, vault, _ = with_inbox_node()
+    # 聊天里教练问的那句检验题
+    core.add_question(vault, "A 靠什么解决 X 问题？", ["a"], ref_answer="靠 Y", source="chat")
+    core.add_question(vault, "a 靠什么解决 x 问题?", ["d"])        # 规整后同一道，只并考点
+    pool = core.load_pool(vault)
+    assert len(pool["questions"]) == 1, pool
+    assert pool["questions"][0]["points"] == ["a", "d"], pool
+
+    # 出题时直接用，压根不调模型
+    from server import quiz as quiz_mod
+    original = quiz_mod.ask
+    quiz_mod.ask = lambda *a, **k: (_ for _ in ()).throw(AssertionError("不该调模型"))
+    try:
+        data = c.post("/api/quiz", json={"node_ids": ["a"], "count": 1}).json()
+    finally:
+        quiz_mod.ask = original
+    assert [q["stem"] for q in data["questions"]] == ["A 靠什么解决 X 问题？"], data
+    assert any("没调模型" in w for w in data["warnings"]), data["warnings"]
+
+    # 答对了打「学会」，答错了摘掉
+    c.post("/api/quiz/grade", json={"answers": [
+        {"question": {"type": "回忆题", "stem": "A 靠什么解决 X 问题？", "ref_answer": "靠 Y",
+                      "points": ["a"], "hint": ""}, "grade": "记得"}]})
+    assert core.load_pool(vault)["questions"][0]["learned"] is True
+    c.post("/api/quiz/grade", json={"answers": [
+        {"question": {"type": "回忆题", "stem": "A 靠什么解决 X 问题？", "ref_answer": "靠 Y",
+                      "points": ["a"], "hint": ""}, "grade": "忘了"}]})
+    row = core.load_pool(vault)["questions"][0]
+    assert row["learned"] is False and row["asked"] == 2 and row["right"] == 1, row
+
+
+@case
+def 题库_没考点的题不收():
+    c, vault, _ = with_inbox_node()
+    assert core.add_question(vault, "一道没考点的题", []) is None
+    assert core.load_pool(vault)["questions"] == []
+
+
+@case
+def chat_检验问题会被摘进题库且题干仍留在答案里():
+    from server.chat import pull_checks
+    text, checks = pull_checks(
+        "核心差别是通用 vs 专用。\n\n```check\nNPU 牺牲了什么？\n考点: NPU, GPU\n```", ["兜底"])
+    assert text.endswith("NPU 牺牲了什么？"), text      # 题干留在正文，摘掉的只是围栏
+    assert "```" not in text
+    assert checks == [{"stem": "NPU 牺牲了什么？", "points": ["NPU", "GPU"]}], checks
+    # 没写考点就按这一轮提到过的点算
+    _, c2 = pull_checks("```check\n只有题干\n```", ["a", "b"])
+    assert c2[0]["points"] == ["a", "b"], c2
 
 
 @case
@@ -601,6 +734,268 @@ def quiz_整轮比对给出漏掉与记错():
         restore_llm(original)
 
 
+def spy_llm() -> tuple[list, object]:
+    """记下每次发给模型的 prompt，并固定返回空 JSON。返回 (收件箱, 原函数)。"""
+    from server import quiz as quiz_mod
+    original = quiz_mod.ask
+    seen: list = []
+
+    def spy(vault_, role, prompt, op="?"):
+        seen.append(prompt)
+        return "{}"
+
+    quiz_mod.ask = spy
+    return seen, original
+
+
+@case
+def quiz_批改按档位判分而不是一把尺子量到底():
+    """出题认档位、批改不认的话，「了解就行」的点会被按「精通」的尺子判成模糊，白白多复习一轮。"""
+    c, _, _ = with_inbox_node()
+    seen, original = spy_llm()
+    try:
+        c.post("/api/quiz/diagnose", json={"answers": [q("A 是什么", ["a"])], "level": "了解"})
+        c.post("/api/quiz/diagnose", json={"answers": [q("A 是什么", ["a"])], "level": "精通"})
+    finally:
+        restore_llm(original)
+    assert "不要因为「没讲机制」" in seen[0], seen[0][:400]
+    assert "经得起追问" in seen[1], seen[1][:400]
+
+
+@case
+def quiz_没传档位时按这份卷子出题用的那一档判():
+    """前端不传也不能退回默认档：这份卷子按「了解」出的，就该按「了解」判。"""
+    c, _, _ = with_inbox_node()
+    original = stub_llm(json.dumps({"questions": [
+        {"type": "回忆题", "stem": "A 是什么", "ref_answer": "甲", "points": ["a"]},
+    ]}, ensure_ascii=False))
+    try:
+        c.post("/api/quiz", json={"node_ids": ["a"], "level": "了解"})   # 存下没交的卷子，带档位
+    finally:
+        restore_llm(original)
+
+    seen, original = spy_llm()
+    try:
+        c.post("/api/quiz/diagnose", json={"answers": [q("A 是什么", ["a"])]})   # 不带 level
+    finally:
+        restore_llm(original)
+    assert "不要因为「没讲机制」" in seen[0], "没传档位时要取卷子上的那一档，而不是退回默认档"
+
+
+@case
+def quiz_完整答案回灌题库但绝不碰标准答案():
+    c, vault, _ = with_inbox_node()
+    original = stub_llm(json.dumps({"questions": [
+        {"type": "回忆题", "stem": "A 是什么", "ref_answer": "来自正文的标准答案", "points": ["a"]},
+    ]}, ensure_ascii=False))
+    try:
+        c.post("/api/quiz", json={"node_ids": ["a"]})       # 出题：题连标准答案一起进池子
+    finally:
+        restore_llm(original)
+
+    original = stub_llm(json.dumps({"items": [
+        {"n": 1, "missed": [], "wrong": [], "suggested_grade": "记得", "comment": "没问题",
+         "beyond": True, "next_gap": "按会用档还缺机制",
+         "full_answer": "补全过的完整答案", "beyond_vault": ["笔记里没有的那个点"]},
+    ]}, ensure_ascii=False))
+    try:
+        r = c.post("/api/quiz/diagnose", json={"answers": [
+            {"question": {"type": "回忆题", "stem": "A 是什么", "ref_answer": "来自正文的标准答案",
+                          "points": ["a"], "hint": ""},
+             "grade": "记得", "my_answer": "我的作答"},
+        ]})
+        assert r.status_code == 200, r.text
+        item = r.json()["items"][0]
+        assert item["beyond"] is True and item["next_gap"], item
+        assert item["full_answer"] == "补全过的完整答案", item
+        assert item["beyond_vault"] == ["笔记里没有的那个点"], item
+    finally:
+        restore_llm(original)
+
+    row = core.load_pool(vault)["questions"][0]
+    assert row["ref_answer"] == "来自正文的标准答案", "标准答案来自 vault，批改绝不许覆盖它"
+    assert row["full_answer"] == "补全过的完整答案", row
+    assert row["beyond_vault"] == ["笔记里没有的那个点"], row
+    assert row["full_src"] == "llm", "模型写的那一份要标出来，回看时得分得清是谁写的"
+
+
+@case
+def quiz_模型现编的题进题库下一轮不再调模型():
+    """出题是花钱的：同一个节点考第二次还去现编，等于为同一件事付两次钱。"""
+    c, vault, _ = with_inbox_node()
+    original = stub_llm(json.dumps({"questions": [
+        {"type": "回忆题", "stem": f"A 的第 {i} 问", "ref_answer": f"答案{i}", "points": ["a"]}
+        for i in range(3)
+    ]}, ensure_ascii=False))
+    try:
+        first = c.post("/api/quiz", json={"node_ids": ["a"], "count": 3}).json()
+    finally:
+        restore_llm(original)
+    assert len(first["questions"]) == 3, first
+    assert len(core.load_pool(vault)["questions"]) == 3, "现编的题要进池子"
+
+    c.delete("/api/quiz/open")          # 丢掉没交的那份，模拟下一轮重新出题
+    seen, original = spy_llm()
+    try:
+        again = c.post("/api/quiz", json={"node_ids": ["a"], "count": 3}).json()
+    finally:
+        restore_llm(original)
+    assert seen == [], "池子里够数时不许再调模型"
+    assert len(again["questions"]) == 3, again
+    assert {x["stem"] for x in again["questions"]} == {f"A 的第 {i} 问" for i in range(3)}, again
+    assert any("没调模型" in w for w in again["warnings"]), again["warnings"]
+
+
+@case
+def quiz_题库里已有的完整答案会带进下一轮批改():
+    """不带的话，同一道题每轮被重写成另一个随机版本，答案永远长不好。"""
+    c, vault, _ = with_inbox_node()
+    core.add_question(vault, "A 是什么", ["a"], ref_answer="标准答案", source="quiz")
+    core.enrich_questions(vault, [{"stem": "A 是什么", "full_answer": "上一轮攒下的完整答案",
+                                   "beyond_vault": ["旧的点"]}])
+
+    seen, original = spy_llm()
+    try:
+        c.post("/api/quiz/diagnose", json={"answers": [q("A 是什么", ["a"])]})
+    finally:
+        restore_llm(original)
+    assert "上一轮攒下的完整答案" in seen[0], seen[0][-500:]
+
+
+def q_no_answer(stem: str, points: list) -> dict:
+    """聊天攒的题就长这样：只有题干和考点，没有标准答案。"""
+    return {"question": {"type": "回忆题", "stem": stem, "ref_answer": "", "points": points, "hint": ""},
+            "grade": "模糊", "my_answer": "我随便答了点"}
+
+
+def with_fat_node() -> tuple[TestClient, Path]:
+    """建一个正文有辨识度的节点，用来验证批改时到底带没带正文进去。"""
+    c, vault = client()
+    core.write(vault / "nodes/组A/e.md",
+               "---\nname: E\nfield: 测试\ndesc: E 的摘要\n---\n# E\n\n拿破仑式的独门正文\n")
+    index_service.invalidate()
+    return c, vault
+
+
+@case
+def quiz_改名前的旧数据和旧键仍然认():
+    """`answer` → `ref_answer` 这次改名不许让手上没答完的卷子作废、题库读不出来。"""
+    c, vault = client()
+    (vault / ".knowrary").mkdir(exist_ok=True)
+    (vault / ".knowrary/quiz-open.json").write_text(json.dumps({
+        "schema_version": 1, "questions": [
+            {"type": "回忆题", "stem": "旧卷子里的题", "answer": "旧键存的标准答案",
+             "points": ["a"], "hint": ""}],
+        "index_revision": 1, "style": "复习", "level": "了解"}, ensure_ascii=False), "utf-8")
+    (vault / ".knowrary/question-pool.json").write_text(json.dumps({
+        "schema_version": 1, "questions": [
+            {"id": "q1-x", "stem": "旧题库里的题", "answer": "旧键存的", "answer_src": "vault",
+             "points": ["a"], "asked": 0, "learned": False}]}, ensure_ascii=False), "utf-8")
+
+    got = c.get("/api/quiz/open").json()["quiz"]
+    assert got["questions"][0]["ref_answer"] == "旧键存的标准答案", got
+    assert "answer" not in got["questions"][0], "旧键要换掉，不能两个键并存"
+    row = core.load_pool(vault)["questions"][0]
+    assert row["ref_answer"] == "旧键存的" and row["ref_src"] == "vault", row
+
+    # 模型偶尔会退回大众化的 `answer`，出题那头两个键都得认，否则白烧一次调用。
+    # 换个没进过题库的节点问，否则会走「池子里够数就不调模型」那条短路，根本试不到解析。
+    original = stub_llm(json.dumps({"questions": [
+        {"type": "回忆题", "stem": "模型用了旧键", "answer": "照样要认", "points": ["b"]},
+    ]}, ensure_ascii=False))
+    try:
+        c.delete("/api/quiz/open")
+        data = c.post("/api/quiz", json={"node_ids": ["b"], "count": 1}).json()
+    finally:
+        restore_llm(original)
+    assert data["questions"][0]["ref_answer"] == "照样要认", data
+
+
+@case
+def quiz_没有标准答案的题照笔记正文补一份():
+    """聊天攒的题没有标准答案（pull_checks 只摘题干和考点）。判分总得有依据，
+    而依据只能是我自己的笔记——所以批改时把正文带进去，让它照正文补出来。"""
+    c, vault = with_fat_node()
+    core.add_question(vault, "E 是什么", ["e"], source="chat")     # 聊天攒的：没有 answer
+    assert core.load_pool(vault)["questions"][0]["ref_answer"] == ""
+
+    seen, original = spy_llm()
+    try:
+        c.post("/api/quiz/diagnose", json={"answers": [q_no_answer("E 是什么", ["e"])]})
+    finally:
+        restore_llm(original)
+    assert "## 考点的笔记正文" in seen[0], seen[0][:600]
+    assert "拿破仑式的独门正文" in seen[0], "缺答案的题要把考点正文带进批改"
+    assert "ref_answer" in seen[0]
+
+    original = stub_llm(json.dumps({"items": [
+        {"n": 1, "suggested_grade": "模糊", "comment": "差点意思",
+         "ref_answer": "照正文补出来的标准答案", "full_answer": "模型自己发挥的完整答案"},
+    ]}, ensure_ascii=False))
+    try:
+        item = c.post("/api/quiz/diagnose", json={
+            "answers": [q_no_answer("E 是什么", ["e"])]}).json()["items"][0]
+        assert item["ref_answer"] == "照正文补出来的标准答案", item
+    finally:
+        restore_llm(original)
+
+    row = core.load_pool(vault)["questions"][0]
+    assert row["ref_answer"] == "照正文补出来的标准答案", "补出来的那份要落进 ref_answer，下轮考才有答案可对"
+    assert row["ref_src"] == "vault", "来源要标出来：它是照笔记正文补的，不是模型自由发挥的"
+    assert row["full_answer"] == "模型自己发挥的完整答案", "两份各归各位，不许串"
+
+
+@case
+def quiz_已有标准答案的题批改不许覆盖():
+    """answer 是判分依据。被模型顶掉一次，以后每轮都按模型的标准判我。"""
+    c, vault = with_fat_node()
+    core.add_question(vault, "E 是什么", ["e"], ref_answer="我笔记里原来那份", source="quiz")
+    original = stub_llm(json.dumps({"items": [
+        {"n": 1, "suggested_grade": "记得", "ref_answer": "模型想顶替的那份"},
+    ]}, ensure_ascii=False))
+    try:
+        c.post("/api/quiz/diagnose", json={"answers": [
+            {"question": {"type": "回忆题", "stem": "E 是什么", "ref_answer": "我笔记里原来那份",
+                          "points": ["e"], "hint": ""},
+             "grade": "记得", "my_answer": "答得不错"},
+        ]})
+    finally:
+        restore_llm(original)
+    assert core.load_pool(vault)["questions"][0]["ref_answer"] == "我笔记里原来那份"
+
+
+@case
+def quiz_考点没有md时补不出答案也不该崩():
+    """stub 节点（只被别人链接过、还没建 md）没有正文可抄。补不出来最多是这题以后还没答案，
+    不该因此连批改都做不成。"""
+    c, vault = client()
+    core.write(vault / "nodes/组A/f.md", node_md("F", rels="- 部件:: [[还没建的节点]]"))
+    index_service.invalidate()
+    original = stub_llm(json.dumps({"items": [
+        {"n": 1, "suggested_grade": "忘了", "ref_answer": ""},
+    ]}, ensure_ascii=False))
+    try:
+        r = c.post("/api/quiz/diagnose", json={
+            "answers": [q_no_answer("那个还没建的节点是什么", ["还没建的节点"])]})
+        assert r.status_code == 200, r.text
+        assert r.json()["items"][0]["ref_answer"] == "", r.json()
+    finally:
+        restore_llm(original)
+
+
+@case
+def quiz_题都有标准答案时不把正文塞进批改():
+    """正文在出题时已经读过一次了，再带一遍纯属白烧 token。"""
+    c, vault = with_fat_node()
+    seen, original = spy_llm()
+    try:
+        c.post("/api/quiz/diagnose", json={"answers": [q("E 是什么", ["e"])]})
+    finally:
+        restore_llm(original)
+    assert "## 考点的笔记正文" not in seen[0], seen[0][:600]
+    assert "拿破仑式的独门正文" not in seen[0]
+
+
 @case
 def quiz_诊断乱答时返回空而不是500():
     c, _, _ = with_inbox_node()
@@ -623,7 +1018,7 @@ def quiz_我的作答与诊断一起留档():
     rec = json.loads((vault / ".knowrary" / "quiz-log.json").read_text("utf-8"))["answers"][0]
     assert rec["my_answer"] == "只记得一半", rec
     assert rec["missed"] == ["位置编码"] and rec["wrong"] == ["把 A 说成了 B"], rec
-    assert rec["answer"] == "标准答案", rec          # 标准答案与我的作答各存各的
+    assert rec["ref_answer"] == "标准答案", rec      # 标准答案与我的作答各存各的
     assert md_digest(vault) == before, "留档改了 md"
 
 
@@ -2230,6 +2625,29 @@ def chat_侧写来自vault且项目级覆盖全局():
 
 
 @case
+def chat_难度档跟着项目走():
+    """一个维度决定三件事。对话这一头按**项目**的档（一次对话不属于某一份清单）。"""
+    c, vault, _ = with_inbox_node()
+    from server import chat as chat_mod
+    c.put("/api/projects", json={"base_revision": 0, "projects": {
+        "hist": {"name": "AI 发展史", "level": "了解", "lists": [{"kind": "学习", "name": "主线"}]},
+        "npu": {"name": "NPU", "level": "精通", "lists": [{"kind": "学习", "name": "主线"}]}}})
+    assert "只要了解" in chat_mod._system_prompt(vault, "教练", "hist")
+    assert "当场追问" in chat_mod._system_prompt(vault, "教练", "npu")
+    # 不绑项目的全局对话落默认档，而不是一段空白
+    assert "会用" in chat_mod._system_prompt(vault, "教练") or "结论 → 机制" in \
+        chat_mod._system_prompt(vault, "教练")
+
+
+@case
+def 清单的难度档盖得住项目的():
+    assert core.level_of({"level": "了解"}, {"level": "精通"}) == "精通"
+    assert core.level_of({"level": "了解"}, {"level": None}) == "了解"
+    assert core.level_of({}, {}) == core.DEFAULT_LEVEL
+    assert core.level_of({"level": "瞎填的"}, None) == core.DEFAULT_LEVEL
+
+
+@case
 def chat_长对话按条数和字数两道闸裁_并且说出来():
     """产品本身是把**整段历史**发过去的（不是每句话单发）；超长时从最早的开始丢，
     但**必须告诉模型丢了**——它不知道自己少了上下文时，会拿半截记忆当完整的用。"""
@@ -2323,6 +2741,47 @@ def chat_同参工具不重复跑():
     assert calls["n"] == 1, f"同样的参数跑了 {calls['n']} 遍"
     tools = [e for e in sse_events(r) if e["type"] == "tool"]
     assert len(tools) == 2 and "不再跑一遍" in tools[1]["summary"], tools
+
+
+@case
+def chat_过程和答案分开留档():
+    """「我先查一下」「工具挂了」是过程，不该和最后那段有营养的话拌在一起读。"""
+    c, vault, _ = with_inbox_node()
+    original, _ = stub_chat([f"我先去图里找找。\n{tool_block('search_nodes', {'q': 'A'})}",
+                             "找到了。核心差别是通用 vs 专用。"])
+    try:
+        r = c.post("/api/chat", json={"messages": [{"role": "user", "content": "A 是什么"}]})
+    finally:
+        restore_chat(original)
+    done = [e for e in sse_events(r) if e["type"] == "done"][-1]
+    assert done["text"] == "找到了。核心差别是通用 vs 专用。", done["text"]
+    assert len(done["trace"]) == 1 and done["trace"][0].startswith("我先去图里找找。"), done["trace"]
+
+    path = next((vault / ".knowrary" / "chat").rglob("*.jsonl"))
+    rows = [json.loads(x) for x in path.read_text("utf-8").splitlines() if x.strip()]
+    said = [x for x in rows if x["role"] == "assistant"][-1]
+    assert said["text"] == done["text"] and said["trace"] == done["trace"], said
+    # 回看时也是分开的，否则历史还是得整段重读
+    hist = c.get("/api/chat/history").json()["messages"]
+    assert hist[-1]["trace"] == done["trace"], hist[-1]
+
+
+@case
+def chat_检验题进题库():
+    c, vault, _ = with_inbox_node()
+    original, _ = stub_chat(["A 是一个测试节点。\n\n```check\nA 的关键机制是什么？\n考点: a\n```"])
+    try:
+        r = c.post("/api/chat", json={"messages": [{"role": "user", "content": "讲讲 A"}]})
+    finally:
+        restore_chat(original)
+    evs = sse_events(r)
+    q = [e for e in evs if e["type"] == "question"]
+    assert q and q[0]["stem"] == "A 的关键机制是什么？" and q[0]["points"] == ["a"], evs
+    pool = core.load_pool(vault)
+    assert [x["stem"] for x in pool["questions"]] == ["A 的关键机制是什么？"], pool
+    # 题干留在正文里（那句问话本来就是对话的一部分），摘掉的只是围栏
+    done = [e for e in evs if e["type"] == "done"][-1]
+    assert done["text"].endswith("A 的关键机制是什么？") and "```" not in done["text"], done["text"]
 
 
 @case
