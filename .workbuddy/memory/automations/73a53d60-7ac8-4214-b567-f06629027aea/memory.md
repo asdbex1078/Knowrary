@@ -7,18 +7,9 @@
 - HTTPS 推送失败后自动切换 SSH，推送成功（day-info-for-autoclaw 分支，提交 ebf4d36）。
 - 已按 8 行内格式汇报，含 1 条即时提醒（critical）。
 
-## 2026-09-15 19:00
-- daily.sh 硬失败（Exit 1）：当前在 main，工作区有大量未提交改动（.knowrary、server、tools、web 等），git 拒绝切到 day-info（无 -f 强切设计）。未采集、未推送。
-- 已如实汇报，未自行切分支/stash/merge。
-
-## 2026-09-15 23:46
-- 连续第二次同样硬失败（Exit 1）：main 分支工作区有未提交改动，无法安全切到 day-info。未采集、未推送。
-- 已如实汇报并提示用户先提交或 stash 工作区改动。
-
-## 2026-09-16 19:00
-- 第三次连续硬失败（Exit 1）：仍在 main，工作区有会被覆盖的本地改动，git 拒绝切到 day-info。未采集、未推送。
-- 已如实汇报，未自行切分支/stash/merge/force push。
-
-## 2026-09-16 20:02
-- 第四次连续硬失败（Exit 1）：仍在 main，工作区未提交改动导致无法安全切到 day-info。未采集、未推送。
-- 已如实汇报并再次提示用户先提交或 stash；未做任何分支操作。
+## 2026-09-16 20:04
+- daily.sh 执行成功（Exit 0）。
+- 新增 84 条，池内累计 84 条（必须看 8 / 值得看 69 / 仅存档 7；critical 0）。
+- 源告警 4 条：GitHub releases 限流（antvis/X6、G6、G6-extension-3d）+ HN SSL 超时。
+- HTTPS 推送失败后自动切 SSH 推送成功（提交 ef2008f）。
+- 新情况：publish.sh 未能切回 main，仓库停留在 day-info 分支，已在输出中提醒用户手动切回。
