@@ -13,6 +13,7 @@ const total = () => {
   const c = props.digest?.counts
   if (!c) return 0
   return (c.drafts || 0) + (c.duplicates || 0) + (c.stubs || 0) + (c.cycles || 0)
+    + (c.bad_years || 0) + (c.issues || 0)
 }
 </script>
 
@@ -86,6 +87,40 @@ const total = () => {
             <li v-for="id in digest.stubs" :key="id" class="edge-row">
               <span class="to link" @click="emit('goto', id)">{{ id }}</span>
             </li>
+          </ul>
+        </section>
+
+        <!-- 出错流水：工具失败 / 写回被拒 / LLM 挂了，原来各自闪一下就没了，
+             "这东西为什么老出问题"没地方回答。攒起来才看得出反复出现的那一类。 -->
+        <section v-if="digest.issues?.count" class="section">
+          <div class="section-head">
+            <Icon name="warn" :size="13" />最近出的错
+            <span class="count">{{ digest.issues.count }}</span>
+            <span class="dim" style="font-size: 10.5px; margin-left: auto">
+              {{ Object.entries(digest.issues.by_kind).map(([k, n]) => `${k} ${n}`).join(' · ') }}
+            </span>
+          </div>
+          <ul>
+            <li v-for="(it, i) in digest.issues.recent" :key="`i${i}`" class="card warn-text"
+                :title="it.ts">
+              <b>{{ it.kind }}{{ it.where ? ` · ${it.where}` : '' }}</b>：{{ it.message }}
+            </li>
+          </ul>
+          <p class="dim" style="font-size: 10.5px; line-height: 1.6">
+            全量在 <code>.knowrary/issues.jsonl</code>（只留最近 500 条）。
+            同一类反复出现，多半是工具本身有问题，不是手滑。
+          </p>
+        </section>
+
+        <!-- 年份可疑：唯一不依赖外部知识的年份矫正——不问"1997 对不对"，
+             只问"这条演化线自己自洽吗"。口述的年份没人能核，倒挂能算出来。 -->
+        <section v-if="digest.bad_years?.length" class="section">
+          <div class="section-head">
+            <Icon name="clock" :size="13" />年份可疑
+            <span class="count">{{ digest.counts.bad_years }}</span>
+          </div>
+          <ul>
+            <li v-for="(m, i) in digest.bad_years" :key="`y${i}`" class="card warn-text">{{ m }}</li>
           </ul>
         </section>
 

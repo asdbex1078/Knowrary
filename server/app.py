@@ -406,6 +406,9 @@ def post_changes(changeset: ChangeSet) -> ChangeResult:
     except core.WriteConflict as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except core.ChangeRejected as exc:
+        # 写回被拒往往说明**工具本身有问题**（字段白名单漏一项这种），不是人手滑，
+        # 攒起来才看得出"同一类拒绝反复出现"
+        core.record_issue(vault, "write", str(exc), where="/api/changes")
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     files = [FileDiff(path=e.rel, notes=e.notes, diff=curation.diff_of(e)) for e in edits]

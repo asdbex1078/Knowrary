@@ -611,6 +611,53 @@ def 清单进度按点汇总且不落盘():
 
 
 @case
+def 演化边年份倒挂会被算出来():
+    """**唯一不依赖外部知识的年份矫正**：不问"1997 对不对"，只问"这条线自己自洽吗"。
+    口述一句"year 填 2017"没人能核，但"它比它的前身还早"是能算的。"""
+    vault = make_vault({
+        "nodes/a.md": node_md("A", extra="year: 1997\n", rels="- 演化为:: [[b]]"),
+        "nodes/b.md": node_md("B", extra="year: 1986\n"),      # 比前身还早 → 一定有一个错了
+        "nodes/c.md": node_md("C", extra="year: 2099\n"),      # 未来
+    })
+    r = core.build_index(vault, None)
+    codes = {w["code"] for w in r.data["warnings"]}
+    assert "year_inverted" in codes, [w["message"] for w in r.data["warnings"]]
+    assert "year_in_future" in codes, codes
+    msg = next(w["message"] for w in r.data["warnings"] if w["code"] == "year_inverted")
+    assert "1997" in msg and "1986" in msg and "倒挂" in msg, msg
+    assert not r.diags.errors, [d.render() for d in r.diags.errors]   # 只警告，不拦着你先记下来
+
+    # 顺序对的不报
+    ok = make_vault({"nodes/a.md": node_md("A", extra="year: 1986\n", rels="- 演化为:: [[b]]"),
+                     "nodes/b.md": node_md("B", extra="year: 1997\n")})
+    assert not [w for w in core.build_index(ok, None).data["warnings"]
+                if w["code"] == "year_inverted"]
+
+    # 欠账清单里能看见（不是只躺在 index 的 warnings 里）
+    d = core.build_digest(vault, r.data, core.empty_layout())
+    assert d["counts"]["bad_years"] == 2, d["counts"]
+
+
+@case
+def 建节点时能写layer_写错则拒():
+    """`layer` 加了字段、加了校验、加了泳道，却忘了开写回白名单——
+    表现是对话里建出来的节点没有 layer，模型只能在正文里留一句"待补"。"""
+    vault = make_vault({"nodes/a.md": node_md("A")})
+    r = core.build_index(vault, None)
+    edits = core.plan(vault, [{"type": "create_node", "source": "NPU", "path": "nodes/NPU.md",
+                               "fields": {"name": "NPU", "field": "计算机系统", "layer": "硬件",
+                                          "year": 2017, "desc": "专用推理电路"}}], r.data)
+    assert "layer: 硬件" in edits[0].after, edits[0].after
+    try:
+        core.plan(vault, [{"type": "create_node", "source": "X", "path": "nodes/X.md",
+                           "fields": {"name": "X", "field": "f", "layer": "硬體", "desc": "d"}}], r.data)
+    except core.ChangeRejected as exc:
+        assert "硬體" in str(exc), exc
+    else:
+        raise AssertionError("拼错的 layer 也放过去了")
+
+
+@case
 def 按抽象层铺布局_二级分组是层且次序固定():
     vault = make_vault({
         "nodes/x/a.md": node_md("A", extra="layer: AI应用\n"),

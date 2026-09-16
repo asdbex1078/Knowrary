@@ -33,7 +33,8 @@ const props = defineProps({
   graphOpen: { type: Boolean, default: true },
 })
 const emit = defineEmits(['send', 'stop', 'apply', 'apply-project', 'apply-points', 'goto',
-                          'new-session', 'pick-session', 'drop-focus', 'toggle-graph', 'stance'])
+                          'new-session', 'pick-session', 'drop-focus', 'toggle-graph', 'stance',
+                          'close'])
 
 // 三档口径。**不是三个 agent**：同一条链路、同一张图、同一套复习记录，
 // 换的只是系统提示词和工具白名单。
@@ -48,8 +49,20 @@ const STARTERS = [
   { t: '今天学什么', q: '看一眼我的今日清单和计划，告诉我今天该动手的是哪几件，按顺序说。' },
   { t: '考考我', q: '从我到期该复习的节点里挑几个考我，一次一题，我答完你再对答案。' },
   { t: '讲个概念', q: '我想搞懂：' },
-  { t: '这段学完了', q: '刚才聊的东西帮我整理成知识点，提一张入库的变更卡给我看。' },
 ]
+
+// 「梳理」不是新链路，就是一条写死的指令：让它回头看这一整段，分清哪些该新建、
+// 哪些该往已有节点里补，然后出一张卡。**用户说的"最后来一个按钮整理知识"就是这个。**
+const TIDY = `把我们刚才这一段对话梳理一遍，整理进我的知识图谱：
+
+1. 先 search_nodes 看哪些概念图里已经有、哪些在计划里还没建、哪些完全没有；
+2. 已经有正文的：如果这次聊出了笔记里没有的东西，read_node 拿到原文，
+   再 update_body 把**原文带上**补一段（别重写整篇，只补这次聊清楚的那点）；
+3. 还没建的：create_node，正文写**我们刚才真的聊清楚的内容**，我没懂的地方留白；
+   带上 layer 和 year（有确切年份才填）；
+4. 概念之间这次聊到的关系，用 add_edge 连上。
+
+一次 propose_changes 出一张卡就行，别拆成好几条消息。没什么值得入库的就直说。`
 
 const text = ref('')
 const box = ref(null)
@@ -103,10 +116,23 @@ function onKey(e) {
       <button class="btn subtle tiny" title="新开一段（旧的还在，随时切回来）" @click="emit('new-session')">
         <Icon name="plus" :size="13" />新的一段
       </button>
+      <!-- 一直摆着（聊之前是灰的）：藏起来的入口等于没有入口 -->
+      <button class="btn subtle tiny" :disabled="busy || messages.length < 2"
+              :title="messages.length < 2 ? '先聊几句，再让我整理'
+                : '回头看这一整段：该新建的新建、该补的往已有节点里补，出一张变更卡'"
+              @click="send(TIDY)">
+        <Icon name="checklist" :size="13" />梳理这段
+      </button>
       <span class="grow" />
       <button class="icon-btn ghost tiny" :title="graphOpen ? '收起右侧的图' : '展开右侧的图'"
               @click="emit('toggle-graph')">
         <Icon :name="graphOpen ? 'fold' : 'unfold'" :size="14" />
+      </button>
+      <!-- 关掉对话＝回到画布。没有这个按钮时只能去顶栏点「项目图」，
+           而"我要关掉这个东西"和"我要切到那个视图"在脑子里不是一回事 -->
+      <button class="icon-btn ghost tiny" title="收起对话，回到画布（对话没丢，还在这条线上）"
+              @click="emit('close')">
+        <Icon name="x" :size="14" />
       </button>
     </div>
 
@@ -202,6 +228,11 @@ function onKey(e) {
             </div>
             <pre v-for="f in c.files" :key="f.path" class="cc-diff"><b>{{ f.path }}</b>
 {{ f.diff || '（新文件）' }}</pre>
+            <p v-if="c.into" class="dim" style="font-size: 11px; margin: 0 0 6px">
+              写入后同时把 <b>{{ c.into.points.join('、') }}</b> 加进
+              「{{ c.into.project_name }}·{{ c.into.list_name }}」清单——
+              不加的话节点建出来了、项目进度却不认它
+            </p>
             <div v-if="!c.applied" class="cc-acts">
               <button class="btn primary tiny" :disabled="busy" @click="emit('apply', { card: c, i, j })">
                 <Icon name="check" :size="13" />写入

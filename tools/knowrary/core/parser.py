@@ -5,6 +5,8 @@
 """
 from __future__ import annotations
 
+import datetime as dt
+
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -134,3 +136,9 @@ def _validate_years(node: Node, diags: Diagnostics, loc: dict) -> None:
     sy, ey = node.fm.get("start_year"), node.fm.get("end_year")
     if isinstance(sy, int) and isinstance(ey, int) and ey <= sy:
         diags.error("year_range_inverted", f"时间区间反转 {sy}..{ey}", **loc)
+    # 未来的年份：真要记规划中的标准也有可能，所以只警告；但绝大多数是敲错了一位
+    nxt = dt.date.today().year + 1
+    for k in ("year", "start_year"):
+        v = node.fm.get(k)
+        if isinstance(v, int) and not isinstance(v, bool) and v > nxt:
+            diags.warn("year_in_future", f"{k} `{v}` 在未来（今年是 {nxt - 1}），是不是敲错了", **loc)

@@ -15,11 +15,11 @@ from pathlib import Path
 
 from .mdio import (RE_ID_OK, RE_NEXT_H2, RE_REL_HEADER, dump_frontmatter, read, split_frontmatter,
                     write)
-from .parser import LAYOUT_KEYS, STATUS_VALUES, digest_of
+from .parser import LAYERS, LAYOUT_KEYS, STATUS_VALUES, digest_of
 from .relations import Edge, parse_relations
 
 # 允许通过 ChangeSet 修改的 frontmatter 字段；布局字段和 id 永远不许改
-EDITABLE_FIELDS = ("name", "field", "type", "status", "year", "start_year", "end_year",
+EDITABLE_FIELDS = ("name", "field", "layer", "type", "status", "year", "start_year", "end_year",
                    "aliases", "tags", "desc", "learned", "source")
 CHANGE_TYPES = ("add_edge", "remove_edge", "update_edge", "update_frontmatter", "create_node",
                 "update_body")
@@ -178,6 +178,8 @@ def _create_node_edit(vault: Path, change: dict, taken: set[str]) -> FileEdit:
             raise ChangeRejected(f"`{key}` 是必填字段（规范 3）")
     if fields.get("status") and fields["status"] not in STATUS_VALUES:
         raise ChangeRejected(f"status `{fields['status']}` 不合法")
+    if fields.get("layer") and fields["layer"] not in LAYERS:
+        raise ChangeRejected(f"layer `{fields['layer']}` 不在已知的抽象层里（{' / '.join(LAYERS)}）")
 
     rel = str(change.get("path") or f"{NODE_ROOTS[0]}/{node_id}.md").strip().lstrip("/")
     if not rel.endswith(".md"):

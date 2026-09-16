@@ -58,6 +58,7 @@ def build_index(vault: Path, previous: dict | None = None) -> IndexResult:
     _collect_edges(ctx)
     _resolve_targets(ctx)
     _warn_history_gaps(ctx)
+    _warn_year_conflicts(ctx)
     _warn_dead_body_links(ctx)
     payload = _assemble(ctx)
     _warn_cycles(payload, ctx)
@@ -135,6 +136,32 @@ def _warn_history_gaps(ctx: BuildContext) -> None:
             ctx.diags.warn("evolution_without_year",
                        f"演化边 `{edge.source} {edge.type} {edge.target}` 两端都无 year，"
                            f"不会进入历史视图", file=edge.declared_in[0], edge=edge.id)
+
+
+def _warn_year_conflicts(ctx: BuildContext) -> None:
+    """演化族边两端年份倒挂：`A 演化为 B` 而 A 比 B 还晚。
+
+    **这是唯一不依赖外部知识的年份矫正**：它不问"1997 对不对"，只问"这条线自己自洽吗"。
+    年份写错时，十有八九会和图里已有的某条演化关系撞上——
+    口述一句"year 填 2017"没人能核，但"它比它的前身还早"是能算出来的。
+
+    `被激活`（跨领域点燃）同理：点燃者不可能晚于被点燃的那个。
+    """
+    def year_of(nid: str):
+        node = ctx.nodes.get(nid)
+        y = node.fm.get("year") if node else None
+        return y if isinstance(y, int) and not isinstance(y, bool) else None
+
+    for edge in ctx.edges.values():
+        if edge.family != "演化":
+            continue
+        a, b = year_of(edge.source), year_of(edge.target)
+        if a is None or b is None or a <= b:
+            continue
+        ctx.diags.warn("year_inverted",
+                       f"`{edge.source}`（{a}）{edge.type} `{edge.target}`（{b}）——"
+                       f"年份倒挂了：源比目标还晚，多半有一个写错了",
+                       file=edge.declared_in[0], edge=edge.id)
 
 
 def _warn_dead_body_links(ctx: BuildContext) -> None:
