@@ -15,7 +15,7 @@
  * 不做自动保存：这是人手编排的文档，不是拖拽手势。边改边存只会把一半想完的东西写进去，
  * 还会和 base_revision 打架。改完点「保存」。
  */
-import { computed, ref, watch } from 'vue'
+import { computed, nextTick, ref, watch } from 'vue'
 import Drawer from '../ui/Drawer.vue'
 import Icon from '../ui/Icon.vue'
 
@@ -105,8 +105,12 @@ const stat = computed(() => props.progress?.[pick.value]?.lists?.[li.value] || n
 const whole = computed(() => props.progress?.[pick.value]?.all || null)
 // 时间账跟着**已保存**的内容走：草稿还没提交，服务端算不到。改完存一次就刷新了。
 const sched = computed(() => props.schedules?.[pick.value]?.lists?.[li.value] || null)
+// 难度档只有项目这一层（和后端 core.level_of 一致）
+const LEVELS = ['了解', '会用', '精通']
+const levelNow = computed(() => project.value?.level || '会用')
 const proposeReq = computed(() => ({ goal: plan.value?.goal, plan_name: project.value?.name,
                                      kind: plan.value?.kind, coach: plan.value?.coach,
+                                     level: levelNow.value,
                                      target_date: plan.value?.target_date,
                                      weekly_hours: project.value?.weekly_hours,
                                      project: pick.value,
@@ -168,8 +172,18 @@ function addPoint(si) {
   if (!id) return
   if (plan.value.stages.some((s) => s.points.some((p) => p.id === id))) return
   plan.value.stages[si].points.push({ id, name: id, why: (form.why || '').trim(), load: '中' })
-  adding.value = { ...adding.value, [si]: { id: '', why: '' } }
+  // 连着加好几个点是常态，所以清空字段但保持展开，焦点也留在原地
+  adding.value = { ...adding.value, [si]: { id: '', why: '', open: true } }
   touch()
+}
+
+const addRefs = {}
+function setAddRef(si, el) { addRefs[si] = el }
+
+function toggleAdd(si) {
+  const open = !adding.value[si]?.open
+  adding.value = { ...adding.value, [si]: { ...adding.value[si], open } }
+  if (open) nextTick(() => addRefs[si]?.focus())
 }
 
 /** 已经在计划里的点不重复加；被划掉的不要。空阶段直接不生成。 */
@@ -269,37 +283,63 @@ function dropPoint(si, pi) {
           这个项目一共 {{ whole.total }} 个点（跨清单去重），已建 {{ whole.built }}
         </div>
 
-        <label v-if="plan" class="fld"><span class="lb">清单名称</span>
-          <input v-model="plan.name" @input="touch" /></label>
-        <div class="two">
-          <label class="fld"><span class="lb">口径</span>
-            <select v-model="plan.kind" :title="kindOf(plan.kind).hint" @change="touch">
-              <option value="学习">学习</option>
-              <option value="面试">面试</option>
-              <option value="领域">领域</option>
-            </select>
-          </label>
-          <label class="fld"><span class="lb">教练方向<i>可选</i></span>
-            <input v-model="plan.coach" :placeholder="plan.kind === '面试' ? 'Java 后端开发' : '大模型 / 运维…'"
-                   @input="touch" />
+        <div v-if="plan" class="two">
+          <label class="fld"><span class="lb">清单名称</span>
+            <input v-model="plan.name" @input="touch" /></label>
+          <label class="fld"><span class="lb">落脚领域<i>可选</i></span>
+            <input v-model="plan.field" list="kg-plan-fields"
+                   :placeholder="project.field || '例如：深度学习'" @input="touch" />
+            <datalist id="kg-plan-fields"><option v-for="f in fields" :key="f" :value="f" /></datalist>
+            <span class="hint">「未建」的点建到 <code>nodes/{{ plan.field || project.field || '…' }}/</code> 下，
+              留空用项目的</span>
           </label>
         </div>
+        <div class="two">
+          <label class="fld key"><span class="lb">怎么拆<i class="hot">影响拆解与出题</i></span>
+            <select v-model="plan.kind" :title="kindOf(plan.kind).hint" @change="touch">
+              <option value="学习">学习 · 按依赖顺序</option>
+              <option value="面试">面试 · 按会怎么问</option>
+              <option value="领域">领域 · 按覆盖度铺</option>
+            </select>
+            <span class="hint">{{ kindOf(plan.kind).hint }}</span>
+          </label>
+          <label class="fld key"><span class="lb">学到什么份上<i>项目级</i></span>
+            <!-- 一个旋钮决定三件事：出题深浅、对话展开到哪一层、拆点拆多细。
+                 只放项目这一层：两层（项目默认 + 清单覆盖）会多出一个长得差不多的下拉，
+                 还得想它们谁盖谁——真要分深浅，那本来就该是两个项目 -->
+            <select v-model="project.level"
+                    title="出题、聊天、拆点都按这一档来；这个项目下所有清单共用"
+                    @change="touch">
+              <option v-for="l in LEVELS" :key="l" :value="l">{{ l }}</option>
+            </select>
+            <span class="hint">了解 = 说得出是什么；会用 = 讲得清机制；精通 = 经得起追问</span>
+          </label>
+        </div>
+        <label class="fld"><span class="lb">教练方向<i>可选</i></span>
+          <input v-model="plan.coach" :placeholder="plan.kind === '面试' ? 'Java 后端开发' : '大模型 / 运维…'"
+                 @input="touch" />
+          <span class="hint">出题和拆解时当成这个方向的人来对待，例如「Java 后端」「面向运维」</span>
+        </label>
 
-        <label class="fld"><span class="lb">{{ kindOf(plan.kind).goal }}</span>
+        <label class="fld key"><span class="lb">{{ kindOf(plan.kind).goal }}<i class="req">拆解要用</i></span>
           <textarea v-if="plan.kind === '面试'" v-model="plan.goal" class="quiz-input" rows="4"
                     :placeholder="kindOf(plan.kind).ph" @input="touch" />
           <input v-else v-model="plan.goal" :placeholder="kindOf(plan.kind).ph" @input="touch" />
-          <span class="hint">{{ kindOf(plan.kind).hint }}</span>
+          <span class="hint">一句话说清要达到什么程度，写得越具体拆得越准（上面那两个选项决定怎么拆、拆多细）</span>
         </label>
         <div class="two">
           <label class="fld"><span class="lb">{{ plan.kind === '面试' ? '面试日期' : '目标日期' }}<i>可选</i></span>
-            <input v-model="plan.target_date" placeholder="2026-12-15" @input="touch" /></label>
+            <input v-model="plan.target_date" placeholder="2026-12-15" @input="touch" />
+            <span class="hint">填了才算得出来得及来不及</span>
+          </label>
           <label class="fld"><span class="lb">每周投入<i>项目级</i></span>
             <input v-model.number="project.weekly_hours" type="number" min="1" max="80"
-                   title="你的时间只有一份，不会因为多开一份清单就变多" @input="touch" /></label>
+                   title="你的时间只有一份，不会因为多开一份清单就变多" @input="touch" />
+            <span class="hint">小时 / 周。时间账的分母</span>
+          </label>
         </div>
-        <p class="dim" style="font-size: 11px; margin: -4px 0 8px; line-height: 1.6">
-          这两个值是排时间表的依据：拆解时会一起发给模型，回来的每个点带一档负荷，
+        <p class="dim" style="font-size: 11px; margin: 0 0 10px; line-height: 1.6">
+          这两个值是排时间表的依据：拆解时一起发给模型，回来的每个点带一档负荷，
           阶段截止日按负荷摊在这段时间里。
         </p>
         <button class="btn" :disabled="proposing || !plan.goal.trim()" style="width: 100%; justify-content: center"
@@ -388,15 +428,6 @@ function dropPoint(si, pi) {
             <Icon name="check" :size="14" />采纳进计划
           </button>
         </div>
-        <label class="fld">
-          <span class="lb">领域</span>
-          <input v-model="plan.field" list="kg-plan-fields"
-                 :placeholder="project.field || '例如：深度学习（决定知识点建到哪个目录）'" @input="touch" />
-          <datalist id="kg-plan-fields"><option v-for="f in fields" :key="f" :value="f" /></datalist>
-          <span class="hint">这份清单里「未建」的点建到
-            <code>nodes/{{ plan.field || project.field || '…' }}/</code> 下；
-            留空就用项目的。面试考点建议用单独的领域，别淹掉主线</span>
-        </label>
 
         <div class="two">
           <label class="fld"><span class="lb">每天几个点<i>项目级</i></span>
@@ -460,7 +491,7 @@ function dropPoint(si, pi) {
           </div>
         </div>
 
-        <section v-for="(stage, si) in plan.stages" :key="si" class="section stage">
+        <section v-for="(stage, si) in plan.stages" :key="si" class="section plan-stage">
           <div class="section-head">
             <input v-model="stage.name" class="stage-name" :title="stage.name" @input="touch" />
             <span v-if="sched?.stages?.[si]?.remaining_hours" class="dim" style="font-size: 11px"
@@ -469,9 +500,30 @@ function dropPoint(si, pi) {
             </span>
             <input v-model="stage.deadline" class="stage-due"
                    :placeholder="sched?.stages?.[si]?.suggested_deadline || '截止（可选）'" @input="touch" />
+            <button class="icon-btn ghost tiny" :class="{ on: adding[si]?.open }"
+                    :title="adding[si]?.open ? '收起' : '往这个阶段里加知识点'" @click="toggleAdd(si)">
+              <Icon name="plus" :size="13" />
+            </button>
             <button class="icon-btn ghost tiny" title="删掉这个阶段"
                     @click="plan.stages.splice(si, 1); touch()">
               <Icon name="trash" :size="13" />
+            </button>
+          </div>
+
+          <!-- 加点的输入框默认收起：每个阶段常驻一整行输入框，五个阶段就白占五行，
+               而"加点"是偶发动作。点阶段头上的 + 才展开，就贴在阶段名下面。 -->
+          <div v-if="adding[si]?.open" class="add-point">
+            <input :ref="(el) => setAddRef(si, el)" :value="adding[si]?.id || ''"
+                   placeholder="知识点（图里没有也行）"
+                   @input="adding = { ...adding, [si]: { ...adding[si], id: $event.target.value } }"
+                   @keydown.esc="toggleAdd(si)"
+                   @keydown.enter.prevent="addPoint(si)" />
+            <input :value="adding[si]?.why || ''" placeholder="为什么要学它（可留空）"
+                   @input="adding = { ...adding, [si]: { ...adding[si], why: $event.target.value } }"
+                   @keydown.esc="toggleAdd(si)"
+                   @keydown.enter.prevent="addPoint(si)" />
+            <button class="icon-btn ghost tiny" title="加进这个阶段（回车也行）" @click="addPoint(si)">
+              <Icon name="check" :size="13" />
             </button>
           </div>
 
@@ -501,17 +553,6 @@ function dropPoint(si, pi) {
             </li>
           </ul>
 
-          <div class="add-point">
-            <input :value="adding[si]?.id || ''" placeholder="知识点（图里没有也行）"
-                   @input="adding = { ...adding, [si]: { ...adding[si], id: $event.target.value } }"
-                   @keydown.enter.prevent="addPoint(si)" />
-            <input :value="adding[si]?.why || ''" placeholder="为什么要学它"
-                   @input="adding = { ...adding, [si]: { ...adding[si], why: $event.target.value } }"
-                   @keydown.enter.prevent="addPoint(si)" />
-            <button class="icon-btn ghost tiny" title="加进这个阶段（回车也行）" @click="addPoint(si)">
-              <Icon name="plus" :size="13" />
-            </button>
-          </div>
         </section>
 
         <div class="act-row">
@@ -521,7 +562,7 @@ function dropPoint(si, pi) {
           <button v-if="stat && stat.total" class="btn" title="就这个计划里的点出题"
                   @click="emit('quiz', { ids: Object.keys(stat.points).filter((k) => stat.points[k] !== '未建'),
                                          style: plan.kind === '面试' ? '面试' : '复习',
-                                         coach: plan.coach })">
+                                         level: levelNow, coach: plan.coach })">
             <Icon name="play" :size="14" />{{ plan.kind === '面试' ? '模拟面试' : '考这个计划' }}
           </button>
           <button v-if="lists.length > 1" class="btn subtle" @click="dropList">

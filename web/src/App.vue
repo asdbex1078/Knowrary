@@ -1,7 +1,7 @@
 <script setup>
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, shallowRef, watch } from 'vue'
 import {
-  fetchCalendar, fetchChatHistory, fetchChatSessions, fetchDigest, postSyncToGlobal, fetchDue, fetchProjects, putProjects, postPlanPropose, fetchToday, fetchUsage, postMerge, postRename, postQuiz, postQuizDiagnose, postQuizGrade, fetchOpenQuiz, dropOpenQuiz, fetchHealth, fetchIndex, fetchInbox, fetchLayout, fetchNode,
+  fetchCalendar, fetchChatHistory, fetchChatSessions, fetchDigest, postSyncToGlobal, fetchDue, fetchProjects, putProjects, postPlanPropose, fetchToday, fetchUsage, postMerge, postRename, postQuiz, postQuizDiagnose, postQuizGrade, fetchOpenQuiz, dropOpenQuiz, renameChatSession, postRegroup, fetchHealth, fetchIndex, fetchInbox, fetchLayout, fetchNode,
   patchLayout, postChanges, postPlace, postReview, postSuggest, streamChat,
 } from './api'
 import AppHeader from './components/AppHeader.vue'
@@ -32,12 +32,14 @@ import MorningBrief from './components/MorningBrief.vue'
 import ProjectsPanel from './panels/ProjectsPanel.vue'
 import ImagePicker from './panels/ImagePicker.vue'
 import TimelinePanel from './panels/TimelinePanel.vue'
+import TourPanel from './components/TourPanel.vue'
 import { clone, createHistory, diffPatch, isEmptyPatch } from './canvas/history'
 import { createPatcher } from './canvas/patcher'
 import { ancestors as groupAncestors, computeCollapsed } from './canvas/lod'
 import {
   LABEL_ZOOM, applyEdgeLabels, applyViewport, buildCells, buildHistoryCells, contentBBox, createGraph,
-  clearPath, currentViewport, highlightEdges, highlightPath, mount, movedPositions, setSnap, snapDelta,
+  clearPath, currentViewport, highlightEdges, highlightPath, markStop, mount, movedPositions,
+  paintHistoryTime, setSnap, snapDelta,
 } from './canvas/render'
 import { timelineOptions } from './canvas/timeline'
 import { communityLayout, compareWithGroups } from './canvas/communities'
@@ -98,12 +100,26 @@ const hist = reactive({ compact: false, validity: false, upto: null, trunk: fals
                         演化: true, 依赖: false, 对照: false })
 const histPlan = shallowRef(null)
 const histChain = computed(() => histPlan.value?.trunk || null)
+// 游标停在当前年份时"已发生"的那批节点。留着当下一站的对照，才知道该点亮谁。
+let histActive = null
+const histActiveCount = ref(0)
 const timelines = ref([])          // 选中的 layout 分组 id（空 = 全部）
 let playing = null
 const isPlaying = ref(false)
+const STEP_MS = 760        // 回放每站停多久。跳的是"有事发生的年份"，不是日历年，所以可以停久一点
+let enterTimer = null
+
+// 沿演化链导览：跟着 plan.chain 一站站走。年份回放管"到哪一年"，导览管"走到哪一站"——
+// 两者共用同一条时间游标（导览每到一站就把游标挪到那年），所以镜头、游标、讲解永远对得上。
+const tour = reactive({ on: false, i: 0, auto: false })
+let tourTimer = null
+const TOUR_MS = 3200       // 每站停多久：够读完一句 desc
+const TOUR_ZOOM = 0.85
 const autoLod = ref(true)                // 缩小自动折叠成簇卡片（设计文档 3.7）
 // 对齐线 + 落点吸附：和主题、小地图一样是"这台机器上怎么摆图"的偏好，不进 layout.json
 const snap = ref(localStorage.getItem('knowrary-snap') !== '0')
+// 连线绕开卡片：默认不开，它会把线掰成直角，是另一种观感
+const avoidNodes = ref(localStorage.getItem('knowrary-avoid') === '1')
 const pathFrom = ref(null)               // 路径搜索的起点（右键选定），等着第二个节点
 const pathHit = shallowRef(null)         // 找到的路径 { nodes, edges }，纯展示态，不落盘
 const focusGroup = ref(null)             // 聚焦的域：点簇卡片进入，只展开它
@@ -468,7 +484,7 @@ function render({ view = 'keep' } = {}) {
   const cells = buildCells(indexDoc.value, layoutDoc.value, {
     families: visibleFamilies(), showLabels: labelsOn.value,
     aggregate: aggregate.value, expanded: expanded.value, collapsed: collapsedIds.value, zoom: g.zoom(),
-    due: dueIds.value, states: nodeStates.value,
+    due: dueIds.value, states: nodeStates.value, avoidNodes: avoidNodes.value,
     only: neighborSet.value || (mode.value === 'project' && projectIds.value.size ? projectIds.value : null),
   })
   edgesShown.value = cells.edges.filter((e) => e.data.kind === 'edge').length
@@ -568,11 +584,16 @@ const layeredHint = computed(() => {
   return withYear.length ? `${n}/${withYear.length} 已分层` : ''
 })
 
+/**
+ * 重建整张历史图。
+ *
+ * **只在"图本身变了"时调用**：换时间线 / 切主干道 / 改紧凑 / 改关系族。
+ * 拖滑块和回放不走这里——那两件事只挪游标（paintTime），一个 cell 都不重建。
+ */
 function renderHistory({ view = 'fit' } = {}) {
   const g = graph.value
   const cells = buildHistoryCells(indexDoc.value, layoutDoc.value, {
-    timelines: timelines.value, families: histFamilies(), compact: hist.compact, upto: hist.upto,
-    validity: hist.validity, trunk: hist.trunk,
+    timelines: timelines.value, families: histFamilies(), compact: hist.compact, trunk: hist.trunk,
   })
   histPlan.value = cells.plan
   applyingViewport = true
@@ -584,11 +605,22 @@ function renderHistory({ view = 'fit' } = {}) {
   mount(g, cells)
   applyingViewport = false
   zoom.value = g.zoom()
+  histActive = null                 // cell 是新的，class 也没了；这一帧不做点亮动画
+  paintTime()
+  paintTour()
   const d = cells.plan.diagnostics
   const parts = [`${cells.plan.placed.size} 个有 year 的节点 · ${cells.edges.length} 条边`]
   if (d.noYear) parts.push(`${d.noYear} 个节点没有 year，不进历史图`)
   if (d.missingYear.length) parts.push(`${d.missingYear.length} 条演化边缺年份（${d.missingYear[0]} …）`)
   setBanner(parts.join('；'), d.missingYear.length ? 'error' : '')
+}
+
+/** 把游标挪到当前年份。拖滑块、回放、切有效期都只走这条路——不重建任何 cell。 */
+function paintTime({ pulse = true } = {}) {
+  histActive = paintHistoryTime(graph.value, histPlan.value,
+                                { upto: hist.upto, validity: hist.validity,
+                                  prev: pulse ? histActive : null })
+  histActiveCount.value = histActive?.size ?? 0
 }
 
 async function switchMode(next) {
@@ -598,6 +630,7 @@ async function switchMode(next) {
   const focusProject = next === 'structure' && !!currentProject.value && mode.value !== 'structure'
   if (mode.value === next) return
   stopPlay()
+  stopTour()
   await patcher.value.flush()           // 离开画布前先把手上的改动落盘
   const wasLayout = layoutName()
   mode.value = next
@@ -640,32 +673,148 @@ async function switchMode(next) {
   }
 }
 
-/** 历史视图给容器加个类名，节点的渐显动画只在这个模式下生效。 */
+/**
+ * 历史视图给容器加个类名，游标相关的样式只在这个模式下生效。
+ *
+ * kg-enter 是一次性的：进场淡入只该在刚切进来那一下放一次。留着的话，
+ * 每次重建 cell（换时间线、改关系族）都会整屏重放一遍。
+ */
 function markHistoryContainer(next) {
-  graph.value?.container?.classList?.toggle('kg-history', next === 'history')
+  const el = graph.value?.container
+  if (!el) return
+  const on = next === 'history'
+  el.classList.toggle('kg-history', on)
+  clearTimeout(enterTimer)
+  el.classList.toggle('kg-enter', on)
+  if (on) enterTimer = setTimeout(() => el.classList.remove('kg-enter'), 400)
 }
 
 function setUpto(value) {
   hist.upto = value === '' || value === null ? null : Number(value)
-  renderHistory({ view: 'keep' })
+  paintTime()
 }
 
+/**
+ * 按年回放。
+ *
+ * 跳的是"有事发生的年份"而不是日历年：真实数据 1936–2018 跨 83 年，
+ * 其中只有 22 年有节点——逐年走的话 73% 的站什么都不会变，纯粹在空转。
+ */
 function togglePlay() {
   if (playing) return stopPlay()
-  const [min, max] = yearRange.value
-  if (hist.upto === null || hist.upto >= max) hist.upto = min
+  stopTour()                        // 两个都在推游标会打架，同一时刻只留一个
+  const years = histPlan.value?.eventYears || []
+  if (years.length < 2) return setBanner('这张图上只有一个年份，没什么可回放的', 'error')
+  // 已经放到最后一站（或压根没设年份）就从头来，否则接着当前位置往下走
+  let i = hist.upto === null ? -1 : years.findIndex((y) => y > hist.upto)
+  if (i < 0) i = 0
   isPlaying.value = true
+  setUpto(years[i])
   playing = setInterval(() => {
-    if (hist.upto === null || hist.upto >= max) return stopPlay()
-    hist.upto += 1
-    renderHistory({ view: 'keep' })
-  }, 220)
+    i += 1
+    if (i >= years.length) return stopPlay()
+    setUpto(years[i])
+  }, STEP_MS)
 }
 
 function stopPlay() {
   if (playing) clearInterval(playing)
   playing = null
   isPlaying.value = false
+}
+
+// —— 沿演化链导览 ——
+//
+// 技术史的叙事单位是"谁接谁"，不是"哪一年"：年份只是坐标轴。
+// 实盘 1936–2018 里 61 年是空的，按年走一路都是空档；按演化链走，站站有内容。
+
+const tourChain = computed(() => histPlan.value?.chain || [])
+const tourStopId = computed(() => tourChain.value[tour.i] || null)
+const tourStop = computed(() => {
+  const id = tourStopId.value
+  if (!id) return null
+  const meta = (indexDoc.value?.nodes || []).find((n) => n.id === id) || {}
+  return { id, name: meta.name || id, desc: meta.desc || '', year: histPlan.value?.placed.get(id)?.year }
+})
+/** 上一站是怎么接到这一站的：把那条演化边的类型写出来，"谁接谁"才算讲清楚。 */
+const tourVia = computed(() => {
+  if (tour.i <= 0) return '起点'
+  const eid = histPlan.value?.chainEdges?.[tour.i - 1]
+  const edge = eid ? (indexDoc.value?.edges || []).find((e) => e.id === eid) : null
+  const from = tourChain.value[tour.i - 1]
+  return edge ? `${from} —${edge.type || edge.family}→` : `接 ${from}`
+})
+
+/** 链走不长时，把原因摆出来：是"图里就这么点演化边"，而不是功能坏了。 */
+function evoGap() {
+  const d = histPlan.value?.diagnostics || {}
+  return `图上一共 ${d.evoAll ?? 0} 条演化边，其中 ${d.evoUsable ?? 0} 条两端都有 year`
+}
+
+function startTour() {
+  stopPlay()
+  const chain = histPlan.value?.chain || []
+  if (chain.length < 2) {
+    return setBanner(`找不到连续的演化链，导览走不起来——${evoGap()}。`
+      + '给发展史节点补上 year，再用「演化为 / 源自 / 被激活」把它们串起来', 'error')
+  }
+  // 导览走的就是演化边，关着的话先打开——否则用户只看到镜头在跳，看不到"沿着什么走"
+  if (!hist.演化) {
+    hist.演化 = true
+    renderHistory({ view: 'keep' })
+  }
+  tour.on = true
+  tour.auto = true
+  tourGo(0)
+  const head = `沿演化链导览：${chain.length} 站，${chain[0]} → ${chain[chain.length - 1]}（Esc 退出）`
+  // 三站以下基本讲不出故事，顺手把欠账报出来，别让人以为是功能没做好
+  setBanner(chain.length < 4 ? `${head}。链这么短是因为${evoGap()}` : head,
+            chain.length < 4 ? 'error' : '')
+}
+
+function tourGo(i) {
+  const chain = histPlan.value?.chain || []
+  if (!chain.length) return stopTour()
+  tour.i = Math.max(0, Math.min(chain.length - 1, i))
+  const box = histPlan.value.placed.get(chain[tour.i])
+  if (!box) return stopTour()
+  setUpto(box.year)                 // 游标跟着走：导览管节奏，游标管坐标，两边永远一致
+  paintTour()
+  flyTo({ cx: box.x + box.w / 2, cy: box.y + box.h / 2, zoom: TOUR_ZOOM }, 520)
+  scheduleTour()
+}
+
+/** 重建过图之后（换时间线 / 关系族）也要重新点上，否则 class 和高亮都随着旧 cell 没了。 */
+function paintTour() {
+  if (!tour.on) return
+  markStop(graph.value, tourStopId.value)
+  highlightEdges(graph.value, new Set(histPlan.value?.chainEdges || []), { flow: true })
+}
+
+function scheduleTour() {
+  clearTimeout(tourTimer)
+  tourTimer = null
+  if (!tour.on || !tour.auto) return
+  // 走到最后一站就停下，不回头重播：导览是"讲完一条线"，不是循环屏保
+  if (tour.i >= tourChain.value.length - 1) { tour.auto = false; return }
+  tourTimer = setTimeout(() => tourGo(tour.i + 1), TOUR_MS)
+}
+
+function toggleTourAuto() {
+  tour.auto = !tour.auto
+  // 停在最后一站时再点"自动走"，就是从头再讲一遍
+  if (tour.auto && tour.i >= tourChain.value.length - 1) return tourGo(0)
+  scheduleTour()
+}
+
+function stopTour() {
+  clearTimeout(tourTimer)
+  tourTimer = null
+  tour.on = false
+  tour.auto = false
+  markStop(graph.value, null)
+  cancelFly()
+  highlightEdges(graph.value, null)
 }
 
 function toggleTimeline(id) {
@@ -762,6 +911,15 @@ function bindEvents(g) {
   const markReady = () => { ready.value = true }
   g.container.addEventListener('mousedown', markReady, { capture: true })
   g.container.addEventListener('wheel', markReady, { capture: true, passive: true })
+  // 导览进行中用户自己拖 / 缩画布，说明他想停下来自己看看：
+  // 立刻松开方向盘（否则下一帧推镜头又把他拽走），并暂停自动走，但不退出导览。
+  const yieldWheel = () => {
+    if (!tour.on) return
+    cancelFly()
+    if (tour.auto) { tour.auto = false; scheduleTour() }
+  }
+  g.container.addEventListener('mousedown', yieldWheel, { capture: true })
+  g.container.addEventListener('wheel', yieldWheel, { capture: true, passive: true })
 
   g.on('node:moved', safe(({ node }) => {
     if (!ready.value) return
@@ -1505,6 +1663,7 @@ async function createNode(form) {
       type: 'create_node', source: form.id, path: `${form.dir}/${form.id}.md`,
       fields: { name: form.name, field: form.field, desc: form.desc,
                 ...(form.year ? { year: form.year } : {}),
+                ...(form.layer ? { layer: form.layer } : {}),
                 learned: new Date().toISOString().slice(0, 10) },
     }] })
     await placeNew([form.id], spot)
@@ -1695,13 +1854,21 @@ function flyToPair(a, b) {
 /**
  * 平滑飞过去。用 setTimeout 而不是 requestAnimationFrame：
  * 后台标签页和无头浏览器里 rAF 不触发，动画会卡在半路，视口再也存不回去（阶段 2 踩过）。
+ *
+ * 可打断：导览一站站走时，新的一站要能立刻接管镜头；用户自己拖画布时更要马上松手，
+ * 否则下一帧又把他拽回去——两个人抢方向盘比不动还糟。
  */
+let flyGen = 0
+function cancelFly() { flyGen += 1 }
+
 function flyTo({ cx, cy, zoom: to }, ms = 420) {
   const g = graph.value
+  const gen = ++flyGen
   const from = currentViewport(g)
   const end = Math.max(0.05, Math.min(3, to))
   const t0 = Date.now()
   const step = () => {
+    if (gen !== flyGen) return                    // 已经被下一次 flyTo / cancelFly 接管
     const p = Math.min(1, (Date.now() - t0) / ms)
     const e = 1 - (1 - p) ** 3                    // easeOutCubic
     g.zoomTo(from.zoom + (end - from.zoom) * e)
@@ -1734,6 +1901,14 @@ function toggleSnap() {
   setSnap(graph.value, snap.value)
   setBanner(snap.value ? '对齐已开：拖动时出参考线，松手贴到 8px 网格'
     : '对齐已关：位置完全按手放的地方存', 'success')
+}
+
+function toggleAvoid() {
+  avoidNodes.value = !avoidNodes.value
+  localStorage.setItem('knowrary-avoid', avoidNodes.value ? '1' : '0')
+  render({ view: 'keep' })
+  setBanner(avoidNodes.value ? '连线会绕开卡片了（直角走线；手工拐过的边仍然听你的）'
+    : '连线恢复直连', 'success')
 }
 
 function toggleMap() {
@@ -1787,6 +1962,32 @@ function editDesc() {
   const value = window.prompt('新的一句话摘要（desc）', detail.value?.meta?.desc || '')
   if (value === null) return
   queueChange({ type: 'update_frontmatter', source: detail.value.id, fields: { desc: value } })
+}
+
+/** 按层归位：把落在领域大框里的草稿挪进对应泳道。只动草稿（4.1 程序不动定稿的东西）。 */
+async function regroupDrafts() {
+  await patcher.value.flush()
+  try {
+    const res = await postRegroup({ base_revision: revision.value })
+    const fresh = await fetchLayout()
+    layoutDoc.value = fresh.layout
+    revision.value = fresh.layout.revision
+    render()
+    refreshDigest()
+    const stuck = res.skipped.length
+    setBanner(res.placed.length
+      ? `归位 ${res.placed.length} 个${stuck ? `，${stuck} 个那一层放不下` : ''}`
+      : (stuck ? `都没挪动：${res.skipped[0].reason}` : '没有需要归位的：草稿都在自己那一层了'),
+      res.placed.length ? 'success' : 'info')
+  } catch (err) {
+    setBanner(`归位失败：${err.body?.detail?.message || err.body?.detail || err.message}`, 'error')
+  }
+}
+
+/** 改抽象层：和改摘要一样走变更卡，人看过 diff 再写盘（4.4 只提议不越权）。 */
+function setLayer({ id, layer }) {
+  if (!id) return
+  queueChange({ type: 'update_frontmatter', source: id, fields: { layer: layer || '' } })
 }
 
 async function previewChanges() {
@@ -2156,6 +2357,18 @@ async function loadChatHistory(session = null) {
     if (!session && hist.messages.length) chatSession.value = list.sessions[0]?.id || chatSession.value
     else if (session) chatSession.value = session
   } catch { /* 读不到就当新开一段，不值得为此报错 */ }
+}
+
+/** 给当前这段对话改个名字。留空 = 回到自动取的名字（第一句我说的话）。 */
+async function renameSession({ session, title }) {
+  if (!session) return
+  try {
+    await renameChatSession(session, title, currentProject.value || null)
+    const list = await fetchChatSessions(currentProject.value || null)
+    chatSessions.value = list.sessions
+  } catch (err) {
+    setBanner(`改名失败：${err.message}`, 'error')
+  }
 }
 
 /** 新开一段：旧的还在留档里，随时切回来。 */
@@ -2649,6 +2862,7 @@ async function redo() {
 /** Esc 的收起顺序：弹窗 → 左侧工具窗口 → 右侧检查器 → 退出聚焦。 */
 function onEscape() {
   if (ctx.value) { ctx.value = null; return }
+  if (tour.on) { stopTour(); setBanner(''); return }
   if (pathHit.value || pathFrom.value) { clearPathHighlight(); return }
   if (relating.value) { relating.value = null; return }
   if (creating.value) { creating.value = null; return }
@@ -2798,6 +3012,9 @@ onMounted(async () => {
     get project() { return currentProject.value },
     get projectIds() { return [...projectIds.value] },
     get progress() { return plansProgress.value },
+    // 历史视图：布局是一次算定的，游标停在哪由 upto 决定——排查"点该亮没亮"只看这两个
+    get histPlan() { return histPlan.value },
+    get histActive() { return histActive ? [...histActive] : null },
     // 往对话里塞一条假回复：图文渲染（Markdown / mermaid）不调模型也能验
     fakeReply(text) {
       chatLog.value = [...chatLog.value,
@@ -2871,7 +3088,7 @@ onBeforeUnmount(() => {
                   @refresh="refreshToday" @close="panel = ''" />
       <CalendarPanel v-else-if="panel === 'calendar'" class="study" :data="calendar"
                      @goto="gotoNode" @refresh="refreshCalendar" @close="panel = ''" />
-      <DigestPanel v-else-if="panel === 'digest'" class="digest" :digest="digest"
+      <DigestPanel v-else-if="panel === 'digest'" :busy="status === 'saving'" @regroup="regroupDrafts" class="digest" :digest="digest"
                    @goto="gotoNode" @refresh="refreshDigest" @merge="openMerge" @close="panel = ''" />
       <ImagePicker v-else-if="panel === 'assets'" class="picker" @pick="addImage" @add-note="addNote"
                    @error="setBanner($event, 'error')" @close="panel = ''" />
@@ -2891,7 +3108,7 @@ onBeforeUnmount(() => {
                   :graph-open="graphPane"
                   @send="sendChat" @stop="stopChat" @apply="applyChatCard"
                   @apply-project="applyProjectCard" @apply-points="applyPointsCard" @goto="gotoNode"
-                  @new-session="newChatSession" @pick-session="pickChatSession"
+                  @new-session="newChatSession" @pick-session="pickChatSession" @rename-session="renameSession"
                   @drop-focus="chatFocus = null" @toggle-graph="toggleGraphPane"
                   @close="switchMode(currentProject ? 'project' : 'structure')" />
 
@@ -2908,12 +3125,12 @@ onBeforeUnmount(() => {
         </div>
 
         <CanvasTools v-if="mode === 'structure' || mode === 'project'" :visible="visible" :shown-families="shownFamilies"
-                     :collapsed="collapsedIds.size" :aggregate="aggregate" :auto-lod="autoLod" :snap="snap"
+                     :collapsed="collapsedIds.size" :aggregate="aggregate" :auto-lod="autoLod" :snap="snap" :avoid-nodes="avoidNodes"
                      :layouts="mode === 'project' ? {} : LAYOUTS" :can-undo="canUndo" :can-redo="canRedo" :locked="!!preview"
                      @toggle-family="visible[$event] = !visible[$event]; render()"
                      @toggle-aggregate="aggregate = !aggregate; expanded = new Set(); render()"
                      @toggle-lod="autoLod = !autoLod; render()"
-                     @toggle-snap="toggleSnap"
+                     @toggle-snap="toggleSnap" @toggle-avoid="toggleAvoid"
                      @pick-layout="runLayout" @add-note="addNote" @add-image="panel = 'assets'"
                      @undo="undo" @redo="redo" />
 
@@ -2922,9 +3139,16 @@ onBeforeUnmount(() => {
 
         <HistoryPlayer v-if="mode === 'history'" :playing="isPlaying" :upto="hist.upto" :range="yearRange"
                        :compact="hist.compact" :validity="hist.validity"
+                       :active="histActiveCount" :total="histPlan?.placed.size || 0"
                        @toggle-play="togglePlay" @set-upto="setUpto"
+                       :touring="tour.on"
                        @toggle-compact="hist.compact = !hist.compact; renderHistory({ view: 'fit' })"
-                       @toggle-validity="hist.validity = !hist.validity; renderHistory({ view: 'keep' })" />
+                       @toggle-validity="hist.validity = !hist.validity; paintTime()"
+                       @tour="tour.on ? stopTour() : startTour()" />
+        <TourPanel v-if="mode === 'history' && tour.on" :chain="tourChain" :index="tour.i"
+                   :stop="tourStop" :via="tourVia" :playing="tour.auto"
+                   @go="tourGo" @prev="tourGo(tour.i - 1)" @next="tourGo(tour.i + 1)"
+                   @toggle="toggleTourAuto" @close="stopTour(); setBanner('')" />
 
         <!-- 换布局是"未落盘的草稿态"，用一条醒目的浮条把去留摆在画布正上方 -->
         <div v-if="preview" class="float banner-bar">
@@ -2972,7 +3196,7 @@ onBeforeUnmount(() => {
                  :all-node-ids="allNodeIds" :pending="pending" :change-preview="changePreview"
                  :is-due="!!selected && dueIds.has(selected.id)"
                  :suggestions="suggestions" :suggesting="suggesting"
-                 @close="inspectorHidden = true" @goto="gotoNode" @edit-desc="editDesc" @add-ref="addRef"
+                 @close="inspectorHidden = true" @goto="gotoNode" @edit-desc="editDesc" @set-layer="setLayer" @add-ref="addRef"
                  @review="markReviewed($event.id, $event.grade)" @quiz="startQuiz"
                  @rename="openRename"
                  @finalize="finalize" @retype-edge="retypeEdge"

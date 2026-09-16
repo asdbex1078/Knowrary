@@ -1032,6 +1032,41 @@ async def case_chat_view(page: Page, ck: Check, api: str) -> None:
     box2 = json.loads(fit or "{}")
     ck.add("「建」按钮没被 why 挤出行外", box2.get("found") and box2.get("inside"), str(box2))
 
+    # 阶段必须是竖着排的：类名撞上画布的 .stage（flex + overflow:hidden）时，
+    # 阶段头会和点列表并排挤扁、超出部分被裁掉
+    stack = json.loads(await page.ev("""JSON.stringify((() => {
+      const st = document.querySelector('aside.study .section.plan-stage');
+      const h = st.querySelector('.section-head').getBoundingClientRect();
+      const u = st.querySelector('ul').getBoundingClientRect();
+      return { headH: Math.round(h.height), listTop: Math.round(u.top - h.bottom) };
+    })())""") or "{}")
+    ck.add("阶段头和点列表上下排，不是并排挤扁",
+           stack.get("headH", 999) < 60 and stack.get("listTop", -1) >= 0, str(stack))
+
+    # 加点的输入框默认收起：常驻一行 × N 个阶段纯属白占地方
+    add0 = await page.ev("document.querySelectorAll('aside.study .add-point').length")
+    ck.add("加点输入框默认收起", add0 == 0, f"可见 {add0} 行")
+    opened = await page.ev("""JSON.stringify((() => {
+      const head = document.querySelector('aside.study .section.plan-stage .section-head');
+      const btn = [...head.querySelectorAll('.icon-btn')].find(x => (x.title || '').includes('加知识点'));
+      if (!btn) return { err: 'no-toggle' };
+      btn.click();
+      return { ok: true };
+    })())""")
+    ck.add("阶段头上有「加知识点」开关", "ok" in (opened or ""), str(opened))
+    box3 = json.loads(await poll(page, """JSON.stringify((() => {
+      const st = document.querySelector('aside.study .section.plan-stage');
+      const row = st.querySelector('.add-point'), head = st.querySelector('.section-head');
+      const ul = st.querySelector('ul');
+      if (!row) return { open: false };
+      return { open: true, focused: document.activeElement === row.querySelector('input'),
+               underHead: row.getBoundingClientRect().top >= head.getBoundingClientRect().bottom - 1,
+               aboveList: !ul || row.getBoundingClientRect().bottom <= ul.getBoundingClientRect().top + 1 };
+    })())""", lambda v: v and '"open":true' in v, timeout=6) or "{}")
+    ck.add("展开后就贴在阶段名下方、在点列表之前",
+           box3.get("underHead") and box3.get("aboveList"), str(box3))
+    ck.add("展开后光标直接落在输入框里", box3.get("focused"), str(box3))
+
     # 清单能拉宽（和对话那条一样的机制），长文本靠省略号 + title 兜底
     wide = await page.ev("""(() => {
       const a = document.querySelector('aside.study');
@@ -1229,6 +1264,87 @@ async def case_edge_vertices(page: Page, ck: Check) -> None:
     ck.add("双击清掉手工拐点", picked not in ck.layout()["edges"], str(ck.layout()["edges"]))
 
 
+# ---------------------------------------------------------------- 表单外观
+
+async def case_form_look(page: Page, ck: Check) -> None:
+    """标签独占一行、输入框占满宽、下拉有箭头——「一眼看不出该填什么」的那三件事。
+
+    只钉死能量出来的几何与属性，不钉颜色：颜色随主题走，量它只会让测试天天红。
+    """
+    # 表单长在项目的清单里：左侧栏那套工具是**跟着视图**走的，所以还得切进项目视图
+    await use_scope(page, "demo")
+    await switch_mode(page, "项目图")
+    rail = await poll(page, """JSON.stringify({ proj: __kg.project,
+      tips: [...document.querySelectorAll('.rail .rail-btn')].map((b) => b.dataset.tip) })""",
+      lambda v: v and "清单" in v, timeout=8)
+    assert rail and "清单" in rail, f"切进项目后左侧栏没换成项目那套：{rail}"
+    await open_rail(page, "清单")
+    look = json.loads(await poll(page, """JSON.stringify((() => {
+      const f = document.querySelector('aside.study .fld');
+      if (!f) return null;
+      const lb = f.querySelector('.lb'), inp = f.querySelector('input, select, textarea');
+      const lr = lb.getBoundingClientRect(), ir = inp.getBoundingClientRect();
+      const sel = document.querySelector('aside.study .fld select');
+      const cs = sel && getComputedStyle(sel);
+      const key = document.querySelector('aside.study .fld.key');
+      if (!lb || !inp) return null;
+      return { labelAbove: lr.bottom <= ir.top + 1, wide: ir.width > lr.width * 0.9,
+               fullWidth: Math.abs(ir.width - f.getBoundingClientRect().width) < 3,
+               chevron: !!cs && cs.backgroundImage.includes('svg'),
+               padRight: cs ? parseFloat(cs.paddingRight) : 0,
+               hasKey: !!key, hints: f.closest('aside').querySelectorAll('.hint').length };
+    })())""", lambda v: v and v != "null", timeout=10) or "{}") or {}
+    ck.add("标签独占一行、在输入框上方", look.get("labelAbove"), str(look))
+    ck.add("输入框占满整行", look.get("fullWidth"), str(look))
+    ck.add("下拉框自己画了箭头（原生那个两套主题都不受控）",
+           look.get("chevron") and look.get("padRight", 0) >= 20, str(look))
+    ck.add("重点字段有标记", look.get("hasKey"), str(look))
+    ck.add("字段下面有说明文字", (look.get("hints") or 0) >= 4, str(look))
+    await open_rail(page, "清单")            # 关掉，别影响后面的用例
+    await switch_mode(page, "全局图")
+    await use_scope(page, "")
+
+
+# ---------------------------------------------------------------- 对话里的图文渲染
+
+async def case_chat_markdown(page: Page, ck: Check, vault: Path) -> None:
+    """模型的回答要渲染成图文：Markdown（表格/列表/代码）+ ```mermaid 画出来的图。
+    不调模型——用 __kg.fakeReply 塞一条假回复，渲染这条链路和模型无关。"""
+    await switch_mode(page, "对话")
+    await asyncio.sleep(0.6)
+    await page.ev("""__kg.fakeReply(`核心差别：
+
+| | NPU | GPU |
+|---|---|---|
+| 定位 | 专用 | 通用 |
+
+- 一条
+- 两条
+
+\\`\\`\\`mermaid
+graph LR
+  A[CPU] --> B[GPU]
+  B --> C[NPU]
+\\`\\`\\`
+
+<img src=x onerror="window.__xss = 1">
+`)""")
+    shape = json.loads(await poll(page, """JSON.stringify((() => {
+      const b = [...document.querySelectorAll('.msg.assistant .bubble')].pop();
+      if (!b) return { found: false };
+      return { found: true, table: !!b.querySelector('table'), li: b.querySelectorAll('li').length,
+               svg: !!b.querySelector('.mmd svg'), raw: !!b.querySelector('.mmd-raw'),
+               xss: !!window.__xss, img: b.querySelectorAll('img').length,
+               why: b.querySelector('.mmd-raw')?.title || '',
+               text: (b.textContent || '').slice(0, 40) };
+    })())""", lambda v: v and '"svg":true' in v, timeout=25) or "{}")
+    ck.add("Markdown 表格渲染出来了", shape.get("table"), str(shape))
+    ck.add("Markdown 列表渲染出来了", shape.get("li") == 2, str(shape))
+    ck.add("mermaid 画成了 svg", shape.get("svg"), str(shape))
+    ck.add("模型写的 HTML 不会变成真标签（先转义再解析）",
+           not shape.get("xss") and shape.get("img") == 0, str(shape))
+
+
 # ---------------------------------------------------------------- 阶段 6：历史视图
 
 async def case_history(page: Page, ck: Check, vault: Path) -> None:
@@ -1239,7 +1355,8 @@ async def case_history(page: Page, ck: Check, vault: Path) -> None:
         "---\nname: 甲\nfield: 测试\ndesc: 甲\nyear: 1990\nlayer: 硬件\n---\n# 甲\n\n正文\n\n"
         "## 关系\n- 被激活:: [[丙]] (2005)\n", "utf-8")
     (vault / "nodes/组B/丙.md").write_text(
-        "---\nname: 丙\nfield: 测试\ndesc: 丙\nyear: 2005\nlayer: 理论\n---\n# 丙\n\n正文\n", "utf-8")
+        "---\nname: 丙\nfield: 测试\ndesc: 丙说明\nyear: 2005\nlayer: 理论\n---\n# 丙\n\n正文\n\n"
+        "## 关系\n- 演化为:: [[庚]] (2015)\n", "utf-8")
     (vault / "nodes/组B/庚.md").write_text(
         "---\nname: 庚\nfield: 另一域\ndesc: 庚\nyear: 2015\nlayer: AI应用\n---\n# 庚\n\n正文\n", "utf-8")
     # 有效期节点：2000 年起、2010 年废止，用来验 F4.5
@@ -1273,30 +1390,82 @@ async def case_history(page: Page, ck: Check, vault: Path) -> None:
     ck.add("节点按年份从左到右真的分开了", ordered and len({r[1] for r in rects}) == 4,
            f"甲 {at.get('甲')} < 丙 {at.get('丙')} < 庚 {at.get('庚')}")
 
-    # 滑块拖到 1990：只剩当年之前的节点
+    # 记住 1990 之前那个节点的 DOM 元素，等会儿用它验"拖滑块没有重建 cell"
+    await page.ev("""(() => { window.__probe = document.querySelector('[data-cell-id="甲"]');
+      window.__probeCount = document.querySelectorAll('[data-shape="kg-node"]').length; return 'ok'; })()""")
+
+    # 滑块拖到 1990：节点**不消失**，只是 1990 之后的淡成"未来"
     await page.ev("""(() => {
       const el = document.querySelector('.float.player .range');
       el.value = '1990';
       el.dispatchEvent(new Event('input', { bubbles: true }));
       return 'moved';
     })()""")
-    left = await poll(page, "document.querySelectorAll('[data-shape=\"kg-node\"]').length",
-                      lambda v: v == 1, timeout=12)
-    ck.add("时间滑块按年份过滤", left == 1, f"≤1990 时剩 {left} 个节点")
+    now = await poll(page, """JSON.stringify({
+      all: document.querySelectorAll('[data-shape="kg-node"]').length,
+      on: document.querySelectorAll('[data-shape="kg-node"]:not(.kg-future)').length })""",
+                     lambda v: v and json.loads(v)["on"] == 1, timeout=12)
+    got = json.loads(now or "{}")
+    ck.add("时间游标把未来的点淡下去（而不是删掉）",
+           got.get("all") == 4 and got.get("on") == 1, f"图上 {got.get('all')} 个，已发生 {got.get('on')} 个")
 
-    # 有效期过滤：辛 2000 年起、2010 年废止，看 2015 年时它不该还在图上
+    # 这一条才是"不闪"的根据：拖滑块只加减 class，DOM 元素必须还是原来那一个。
+    # 以前每动一下就 fromJSON 重建整张图，节点 DOM 一换、入场动画就重放一遍。
+    same = await page.ev("""(() => {
+      const el = document.querySelector('[data-cell-id="甲"]');
+      return JSON.stringify({ same: el === window.__probe, live: !!el && el.isConnected });
+    })()""")
+    kept = json.loads(same or "{}")
+    ck.add("拖滑块不重建 cell（同一个 DOM 元素）",
+           kept.get("same") is True and kept.get("live") is True, same)
+
+    # 游标本体：药丸上写着当前年份，位置随年份右移
+    cur = json.loads(await page.ev("""(() => {
+      const el = document.querySelector('[data-shape="kg-cursor"]');
+      if (!el) return JSON.stringify({ missing: true });
+      const r = el.getBoundingClientRect();
+      return JSON.stringify({ x: Math.round(r.x), text: el.textContent.trim(),
+                              shown: getComputedStyle(el).display !== 'none' });
+    })()"""))
+    ck.add("时间游标画出来了，标着当前年份", cur.get("text") == "1990" and cur.get("shown") is True, str(cur))
+
     await page.ev("""(() => {
       const el = document.querySelector('.float.player .range');
       el.value = '2015';
       el.dispatchEvent(new Event('input', { bubbles: true }));
       return 'moved';
     })()""")
-    await poll(page, "document.querySelectorAll('[data-shape=\"kg-node\"]').length", lambda v: v == 4, timeout=12)
+    moved = await poll(page, """(() => { const el = document.querySelector('[data-shape="kg-cursor"]');
+      return Math.round(el.getBoundingClientRect().x); })()""",
+                      lambda v: v is not None and v > cur.get("x", 0), timeout=12)
+    ck.add("游标随年份右移", (moved or 0) > cur.get("x", 0), f"1990 在 {cur.get('x')}，2015 在 {moved}")
+
+    # 有效期过滤：辛 2000 年起、2010 年废止，2015 年时它该被划进"未来/已失效"那一边
+    await poll(page, "document.querySelectorAll('[data-shape=\"kg-node\"]:not(.kg-future)').length",
+               lambda v: v == 4, timeout=12)
     await click_text(page, ".float.player button", "有效期")
-    ids = await poll(page, """JSON.stringify([...document.querySelectorAll('[data-shape="kg-node"]')]
-      .map((e) => e.getAttribute('data-cell-id')).sort())""", lambda v: v and "辛" not in v, timeout=12)
-    ck.add("有效期过滤掉当年已废止的节点", "辛" not in (ids or "x"), f"2015 年还在图上的是 {ids}")
+    ids = await poll(page, """JSON.stringify([...document.querySelectorAll(
+      '[data-shape="kg-node"]:not(.kg-future)')].map((e) => e.getAttribute('data-cell-id')).sort())""",
+                     lambda v: v and "辛" not in v, timeout=12)
+    ck.add("有效期把当年已废止的节点淡掉", "辛" not in (ids or "x"), f"2015 年仍有效的是 {ids}")
+    ck.add("已废止的节点仍留在图上（看得见它曾经存在）",
+           await page.ev("!!document.querySelector('[data-cell-id=\"辛\"]')"), "")
     await click_text(page, ".float.player button", "有效期")     # 关掉，别影响后面的用例
+
+    # 回放按"有事发生的年份"跳站，不是一年一格空转
+    stations = await page.ev("JSON.stringify(__kg.histPlan?.eventYears || [])")
+    ck.add("回放按事件年份跳站（不是逐个日历年）",
+           json.loads(stations or "[]") == [1990, 2000, 2005, 2015], stations)
+    await page.ev("document.querySelector('.float.player .icon-btn').click() || 'ok'")   # ▶
+    await asyncio.sleep(1.8)
+    walked = json.loads(await page.ev("""JSON.stringify({
+      yr: document.querySelector('.float.player .yr')?.textContent.trim(),
+      cursor: document.querySelector('[data-shape="kg-cursor"]')?.textContent.trim(),
+      probeAlive: !!window.__probe && window.__probe.isConnected })"""))
+    ck.add("按下播放后游标真的在往前走", "≤" in (walked.get("yr") or ""), str(walked))
+    ck.add("回放全程不重建 cell（所以不会一闪一闪）", walked.get("probeAlive") is True, str(walked))
+    await page.ev("document.querySelector('.float.player .icon-btn').click() || 'ok'")   # ⏸
+    await asyncio.sleep(0.3)
 
     # 切一条时间线：泳道换成所选分组的直接子分组
     await open_rail(page, "时间线")
@@ -1316,6 +1485,38 @@ async def case_history(page: Page, ck: Check, vault: Path) -> None:
     ck.add("按抽象层分泳道", set(got) >= {"理论", "硬件", "AI应用"}, str(got))
     ck.add("泳道按层次排序，不是字典序", got.index("AI应用") < got.index("理论") if
            ("AI应用" in got and "理论" in got) else False, f"{got}（上→下）")
+
+    # 关系族开关：真 input 是 opacity:0 的 absolute 元素，它的包含块必须是 .switch-row 自己。
+    # 一旦落到 .drawer 上，抽屉内容一滚动 input 就留在原地、跑到视口外；点标题触发 focus()，
+    # 浏览器为了把焦点滚进视野去滚根容器，而 body / .app 都是 overflow: hidden，
+    # 鼠标滚不回来——表现就是"点演化/依赖/对照，整屏往上拽、下半截全黑"。
+    await page.ev("""(() => {
+      const body = document.querySelector('aside.timeline .drawer-body');
+      body.scrollTop = body.scrollHeight;          // 滚到底，「显示的关系族」那一节露出来
+      return 'ok';
+    })()""")
+    await asyncio.sleep(0.3)
+    geo = json.loads(await page.ev("""(() => {
+      const rows = [...document.querySelectorAll('aside.timeline .switch-row')];
+      const row = rows[rows.length - 1];           // 「对照」那一行，抽屉最底下
+      const input = row.querySelector('input');
+      const rr = row.getBoundingClientRect();
+      const ir = input.getBoundingClientRect();
+      input.focus();                                // 点 label 时浏览器做的就是这一步
+      row.click();
+      return JSON.stringify({ inside: ir.top >= rr.top - 1 && ir.bottom <= rr.bottom + 1,
+        rowTop: Math.round(rr.top), inputTop: Math.round(ir.top) });
+    })()"""))
+    ck.add("关系族开关的隐藏 input 待在自己那一行里",
+           geo["inside"], f"行 top={geo['rowTop']}，input top={geo['inputTop']}")
+    await asyncio.sleep(0.4)
+    scrolled = json.loads(await page.ev("""JSON.stringify({
+      app: Math.round(document.querySelector('.app').scrollTop),
+      body: Math.round(document.body.scrollTop),
+      doc: Math.round(document.scrollingElement.scrollTop) })"""))
+    ck.add("点关系族开关不会把整屏拽上去",
+           scrolled == {"app": 0, "body": 0, "doc": 0}, str(scrolled))
+
     await open_rail(page, "时间线")
 
     ck.add("历史视图不修改结构布局", ck.layout()["revision"] == before,
@@ -1325,6 +1526,71 @@ async def case_history(page: Page, ck: Check, vault: Path) -> None:
     back = await poll(page, "document.querySelectorAll('[data-shape=\"kg-node\"]').length",
                       lambda v: (v or 0) >= 4, timeout=15)
     ck.add("切回结构视图恢复原图", (back or 0) >= 4, f"{back} 个节点")
+
+
+async def case_tour(page: Page, ck: Check) -> None:
+    """沿演化链导览：跟着最长的那条「谁接谁」一站站走，镜头推过去、游标跟着走。
+
+    fixture 里的链是 甲(1990) —被激活→ 丙(2005) —演化为→ 庚(2015)，共 3 站。
+    """
+    await switch_mode(page, "历史")
+    await wait_render(page, 4)
+    chain = await poll(page, "JSON.stringify(__kg.histPlan?.chain || [])",
+                       lambda v: v and v != "[]", timeout=12)
+    ck.add("泳道布局下也算得出演化链（导览不依赖主干道）",
+           json.loads(chain or "[]") == ["甲", "丙", "庚"], chain or "没算出链")
+
+    await click_text(page, ".float.player button", "导览")
+    card = await poll(page, """(() => { const el = document.querySelector('.float.tour');
+      return el ? el.textContent.replace(/\s+/g, ' ') : ''; })()""",
+                     lambda v: v and "1/3" in v, timeout=10)
+    ck.add("导览卡片浮出来，停在第一站", "1/3" in (card or "") and "甲" in (card or ""), (card or "")[:80])
+
+    at = json.loads(await page.ev("""JSON.stringify({
+      stop: document.querySelector('.x6-node.kg-stop')?.getAttribute('data-cell-id') || null,
+      stops: document.querySelectorAll('.x6-node.kg-stop').length,
+      cursor: document.querySelector('[data-shape="kg-cursor"]')?.textContent.trim() })"""))
+    ck.add("当前这一站在图上点亮（且同时只有一个）",
+           at.get("stop") == "甲" and at.get("stops") == 1, str(at))
+    ck.add("游标跟着导览走到那一年（导览管节奏，游标管坐标）", at.get("cursor") == "1990", str(at))
+
+    # 下一站：卡片、点亮、游标、镜头四样都得跟上
+    before = json.loads(await page.ev("JSON.stringify(__kg.graph.translate())"))
+    await click_text(page, ".float.tour footer .btn", "下一站")
+    moved = await poll(page, """JSON.stringify({
+      card: (document.querySelector('.float.tour')?.textContent || '').replace(/\s+/g, ' '),
+      stop: document.querySelector('.x6-node.kg-stop')?.getAttribute('data-cell-id') || null,
+      cursor: document.querySelector('[data-shape="kg-cursor"]')?.textContent.trim() })""",
+                      lambda v: v and json.loads(v)["stop"] == "丙", timeout=10)
+    got = json.loads(moved or "{}")
+    ck.add("下一站：卡片、点亮、游标一起前进",
+           got.get("stop") == "丙" and "2/3" in (got.get("card") or "") and got.get("cursor") == "2005",
+           str(got)[:160])
+    ck.add("卡片写出了上一站怎么接过来的", "被激活" in (got.get("card") or ""), (got.get("card") or "")[:90])
+
+    # 推镜头是渐进的（flyTo 走 520ms），等它走完再比，而且必须比**数值**——
+    # 比 JSON 字符串会被 json.dumps 的空格骗过去：看着通过，其实镜头一动没动。
+    await asyncio.sleep(1.0)
+    after = json.loads(await page.ev("JSON.stringify(__kg.graph.translate())"))
+    shifted = abs(after["tx"] - before["tx"]) + abs(after["ty"] - before["ty"])
+    ck.add("镜头真的推过去了（不是原地换个高亮）", shifted > 20,
+           f"translate 位移 {shifted:.0f}px")
+    # 站点条当目录用：点第 1 站直接跳回去
+    await page.ev("document.querySelectorAll('.float.tour .stops button')[0].click() || 'ok'")
+    back = await poll(page, "document.querySelector('.x6-node.kg-stop')?.getAttribute('data-cell-id')",
+                      lambda v: v == "甲", timeout=10)
+    ck.add("站点条能当目录点（跳回第一站）", back == "甲", str(back))
+
+    # Esc 退出：卡片收掉、点亮摘掉、边的高亮还原
+    await page.ev("""window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))""")
+    gone = await poll(page, """JSON.stringify({ card: !!document.querySelector('.float.tour'),
+      stop: document.querySelectorAll('.x6-node.kg-stop').length,
+      dimmed: [...document.querySelectorAll('.x6-edge path')]
+        .filter((p) => +(p.getAttribute('opacity') || 1) < 0.2).length })""",
+                      lambda v: v and json.loads(v)["card"] is False, timeout=10)
+    out = json.loads(gone or "{}")
+    ck.add("Esc 退出导览，点亮和边高亮一起还原",
+           out.get("card") is False and out.get("stop") == 0 and out.get("dimmed") == 0, str(out))
 
 
 async def right_click(page: Page, cell: str, grab: str = "center") -> str:
@@ -1729,7 +1995,10 @@ async def scenarios(page: Page, api: str, results: list) -> None:
     await case_create_node(page, ck, VAULT_HOLDER[0])
     await case_subgroup(page, ck)
     await case_group_doc(page, ck, VAULT_HOLDER[0])
+    await case_form_look(page, ck)
+    await case_chat_markdown(page, ck, VAULT_HOLDER[0])
     await case_history(page, ck, VAULT_HOLDER[0])
+    await case_tour(page, ck)
     results.extend(ck.items)
 
 

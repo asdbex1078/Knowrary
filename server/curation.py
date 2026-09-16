@@ -43,19 +43,34 @@ def inbox(vault: Path) -> InboxRead:
     return InboxRead(items=items, index_revision=index["revision"], layout_revision=layout.revision)
 
 
+def _merge_patch(plain: dict, patch_groups: dict, patch_nodes: dict,
+                 gpatch: dict, npatch: dict) -> None:
+    """长框 / 泳道下移的结果既要并进工作副本（后面的节点才避得开），也要进这一次 PATCH。"""
+    for gid, fields in gpatch.items():
+        plain["groups"][gid].update(fields)
+        merged = {**(patch_groups[gid].model_dump(exclude_none=True) if gid in patch_groups else {}),
+                  **fields}
+        patch_groups[gid] = GroupPatch(**merged)
+    for nid, fields in npatch.items():
+        plain["nodes"][nid].update(fields)
+        merged = {**(patch_nodes[nid].model_dump(exclude_none=True) if nid in patch_nodes else {}),
+                  **fields}
+        patch_nodes[nid] = NodePatch(**merged)
+
+
 def _one_placement(nid: str, req: PlaceRequest, index: dict, plain: dict,
-                   today: str) -> tuple[dict | None, dict[str, float]]:
-    """算一个节点的落点。返回 (节点条目, 需要加高的分组)；人工指定坐标时不长框。"""
+                   today: str) -> tuple[dict | None, dict[str, dict], dict[str, dict]]:
+    """算一个节点的落点。返回 (节点条目, 分组补丁, 节点补丁)；人工指定坐标时不长框。"""
     if req.at is not None:
         gid = req.group or core.target_group(nid, index, plain)
         if not gid:
-            return None, {}
+            return None, {}, {}
         return {"x": req.at.x, "y": req.at.y, "w": core.NODE_W, "h": core.NODE_H,
-                "group": gid, "state": req.state, "anchor": None, "placedAt": today}, {}
-    box, grown = core.place_or_grow(nid, index, plain, today=today, gid=req.group)
+                "group": gid, "state": req.state, "anchor": None, "placedAt": today}, {}, {}
+    box, gpatch, npatch = core.place_or_grow(nid, index, plain, today=today, gid=req.group)
     if box:
         box["state"] = req.state
-    return box, grown
+    return box, gpatch, npatch
 
 
 def place(vault: Path, req: PlaceRequest) -> PlaceResult:
@@ -77,13 +92,11 @@ def place(vault: Path, req: PlaceRequest) -> PlaceResult:
         if nid in plain["nodes"]:
             skipped.append({"id": nid, "reason": "已经在画布上了"})
             continue
-        box, grown = _one_placement(nid, req, index, plain, today)
+        box, gpatch, npatch = _one_placement(nid, req, index, plain, today)
         if box is None:
             skipped.append({"id": nid, "reason": "目标分组放不下或判不出分组，留在 Inbox"})
             continue
-        for gid, h in grown.items():                   # 组框长高也并进工作副本
-            plain["groups"][gid]["h"] = h
-            patch_groups[gid] = GroupPatch(h=h)
+        _merge_patch(plain, patch_groups, patch_nodes, gpatch, npatch)
         plain["nodes"][nid] = box                      # 并进工作副本：下一个节点会避开它
         patch_nodes[nid] = NodePatch(**box)
         placed.append(Placed(id=nid, x=box["x"], y=box["y"], group=box["group"],
@@ -95,6 +108,55 @@ def place(vault: Path, req: PlaceRequest) -> PlaceResult:
                         groups=patch_groups or None)
     doc, _, _ = apply_patch(vault, patch, index)
     return PlaceResult(revision=doc.revision, placed=placed, skipped=skipped,
+                       grown_groups=sorted(patch_groups))
+
+
+def regroup(vault: Path, base_revision: int, only_draft: bool = True) -> PlaceResult:
+    """把落在**父框**里的节点挪进它那一层的泳道。
+
+    为什么需要它：`layer` 是后加的字段，早先建的点没有；一个连边都没有、又没分层的点
+    只能落在 field 那个大框里，正好在所有泳道之外。等它补上 `layer` 之后，
+    画布不会自己动——这个入口就是那一下"动"。
+
+    **只动 draft**（设计文档 4.1：程序不动已定稿的东西），只往**已有的**子框里挪，
+    挪不进去就原地不动。
+    """
+    index, layout = load_pair(vault)
+    plain = layout.model_dump()
+    by_id = {n["id"]: n for n in index["nodes"]}
+    today = dt.date.today().isoformat()
+
+    moved, skipped, patch_nodes, patch_groups = [], [], {}, {}
+    for nid, place in sorted(plain["nodes"].items()):
+        if only_draft and place.get("state") != "draft":
+            continue
+        want = core.by_field_and_layer(by_id.get(nid) or {}, plain)
+        if not want or want == place.get("group"):
+            continue
+        # 它想去的那条道还不存在时，by_field_and_layer 退回领域大框——
+        # 那会把一个**已经待在某条道里**的点拽回大框，比原地不动更糟
+        if plain["groups"].get(place.get("group"), {}).get("parent") == want:
+            continue
+        # 先把它从工作副本里摘掉，否则找空位时会被自己挡住
+        stash = plain["nodes"].pop(nid)
+        box, gpatch, npatch = core.place_or_grow(nid, index, plain, today=today, gid=want)
+        if box is None:
+            plain["nodes"][nid] = stash
+            skipped.append({"id": nid, "reason": f"「{plain['groups'][want]['name']}」这条道塞不下了"
+                                                  f"（旁边的点压过来了）：整张按层重排一次再试"})
+            continue
+        box["state"] = stash.get("state", "draft")
+        _merge_patch(plain, patch_groups, patch_nodes, gpatch, npatch)
+        plain["nodes"][nid] = box
+        patch_nodes[nid] = NodePatch(**box)
+        moved.append(Placed(id=nid, x=box["x"], y=box["y"], group=box["group"],
+                            state=box["state"], anchor=box.get("anchor")))
+
+    if not patch_nodes:
+        return PlaceResult(revision=layout.revision, placed=[], skipped=skipped)
+    patch = LayoutPatch(base_revision=base_revision, nodes=patch_nodes, groups=patch_groups or None)
+    doc, _, _ = apply_patch(vault, patch, index)
+    return PlaceResult(revision=doc.revision, placed=moved, skipped=skipped,
                        grown_groups=sorted(patch_groups))
 
 

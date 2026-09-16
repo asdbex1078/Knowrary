@@ -1,0 +1,41 @@
+{
+  "schema_version": 1,
+  "updated_at": "2026-09-16T15:11:23Z",
+  "questions": [
+    {
+      "id": "q1-decode时把batc",
+      "stem": "decode 时把 batch size 从 1 开到 64，带宽墙和容量墙分别是缓解还是加剧？为什么这两堵墙在这里的走向不一样？",
+      "ref_answer": "",
+      "points": [
+        "内存墙"
+      ],
+      "full_answer": "",
+      "beyond_vault": [],
+      "source": "chat",
+      "created": "2026-09-16",
+      "asked": 0,
+      "right": 0,
+      "wrong": 0,
+      "last": "",
+      "learned": false
+    },
+    {
+      "id": "q2-gqa的uptraini",
+      "stem": "GQA 的 uptraining 能把现成 MHA checkpoint 的多份 K/V 投影做 mean pooling 合并后续训出来，为什么 MLA 做不到这种低成本迁移？",
+      "ref_answer": "",
+      "points": [
+        "GQA",
+        "MLA"
+      ],
+      "full_answer": "",
+      "beyond_vault": [],
+      "source": "chat",
+      "created": "2026-09-16",
+      "asked": 0,
+      "right": 0,
+      "wrong": 0,
+      "last": "",
+      "learned": false
+    }
+  ]
+}

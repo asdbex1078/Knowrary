@@ -17,6 +17,7 @@ from pathlib import Path
 from .contracts import (ID_PATTERN, PlanPoint, PlanProposal, PlanProposeRequest, PlanStage,
                         Project, ProjectsDoc, ProjectsRead, ProjectsSaved, ProjectsWrite)
 from .index_service import current_index
+from .levels import fragment as level_fragment
 from .llm_call import ask, parse_json
 from .paths import core
 
@@ -178,6 +179,7 @@ def _build_prompt(req: PlanProposeRequest, index: dict, today: dt.date,
             .replace("{{goal}}", goal)
             .replace("{{budget}}", _budget_text(req, today))
             .replace("{{mode}}", _COMPRESS if req.mode == "速学" else "")
+            .replace("{{level}}", level_fragment(req.level, "plan"))
             .replace("{{node_count}}", str(len(real)))
             .replace("{{existing_ids}}", ids)
             .replace("{{fields}}", fields))
@@ -201,7 +203,7 @@ def propose(vault: Path, req: PlanProposeRequest) -> PlanProposal:
     known = {n["id"] for n in index["nodes"] if not n.get("virtual")}
     built = {n["id"] for n in index["nodes"]
              if not n.get("virtual") and not n.get("stub") and n.get("path")}
-    return _parse_proposal(parse_json(raw, f"plan goal={req.goal[:30]}"), known, built, req, today,
+    return _parse_proposal(parse_json(raw, f"plan goal={req.goal[:30]}", vault=vault), known, built, req, today,
                            elsewhere)
 
 

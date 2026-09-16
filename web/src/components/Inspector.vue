@@ -21,8 +21,10 @@ const props = defineProps({
   suggestions: { type: Object, default: null },   // SuggestResult from /api/suggest
   suggesting: { type: Boolean, default: false },   // LLM 正在生成建议
 })
+// 抽象层的七档，和 core.parser.LAYERS 同一张表
+const LAYERS = ['理论', '硬件', '体系结构', '汇编接口', '系统软件', '高级语言', 'AI应用']
 const emit = defineEmits([
-  'close', 'goto', 'edit-desc', 'add-ref', 'review', 'quiz', 'rename', 'finalize',
+  'close', 'goto', 'edit-desc', 'set-layer', 'add-ref', 'review', 'quiz', 'rename', 'finalize',
   'retype-edge', 'remove-edge', 'add-edge', 'drop-change',
   'preview-changes', 'apply-changes', 'clear-changes', 'save-body',
   'suggest', 'dismiss-suggestion',
@@ -161,6 +163,17 @@ function diffLines(text) {
                 <template v-if="selected.field"><dt>领域</dt><dd>{{ selected.field }}</dd></template>
                 <template v-if="selected.type"><dt>类型</dt><dd>{{ selected.type }}</dd></template>
                 <template v-if="selected.year"><dt>年份</dt><dd class="tnum">{{ selected.year }}</dd></template>
+                <!-- 抽象层：历史视图按它分泳道，新点也按它归位。空着的话这个点只能待在领域大框里 -->
+                <dt>抽象层</dt>
+                <dd>
+                  <select class="layer-pick" :value="detail?.meta?.layer || ''"
+                          :title="detail ? '改它会写回 md（走变更卡）' : '先打开这个节点'"
+                          :disabled="!detail"
+                          @change="emit('set-layer', { id: selected.id, layer: $event.target.value })">
+                    <option value="">未分层</option>
+                    <option v-for="l in LAYERS" :key="l" :value="l">{{ l }}</option>
+                  </select>
+                </dd>
                 <template v-if="selected.weight">
                   <dt>权重</dt><dd class="tnum">{{ (selected.weight * 100).toFixed(0) }}% · pageRank</dd>
                 </template>

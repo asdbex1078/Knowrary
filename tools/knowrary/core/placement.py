@@ -9,6 +9,7 @@ import datetime as dt
 import math
 
 from .layout import CELL_H, NODE_H, NODE_W
+from .parser import UNLAYERED
 
 FAMILY_WEIGHT = {"演化": 3.0, "依赖": 2.0, "结构": 2.0, "对照": 1.0, "弱关联": 0.5}
 GAP = 16.0            # 候选位置与已有元素之间至少留这么多空
@@ -60,11 +61,35 @@ def target_group(node_id: str, index: dict, layout: dict) -> str | None:
     if votes:
         return max(sorted(votes), key=lambda k: votes[k])
     node = next((n for n in index["nodes"] if n["id"] == node_id), None)
-    field = (node or {}).get("field")
-    for gid, g in sorted(layout.get("groups", {}).items()):
-        if not g.get("parent") and g.get("name") == field:
-            return gid
-    return None
+    return by_field_and_layer(node or {}, layout)
+
+
+def by_field_and_layer(node: dict, layout: dict) -> str | None:
+    """一条边都没有的节点：按 field 找顶层分组，再按 layer 落到它下面那条泳道。
+
+    只认 field 会把节点丢在**父框里、所有泳道之外**——分组按抽象层切开之后，
+    父框里那块空地不属于任何一层，节点落在那儿等于没分层。
+    没有 layer 的落「未分层」那条（它本来就是为这些点留的），连子框都没有才退回父框。
+    """
+    groups = layout.get("groups", {})
+    top = next((gid for gid, g in sorted(groups.items())
+                if not g.get("parent") and g.get("name") == node.get("field")), None)
+    if top is None:
+        return None
+    wanted = node.get("layer") or UNLAYERED
+    # 逐层往下找同名子框：现在是 field → layer 两层，多包一层也不至于失灵
+    seen, frontier = {top}, [top]
+    while frontier:
+        children = [gid for gid, g in sorted(groups.items())
+                    if g.get("parent") in frontier and gid not in seen]
+        if not children:
+            break
+        hit = next((gid for gid in children if groups[gid].get("name") == wanted), None)
+        if hit:
+            return hit
+        seen.update(children)
+        frontier = children
+    return top
 
 
 def anchor_for(node_id: str, gid: str, index: dict, layout: dict) -> str | None:
@@ -170,26 +195,98 @@ def plan_growth(gid: str, layout: dict, extra: float = CELL_H) -> dict[str, floa
     return grown or None
 
 
+def is_lane_stack(parent: str | None, layout: dict) -> bool:
+    """这个父框下面是不是一摞**泳道**：子框各自横跨整幅宽度、上下排开、互不重叠。
+
+    这件事要判出来，是因为两种"兄弟挡路"完全不同：
+    并排的两个域挤在一起时把人家推走是破坏排版；而泳道本来就是从上到下码的，
+    给中间那条加一行、下面整体下移，正是人手会做的那一下。
+    """
+    groups = layout.get("groups", {})
+    box = groups.get(parent) if parent else None
+    if not box:
+        return False
+    lanes = [g for g in groups.values() if g.get("parent") == parent]
+    if len(lanes) < 2:
+        return False
+    if any(g["w"] < box["w"] * 0.85 for g in lanes):
+        return False                       # 有子框没横跨整幅：不是泳道，是并排的块
+    lanes = sorted(lanes, key=lambda g: g["y"])
+    return all(a["y"] + a["h"] <= b["y"] + 1 for a, b in zip(lanes, lanes[1:]))
+
+
+def plan_lane_growth(gid: str, layout: dict, extra: float = CELL_H) -> tuple[dict, dict] | None:
+    """给一条泳道加一行：它自己长高，**下面的泳道连同里面的节点整体下移**。
+
+    泳道框是按"当时有几个点"算出来的，常常只装得下一两个；不许长就等于
+    这条道以后再也进不来新点（实测 248x128 的道，容量正好 1 个）。
+    返回 ({分组 id: 局部补丁}, {节点 id: 局部补丁})。
+    """
+    groups = layout.get("groups", {})
+    box = groups.get(gid)
+    if not box or not is_lane_stack(box.get("parent"), layout):
+        return None
+    gpatch: dict[str, dict] = {gid: {"h": box["h"] + extra}}
+    npatch: dict[str, dict] = {}
+    bottom = box["y"] + box["h"]
+
+    moved_groups = {oid for oid, g in groups.items()
+                    if g.get("parent") == box.get("parent") and oid != gid and g["y"] >= bottom - 1}
+    # 子孙框跟着走，否则嵌套的那层会被留在原地
+    while True:
+        more = {oid for oid, g in groups.items()
+                if g.get("parent") in moved_groups and oid not in moved_groups}
+        if not more:
+            break
+        moved_groups |= more
+    for oid in moved_groups:
+        gpatch[oid] = {"y": groups[oid]["y"] + extra}
+    for nid, place in (layout.get("nodes") or {}).items():
+        if place.get("group") in moved_groups or (
+                place.get("group") == box.get("parent") and place.get("y", 0) >= bottom - 1):
+            npatch[nid] = {"y": place["y"] + extra}
+
+    # 祖先也要跟着长高，否则整摞泳道会顶出父框
+    cur = box.get("parent")
+    while cur and cur in groups:
+        gpatch.setdefault(cur, {})["h"] = groups[cur]["h"] + extra
+        cur = groups[cur].get("parent")
+    return gpatch, npatch
+
+
+def _apply_patch(layout: dict, gpatch: dict, npatch: dict) -> dict:
+    """把补丁应用到一份工作副本上（不改原 layout）。"""
+    groups = {gid: {**g, **gpatch.get(gid, {})} for gid, g in (layout.get("groups") or {}).items()}
+    nodes = {nid: {**n, **npatch.get(nid, {})} for nid, n in (layout.get("nodes") or {}).items()}
+    return {**layout, "groups": groups, "nodes": nodes}
+
+
 def place_or_grow(node_id: str, index: dict, layout: dict, today: str | None = None,
-                  gid: str | None = None) -> tuple[dict | None, dict[str, float]]:
+                  gid: str | None = None) -> tuple[dict | None, dict[str, dict], dict[str, dict]]:
     """先按 place_node 在框内找空位；框内排满了就长一行再找。
 
-    返回 (节点条目, 要改高度的分组)。两者要在同一次 PATCH 里一起写，
+    返回 (节点条目, 分组补丁, 节点补丁)。三者要在同一次 PATCH 里一起写，
     否则会出现"节点站在框外面"的中间状态。
     """
     box = place_node(node_id, index, layout, today=today, gid=gid)
     if box is not None:
-        return box, {}
+        return box, {}, {}
     gid = gid or target_group(node_id, index, layout)
     if not gid or gid not in layout.get("groups", {}):
-        return None, {}
+        return None, {}, {}
     grown = plan_growth(gid, layout)
-    if not grown:
-        return None, {}
-    taller = {**layout, "groups": {**layout["groups"],
-                                   **{k: {**layout["groups"][k], "h": h} for k, h in grown.items()}}}
-    box = place_node(node_id, index, taller, today=today, gid=gid)
-    return (box, grown) if box else (None, {})
+    if grown:
+        gpatch = {k: {"h": h} for k, h in grown.items()}
+        box = place_node(node_id, index, _apply_patch(layout, gpatch, {}), today=today, gid=gid)
+        if box:
+            return box, gpatch, {}
+    lane = plan_lane_growth(gid, layout)
+    if lane:
+        gpatch, npatch = lane
+        box = place_node(node_id, index, _apply_patch(layout, gpatch, npatch), today=today, gid=gid)
+        if box:
+            return box, gpatch, npatch
+    return None, {}, {}
 
 
 def inbox_ids(index: dict, layout: dict) -> list[str]:

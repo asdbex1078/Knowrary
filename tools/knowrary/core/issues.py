@@ -20,8 +20,15 @@ def issues_path(vault: Path) -> Path:
     return vault / ".knowrary" / "issues.jsonl"
 
 
-def record(vault: Path, kind: str, message: str, where: str = "", detail: dict | None = None) -> None:
-    """记一条。`kind` 粗分几类：llm / tool / write / index。"""
+def record(vault: Path, kind: str, message: str, where: str = "",
+           detail: dict | str | None = None) -> None:
+    """记一条。`kind` 粗分几类：llm / tool / write / index。
+
+    `detail` 给一段字符串也认（模型原文这种最常见）——旁路不该因为调用方写法不同就抛异常，
+    那正好违背这个模块存在的理由。
+    """
+    if detail is not None and not hasattr(detail, "keys"):
+        detail = {"detail": str(detail)[:2000]}
     row = {"ts": dt.datetime.now().astimezone().isoformat(timespec="seconds"),
            "kind": kind, "where": where, "message": str(message)[:500], **(detail or {})}
     path = issues_path(vault)

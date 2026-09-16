@@ -22,10 +22,11 @@
  */
 import { computed, nextTick, ref, watch } from 'vue'
 import Icon from '../ui/Icon.vue'
+import Markdown from '../ui/Markdown.vue'
 
 const props = defineProps({
   busy: { type: Boolean, default: false },
-  messages: { type: Array, default: () => [] },   // [{ role, content, tools?, cards?, streaming? }]
+  messages: { type: Array, default: () => [] },   // [{ role, content, trace?, cards?, streaming? }]
   stance: { type: String, default: '教练' },
   sessions: { type: Array, default: () => [] },   // 从留档聚合出来的会话列表
   session: { type: String, default: '' },
@@ -34,8 +35,13 @@ const props = defineProps({
 })
 const emit = defineEmits(['send', 'stop', 'apply', 'apply-project', 'apply-points', 'goto',
                           'new-session', 'pick-session', 'drop-focus', 'toggle-graph', 'stance',
-                          'close'])
+                          'rename-session', 'close'])
 
+
+/** 折叠条上直接写清楚这一轮都动了什么，不点开也知道它去查了图还是出了题。 */
+function traceTools(m) {
+  return [...new Set((m.trace || []).filter((t) => t.kind === 'tool').map((t) => t.label))]
+}
 // 三档口径。**不是三个 agent**：同一条链路、同一张图、同一套复习记录，
 // 换的只是系统提示词和工具白名单。
 const STANCES = {
@@ -85,8 +91,28 @@ function send(q) {
 
 const sessionLabel = computed(() => {
   const hit = props.sessions.find((s) => s.id === props.session)
-  return hit ? `${hit.title}（${hit.turns} 条）` : '新的一段'
+  return hit ? `${hit.title}（${hit.turns} 条）` : '这段（还没说话）'
 })
+
+// 改名：默认名是第一句我说的话（自动取的），改过之后存一张贴纸
+const naming = ref(false)
+const nameDraft = ref('')
+const nameBox = ref(null)
+const autoTitle = computed(() =>
+  props.sessions.find((s) => s.id === props.session)?.auto || '这段对话')
+
+function startName() {
+  const hit = props.sessions.find((s) => s.id === props.session)
+  nameDraft.value = hit?.renamed ? hit.title : ''
+  naming.value = true
+  nextTick(() => nameBox.value?.focus())
+}
+
+function saveName() {
+  if (!naming.value) return
+  naming.value = false
+  emit('rename-session', { session: props.session, title: nameDraft.value.trim() })
+}
 
 function starter(s) {
   if (s.q.endsWith('：')) { text.value = s.q; return }   // 要我补一句的，只填进输入框
@@ -102,16 +128,24 @@ function onKey(e) {
   <section class="chat-view">
     <!-- 会话条：多段对话在这里切。会话不是一张表，是留档行上的一个标签聚合出来的 -->
     <div class="chat-bar">
-      <select class="sess-pick" :value="session" title="切到另一段对话"
+      <!-- 改名：名字默认取第一句我说的话，改过的存成一张贴纸（不建会话表） -->
+      <input v-if="naming" ref="nameBox" v-model="nameDraft" class="sess-pick sess-name"
+             :placeholder="autoTitle" title="回车保存，Esc 取消；留空就回到自动取的名字"
+             @keydown.enter.prevent="saveName" @keydown.esc="naming = false" @blur="saveName" />
+      <select v-else class="sess-pick" :value="session" title="切到另一段对话"
               @change="emit('pick-session', $event.target.value)">
         <option v-if="!sessions.some((s) => s.id === session)" :value="session">{{ sessionLabel }}</option>
         <option v-for="s in sessions" :key="s.id" :value="s.id">
           {{ s.title }} · {{ s.turns }} 条
         </option>
       </select>
-      <select class="sess-pick" style="max-width: 96px" :value="stance"
+      <button class="icon-btn ghost tiny" :title="naming ? '收起' : '给这段对话改个名字'"
+              @click="naming ? (naming = false) : startName()">
+        <Icon name="pencil" :size="13" />
+      </button>
+      <select class="sess-pick" style="max-width: 112px" :value="stance"
               :title="STANCES[stance]?.tip" @change="emit('stance', $event.target.value)">
-        <option v-for="(v, k) in STANCES" :key="k" :value="k">{{ k }}</option>
+        <option v-for="(v, k) in STANCES" :key="k" :value="k">口径 · {{ k }}</option>
       </select>
       <button class="btn subtle tiny" title="新开一段（旧的还在，随时切回来）" @click="emit('new-session')">
         <Icon name="plus" :size="13" />新的一段
@@ -151,12 +185,36 @@ function onKey(e) {
         </div>
 
         <div v-for="(m, i) in messages" :key="i" class="msg" :class="m.role">
-          <div v-if="m.content" class="bubble">{{ m.content }}<span v-if="m.streaming" class="caret">▍</span></div>
+          <!-- 过程默认收起来：查资料、工具报错、"我先看一下"——摊开给人看是对的，
+               但和答案混在一行里，每次都得在里面淘那几句有营养的。点开随时能看全 -->
+          <details v-if="(m.trace || []).length" class="trace">
+            <summary>
+              <Icon name="search" :size="12" />过程 · {{ (m.trace || []).length }} 步
+              <span v-if="traceTools(m).length" class="dim">（{{ traceTools(m).join('、') }}）</span>
+            </summary>
+            <div v-for="(t, j) in m.trace" :key="`tr${j}`" class="trace-row">
+              <template v-if="t.kind === 'tool'">
+                <span class="tool-line"><Icon name="search" :size="12" />{{ t.label }}</span>
+                <div v-if="t.summary" class="dim trace-sum">{{ t.summary }}</div>
+              </template>
+              <div v-else class="dim trace-say">{{ t.text }}</div>
+            </div>
+          </details>
+
+          <!-- 模型那边渲染成图文（Markdown + mermaid 画的图）；我自己说的话按原样显示 -->
+          <div v-if="m.content" class="bubble">
+            <Markdown v-if="m.role === 'assistant'" :text="m.content" />
+            <template v-else>{{ m.content }}</template>
+            <span v-if="m.streaming" class="caret">▍</span>
+          </div>
           <div v-else-if="m.streaming" class="bubble dim">想一下…</div>
 
-          <!-- 调了哪些工具：摊开给人看，别让它像黑箱 -->
-          <div v-for="(t, j) in (m.tools || [])" :key="`t${j}`" class="tool-line" :title="t.summary">
-            <Icon name="search" :size="12" />{{ t.label }}
+
+          <!-- 讲完一段问的那个检验问题：已经攒进题库，以后按遗忘曲线抽查 -->
+          <div v-for="(qq, j) in (m.questions || [])" :key="`q${j}`" class="tool-line"
+               :title="`「${qq.stem}」已经进题库，考点：${(qq.points || []).join('、') || '（这轮提到的点）'}\n下次考这些点时优先用它，不用再花钱出题`">
+            <Icon name="checklist" :size="12" />这道检验题已收进题库<span
+              v-if="(qq.points || []).length" class="dim"> · {{ qq.points.join('、') }}</span>
           </div>
 
           <!-- 项目卡：建项目 / 加清单。同样只是提议，点了才写 projects.json -->

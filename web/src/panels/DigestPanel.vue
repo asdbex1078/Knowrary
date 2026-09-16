@@ -6,8 +6,11 @@
 import Drawer from '../ui/Drawer.vue'
 import Icon from '../ui/Icon.vue'
 
-const props = defineProps({ digest: { type: Object, default: null } })
-const emit = defineEmits(['goto', 'close', 'refresh', 'merge'])
+const props = defineProps({
+  digest: { type: Object, default: null },
+  busy: { type: Boolean, default: false },
+})
+const emit = defineEmits(['goto', 'close', 'refresh', 'merge', 'regroup'])
 
 const total = () => {
   const c = props.digest?.counts
@@ -36,6 +39,13 @@ const total = () => {
             <span v-if="digest.counts.stale_drafts" class="tail warn-text">
               {{ digest.counts.stale_drafts }} 个放太久
             </span>
+            <button class="btn subtle tiny" :class="{ tail: !digest.counts.stale_drafts }"
+                    :disabled="busy"
+                    title="把落在领域大框里的草稿挪进它那一层的泳道（硬件 / 系统软件 / AI应用…）。
+只动草稿，只往已有的泳道里挪；节点没填 layer 的先去检查器里补上"
+                    @click="emit('regroup')">
+              <Icon name="layers" :size="13" />按层归位
+            </button>
           </div>
           <ul>
             <li v-for="d in digest.drafts" :key="d.id" class="edge-row">

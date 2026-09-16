@@ -78,17 +78,57 @@ def _record(vault: Path, row: dict) -> None:
         log.warning("用量没记上：%s", exc)
 
 
-def parse_json(raw: str, context: str = "") -> dict:
-    """把回答解析成 dict。模型偶尔会套 ``` 围栏或直接答非所问，解析失败只警告不抛。"""
+def _carve(text: str) -> str:
+    """从一段话里抠出第一个完整的 JSON 对象。
+
+    模型经常在 JSON 前后加一句「好的，这是题目：」或者半个围栏，只剥首尾围栏不够用。
+    按花括号配对扫一遍（跳过字符串里的括号和转义），比正则可靠。
+    """
+    start = text.find("{")
+    if start < 0:
+        return text
+    depth, in_str, esc = 0, False, False
+    for i in range(start, len(text)):
+        ch = text[i]
+        if in_str:
+            if esc: esc = False
+            elif ch == "\\": esc = True
+            elif ch == '"': in_str = False
+            continue
+        if ch == '"': in_str = True
+        elif ch == "{": depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start:i + 1]
+    return text[start:]
+
+
+def parse_json(raw: str, context: str = "", vault: Path | None = None) -> dict:
+    """把回答解析成 dict。模型偶尔会套 ``` 围栏或直接答非所问，解析失败只警告不抛。
+
+    解析不出来时**必须留痕**：调用已经花了钱和时间，界面上只剩一句「没出出题来」的话，
+    下次遇到照样两眼一抹黑。原文前 600 字进问题流（`.knowrary/issues.jsonl`）。
+    """
     text = raw.strip()
     if text.startswith("```"):
         first_nl = text.find("\n")
         text = text[first_nl + 1:] if first_nl != -1 else text[3:]
     if text.endswith("```"):
         text = text[:-3]
-    try:
-        data = json.loads(text.strip())
-    except json.JSONDecodeError:
-        log.warning("LLM 返回的不是合法 JSON%s，raw=%s", f"（{context}）" if context else "", raw[:200])
-        return {}
-    return data if isinstance(data, dict) else {}
+    text = text.strip()
+    for candidate in (text, _carve(text)):
+        try:
+            data = json.loads(candidate)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(data, dict):
+            return data
+    log.warning("LLM 返回的不是合法 JSON%s，raw=%s", f"（{context}）" if context else "", raw[:200])
+    if vault is not None:
+        try:
+            core.record_issue(vault, "llm", f"模型没给出合法 JSON（{context}）", where="parse_json",
+                              detail=raw[:600])
+        except OSError as exc:
+            log.warning("问题流没记上：%s", exc)
+    return {}

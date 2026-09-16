@@ -67,6 +67,27 @@ export const postQuiz = (body) => request('/api/quiz', {
   body: JSON.stringify(body),
 })
 
+/** 把落在父框里的草稿挪进它那一层的泳道（`layer` 是后加的字段，早先的点没有）。 */
+export const postRegroup = (body) => request('/api/place/regroup', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify(body),
+})
+
+/** 给一段对话改名（留空 = 回到自动取的标题）。 */
+export const renameChatSession = (session, title, project) => request(
+  `/api/chat/sessions/${encodeURIComponent(session)}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ title, project: project || null }),
+  })
+
+/** 上次出了还没交卷的那份题（出题花过钱，刷新一下不该就没了）。 */
+export const fetchOpenQuiz = () => request('/api/quiz/open')
+
+/** 明确放弃那份没答完的卷子。 */
+export const dropOpenQuiz = () => request('/api/quiz/open', { method: 'DELETE' })
+
 /** 整轮比对：我写的答案 vs 标准答案 → 漏掉点 / 记错点 / 建议档位。只读，不写盘。 */
 export const postQuizDiagnose = (body) => request('/api/quiz/diagnose', {
   method: 'POST',

@@ -40,7 +40,7 @@ def suggest(vault: Path, node_id: str) -> SuggestResult:
 
     prompt = _build_prompt(meta, candidates, rt, existing_edges, groups)
     raw = _call_llm(vault, prompt)
-    parsed = _parse_llm_response(raw, node_id)
+    parsed = _parse_llm_response(raw, node_id, vault)
 
     gid = core.target_group(node_id, index, plain)
     gname = plain["groups"].get(gid, {}).get("name") if gid else None
@@ -141,8 +141,8 @@ def _call_llm(vault: Path, prompt: str) -> str:
     return ask(vault, "review", prompt, op="suggest")
 
 
-def _parse_llm_response(raw: str, node_id: str) -> dict:
-    data = parse_json(raw, f"node_id={node_id}")
+def _parse_llm_response(raw: str, node_id: str, vault: Path | None = None) -> dict:
+    data = parse_json(raw, f"node_id={node_id}", vault=vault)
     result: dict = {"edges": [], "duplicates": [], "suggested_field": None}
 
     for e in data.get("edges", []):

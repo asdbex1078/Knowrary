@@ -1,18 +1,20 @@
 {
   "schema_version": 2,
-  "revision": 14,
-  "updated_at": "2026-09-16T07:04:52Z",
+  "revision": 15,
+  "updated_at": "2026-09-16T13:38:13Z",
   "projects": {
     "transformer": {
       "name": "Transformer",
       "created": "2026-09-15",
       "field": "AI-Agent",
+      "level": "会用",
       "weekly_hours": 7,
       "daily_quota": 3,
       "legacy_id": "新计划",
       "lists": [
         {
           "kind": "学习",
+          "level": null,
           "name": "Transformer",
           "goal": "学习Transformer的发展历史以及各项技术",
           "coach": "大模型",
@@ -339,12 +341,14 @@
       "name": "计组",
       "created": "2026-09-15",
       "field": "",
+      "level": "会用",
       "weekly_hours": 7,
       "daily_quota": 2,
       "legacy_id": "新计划2",
       "lists": [
         {
           "kind": "学习",
+          "level": null,
           "name": "计组",
           "goal": "",
           "coach": "",
@@ -358,12 +362,14 @@
       "name": "AI技术发展史",
       "created": "2026-09-15",
       "field": "AI",
+      "level": "会用",
       "weekly_hours": 7,
       "daily_quota": 2,
       "legacy_id": "新计划3",
       "lists": [
         {
           "kind": "学习",
+          "level": "了解",
           "name": "AI技术发展史",
           "goal": "了解AI发展史，包括硬件cpu,gpu,npu,tpu 到 应用层面：cv,nlp,ap。 nlp的历史时，ngram -> backOfWords -> w2c -> s2s -> rnn -> transformer。某些细节点：MHA -> MQA -> GQA -> MLA。 要全面，覆盖多个范围多个点",
           "coach": "",
