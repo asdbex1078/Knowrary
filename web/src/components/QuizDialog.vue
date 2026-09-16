@@ -16,7 +16,9 @@ import Icon from '../ui/Icon.vue'
 const props = defineProps({
   questions: { type: Array, default: () => [] },
   names: { type: Object, default: () => ({}) },   // node_id → 展示名
-  diagnosis: { type: Object, default: null },     // { items: [{ n, missed, wrong, suggested_grade, comment }] }
+  // { items: [{ n, missed, wrong, suggested_grade, comment, beyond, next_gap,
+  //             full_answer, beyond_vault, ref_answer }] }
+  diagnosis: { type: Object, default: null },
   busy: { type: Boolean, default: false },        // 诊断中 / 交卷中
 })
 const emit = defineEmits(['diagnose', 'submit', 'goto', 'close'])
@@ -141,7 +143,7 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onKey, true))
 
         <template v-else>
           <div class="quiz-label">标准答案</div>
-          <div class="card quiz-answer">{{ current.answer || '（模型没给标准答案）' }}</div>
+          <div class="card quiz-answer">{{ current.ref_answer || '（这题还没有标准答案，批改时会照你的笔记补一份）' }}</div>
           <p class="dim" style="font-size: 11.5px; margin: 10px 0 6px">对完了，刚才答得怎么样？</p>
           <div class="quiz-grades">
             <button v-for="(g, i) in GRADES" :key="g.key" class="btn" :class="{ primary: g.key === '记得' }"
@@ -188,12 +190,39 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onKey, true))
                 </span>
                 <button class="btn subtle tiny" @click="adopt(i)">下调为 {{ downgrade(i) }}</button>
               </div>
+
+              <!-- 档位之间的信号：答超了该升档，没超也该知道下一档还差什么。
+                   它不进复习调度——调度只认上面那三档。 -->
+              <div v-if="hintOf(i + 1).beyond || hintOf(i + 1).next_gap" class="sum-line">
+                <span v-if="hintOf(i + 1).beyond" class="sum-tag up">答超了</span>
+                <span v-if="hintOf(i + 1).next_gap" class="dim" style="font-size: 11.5px">
+                  {{ hintOf(i + 1).next_gap }}
+                </span>
+              </div>
+
+              <!-- 这题本来没有标准答案（聊天随口问的题只有题干和考点），刚照笔记正文补了一份。
+                   来源是我自己的笔记，所以它会进题库当以后的判分依据，和下面那份模型写的不是一回事。 -->
+              <template v-if="hintOf(i + 1).ref_answer">
+                <div class="sum-line"><span class="sum-tag">照你的笔记补出的标准答案</span></div>
+                <div class="card quiz-answer">{{ hintOf(i + 1).ref_answer }}</div>
+              </template>
+
+              <details v-if="hintOf(i + 1).full_answer" class="sum-full">
+                <summary>完整答案</summary>
+                <div class="card quiz-answer">{{ hintOf(i + 1).full_answer }}</div>
+                <div v-if="hintOf(i + 1).beyond_vault.length" class="sum-line">
+                  <span class="sum-tag new">笔记里没有</span>
+                  <span v-for="b in hintOf(i + 1).beyond_vault" :key="b" class="chip">{{ b }}</span>
+                </div>
+              </details>
             </template>
           </li>
         </ol>
 
         <p class="dim sum-note">
           「漏掉」多复习几次就补上了；<b>「记错」要回去看那张卡</b>——记成了别的东西，再考几遍只会焊得更牢。
+          判分按这批点设定的档位来，<b>「答超了」不加分，是在提醒你这个点可以升档</b>。
+          「笔记里没有」的那几条是模型补的，<b>信之前先自己核一遍</b>，核实了再补进节点。
         </p>
 
         <footer>

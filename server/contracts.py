@@ -353,19 +353,31 @@ class SuggestResult(Strict):
 Grade = Literal["记得", "模糊", "忘了"]
 
 
+# 学到什么份上。一个维度决定三件事：出题深浅、对话展开到哪一层、拆点拆多细。
+# 档位名在 core.LEVELS（数据），对应的口径文本在 server/levels.py（行为）。
+Level = Literal["了解", "会用", "精通"]
+
+
 class QuizRequest(Strict):
     """对哪些节点出题。节点多了 prompt 会超长，服务端按 MAX_NODES 截断并在 warnings 里说明。"""
 
     node_ids: list[str]
     count: int = Field(default=3, ge=1, le=10)
     style: Literal["复习", "面试"] = "复习"
+    level: Level | None = None               # 难度档：决定问到多深、标准答案写多细
     coach: str = ""                          # 面试口径下的方向，例如「Java 后端开发」
 
 
 class QuizQuestion(Strict):
+    """一道题的四份文本里，这里只放两份：题干和标准答案。
+
+    我答题写的那份叫 `QuizAnswer.my_answer`，模型批改时补的那份叫 `QuizDiagnosisItem.full_answer`，
+    都不在这里——**这个模型里的文本全部来自我的笔记**，出题时照节点正文抄，所以能当判分依据。
+    """
+
     type: str = "回忆题"                     # 回忆题 / 关系题 / 辨析题
     stem: str
-    answer: str = ""
+    ref_answer: str = ""                     # 标准答案，照节点 md 正文抄的（不是我答题写的那份）
     points: list[str] = Field(default_factory=list)   # 考点节点 id，答错时按这些安排复习
     hint: str = ""
 
@@ -373,6 +385,7 @@ class QuizQuestion(Strict):
 class QuizSet(Strict):
     questions: list[QuizQuestion] = Field(default_factory=list)
     index_revision: int = 0                  # 提交批改时带回来，索引变了就该重新出题
+    level: Level | None = None               # 这份卷子按哪一档出的；批改要按同一档判，不重新猜
     warnings: list[str] = Field(default_factory=list)
 
 
@@ -393,14 +406,34 @@ class QuizDiagnoseRequest(Strict):
     """整轮一次性比对：逐题调模型会让每道题都卡几秒，答题节奏全毁。"""
 
     answers: list[QuizAnswer]
+    level: Level | None = None               # 按哪一档判；空 = 服务端从没交的那份卷子里取
 
 
 class QuizDiagnosisItem(Strict):
+    """一道题的诊断。三组字段各管一件事，别混：
+
+    - `missed / wrong / suggested_grade`：**按当前档位**判我这次答得怎么样，喂复习调度。
+    - `beyond / next_gap`：档位之间的信号。答超了就该考虑升档，没超也能知道下一档还差什么。
+      「超分」做成升档建议而不是第四个档位，是因为 `Grade` 三档是遗忘曲线的输入，
+      动它要改 review-log 和所有历史记录，而升档本来就是另一件事。
+    - `full_answer / beyond_vault`：这题的完整答案，答完顺手把视野撑开一点。
+      `beyond_vault` 是其中**我笔记里没有**的那些点——既是提醒"这是模型说的、未必对"，
+      也是"要不要补进节点 md"的候选。
+    - `ref_answer`：这题本来没有标准答案时（聊天攒的题只有题干和考点），照节点正文补出来的那一份，
+      会填进 `QuizQuestion.ref_answer`。**和 `full_answer` 是两回事**：它只许用我笔记里的原话，
+      补出来是要当以后判分依据的；`full_answer` 允许超出笔记，永远只给我看。
+    """
+
     n: int                                   # 第几题，从 1 开始
     missed: list[str] = Field(default_factory=list)
     wrong: list[str] = Field(default_factory=list)
     suggested_grade: Grade = "模糊"
     comment: str = ""
+    beyond: bool = False                     # 答得超出了当前档位的要求
+    next_gap: str = ""                       # 按上一档看还缺什么；已是最高档则留空
+    full_answer: str = ""                    # 完整答案：标准答案之上补全的那一版
+    beyond_vault: list[str] = Field(default_factory=list)   # 完整答案里我笔记没有的点
+    ref_answer: str = ""                     # 本来没有标准答案时，照节点正文补出来的那一份
 
 
 class QuizDiagnosis(Strict):
@@ -435,6 +468,7 @@ PointLoad = Literal["轻", "中", "重"]
 ListKind = Literal["学习", "面试", "领域"]
 
 
+
 class PlanPoint(Strict):
     """清单里的一个知识点。
 
@@ -462,6 +496,7 @@ class ProjectList(Strict):
     """
 
     kind: ListKind = "学习"
+    level: Level | None = None         # 这份清单的难度档；空 = 跟项目走
     name: str = Field(default="主线", max_length=120)
     goal: str = ""                     # 面试清单里这里放岗位要求原文
     coach: str = ""                    # 教练侧写，例如「Java 后端开发」；注入拆解与出题
@@ -480,6 +515,7 @@ class Project(Strict):
     name: str = Field(min_length=1, max_length=120)
     created: str | None = None
     field: str = ""                    # 默认落脚领域，清单没写自己的就用它
+    level: Level = "会用"              # 项目默认难度档；清单可以各自覆盖
     weekly_hours: int = Field(default=7, ge=1, le=80)   # 每周能投入几小时；时间账的分母
     daily_quota: int = Field(default=2, ge=1, le=20)    # 今日清单一次摆几个建设项
     legacy_id: str | None = None       # 从 plans.json 迁来的旧 id，对话目录迁移用
@@ -523,6 +559,7 @@ class PlanProposeRequest(Strict):
     goal: str = Field(min_length=1, max_length=8000)   # 面试清单要塞得下一整份 JD
     plan_name: str = ""
     kind: ListKind = "学习"
+    level: Level | None = None                        # 拆多细：了解 = 少而粗，精通 = 拆到机制
     coach: str = ""
     target_date: str | None = None                    # 有它模型才排得出阶段截止日
     weekly_hours: int = Field(default=7, ge=1, le=80)

@@ -299,11 +299,28 @@ def post_quiz(req: QuizRequest) -> QuizSet:
     return qz.generate(vault_path(), req)
 
 
+@app.get("/api/quiz/open")
+def get_quiz_open() -> dict:
+    """上次出了还没交卷的那份题。前端启动时问一次，别让烧掉的那次调用白费。"""
+    return {"quiz": core.load_open(vault_path())}
+
+
+@app.delete("/api/quiz/open")
+def drop_quiz_open() -> dict:
+    """明确放弃这份卷子。"""
+    core.clear_open(vault_path())
+    return {"ok": True}
+
+
 @app.post("/api/quiz/diagnose", response_model=QuizDiagnosis)
 def post_quiz_diagnose(req: QuizDiagnoseRequest) -> QuizDiagnosis:
-    """整轮比对我的作答与标准答案：漏掉点、记错点、建议档位。只读，不写任何文件。"""
+    """整轮比对我的作答与标准答案：漏掉点、记错点、按档位的建议档位，外加一份完整答案。
+
+    **不碰 md，但会写题库**（`.knowrary/question-pool.json` 的 `full_answer`）——
+    完整答案已经生成出来了，不落盘等于下次为同一道题再付一次钱。复习调度仍然只由交卷那一头动。
+    """
     from . import quiz as qz
-    return qz.diagnose(vault_path(), req.answers)
+    return qz.diagnose(vault_path(), req.answers, req.level)
 
 
 @app.post("/api/quiz/grade", response_model=QuizGraded)

@@ -1,7 +1,7 @@
 <script setup>
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, shallowRef, watch } from 'vue'
 import {
-  fetchCalendar, fetchChatHistory, fetchChatSessions, fetchDigest, postSyncToGlobal, fetchDue, fetchProjects, putProjects, postPlanPropose, fetchToday, fetchUsage, postMerge, postRename, postQuiz, postQuizDiagnose, postQuizGrade, fetchHealth, fetchIndex, fetchInbox, fetchLayout, fetchNode,
+  fetchCalendar, fetchChatHistory, fetchChatSessions, fetchDigest, postSyncToGlobal, fetchDue, fetchProjects, putProjects, postPlanPropose, fetchToday, fetchUsage, postMerge, postRename, postQuiz, postQuizDiagnose, postQuizGrade, fetchOpenQuiz, dropOpenQuiz, fetchHealth, fetchIndex, fetchInbox, fetchLayout, fetchNode,
   patchLayout, postChanges, postPlace, postReview, postSuggest, streamChat,
 } from './api'
 import AppHeader from './components/AppHeader.vue'
@@ -368,6 +368,7 @@ const dueList = ref([])                  // 今日到期明细（dueIds 只存 i
 const quiz = shallowRef(null)            // 本轮题目；null = 没在考试
 const quizBusy = ref(false)              // 出题 / 诊断 / 交卷中（都要等服务端）
 const quizDiag = shallowRef(null)        // 整轮比对结果；纯提议，档位仍由我点
+const openQuiz = shallowRef(null)        // 上次出了还没交卷的那份题（服务端存着，刷新也在）
 const inspectorHidden = ref(false)
 const showHelp = ref(false)
 const problems = ref([])                 // 加载时发现的待处理项，挂在状态栏上
@@ -1674,6 +1675,10 @@ async function reloadIndex() {
   Object.assign(stats, { nodes: index.stats.nodes, edges: index.stats.edges, stubs: index.stats.stubs })
   render()
   refreshInbox()
+  // 进度是服务端按 index 现算的（建没建、是不是只有壳），md 一变它就旧了。
+  // 不在这里跟着刷的话，点完「建」清单上那个点还写着「未建」，非得手动刷新页面
+  // ——派生数据不落盘，代价就是每次源数据变都得让它重算一遍。
+  if (plansDoc.value) refreshPlans()
   if (selected.value) await loadDetail(selected.value.id)
 }
 
@@ -2144,7 +2149,9 @@ async function loadChatHistory(session = null) {
       fetchChatSessions(currentProject.value || null),
     ])
     chatSessions.value = list.sessions
-    chatLog.value = hist.messages.map((m) => ({ ...m, tools: [], cards: [], resumed: true }))
+    chatLog.value = hist.messages.map((m) => ({
+      ...m, cards: [], resumed: true,
+      trace: (m.trace || []).map((t) => ({ kind: 'say', text: t })) }))
     // 接着最近那一段聊：服务端不给 session 时返回的就是它，这里把 id 对上
     if (!session && hist.messages.length) chatSession.value = list.sessions[0]?.id || chatSession.value
     else if (session) chatSession.value = session
@@ -2173,8 +2180,10 @@ async function sendChat(body) {
     ? `${body}\n\n（我正在看图上的「${focus.name || focus.id}」：${focus.desc || '没写摘要'}）`
     : body
   chatLog.value = [...chatLog.value, { role: 'user', content: text }]
-  const reply = reactive({ role: 'assistant', content: '', tools: [], cards: [], projects: [],
-                           points: [], streaming: true })
+  // trace = 过程（"我先查一下"、工具调用、工具报错），content = 最终那段答案。
+  // 混在一起的话，每次都要在一堆过程里找那几句有营养的——真实使用里最费时间的一点。
+  const reply = reactive({ role: 'assistant', content: '', trace: [], cards: [], projects: [],
+                           points: [], questions: [], streaming: true })
   chatLog.value = [...chatLog.value, reply]
   chatBusy.value = true
   chatAbort = new AbortController()
@@ -2186,12 +2195,22 @@ async function sendChat(body) {
   try {
     await streamChat(wire, (ev) => {
       if (ev.type === 'delta') reply.content = stripToolBlocks(reply.content + ev.text)
-      else if (ev.type === 'tool') reply.tools.push({ label: TOOL_LABEL[ev.name] || ev.name, summary: ev.summary })
+      else if (ev.type === 'tool') {
+        // 还要接着调工具 = 刚才那段是过程，收进折叠区，正文腾空给最后那段答案
+        if (reply.content.trim()) { reply.trace.push({ kind: 'say', text: reply.content }); reply.content = '' }
+        reply.trace.push({ kind: 'tool', label: TOOL_LABEL[ev.name] || ev.name, summary: ev.summary })
+      }
       else if (ev.type === 'card') reply.cards.push({ ...ev.card, applied: false })
       else if (ev.type === 'project') reply.projects.push({ ...ev.project, applied: false })
       else if (ev.type === 'points') reply.points.push({ ...ev.points, applied: false })
+      else if (ev.type === 'question') reply.questions.push({ stem: ev.stem, points: ev.points })
+      else if (ev.type === 'question') reply.questions.push({ stem: ev.stem, points: ev.points })
       else if (ev.type === 'review') { refreshDue(); pushToast(`已记一次「忘了」：${ev.id}`, 'info') }
       else if (ev.type === 'done') {
+        // 服务端也分好了过程和答案；流式那边分错了以它为准
+        if (ev.trace?.length && !reply.trace.some((t) => t.kind === 'say')) {
+          reply.trace.unshift(...ev.trace.map((t) => ({ kind: 'say', text: t })))
+        }
         reply.content = stripToolBlocks(ev.text) || reply.content
         // 聊到哪，图上亮哪（重构方案 §5.2）。走已有的 highlightPath，不新写高亮逻辑。
         if (ev.node_ids?.length && graph.value) {
@@ -2367,6 +2386,28 @@ function buildPoint(point) {
 
 // —— 阶段 9：测验（出题走 LLM，自评三档回写复习调度；全程不碰 md）——
 
+// 检查器、今日清单那些地方点「考一下」时不带档位：按当前项目的默认档来，
+// 而不是一律用最难的——「只想了解的历史」被按精通考一遍，人就再也不想点这个按钮了
+const projectLevel = computed(() => plansDoc.value?.projects?.[currentProject.value]?.level || null)
+
+/** 没交卷的那份题：出题花过钱，关掉对话框、刷新页面都不该让它蒸发。 */
+async function refreshOpenQuiz() {
+  try { openQuiz.value = (await fetchOpenQuiz()).quiz || null } catch { openQuiz.value = null }
+}
+
+function resumeQuiz() {
+  if (!openQuiz.value) return
+  quiz.value = { questions: openQuiz.value.questions,
+                 index_revision: openQuiz.value.index_revision ?? null, warnings: [] }
+  quizDiag.value = null
+  openQuiz.value = null
+}
+
+async function discardQuiz() {
+  try { await dropOpenQuiz() } catch { /* 删不掉也不挡事，下次进来还在而已 */ }
+  openQuiz.value = null
+}
+
 async function startQuiz(arg) {
   const ids = Array.isArray(arg) ? arg : arg?.ids || []
   const style = Array.isArray(arg) ? '复习' : arg?.style || '复习'
@@ -2374,7 +2415,8 @@ async function startQuiz(arg) {
   quizBusy.value = true
   try {
     const res = await postQuiz({ node_ids: ids, count: Math.min(5, Math.max(3, ids.length)),
-                                 style, coach: Array.isArray(arg) ? '' : arg?.coach || '' })
+                                 style, level: (Array.isArray(arg) ? null : arg?.level) || projectLevel.value,
+                                 coach: Array.isArray(arg) ? '' : arg?.coach || '' })
     ;(res.warnings || []).forEach((w) => pushToast(w, 'info'))
     if (!res.questions.length) {
       setBanner('这轮没出出题来——模型没给有效题目，换几个节点再试', 'error')
@@ -2382,6 +2424,7 @@ async function startQuiz(arg) {
     }
     quiz.value = res
     quizDiag.value = null
+    openQuiz.value = null      // 这份现在就在手上，不用再提示「还有没答完的」
   } catch (err) {
     setBanner(`出题失败：${err.message}`, 'error')
   } finally {
@@ -2394,7 +2437,9 @@ async function diagnoseQuiz(rows) {
   quizBusy.value = true
   try {
     const res = await postQuizDiagnose({
+      // 判分要和出题用同一档：出题按「了解」问的，批改却按「精通」判，会白白多复习一轮
       answers: rows.map((r) => ({ question: r.question, grade: r.grade, my_answer: r.my_answer })),
+      level: quiz.value?.level || projectLevel.value || null,
     })
     ;(res.warnings || []).forEach((w) => pushToast(w, 'info'))
     quizDiag.value = res
@@ -2416,6 +2461,7 @@ async function submitQuiz(answers) {
                     : `交卷：${answers.length} 题全对，间隔往后拉了`, wrong ? 'info' : 'success')
     quiz.value = null
     quizDiag.value = null
+    openQuiz.value = null
   } catch (err) {
     setBanner(`交卷失败：${err.message}`, 'error')
   } finally {
@@ -2752,6 +2798,11 @@ onMounted(async () => {
     get project() { return currentProject.value },
     get projectIds() { return [...projectIds.value] },
     get progress() { return plansProgress.value },
+    // 往对话里塞一条假回复：图文渲染（Markdown / mermaid）不调模型也能验
+    fakeReply(text) {
+      chatLog.value = [...chatLog.value,
+                       { role: 'assistant', content: text, trace: [], cards: [] }]
+    },
   }
   try {
     await load()
@@ -2759,6 +2810,7 @@ onMounted(async () => {
     // 都是本地接口、都不调 LLM，不 await 是为了不挡首屏。
     refreshPlans()
     refreshToday()
+    refreshOpenQuiz()
     // 从 3D 总览跳回来时带着 ?focus=<id>：定位到那个节点，然后把参数抹掉
     const wanted = new URLSearchParams(window.location.search).get('focus')
     if (wanted) {
@@ -2812,6 +2864,7 @@ onBeforeUnmount(() => {
                      @quiz="startQuiz" @switch="switchProject" @refresh="refreshPlans"
                      @close="panel = ''" />
       <StudyPanel v-else-if="panel === 'study'" class="study" :today="todayList" :busy="quizBusy"
+                  :open-quiz="openQuiz" @resume-quiz="resumeQuiz" @drop-quiz="discardQuiz"
                   @goto="gotoNode" @quiz="startQuiz($event.id ? [$event.id] : $event)"
                   @build="buildPoint" @write="writeBody" @place="placeFromToday"
                   @plans="panel = 'plans'; refreshPlans()" @global="switchProject('')"
