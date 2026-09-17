@@ -50,7 +50,7 @@ const emit = defineEmits([
         <label class="switch-row">
           <input type="checkbox" :checked="aggregate" @change="emit('toggle-aggregate')" />
           <span class="check"><Icon name="check" :size="11" :width="2.6" /></span>
-          <span class="label">聚合跨组边<span class="sub">同组对之间的线并成一束</span></span>
+          <span class="label">聚合跨组边<span class="sub">同一对分组之间 3 条以上才并成一束</span></span>
         </label>
         <label class="switch-row">
           <input type="checkbox" :checked="autoLod" @change="emit('toggle-lod')" />

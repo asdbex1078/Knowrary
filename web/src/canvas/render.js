@@ -294,14 +294,14 @@ export function buildCells(index, layout, options = {}) {
     const color = colorOf(gid)
     if (collapsed.has(gid)) {
       const summary = clusterSummary(layout, index, gid)
-      const box = clusterBox(g, zoom)
+      const box = clusterBox(g)
       // 卡片缩在分组框正中间，落盘时要减掉这个偏移才是分组框自己的坐标
       const dx = (g.w - box.w) / 2
       const dy = (g.h - box.h) / 2
       nodes.push({
         id: gid, shape: 'kg-cluster',
         x: g.x + dx, y: g.y + dy, width: box.w, height: box.h, zIndex: 12,
-        attrs: clusterAttrs(g.name, summary, color, box, g.doc || null),
+        attrs: clusterAttrs(g.name, summary, color, box, g.doc || null, zoom),
         data: { kind: 'cluster', group: gid, count: summary.count, dx, dy },
       })
       continue
@@ -309,7 +309,7 @@ export function buildCells(index, layout, options = {}) {
     nodes.push({
       id: gid, shape: 'kg-group', x: g.x, y: g.y, width: g.w, height: g.h,
       zIndex: 1 + groupDepth(layout.groups, gid),
-      attrs: groupAttrs(g.name, color, g.doc || null),
+      attrs: groupAttrs(g.name, color, g.doc || null, zoom, g),
       data: { kind: 'group', parent: g.parent || null, doc: g.doc || null },
     })
   }
@@ -412,8 +412,13 @@ export function buildCells(index, layout, options = {}) {
   return { nodes, edges }
 }
 
-// 分流：两端在同一分组（或该组对已展开）的边照常画；跨分组的边按「源分组 → 目标分组」聚合。
-// 聚合后一屏里横穿全图的长斜线从几十条降到十几条，点开某一对分组才看明细。
+// 一对分组之间**少于这么多条**就不聚合：一条「A 组 → B 组」的灰线代替不了
+// 「NPU 对比 GPU」这种具体关系——人看图就是在看这个。聚合是治"几十条长斜线糊成一片"的药，
+// 不是默认形态；按层分泳道之后几乎每条边都跨组，一刀切聚合会让整张图只剩卡片之间的灰线。
+const AGG_MIN = 3
+
+// 分流：两端在同一分组（或该组对已展开、或这对分组之间线本来就不多）的边照常画；
+// 只有密到 AGG_MIN 条以上的跨分组边才按「源分组 → 目标分组」并成一束。
 function splitEdges(visibleEdges, layout, options) {
   const { aggregate = true, expanded = new Set(), collapsed = new Set() } = options
   const insideCluster = (nid) => containerOf(layout, nid, collapsed) !== nid
@@ -454,9 +459,22 @@ function splitEdges(visibleEdges, layout, options) {
     }
     if (a === b) continue                     // 端点重合就画不出边（裸节点落在同一个容器上）
     if (!groups.has(pair)) groups.set(pair, [])
-    groups.get(pair).push(e)
+    groups.get(pair).push({ edge: e, clustered })
   }
-  return { detail, groups }
+  // 线不多的那些组对退回去画真实连线；有一端被折进簇里的没得退（那个节点根本不在画布上）
+  const dense = new Map()
+  for (const [pair, items] of groups) {
+    const stuck = items.filter((x) => x.clustered)
+    if (items.length >= AGG_MIN || stuck.length === items.length) {
+      dense.set(pair, items.map((x) => x.edge))
+      continue
+    }
+    for (const x of items) {
+      if (x.clustered) dense.set(pair, [...(dense.get(pair) || []), x.edge])
+      else detail.push(x.edge)
+    }
+  }
+  return { detail, groups: dense }
 }
 
 // 同一对节点之间有多条边时（如 CPU 部件/控制 寄存器），给第 n 条边一个法向拐点，
