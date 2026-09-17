@@ -330,9 +330,14 @@ def _tool_propose_project(vault: Path, args: dict) -> tuple[str, dict]:
     if not lists and not exists:
         lists = [{"kind": "学习", "name": "主线", "goal": str(args.get("goal") or ""),
                   "coach": "", "field": "", "target_date": None, "stages": []}]
+    # 档位（了解 / 会用 / 精通）决定出题深浅、对话展开到哪一层、拆点拆多细。
+    # 让模型给：它刚跟你聊完目标，"面试要用"还是"了解一下"它比默认值清楚；
+    # 认不出就退回 core.DEFAULT_LEVEL，不瞎填——档位填错会一路影响出题和拆解。
+    level = str(args.get("level") or "").strip()
     card = {"id": pid, "action": "update" if exists else "create", "near": near,
             "name": str(args.get("name") or pid)[:120],
             "field": str(args.get("field") or "")[:120],
+            "level": level if level in core.LEVELS else core.DEFAULT_LEVEL,
             "weekly_hours": int(args.get("weekly_hours") or 7),
             "daily_quota": int(args.get("daily_quota") or 2),
             "lists": lists}
@@ -427,7 +432,7 @@ TOOL_DOC = {
     "quiz": "`node_ids`、`count`（默认 3） | 按这些节点出题考我",
     "record_review": "`id`、`grade` | 记一次复习。**只能记「忘了」**，见下面的纪律",
     "propose_changes": "`changes` | 提议把学到的东西写进图谱。**只是提议**，会变成一张卡片等我点「写入」",
-    "propose_project": "`id`、`name`、`field`、`lists` | 提议建一个项目，或往现有项目里加一份清单。同样只是卡片",
+    "propose_project": "`id`、`name`、`field`、`level`、`lists` | 提议建一个项目，或往现有项目里加一份清单。同样只是卡片",
     "propose_points": "`project`、`list`、`goal` | 把某个项目的某份清单拆成知识点。走面板上「让 AI 拆一份」同一条链路，同样出卡片",
 }
 
@@ -440,13 +445,19 @@ FORMAT_DOC = {
 
 ```knowrary
 {"tool": "propose_project", "args": {
-  "id": "nlp", "name": "NLP 方向", "field": "AI", "weekly_hours": 7,
+  "id": "nlp", "name": "NLP 方向", "field": "AI", "level": "会用", "weekly_hours": 7,
   "lists": [{"kind": "学习", "name": "主线", "goal": "三个月吃透 Transformer 到 RLHF",
              "target_date": "2026-12-15"}]}}
 ```
 
 一个项目下可以有好几份清单，`kind` 决定怎么拆：`学习`（按依赖顺序）/ `面试`（按会怎么问）/
-`领域`（按覆盖度铺地图）。**先建项目，再拆点**——拆点是另一步，别在同一条消息里全干完。""",
+`领域`（按覆盖度铺地图）。
+
+`level` 是**学到什么份上**，三档：`了解`（知道它是什么、解决什么问题就够）/
+`会用`（能上手、讲得清取舍）/ `精通`（要能推导机制、答得住追问）。
+它一路决定出题深浅、拆点拆多细——按他刚才说的目标挑，别一律给默认档。
+
+**先建项目，再拆点**——拆点是另一步，别在同一条消息里全干完。""",
     "propose_changes": """`propose_changes` 的 `changes` 和图谱的 ChangeSet 同一个形状，七种改动：
 
 ```knowrary

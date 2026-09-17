@@ -1742,6 +1742,74 @@ def projects_拆解丢弃非法id与重复点():
 
 
 @case
+def projects_拆解顺手带回抽象层和年份_认不出的丢掉():
+    """新建知识点时那两个下拉要预填，靠的就是这一次调用顺手多答的两个字段。
+
+    单开一次调用去问 layer/year 也能做，但拆一份计划就要多烧 N 次；
+    模型此刻正在逐个点地想"这是什么"，顺手答两个字段几乎不要钱。
+
+    收得住才敢预填：层名不在七档里、年份写成 `1970s` 这种一律丢掉留空——
+    填错的层会把点放进错的泳道，填错的年份会让它在历史视图上站错位置，
+    两样都不报错，只会让图**悄悄**是错的。"""
+    c, _, _ = with_inbox_node()
+    seen = {}
+
+    from server import projects as projects_mod
+    original = projects_mod.ask
+
+    def spy(vault, role, prompt, op="?"):
+        seen["prompt"] = prompt
+        return json.dumps({"stages": [{"name": "一", "points": [
+            {"id": "自注意力", "layer": "AI应用", "year": 2017},
+            {"id": "反向传播", "layer": "AI應用", "year": "1986 年左右"},   # 层名拼错 + 年份不是数
+            {"id": "位置编码", "layer": "", "year": None},                  # 模型自己说拿不准
+        ]}]}, ensure_ascii=False)
+
+    projects_mod.ask = spy
+    try:
+        points = c.post("/api/projects/propose", json={"goal": "x"}).json()["stages"][0]["points"]
+    finally:
+        projects_mod.ask = original
+
+    got = {p["id"]: (p["layer"], p["year"]) for p in points}
+    assert got["自注意力"] == ("AI应用", 2017), got
+    assert got["反向传播"] == ("", None), got      # 认不出就留空，不硬塞
+    assert got["位置编码"] == ("", None), got
+    # 七档得写进提示词里，否则模型只能瞎猜一个层名，然后每一条都被上面那道校验丢掉
+    for layer in core.LAYERS:
+        assert layer in seen["prompt"], layer
+
+
+@case
+def suggest_顺手给抽象层和年份_已经填了的不再建议():
+    """关系建议本来就要调一次模型，layer/year 搭这趟车走，不另开调用。
+
+    它覆盖的是**不走计划建出来的点**（画布上右键新建的那些）——
+    从计划进来的在拆解时就填好了。
+
+    已经填了的一律不建议，而且**在服务端挡**：不指望模型看懂"已设置"四个字。
+    放它过去的后果是检查器上永远挂着一条「建议改成你已经填的那个值」。"""
+    c, vault, _ = with_inbox_node()
+    from server import suggest as suggest_mod
+    original = suggest_mod.ask
+    answer = json.dumps({"edges": [], "duplicates": [],
+                         "suggested_layer": "体系结构", "suggested_year": 1964}, ensure_ascii=False)
+    suggest_mod.ask = lambda vault, role, prompt, op="?": answer
+    try:
+        got = c.post("/api/suggest", json={"node_id": "d"}).json()
+        assert (got["suggested_layer"], got["suggested_year"]) == ("体系结构", 1964), got
+
+        # 同一个点补上 layer / year 之后，同一份回答里这两条就该被吞掉
+        core.write(vault / "nodes/组A/d.md",
+                   node_md("D", rels="- 部件:: [[a]]", extra="learned: 2026-09-01\nlayer: 硬件\nyear: 1971\n"))
+        index_service.invalidate()
+        got = c.post("/api/suggest", json={"node_id": "d"}).json()
+        assert got["suggested_layer"] is None and got["suggested_year"] is None, got
+    finally:
+        suggest_mod.ask = original
+
+
+@case
 def projects_拆解乱答时返回空而不是500():
     c, _, _ = with_inbox_node()
     original = stub_project_llm("我拒绝拆解。")

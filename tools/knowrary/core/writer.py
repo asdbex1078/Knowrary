@@ -159,6 +159,11 @@ def apply_to_text(text: str, node_id: str, changes: list[dict]) -> tuple[str, li
                     raise ChangeRejected(f"未知 frontmatter 字段 `{key}`")
                 if key == "status" and value not in STATUS_VALUES:
                     raise ChangeRejected(f"status `{value}` 不合法")
+                # layer 和 create_node 那边同一把尺子。原来只有新建校验、改的时候不校验，
+                # 于是 propose_changes 能从这条路写进一个不存在的层名——
+                # 它不报错，只会让这个节点在历史视图上凭空消失（泳道按 LAYERS 建，对不上的没地方去）。
+                if key == "layer" and value and value not in LAYERS:
+                    raise ChangeRejected(f"layer `{value}` 不在已知的抽象层里（{' / '.join(LAYERS)}）")
                 fm[key] = value
                 fm_changed = True
                 notes.append(f"frontmatter {key} = {value!r}")

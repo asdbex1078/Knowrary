@@ -7,7 +7,7 @@ from pathlib import Path
 from .contracts import SuggestDuplicate, SuggestEdge, SuggestResult
 from .index_service import current_index
 from .layout_store import load_or_init
-from .llm_call import ask, parse_json
+from .llm_call import ask, clean_layer, clean_year, parse_json
 from .paths import core
 
 log = logging.getLogger(__name__)
@@ -50,6 +50,10 @@ def suggest(vault: Path, node_id: str) -> SuggestResult:
         edges=parsed.get("edges", []),
         duplicates=parsed.get("duplicates", []),
         suggested_field=parsed.get("suggested_field"),
+        # 已经填了的一律不建议：这在服务端挡，不指望模型看懂"已设置"四个字。
+        # 放它过去的后果是检查器上永远挂着一条"建议改成你已经填的那个值"。
+        suggested_layer=None if meta.get("layer") else parsed.get("suggested_layer"),
+        suggested_year=None if meta.get("year") else parsed.get("suggested_year"),
         suggested_group=gid,
         suggested_group_name=gname,
         raw_llm=raw,
@@ -131,6 +135,9 @@ def _build_prompt(meta: dict, candidates: list[dict], rt, existing_edges: list[d
             .replace("{{node_name}}", meta.get("name") or meta.get("id", ""))
             .replace("{{node_field}}", meta.get("field") or "（未设置）")
             .replace("{{node_desc}}", meta.get("desc") or "（未设置）")
+            .replace("{{node_layer}}", meta.get("layer") or "（未设置）")
+            .replace("{{node_year}}", str(meta.get("year") or "（未设置）"))
+            .replace("{{layers}}", " / ".join(core.LAYERS))
             .replace("{{existing_edges}}", existing_text)
             .replace("{{candidates}}", candidates_text)
             .replace("{{relation_types}}", rt.describe())
@@ -143,7 +150,8 @@ def _call_llm(vault: Path, prompt: str) -> str:
 
 def _parse_llm_response(raw: str, node_id: str, vault: Path | None = None) -> dict:
     data = parse_json(raw, f"node_id={node_id}", vault=vault)
-    result: dict = {"edges": [], "duplicates": [], "suggested_field": None}
+    result: dict = {"edges": [], "duplicates": [], "suggested_field": None,
+                    "suggested_layer": None, "suggested_year": None}
 
     for e in data.get("edges", []):
         if not isinstance(e, dict):
@@ -173,5 +181,7 @@ def _parse_llm_response(raw: str, node_id: str, vault: Path | None = None) -> di
         ))
 
     result["suggested_field"] = data.get("suggested_field") or None
+    result["suggested_layer"] = clean_layer(data.get("suggested_layer")) or None
+    result["suggested_year"] = clean_year(data.get("suggested_year"))
 
     return result

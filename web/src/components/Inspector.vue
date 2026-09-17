@@ -24,7 +24,7 @@ const props = defineProps({
 // 抽象层的七档，和 core.parser.LAYERS 同一张表
 const LAYERS = ['理论', '硬件', '体系结构', '汇编接口', '系统软件', '高级语言', 'AI应用']
 const emit = defineEmits([
-  'close', 'goto', 'edit-desc', 'set-layer', 'add-ref', 'review', 'quiz', 'rename', 'finalize',
+  'close', 'goto', 'edit-desc', 'set-layer', 'set-year', 'add-ref', 'review', 'quiz', 'rename', 'finalize',
   'retype-edge', 'remove-edge', 'add-edge', 'drop-change',
   'preview-changes', 'apply-changes', 'clear-changes', 'save-body',
   'suggest', 'dismiss-suggestion',
@@ -278,6 +278,24 @@ function diffLines(text) {
                   <p v-else-if="!suggestions.duplicates?.length" class="dim">LLM 没有发现需要建议的关系。</p>
                   <p v-if="suggestions.suggested_field" class="dim" style="margin-top: 6px">
                     建议领域：<strong>{{ suggestions.suggested_field }}</strong>
+                  </p>
+                  <!-- 抽象层 / 年份：同一次调用顺手带回来的，只在这个点还空着时才会有。
+                       不直接写盘——点「采纳」进变更卡，和改摘要一样人看过 diff 再落（4.4）。 -->
+                  <p v-if="suggestions.suggested_layer" class="dim" style="margin-top: 6px">
+                    建议抽象层：<strong>{{ suggestions.suggested_layer }}</strong>
+                    <button class="btn subtle tiny" style="margin-left: 6px" :disabled="!detail"
+                            :title="detail ? '进变更卡，确认后写回 md' : '先打开这个节点'"
+                            @click="emit('set-layer', { id: selected.id, layer: suggestions.suggested_layer })">
+                      采纳
+                    </button>
+                  </p>
+                  <p v-if="suggestions.suggested_year" class="dim" style="margin-top: 6px">
+                    建议年份：<strong class="tnum">{{ suggestions.suggested_year }}</strong>
+                    <button class="btn subtle tiny" style="margin-left: 6px" :disabled="!detail"
+                            :title="detail ? '进变更卡，确认后写回 md' : '先打开这个节点'"
+                            @click="emit('set-year', { id: selected.id, year: suggestions.suggested_year })">
+                      采纳
+                    </button>
                   </p>
                 </template>
                 <p v-else-if="!suggesting" class="dim">点「请求建议」让 AI 分析可能的关系。</p>

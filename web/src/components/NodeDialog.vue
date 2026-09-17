@@ -20,11 +20,21 @@ const emit = defineEmits(['create', 'close'])
 const name = ref(props.defaults.name || '')
 const desc = ref(props.defaults.planWhy || '')
 const field = ref(props.defaults.field || props.fields[0] || '')
-const year = ref('')     // 可选：填了才进历史视图的时间轴
 // 抽象层：历史视图按它分泳道，新节点也按它落到对应的那条道里。
 // 不填的话，一个没有边的新点只能落在领域那个大框里——正好在所有泳道之外。
 const LAYERS = ['理论', '硬件', '体系结构', '汇编接口', '系统软件', '高级语言', 'AI应用']
-const layer = ref(props.defaults.layer || '')
+
+// 从计划点进来时，这两个格子是**拆计划那一次调用顺手给的建议**（server/projects.py 的 _LAYER_YEAR），
+// 不是我填的。直接预填省一次选择，但必须看得出来是机器猜的——
+// 所以旁边挂一个「AI 建议」小标，值一被改动就消失：机器猜的和我自己填的不能长成一个样。
+const advised = {
+  layer: props.defaults.layer || '',
+  year: props.defaults.year ? String(props.defaults.year) : '',
+}
+const layer = ref(advised.layer)
+const year = ref(advised.year)   // 可选：填了才进历史视图的时间轴
+const aiLayer = computed(() => !!advised.layer && layer.value === advised.layer)
+const aiYear = computed(() => !!advised.year && year.value === advised.year)
 const dir = ref(props.defaults.dir || props.dirs[0] || 'nodes')
 // 目录可以手敲：开一个新领域时 vault 里还没有那个文件夹，只能选已有的就卡死了
 const badDir = computed(() => {
@@ -93,11 +103,11 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onKey, true))
 
       <div class="two">
         <label class="fld">
-          <span class="lb">年份<i>可选</i></span>
+          <span class="lb">年份<i v-if="aiYear" class="hot">AI 建议</i><i v-else>可选</i></span>
           <input v-model="year" inputmode="numeric" placeholder="如 2017，填了才进历史视图" />
         </label>
         <label class="fld">
-          <span class="lb">抽象层<i>可选</i></span>
+          <span class="lb">抽象层<i v-if="aiLayer" class="hot">AI 建议</i><i v-else>可选</i></span>
           <select v-model="layer">
             <option value="">不分层</option>
             <option v-for="l in LAYERS" :key="l" :value="l">{{ l }}</option>
