@@ -18,7 +18,7 @@ from .contracts import (ID_PATTERN, PlanPoint, PlanProposal, PlanProposeRequest,
                         Project, ProjectsDoc, ProjectsRead, ProjectsSaved, ProjectsWrite)
 from .index_service import current_index
 from .levels import fragment as level_fragment
-from .llm_call import ask, parse_json
+from .llm_call import ask, clean_layer, clean_year, parse_json
 from .paths import core
 
 
@@ -124,6 +124,30 @@ def _budget_text(req: PlanProposeRequest, today: dt.date) -> str:
             f"**{round(days * weekly / 7)} 小时**。")
 
 
+# 抽象层与年份：**三份模板共用的一小段**。
+#
+# 口径（学习 / 面试 / 领域）决定"拆成什么样"，而"自注意力属于哪一层、哪年提出"
+# 和口径无关——所以和 level / mode 那两段一样抽出来注入，不在三份模板里各抄一遍。
+#
+# 它们不参与排期、不影响进度，唯一的用途是**新建知识点时把两个下拉预填好**。
+# 之所以塞进拆解这一次调用：模型此刻正在逐个点地想"这是什么"，顺手多答两个字段几乎不要钱；
+# 等到新建对话框打开时再单开一次调用去问，既慢又贵。
+# 不带编号：三份模板的要求列表长度不一样（8 / 6 / 7 条），写死 9. 10. 会有两份对不上号。
+_LAYER_YEAR = """
+- **`layer`（抽象层）**，从这七档里挑一个原样填：
+  {{layers}}。
+  它决定这个点将来落在历史视图的哪条泳道里。
+  七档的意思：`理论`＝数学与计算模型；`硬件`＝电路与器件；`体系结构`＝指令集与处理器组织；
+  `汇编接口`＝ ABI、链接、系统调用这一层；`系统软件`＝操作系统、编译器、运行时；
+  `高级语言`＝语言与框架；`AI应用`＝模型与应用层。
+  **拿不准就留空字符串**——填错比不填更麻烦（它会把点放进错的泳道）。
+- **`year`（年份）**：这个概念**被提出 / 定型**的那一年，四位数字。
+  只填**查得准**的（论文、标准、首个实现的年份）；含糊的、我自己造的名字一律留 `null`。
+  宁可空着：填错的年份会在历史视图上把这个点摆到错误的位置。
+
+"""
+
+
 _COMPRESS = """
 ## 这次要的是「速学版」
 
@@ -179,6 +203,7 @@ def _build_prompt(req: PlanProposeRequest, index: dict, today: dt.date,
             .replace("{{goal}}", goal)
             .replace("{{budget}}", _budget_text(req, today))
             .replace("{{mode}}", _COMPRESS if req.mode == "速学" else "")
+            .replace("{{layer_year}}", _LAYER_YEAR.replace("{{layers}}", " / ".join(core.LAYERS)))
             .replace("{{level}}", level_fragment(req.level, "plan"))
             .replace("{{node_count}}", str(len(real)))
             .replace("{{existing_ids}}", ids)
@@ -223,8 +248,10 @@ def _clean_points(items, seen: set[str], warnings: list[str]) -> list[PlanPoint]
         seen.add(pid)
         load = str(it.get("load") or "").strip()
         out.append(PlanPoint(id=pid, name=str(it.get("name") or pid), why=str(it.get("why") or ""),
-                             load=load if load in core.LOADS else core.DEFAULT_LOAD))
+                             load=load if load in core.LOADS else core.DEFAULT_LOAD,
+                             layer=clean_layer(it.get("layer")), year=clean_year(it.get("year"))))
     return out
+
 
 
 def _parse_proposal(data: dict, known: set[str], built: set[str], req: PlanProposeRequest,

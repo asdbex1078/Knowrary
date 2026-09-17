@@ -241,6 +241,8 @@ function onKey(e) {
               <Icon name="checklist" :size="13" />
               {{ pj.action === 'create' ? '提议新建项目' : '提议加清单' }}「{{ pj.name }}」
               <span class="dim">id {{ pj.id }}</span>
+              <!-- 档位一路决定出题深浅和拆点粒度，按下「创建」之前得看得见它被定成了哪一档 -->
+              <span v-if="pj.level" class="chip m-due" title="学到什么份上：出题深浅、拆点粒度都看它">{{ pj.level }}</span>
               <span v-if="pj.applied" class="chip m-mastered">已创建</span>
             </div>
             <ul>

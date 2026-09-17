@@ -343,6 +343,10 @@ class SuggestResult(Strict):
     edges: list[SuggestEdge] = Field(default_factory=list)
     duplicates: list[SuggestDuplicate] = Field(default_factory=list)
     suggested_field: str | None = None
+    # 抽象层和年份：同一次调用顺手要出来的，模型此刻正在读这个节点。
+    # 覆盖的是**不走计划建出来的点**——从计划进来的在拆解时就填好了（PlanPoint.layer / year）。
+    suggested_layer: str | None = None
+    suggested_year: int | None = None
     suggested_group: str | None = None
     suggested_group_name: str | None = None
     raw_llm: str | None = None
@@ -480,6 +484,11 @@ class PlanPoint(Strict):
     name: str = ""
     why: str = ""
     load: PointLoad = "中"      # 学习负荷三档；换算成小时是 core.LOAD_HOURS 那一张表
+    # 下面两个是**给新建对话框的预填值**，不参与排期也不影响进度。
+    # 拆解那一次调用顺手要出来的：模型正在读这个概念，问它属于哪一层、哪年提出，
+    # 比之后单开一次调用去猜便宜得多（也比本地按领域投多数派准）。
+    layer: str = ""             # 抽象层七档之一（core.LAYERS）；拿不准就留空
+    year: int | None = None     # 提出年份；只有查得准的才填
 
 
 class PlanStage(Strict):

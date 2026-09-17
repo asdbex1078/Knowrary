@@ -658,6 +658,31 @@ def 建节点时能写layer_写错则拒():
 
 
 @case
+def 改layer时也校验_和新建同一把尺子():
+    """新建时校验了、改的时候不校验，等于没校验：propose_changes 走的就是 update_frontmatter。
+
+    写进一个不存在的层名不会报错，只会让这个节点从历史视图上**悄悄消失**——
+    泳道是按 LAYERS 建的，对不上的那个没有泳道可去。
+    """
+    vault = make_vault({"nodes/a.md": node_md("A", extra="layer: 理论\n")})
+    r = core.build_index(vault, None)
+    edits = core.plan(vault, [{"type": "update_frontmatter", "source": "a",
+                               "fields": {"layer": "系统软件"}}], r.data)
+    assert "layer: 系统软件" in edits[0].after, edits[0].after
+    # 清空是合法的：layer 本来就是可选字段
+    edits = core.plan(vault, [{"type": "update_frontmatter", "source": "a",
+                               "fields": {"layer": ""}}], r.data)
+    assert "layer: 理论" not in edits[0].after, edits[0].after
+    try:
+        core.plan(vault, [{"type": "update_frontmatter", "source": "a",
+                           "fields": {"layer": "系統軟件"}}], r.data)
+    except core.ChangeRejected as exc:
+        assert "系統軟件" in str(exc), exc
+    else:
+        raise AssertionError("改的时候放过了新建会拒的层名")
+
+
+@case
 def 按抽象层铺布局_二级分组是层且次序固定():
     vault = make_vault({
         "nodes/x/a.md": node_md("A", extra="layer: AI应用\n"),

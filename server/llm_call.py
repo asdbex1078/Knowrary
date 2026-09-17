@@ -5,6 +5,7 @@ suggest 与 quiz 共用：角色名（learn / review）和"剥围栏再 json.loa
 """
 from __future__ import annotations
 
+import datetime as dt
 import json
 import logging
 import time
@@ -132,3 +133,31 @@ def parse_json(raw: str, context: str = "", vault: Path | None = None) -> dict:
         except OSError as exc:
             log.warning("问题流没记上：%s", exc)
     return {}
+
+
+def clean_layer(raw) -> str:
+    """模型给的抽象层：只认 core.LAYERS 里的七档，别的一律当没填。
+
+    和 load 不一样：load 认不出就退回默认档（总得有个负荷才排得出时间表），
+    而 layer 认不出必须留空——瞎填一个会把节点放进错的泳道，比不分层更难发现。
+
+    拆计划（projects.py）和关系建议（suggest.py）两条链路都要收这个字段，
+    所以判断只写一份：两边各写一遍，改了七档的名字必定漏掉一处。
+    """
+    val = str(raw or "").strip()
+    return val if val in core.LAYERS else ""
+
+
+def clean_year(raw) -> int | None:
+    """模型给的年份：三到四位的才要。
+
+    模型偶尔会给 "1970s"、"约 2017"、"不详" 或者一整句话，全部当没填——
+    错的年份会在历史视图上把节点摆到错误的位置，比空着更难查。
+    """
+    if isinstance(raw, bool):          # bool 是 int 的子类，不挡住 True 就会变成 1
+        return None
+    try:
+        year = int(str(raw).strip())
+    except (TypeError, ValueError):
+        return None
+    return year if 100 <= year <= dt.date.today().year else None

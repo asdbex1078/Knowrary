@@ -242,7 +242,8 @@ async function applyProjectCard({ card, i, j }) {
     const old = next[card.id]
     next[card.id] = old
       ? { ...old, lists: [...(old.lists || []), ...card.lists] }      // 已有项目：加清单，不覆盖
-      : { name: card.name, field: card.field, weekly_hours: card.weekly_hours,
+      : { name: card.name, field: card.field, level: card.level || '会用',
+          weekly_hours: card.weekly_hours,
           daily_quota: card.daily_quota, created: new Date().toISOString().slice(0, 10),
           lists: card.lists }
     await putProjects({ base_revision: doc.doc.revision, projects: next })
@@ -295,13 +296,19 @@ async function applyPointsCard({ card, i, j }) {
   }
 }
 
-/** 在当前项目的清单里找这个点（幽灵节点要用它的 name / why）。 */
-function projectPoint(id) {
-  const lists = plansDoc.value?.projects?.[currentProject.value]?.lists || []
-  for (const ls of lists) {
-    for (const stage of ls.stages || []) {
-      const hit = (stage.points || []).find((p) => p.id === id)
-      if (hit) return hit
+/** 在清单里找这个点（幽灵节点要它的 name / why，新建对话框要它的 layer / year）。
+ *
+ * 默认在当前项目里找。今日清单那条路送进来的条目可能属于别的项目，
+ * 所以 `pid` 可以指定——找不到再退回当前项目，两边都空才返回 null。
+ */
+function projectPoint(id, pid) {
+  for (const key of [pid, currentProject.value]) {
+    if (!key) continue
+    for (const ls of plansDoc.value?.projects?.[key]?.lists || []) {
+      for (const stage of ls.stages || []) {
+        const hit = (stage.points || []).find((p) => p.id === id)
+        if (hit) return hit
+      }
     }
   }
   return null
@@ -2088,6 +2095,13 @@ function setLayer({ id, layer }) {
   queueChange({ type: 'update_frontmatter', source: id, fields: { layer: layer || '' } })
 }
 
+/** 采纳 AI 建议的年份。同样走变更卡——机器给的年份更要经人过目，
+ *  它错了不会报错，只会把这个点在历史视图上摆到错误的位置。 */
+function setYear({ id, year }) {
+  if (!id || !year) return
+  queueChange({ type: 'update_frontmatter', source: id, fields: { year: Number(year) } })
+}
+
 async function previewChanges() {
   if (!pending.value.length) return
   try {
@@ -2753,9 +2767,16 @@ function dirForField(field) {
 function buildPoint(point) {
   const field = point.field || plansDoc.value?.projects?.[point.project]?.field || ''
   const box = layoutDoc.value?.viewport
+  // 抽象层和年份是**拆计划那一次调用顺手给的建议**，存在清单点上（PlanPoint.layer / year）。
+  // 三条路径（计划面板 / 画布幽灵 / 今日清单）送进来的对象形状不一样——只有计划面板给的是
+  // 清单里那个点本身，另外两条只挑了 name / why。所以在这儿统一回查一次，
+  // 而不是让三处各记得补一遍（漏一处的表现就是"同一个点从这边进有预填、从那边进没有"）。
+  const pt = projectPoint(point.id, point.project)
   openNodeDialog({ x: (box?.cx ?? 0) - 80, y: (box?.cy ?? 0) - 30 }, null)
   creating.value = { ...creating.value, name: point.id, field, dir: dirForField(field),
-                     groupName: '', planWhy: point.why || '' }
+                     groupName: '', planWhy: point.why || '',
+                     layer: point.layer || pt?.layer || '',
+                     year: point.year || pt?.year || null }
 }
 
 // —— 阶段 9：测验（出题走 LLM，自评三档回写复习调度；全程不碰 md）——
@@ -3369,7 +3390,7 @@ onBeforeUnmount(() => {
                  :all-node-ids="allNodeIds" :pending="pending" :change-preview="changePreview"
                  :is-due="!!selected && dueIds.has(selected.id)"
                  :suggestions="suggestions" :suggesting="suggesting"
-                 @close="inspectorHidden = true" @goto="gotoNode" @edit-desc="editDesc" @set-layer="setLayer" @add-ref="addRef"
+                 @close="inspectorHidden = true" @goto="gotoNode" @edit-desc="editDesc" @set-layer="setLayer" @set-year="setYear" @add-ref="addRef"
                  @review="markReviewed($event.id, $event.grade)" @quiz="startQuiz"
                  @rename="openRename"
                  @finalize="finalize" @retype-edge="retypeEdge"
