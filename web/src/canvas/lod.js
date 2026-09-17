@@ -8,8 +8,12 @@
 // pinned 覆盖自动规则；可见元素超预算时，从最深的分组开始继续折叠。
 export const BUDGET = 600
 export const BUDGET_MAX = 1500
-export const LEAF_ZOOM = 0.5        // 叶子分组的折叠阈值：13px 字号 × 0.5 ≈ 6.5px，已读不出来
-export const CONTAINER_ZOOM = 0.28  // 容器分组：再缩一档才整体折叠
+// 阈值按**节点卡片在屏幕上还剩多大**定，而不是"字还读不读得出来"：
+// 字读不出来时，图上"谁连着谁"仍然是有用的信息，而折叠会把这条信息整个换成
+// 卡片之间的一根灰线——人看图看的正是那些具体关系。所以先保结构、后保字。
+// 196px 的卡片 × 0.28 ≈ 55px：再小就真成色块了，那时才折叠。
+export const LEAF_ZOOM = 0.28       // 叶子分组（里面全是节点）
+export const CONTAINER_ZOOM = 0.16  // 容器分组：再缩一档才整体折叠
 
 export function groupDepth(groups, id, seen = new Set()) {
   const g = groups[id]

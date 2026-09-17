@@ -119,7 +119,8 @@ const autoLod = ref(true)                // 缩小自动折叠成簇卡片（设
 // 对齐线 + 落点吸附：和主题、小地图一样是"这台机器上怎么摆图"的偏好，不进 layout.json
 const snap = ref(localStorage.getItem('knowrary-snap') !== '0')
 // 连线绕开卡片：默认不开，它会把线掰成直角，是另一种观感
-const avoidNodes = ref(localStorage.getItem('knowrary-avoid') === '1')
+// 默认**开**：线被卡片盖住是实打实看不见信息，直角走线只是观感问题
+const avoidNodes = ref(localStorage.getItem('knowrary-avoid') !== '0')
 const pathFrom = ref(null)               // 路径搜索的起点（右键选定），等着第二个节点
 const pathHit = shallowRef(null)         // 找到的路径 { nodes, edges }，纯展示态，不落盘
 const focusGroup = ref(null)             // 聚焦的域：点簇卡片进入，只展开它
@@ -1659,13 +1660,13 @@ async function createNode(form) {
   creating.value = null
   status.value = 'saving'
   try {
-    const res = await postChanges({ base_revision: indexRevision.value, dry_run: false, changes: [{
+    const res = await writeChanges([{
       type: 'create_node', source: form.id, path: `${form.dir}/${form.id}.md`,
       fields: { name: form.name, field: form.field, desc: form.desc,
                 ...(form.year ? { year: form.year } : {}),
                 ...(form.layer ? { layer: form.layer } : {}),
                 learned: new Date().toISOString().slice(0, 10) },
-    }] })
+    }])
     await placeNew([form.id], spot)
     // 在项目画布 / 项目对话下新建的点，**自动归到这个项目的清单**——
     // 不加的话节点建出来了、项目进度却不认它（清单只按 id 引用）。
@@ -1758,8 +1759,7 @@ async function createRelation({ relation, target, swap }) {
   relating.value = null
   status.value = 'saving'
   try {
-    const res = await postChanges({ base_revision: indexRevision.value, dry_run: false,
-                                    changes: [{ type: 'add_edge', source: from, relation, target: to }] })
+    const res = await writeChanges([{ type: 'add_edge', source: from, relation, target: to }])
     await ensurePlaced(to)
     await ensurePlaced(from)
     const family = familyOfType(relation)
@@ -1780,8 +1780,7 @@ async function saveBody(text) {
   if (!id) return
   status.value = 'saving'
   try {
-    const res = await postChanges({ base_revision: indexRevision.value, dry_run: false,
-                                    changes: [{ type: 'update_body', source: id, body: text }] })
+    const res = await writeChanges([{ type: 'update_body', source: id, body: text }])
     await reloadIndex()
     status.value = 'saved'
     setBanner(`已保存「${id}」的正文，原文备份在 ${res.backup}`, 'success')
@@ -1803,8 +1802,7 @@ async function deleteEdge(edgeId) {
   if (!e) return
   status.value = 'saving'
   try {
-    await postChanges({ base_revision: indexRevision.value, dry_run: false,
-                        changes: [{ type: 'remove_edge', source: e.source, relation: e.type, target: e.target }] })
+    await writeChanges([{ type: 'remove_edge', source: e.source, relation: e.type, target: e.target }])
     await reloadIndex()
     status.value = 'saved'
     setBanner(`已删除「${e.source} ${e.type} → ${e.target}」`, 'success')
@@ -1993,9 +1991,7 @@ function setLayer({ id, layer }) {
 async function previewChanges() {
   if (!pending.value.length) return
   try {
-    changePreview.value = await postChanges({
-      base_revision: indexRevision.value, dry_run: true, changes: pending.value,
-    })
+    changePreview.value = await writeChanges(pending.value, { dryRun: true })
     setBanner('')
   } catch (err) {
     changePreview.value = null
@@ -2003,11 +1999,35 @@ async function previewChanges() {
   }
 }
 
+/**
+ * 走 /api/changes 的唯一出口：**撞上「索引已更新」自己刷一次再试**。
+ *
+ * base_revision 是整张索引的粗粒度闸：你在 Obsidian 里随手改一个字，索引就重建、
+ * revision 就变，于是这一页上后面**每一次**写回都 409——变更卡、新建、改摘要全部
+ * 卡死，只能刷新页面。（真实使用里就是这么炸的：手改了一个文件，之后所有卡片都失败。）
+ *
+ * 自动重试是安全的：真正的保护是**每个文件的 digest**（core.plan 会拿索引里的指纹
+ * 比对磁盘原文，被人改过就抛 WriteConflict），刷新索引后写的是**改过之后**的那一版，
+ * 不会覆盖掉人手写的东西。digest 对不上时仍然 409，但 detail 是一句话而不是带
+ * current_revision 的对象——那种不重试，原样报给人看。
+ */
+async function writeChanges(changes, { dryRun = false } = {}) {
+  const body = { base_revision: indexRevision.value, dry_run: dryRun, changes }
+  try {
+    return await postChanges(body)
+  } catch (err) {
+    const current = err.status === 409 ? err.body?.detail?.current_revision : null
+    if (!current) throw err
+    const fresh = await fetchIndex()
+    indexDoc.value = fresh
+    indexRevision.value = fresh.revision
+    return postChanges({ ...body, base_revision: fresh.revision })
+  }
+}
+
 async function applyChanges() {
   try {
-    const res = await postChanges({
-      base_revision: indexRevision.value, dry_run: false, changes: pending.value,
-    })
+    const res = await writeChanges(pending.value)
     pending.value = []
     changePreview.value = null
     const id = detail.value?.id
@@ -2453,8 +2473,7 @@ function stopChat() { chatAbort?.abort() }
 async function applyChatCard({ card, i, j }) {
   chatBusy.value = true
   try {
-    const res = await postChanges({ base_revision: indexRevision.value, dry_run: false,
-                                    changes: card.changes })
+    const res = await writeChanges(card.changes)
     chatLog.value[i].cards[j].applied = true
     await load()
     // 学完之后图谱自动长出来（重构方案 §4）：新建的点自动上画布，落 draft 等人定稿。
@@ -3012,6 +3031,8 @@ onMounted(async () => {
     get project() { return currentProject.value },
     get projectIds() { return [...projectIds.value] },
     get progress() { return plansProgress.value },
+    get indexRevision() { return indexRevision.value },
+    write: writeChanges,          // 排查"写回为什么失败"时，能在控制台直接打一发
     // 历史视图：布局是一次算定的，游标停在哪由 upto 决定——排查"点该亮没亮"只看这两个
     get histPlan() { return histPlan.value },
     get histActive() { return histActive ? [...histActive] : null },

@@ -263,6 +263,8 @@ export function registerShapes() {
   }, true)
 }
 
+// 分组标题条的上限 = 布局给标题留的内边距（core.layout.PAD_TOP），超了会被子分组压住
+export const HEAD_MAX = 44
 export const CLUSTER_W = 260
 export const CLUSTER_H = 128
 
@@ -270,33 +272,44 @@ export const CLUSTER_H = 128
 const truncate = (text, max) => (text.length > max ? `${text.slice(0, max)}…` : text)
 
 /**
- * 簇卡片的尺寸与字号跟着"它替代的那个分组框"走，不跟缩放耦合：
- * 折叠后卡片占据原分组的位置，缩小时它本来就大，字自然读得出来；
- * 早先按 1/zoom 放大会算出极端值，触发 X6 文本处理递归爆栈。
+ * 簇卡片**不越出它替代的那个分组框**。
+ *
+ * 早先为了"缩小时也读得清"，把卡片按 1/zoom 放大到 3 倍——于是 248×128 的泳道
+ * 画出 780×384 的卡片，相邻的簇互相盖、连线全埋在卡片底下（zIndex 12 > 边的 5），
+ * 看上去就是"卡片挡住连线、卡片和卡片压在一起"。
+ * 现在反过来：**尺寸认框，字号认缩放**（clusterAttrs 里按 1/zoom 放大字，再按卡片
+ * 尺寸夹一层，装不下的行直接不画）。缩小时看不清细节是对的——那时只需要知道
+ * "这里有一簇"，要读内容就放大。
  */
-export function clusterBox(group, zoom = 1) {
-  // 卡片至少要"屏幕上看得清"：世界尺寸随缩放放大，但夹在 1~3 倍——
-  // 早先直接用 1/zoom（能到 20 倍）会让 X6 的文本处理递归爆栈。
-  const k = Math.min(3, Math.max(1, 1 / Math.max(zoom, 0.05)))
-  const w = Math.max(CLUSTER_W * k, Math.min(group.w || CLUSTER_W, 1100))
-  const h = Math.max(CLUSTER_H * k, Math.min(group.h || CLUSTER_H, 480))
-  return { w, h }
+export function clusterBox(group) {
+  return { w: Math.min(group.w || CLUSTER_W, 1100), h: Math.min(group.h || CLUSTER_H, 480) }
 }
 
+
 export function clusterAttrs(name, summary, color = NEUTRAL, box = { w: CLUSTER_W, h: CLUSTER_H },
-                             doc = null) {
-  const s = Math.max(1, Math.min(box.h / CLUSTER_H, 3.2))   // 字号随卡片变大，但设上限
+                             doc = null, zoom = 1) {
+  // 字跟着缩放放大（缩小时才读得出来），但必须装得进卡片：宽了会溢出到隔壁，
+  // 高了会把下面几行挤出框外——所以三个上限取最小的那个。
+  const k = Math.min(3, Math.max(1, 1 / Math.max(zoom, 0.05)))
+  const title = Math.max(9, Math.min(17 * k, box.h * 0.3, box.w / 5.2))
+  const small = title * 0.72
+  const fits = (need) => box.h >= need
+  const chars = (size) => Math.max(4, Math.floor((box.w - title * 1.6) / (size * 1.05)))
+  const showCount = fits(title * 3.4)
+  const showList = fits(title * 5.2)
+  const showHint = fits(title * 6.4)
   return {
-    body: { fill: color.fill, stroke: color.line, strokeWidth: 1.6 * s, rx: 16 * s, ry: 16 * s, class: 'kg-card' },
-    accent: { width: 6 * s, height: box.h, rx: 3 * s, ry: 3 * s, fill: color.line },
-    title: { text: truncate(name, 16), fill: color.text, fontSize: 17 * s, fontWeight: 700,
-             refX: 20 * s, refY: 30 * s },
-    count: { text: `${summary.count} 个知识点${doc ? ' · 📄 有总览' : ''}`, fill: color.text,
-             fontSize: 12 * s, refX: 20 * s, refY: 54 * s, opacity: 0.85 },
-    list: { text: truncate(summary.top.join(' · '), 30), fill: tokens().title, fontSize: 12 * s,
-            refX: 20 * s, refY: 80 * s, opacity: 0.75 },
-    hint: { text: '点开展开这一簇', fill: color.text, fontSize: 11 * s, refX: 20 * s, refY: box.h - 18 * s,
-            opacity: 0.5 },
+    body: { fill: color.fill, stroke: color.line, strokeWidth: Math.max(1.2, title / 11),
+            rx: 16, ry: 16, class: 'kg-card' },
+    accent: { width: Math.max(4, title / 3), height: box.h, rx: 3, ry: 3, fill: color.line },
+    title: { text: truncate(name, chars(title)), fill: color.text, fontSize: title, fontWeight: 700,
+             refX: title * 0.9, refY: title * 1.5 },
+    count: { text: showCount ? `${summary.count} 个知识点${doc ? ' · 📄 有总览' : ''}` : '',
+             fill: color.text, fontSize: small, refX: title * 0.9, refY: title * 2.8, opacity: 0.85 },
+    list: { text: showList ? truncate(summary.top.join(' · '), chars(small)) : '',
+            fill: tokens().title, fontSize: small, refX: title * 0.9, refY: title * 4.2, opacity: 0.75 },
+    hint: { text: showHint ? '点开展开这一簇' : '', fill: color.text, fontSize: small * 0.92,
+            refX: title * 0.9, refY: box.h - title * 0.8, opacity: 0.5 },
   }
 }
 
@@ -381,13 +394,22 @@ export function nodeAttrs(indexNode, layoutNode, color = NEUTRAL, due = false, s
   }
 }
 
-export function groupAttrs(name, color = NEUTRAL, doc = null) {
+export function groupAttrs(name, color = NEUTRAL, doc = null, zoom = 1, box = null) {
+  // 标题条跟着缩放放大：13px 的字缩到 30% 只剩 4px，整块框就成了没名字的方块。
+  // **但条子不能超过布局给标题预留的那 44px**（core.layout.PAD_TOP）——
+  // 撑过头的话，里面的子分组会直接压在标题上把它盖掉（试出来的：条子 75px 时标题被削一半）。
+  const k = Math.min(2.4, Math.max(1, 1 / Math.max(zoom, 0.05)))
+  const head = Math.min(Math.max(34, 13 * k * 2.2), HEAD_MAX)
+  const size = Math.min(13 * k, head * 0.52, Math.max(11, (box?.h || 200) / 3.2))
   return {
     body: { fill: tokens().groupFill, stroke: color.line, strokeWidth: 1.1, strokeOpacity: 0.4, rx: 16, ry: 16,
             class: 'kg-group-box' },
-    head: { fill: color.head, rx: 16, ry: 16, height: 34, refWidth: '100%' },
-    label: { text: name, fill: color.text, fontSize: 13, fontWeight: 600 },
-    doc: { text: doc ? '📄 总览' : '', fill: color.text, opacity: 0.75 },
+    head: { fill: color.head, rx: 16, ry: 16, height: head, refWidth: '100%' },
+    // refY 是**基线**不是中心：按一半放会把字顶到标题条外面去（框边一圆角就削掉半个字）
+    label: { text: name, fill: color.text, fontSize: size, fontWeight: 600,
+             refX: 16, refY: head * 0.5 + size * 0.36 },
+    doc: { text: doc ? '📄 总览' : '', fill: color.text, opacity: 0.75, fontSize: size * 0.9,
+           refY: head * 0.5 + size * 0.32 },
   }
 }
 

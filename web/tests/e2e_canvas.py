@@ -190,8 +190,10 @@ class Page:
             if msg.get("id") == self.n:
                 return msg.get("result", {})
 
-    async def ev(self, expr: str):
-        res = await self.call("Runtime.evaluate", {"expression": expr, "returnByValue": True})
+    async def ev(self, expr: str, await_promise: bool = False):
+        # await_promise：表达式是 async IIFE 时必须开，否则拿回来的是 Promise 对象本身
+        res = await self.call("Runtime.evaluate", {"expression": expr, "returnByValue": True,
+                                                   "awaitPromise": await_promise})
         if res.get("exceptionDetails"):
             raise AssertionError("页面 JS 异常：" + json.dumps(res["exceptionDetails"], ensure_ascii=False)[:300])
         return res.get("result", {}).get("value")
@@ -284,16 +286,28 @@ async def edge_counts(page: Page) -> dict:
 
 
 async def case_aggregate(page: Page, ck: Check) -> None:
-    """跨分组边默认聚合成一束；点它展开明细，再点收起。"""
-    start = await edge_counts(page)
-    # 规则是"跨分组的边一条都不单独画"，而不是"画布上只有聚合束"：
-    # 2026-09-14 起结构族默认可见，组内的 甲 部件 乙 是正常的明细边。
-    cross = await page.ev("""JSON.stringify(__kg.graph.getEdges()
+    """一对分组之间线不多时画真实连线，密了才并成一束；点束展开明细，再点收起。"""
+    cross_ids = """JSON.stringify(__kg.graph.getEdges()
       .filter((e) => (e.getData() || {}).kind === 'edge')
       .filter((e) => (__kg.layout.nodes[e.getSourceCellId()] || {}).group
                   !== (__kg.layout.nodes[e.getTargetCellId()] || {}).group)
-      .map((e) => e.id))""")
-    ck.add("跨分组边默认聚合成束", start["agg"] >= 1 and cross == "[]",
+      .map((e) => e.id))"""
+    thin = await edge_counts(page)
+    cross = await page.ev(cross_ids)
+    # 只有 2 条跨组边时**不聚合**：一根「组B → 组A」的灰线代替不了「丙 依赖 甲」，
+    # 而人看图看的正是那些具体关系（按层分泳道之后几乎每条边都跨组，一刀切聚合等于整张图只剩灰线）
+    ck.add("跨组边不多时照画真实连线", thin["agg"] == 0 and len(json.loads(cross)) == 2,
+           f"聚合 {thin['agg']} 束，跨组明细 {cross}")
+
+    # 加第三条 组B → 组A 的边，越过阈值：这时才该并成一束
+    await page.ev("""__kg.write([{ type: 'add_edge', source: '丁', relation: '依赖', target: '甲' }])""",
+                  await_promise=True)
+    await page.ev("location.reload()")
+    await asyncio.sleep(2.4)
+    await poll(page, "!!window.__kg", lambda v: v is True, timeout=12)
+    start = await edge_counts(page)
+    cross = await page.ev(cross_ids)
+    ck.add("同一对分组之间密了就并成一束", start["agg"] >= 1 and cross == "[]",
            f"画布 {start['total']} 条、聚合 {start['agg']} 束，漏网的跨组明细边 {cross}")
     click = """(() => {
       const agg = [...document.querySelectorAll('.x6-edge')].find(
@@ -309,7 +323,7 @@ async def case_aggregate(page: Page, ck: Check) -> None:
       return agg.getAttribute('data-cell-id');
     })()"""
     bundle = await page.ev(click)
-    expect_detail = start["total"] - start["agg"] + 2   # 这束里有 2 条明细
+    expect_detail = start["total"] - start["agg"] + 3   # 这束里有 3 条明细
     await poll(page, "document.querySelectorAll('.x6-edge').length", lambda v: (v or 0) >= expect_detail)
     opened = await edge_counts(page)
     ck.add("点聚合束展开明细", opened["agg"] == start["agg"] - 1 and opened["total"] > start["total"],
@@ -329,6 +343,13 @@ async def case_aggregate(page: Page, ck: Check) -> None:
     dim = await poll(page, """[...document.querySelectorAll('.x6-edge path')].filter(
       (p) => parseFloat(p.getAttribute('opacity') || '1') < 0.2).length""", lambda v: (v or 0) > 0)
     ck.add("悬停节点高亮相关边、淡出其余", (dim or 0) > 0, f"淡出 {dim} 条")
+
+    # 收尾：把为了触发聚合加的那条边删掉，后面数边的用例才对得上
+    await page.ev("""__kg.write([{ type: 'remove_edge', source: '丁', relation: '依赖', target: '甲' }])""",
+                  await_promise=True)
+    await page.ev("location.reload()")
+    await asyncio.sleep(2.4)
+    await poll(page, "!!window.__kg", lambda v: v is True, timeout=12)
 
 
 async def case_drag_node(page: Page, ck: Check) -> dict:
@@ -533,7 +554,8 @@ async def case_note_and_ref(page: Page, ck: Check, vault: Path) -> None:
 
 async def case_focus_cluster(page: Page, ck: Check) -> None:
     """缩小出簇卡片 → 点一张放大进那个域 → Esc 回全景。"""
-    await page.ev("__kg.graph.zoomTo(0.3)")
+    # 折叠阈值按"卡片在屏幕上还剩多大"定（LEAF_ZOOM 0.28），0.3 还不折
+    await page.ev("__kg.graph.zoomTo(0.2)")
     clusters = await poll(page, "document.querySelectorAll('[data-shape=\"kg-cluster\"]').length",
                           lambda v: (v or 0) > 0)
     if not clusters:
@@ -1264,6 +1286,30 @@ async def case_edge_vertices(page: Page, ck: Check) -> None:
     ck.add("双击清掉手工拐点", picked not in ck.layout()["edges"], str(ck.layout()["edges"]))
 
 
+# ---------------------------------------------------------------- 外部改过文件之后还能继续写
+
+async def case_stale_index(page: Page, ck: Check, vault: Path, api: str) -> None:
+    """有人在 Obsidian 里改一个字，索引就重建、revision 就变——
+    页面上后面**每一次**写回都会 409，直到刷新。真实使用里就是这么炸的。"""
+    await switch_mode(page, "全局图")
+    # 背着页面改一个文件：等价于在 Obsidian 里手改
+    p = vault / "nodes/组B/丙.md"
+    p.write_text(p.read_text("utf-8") + "\n外部加的一行\n", "utf-8")
+    stale = await page.ev("__kg.indexRevision ?? null")
+    await asyncio.sleep(0.5)
+    out = await page.ev("""(async () => {
+      try {
+        const r = await window.__kg.write([{ type: 'update_frontmatter', source: '甲',
+                                             fields: { desc: '外部改过之后再写一次' } }])
+        return JSON.stringify({ ok: true, files: r.files.length })
+      } catch (e) { return JSON.stringify({ ok: false, msg: String(e.body?.detail?.message || e.message) }) }
+    })()""", await_promise=True)
+    res = json.loads(out or "{}")
+    ck.add("外部改过文件之后，写回自己刷新索引再试一次", res.get("ok"), f"{res} · 原 revision {stale}")
+    ck.add("写回落到了磁盘上", "外部改过之后再写一次" in (vault / "nodes/组A/甲.md").read_text("utf-8"),
+           "甲.md")
+
+
 # ---------------------------------------------------------------- 表单外观
 
 async def case_form_look(page: Page, ck: Check) -> None:
@@ -1648,7 +1694,8 @@ async def case_wheel_pan(page: Page, ck: Check) -> None:
 
 async def case_cluster_drag(page: Page, ck: Check) -> None:
     """拖簇卡片 = 拖它代表的分组：分组框要真的动，且不能在 nodes 里留下同名幽灵记录。"""
-    await page.ev("__kg.graph.zoomTo(0.3)")
+    # 折叠阈值按"卡片在屏幕上还剩多大"定（LEAF_ZOOM 0.28），0.3 还不折
+    await page.ev("__kg.graph.zoomTo(0.2)")
     gid = await poll(page, """document.querySelector('[data-shape="kg-cluster"]')
       ?.getAttribute('data-cell-id') || ''""", lambda v: bool(v))
     if not gid:
@@ -1995,6 +2042,7 @@ async def scenarios(page: Page, api: str, results: list) -> None:
     await case_create_node(page, ck, VAULT_HOLDER[0])
     await case_subgroup(page, ck)
     await case_group_doc(page, ck, VAULT_HOLDER[0])
+    await case_stale_index(page, ck, VAULT_HOLDER[0], api)
     await case_form_look(page, ck)
     await case_chat_markdown(page, ck, VAULT_HOLDER[0])
     await case_history(page, ck, VAULT_HOLDER[0])
