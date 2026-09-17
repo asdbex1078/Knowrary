@@ -4,8 +4,8 @@
 // 两者不一致的地方，往往就是值得重新思考归属的地方。符合核心原则 5：Agent 只提议不写入——
 // 这里只生成预览，确认后才走 PATCH 落盘，且可撤销。
 import { louvain } from '@antv/algorithm'
-import { PAD, ROW_MAX_W, TREE_GAP, ROW_GAP, looseGrid, packRows } from './layouts'
-import { NODE_H, NODE_W } from './shapes'
+import { PAD, ROW_MAX_W, TREE_GAP, ROW_GAP, looseGrid, packRows } from './layouts.js'
+import { NODE_H, NODE_W } from './shapes.js'
 
 const CELL = { w: NODE_W + 40, h: NODE_H + 28 }
 const COLS_MAX = 5

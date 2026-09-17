@@ -10,7 +10,7 @@
  */
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import Icon from '../ui/Icon.vue'
-import { FAMILY_STYLE } from '../canvas/shapes'
+import { FAMILY_STYLE } from '../canvas/shapes.js'
 
 const props = defineProps({
   source: { type: Object, required: true },         // { id, name }
@@ -18,6 +18,7 @@ const props = defineProps({
   nodes: { type: Array, default: () => [] },        // index.nodes
   placed: { type: Set, default: () => new Set() },  // 已经在画布上的 id
   linked: { type: Object, default: () => ({}) },    // { 目标id: [已有的关系类型] }
+  preset: { type: Object, default: null },          // { relation, target }：欠账清单点「连边」带过来的默认值
 })
 const emit = defineEmits(['create', 'close'])
 
@@ -93,6 +94,24 @@ function onKey(ev) {
   if (step.value === 'target') { step.value = 'type'; return }
   emit('close')
 }
+
+/**
+ * 欠账清单里的连边建议带着"默认类型 + 默认目标"过来，直接落到第二步。
+ *
+ * **只是默认值，不是决定**：类型能退回去换、方向能反过来、目标能重搜。建议算出来的
+ * `包含` / `对比` 是按名字猜的，猜错了写进 md 就是一条骗人的边。
+ */
+onMounted(() => {
+  if (!props.preset?.relation) return
+  relation.value = props.preset.relation
+  step.value = 'target'
+  query.value = props.preset.target || ''
+  nextTick(() => {
+    const i = hits.value.findIndex((n) => n.id === props.preset.target)
+    if (i >= 0) cursor.value = i
+    searchEl.value?.focus()
+  })
+})
 
 onMounted(() => document.addEventListener('keydown', onKey, true))
 onBeforeUnmount(() => document.removeEventListener('keydown', onKey, true))

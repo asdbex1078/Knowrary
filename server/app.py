@@ -15,7 +15,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import assets, chat as chat_svc, curation, projects as projects_svc
+from . import assets, chat as chat_svc, curation, projects as projects_svc, years as years_svc
 from .contracts import (CalendarRead, ChangeResult, ChangeSet, ChatRequest, CoachToday, FileDiff,
                         InboxRead,
                         LayoutPatch, LayoutRead,
@@ -24,8 +24,9 @@ from .contracts import (CalendarRead, ChangeResult, ChangeSet, ChatRequest, Coac
                         PlaceResult, ProjectsRead, ProjectsSaved, ProjectsWrite, QuizDiagnoseRequest,
                         QuizDiagnosis, QuizGradeRequest, QuizGraded, QuizRequest, QuizSet, RenameImpact,
                         RenameRequest, RenameResult, ReviewDone, ReviewRequest, SuggestRequest,
-                        SuggestResult, UsageRead)
+                        SuggestResult, UsageRead, YearProposal, YearProposeRequest)
 from .index_service import current_index, invalidate
+from .llm_call import LLMFailed
 from .layout_store import (LayoutBroken, PatchRejected, RevisionConflict, apply_patch, find_orphans,
                            load_or_init)
 from .paths import DEFAULT_LAYOUT, WEB3D_DIST, WEB_DIST, core, vault_path
@@ -44,6 +45,17 @@ app.add_middleware(CORSMiddleware, allow_origins=["http://localhost:5173", "http
 def _on_layout_broken(_request, exc: LayoutBroken) -> JSONResponse:
     return JSONResponse(status_code=500, content={"detail": str(exc),
                                                   "hint": "原文件已保留，修好或删除后重启即可重新生成"})
+
+
+@app.exception_handler(LLMFailed)
+def llm_failed(request: Request, exc: LLMFailed) -> JSONResponse:
+    """模型没答上来 → 502，把原话带回去。
+
+    所有调模型的路由（出题、判分、关系建议、拆计划、补 year）共用这一处：
+    它们的失败长得一模一样，各写一遍 try 只会有的写有的漏。对话那条路不走这里——
+    它是 SSE，已经开始往外吐字节了，只能在流里发一个 `error` 事件。
+    """
+    return JSONResponse(status_code=502, content={"detail": str(exc)})
 
 
 @app.get("/api/health")
@@ -162,6 +174,25 @@ def post_regroup(body: dict) -> PlaceResult:
 def get_digest() -> dict:
     """图谱欠账清单：草稿 / 待复习 / stub / 跨分组桥 / 重复候选 / 环。只读。"""
     return curation.digest(vault_path())
+
+
+@app.post("/api/years/propose", response_model=YearProposal)
+def post_years_propose(req: YearProposeRequest) -> YearProposal:
+    """给缺 year 的节点批量提议年份。调 LLM（review 角色）**一次**，只读不写。
+
+    写回仍然走 /api/changes（update_frontmatter），所以 diff 预览、备份、指纹校验一样不少。
+    """
+    return years_svc.propose(vault_path(), req.node_ids)
+
+
+@app.get("/api/years/missing")
+def get_years_missing() -> dict:
+    """还有哪些节点没填 year。不调 LLM，纯查。"""
+    rows = years_svc.missing(current_index(vault_path()))
+    return {"count": len(rows),
+            "items": [{"id": n["id"], "name": n.get("name") or n["id"],
+                       "field": n.get("field") or "", "desc": (n.get("desc") or "")[:120]}
+                      for n in rows]}
 
 
 @app.post("/api/suggest", response_model=SuggestResult)
@@ -475,19 +506,35 @@ def post_changes(changeset: ChangeSet) -> ChangeResult:
                         index_revision=current_index(vault)["revision"])
 
 
+class FreshStatic(StaticFiles):
+    """每次都回源问一句"变了没"（`Cache-Control: no-cache`）。
+
+    构建产物的文件名**不带 content hash**（见 web/vite.config.js 里的理由），所以
+    "文件换了"这件事没法靠名字告诉浏览器——只能靠这个头。no-cache 不是不缓存：
+    浏览器照旧存着，只是每次用之前拿 ETag 问一下，没变就 304，一个字节都不下。
+    """
+
+    def file_response(self, *args, **kwargs):
+        resp = super().file_response(*args, **kwargs)
+        resp.headers["Cache-Control"] = "no-cache"
+        return resp
+
+
 def _mount_web() -> None:
     """有构建产物时同源托管前端（运行期零 Node）。/3d 是只读的 3D 总览原型，可随时删。"""
     if WEB3D_DIST.exists():
-        app.mount("/3d", StaticFiles(directory=str(WEB3D_DIST), html=True), name="web3d")
+        app.mount("/3d", FreshStatic(directory=str(WEB3D_DIST), html=True), name="web3d")
     if not WEB_DIST.exists():
         return
     assets = WEB_DIST / "assets"
     if assets.exists():
-        app.mount("/assets", StaticFiles(directory=str(assets)), name="assets")
+        app.mount("/assets", FreshStatic(directory=str(assets)), name="assets")
 
     @app.get("/")
     def index_html() -> FileResponse:
-        return FileResponse(str(WEB_DIST / "index.html"))
+        # index.html 本来就每次都要重读：它是那张指向各个 chunk 的清单
+        return FileResponse(str(WEB_DIST / "index.html"),
+                            headers={"Cache-Control": "no-cache"})
 
 
 _mount_web()

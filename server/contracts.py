@@ -597,7 +597,7 @@ class PlanProposal(Strict):
 class CoachItem(Strict):
     """今天可以动手的一条。kind 决定点下去干什么，前端按它分派。"""
 
-    kind: Literal["wrong", "due", "unbuilt", "shell", "inbox"]
+    kind: Literal["wrong", "due", "unbuilt", "shell", "lonely", "inbox"]
     id: str
     name: str
     why: str = ""                      # 清单里写的"为什么要学它"
@@ -607,6 +607,9 @@ class CoachItem(Strict):
     list: str | None = None
     stage: str | None = None
     state: dict[str, str] = Field(default_factory=dict)   # {study, exam}，学/考双态，现算
+    link: dict[str, str] = Field(default_factory=dict)
+    """`lonely` 专用：现成的连边建议 `{relation, target}`，没有就空。
+    点「连边」时预填进关系对话框——**只是默认值**，方向和类型仍然由人定。"""
 
 
 class CoachPlanLine(Strict):
@@ -637,6 +640,34 @@ class CoachToday(Strict):
     elsewhere: dict[str, int] = Field(default_factory=dict)
     """按项目过滤时，**别的项目还欠着多少**（{wrong, due}）。过滤可以，藏起来不行——
     藏起来的复习等于没有复习。"""
+
+
+# ---------------------------------------------------------------- year 批量回填
+
+class YearSuggestion(Strict):
+    """一个节点的 year 提议。**只是提议**——写盘仍然走 /api/changes 的 update_frontmatter。"""
+
+    id: str
+    name: str
+    year: int
+    confidence: float = 0.8
+    why: str = ""                      # 可核对的依据（哪篇论文 / 哪个标准 / 哪次发布）
+    picked: bool = True
+    """默认勾没勾上。低把握的仍然列出来但默认不选——**错的 year 比空的 year 难发现**：
+    它会把节点摆到时间轴上一个看起来很正常的位置，没人会去核。"""
+
+
+class YearProposal(Strict):
+    asked: int = 0                     # 这一轮问了几个
+    remaining: int = 0                 # 还剩几个没问（一次问不完时分批）
+    skipped: list[str] = Field(default_factory=list)
+    """问了但模型没给的——**这不是失败，是它说"拿不准"**，提示词里就这么要求的。
+    摆出来是为了让人知道这几个还欠着，而不是以为已经补齐了。"""
+    suggestions: list[YearSuggestion] = Field(default_factory=list)
+
+
+class YearProposeRequest(Strict):
+    node_ids: list[str] | None = None  # 不给就按 rank 取前 MAX_NODES 个缺 year 的
 
 
 # ---------------------------------------------------------------- 对话式教练（阶段 12）

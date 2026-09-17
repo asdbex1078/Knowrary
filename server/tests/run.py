@@ -445,6 +445,18 @@ def digest_汇总草稿与跨分组桥与重复候选():
     bridges = [(b["from_name"], b["to_name"], b["count"]) for b in d["bridges"]]
     assert bridges, "组A 到 组B 有边，桥不该是空的"
     assert d["counts"]["due"] >= 1, d["counts"]          # d 的 learned 是 2026-09-01，早就该复习了
+    assert "links" in d and d["counts"]["links"] == len(d["links"]), d["counts"]
+
+
+@case
+def digest_连边建议一路透到接口():
+    """连边建议是前端「连边」按钮的唯一数据源，字段掉了按钮就没得点。"""
+    c, _ = client({"nodes/组A/内存.md": node_md("内存"),
+                   "nodes/组A/堆内存.md": node_md("堆内存")})
+    links = c.get("/api/digest").json()["links"]
+    hit = next((h for h in links if {h["source"], h["target"]} == {"内存", "堆内存"}), None)
+    assert hit and hit["relation"] == "包含" and hit["source"] == "内存", links
+    assert hit["lonely"] == 2 and hit["reason"], hit
 
 
 @case
@@ -1171,6 +1183,41 @@ def projects_编排不碰md也不碰layout():
 
 
 @case
+def projects_删掉项目时把它的画布挪进备份():
+    """删项目原来只抹掉 projects.json 里的一行，`.knowrary/layouts/<项目>.json` 没人管。
+
+    实盘上就这么留下了一个 `mha.json`（0 分组 0 节点），谁也想不起它是谁的。
+    **挪走而不是删掉**：手工摆位是攒出来的成果，而删项目本来就可能是误点。
+    """
+    c, vault, _ = with_inbox_node()
+    c.put("/api/projects", json={"base_revision": 0, "projects": one_project([{"id": "a"}])})
+    canvas = vault / ".knowrary" / "layouts" / "llm.json"
+    canvas.parent.mkdir(parents=True, exist_ok=True)
+    canvas.write_text('{"schema_version": 2, "revision": 7}', encoding="utf-8")
+
+    r = c.put("/api/projects", json={"base_revision": 1, "projects": {}})
+    assert r.status_code == 200, r.text
+    assert not canvas.exists(), "项目删了，画布还躺在 layouts/ 里"
+    saved = list((vault / ".knowrary" / "backup").glob("*/layouts/llm.json"))
+    assert len(saved) == 1 and '"revision": 7' in saved[0].read_text("utf-8"), saved
+
+
+@case
+def projects_改项目不会误伤自己的画布():
+    """只有**消失的**项目才退役画布——改个名字、加个点不能把画布搬走。"""
+    c, vault, _ = with_inbox_node()
+    c.put("/api/projects", json={"base_revision": 0, "projects": one_project([{"id": "a"}])})
+    canvas = vault / ".knowrary" / "layouts" / "llm.json"
+    canvas.parent.mkdir(parents=True, exist_ok=True)
+    canvas.write_text('{"schema_version": 2, "revision": 7}', encoding="utf-8")
+
+    r = c.put("/api/projects", json={"base_revision": 1,
+                                     "projects": one_project([{"id": "a"}, {"id": "b"}])})
+    assert r.status_code == 200, r.text
+    assert canvas.exists(), "只是改了清单，画布不该被搬走"
+
+
+@case
 def projects_没有文件时返回空而不是报错():
     c, vault, _ = with_inbox_node()
     assert not (vault / ".knowrary" / "projects.json").exists()
@@ -1863,17 +1910,51 @@ def usage_失败的调用也要记一笔():
 
     llm_backend.ask_detailed = boom
     try:
-        raised = False
-        try:
-            c.post("/api/quiz", json={"node_ids": ["a"]})
-        except SystemExit:
-            raised = True
+        # 模型挂了要回 502 而不是让 SystemExit 逃到 ASGI 层——那样客户端只会看到
+        # 连接莫名其妙断掉，服务端日志里横一段 asyncio 的 ExceptionGroup
+        r = c.post("/api/quiz", json={"node_ids": ["a"]})
+        assert r.status_code == 502, r.status_code
+        assert "连接失败" in r.json()["detail"], r.json()
         u = c.get("/api/llm/usage").json()
-        assert u["today"]["calls"] == 1 and u["today"]["errors"] == 1, (u["today"], raised)
+        assert u["today"]["calls"] == 1 and u["today"]["errors"] == 1, u["today"]
         assert u["recent"][0]["ok"] is False and "连接失败" in u["recent"][0]["error"], u["recent"][0]
     finally:
         llm_backend.ask_detailed = real
         quiz_mod.ask = original
+
+
+@case
+def llm_挂掉时每条路由都回502而不是断连接():
+    """`llm_backend` 是先有 CLI 后有服务的，报错一路用 `SystemExit`——命令行里那是对的。
+
+    但 `SystemExit` 是 `BaseException`，Starlette 的异常中间件只接 `Exception`，
+    于是它会**一路穿过请求处理层**：客户端拿到的不是"模型挂了"，而是连接莫名其妙断掉。
+    所有调模型的路由共用 llm_call 这一个收口，在那里换成 `LLMFailed` 就够了。
+    """
+    import llm_backend
+    c, _ = client({"nodes/组A/a.md": node_md("A")})
+    real_ask, real_chat = llm_backend.ask_detailed, llm_backend.chat
+
+    def boom(*a, **kw):
+        raise SystemExit("LLM 连接失败")
+
+    llm_backend.ask_detailed = boom
+    llm_backend.chat = boom
+    try:
+        for path, body in (("/api/quiz", {"node_ids": ["a"]}),
+                           ("/api/suggest", {"node_id": "a", "index_revision": 0}),
+                           ("/api/years/propose", {}),
+                           ("/api/quiz/diagnose", {"questions": [], "answers": []})):
+            r = c.post(path, json=body)
+            assert r.status_code in (422, 502), f"{path} -> {r.status_code}"
+            if r.status_code == 502:
+                assert "连接失败" in r.json()["detail"], (path, r.json())
+
+        # 对话不走这条：SSE 已经开始往外吐字节了，只能在流里发一个 error 事件
+        r = c.post("/api/chat", json={"messages": [{"role": "user", "content": "在吗"}]})
+        assert [e for e in sse_events(r) if e["type"] == "error"], sse_events(r)
+    finally:
+        llm_backend.ask_detailed, llm_backend.chat = real_ask, real_chat
 
 
 @case
@@ -1883,7 +1964,7 @@ def llm_报错里带着是哪个角色哪个provider():
     import llm_backend
     real = llm_backend.chat
 
-    def boom(messages, provider, model_override=None, on_delta=None):
+    def boom(messages, provider, model_override=None, on_delta=None, session=None):
         raise SystemExit("LLM 请求失败 HTTP 503（https://api.example.com/v1/chat/completions）："
                          "{\"error\":{\"code\":\"model_not_found\"}}")
 
@@ -2224,14 +2305,24 @@ def health_汇总可用():
 # ---------------------------------------------------------------- 阶段 12：对话式教练
 
 def stub_chat(replies: list[str]):
-    """按顺序吐回复的假模型。返回 (原函数, 收到的 messages 列表)。"""
+    """按顺序吐回复的假模型。返回 (原函数, 收到的 messages 列表)。
+
+    `seen` 上挂一份 `sessions`：每次调用带的会话钥匙。claude-cli 靠它续同一段
+    会话、只发新增的几条，钥匙没传下去就悄悄退回"每轮重发全文"。
+    """
     from server import chat as chat_mod
     original = chat_mod.llm_chat
-    seen: list = []
+
+    class Seen(list):
+        sessions: list = []
+
+    seen = Seen()
+    seen.sessions = []
     box = list(replies)
 
-    def fake(vault, role, messages, op="chat", on_delta=None):
+    def fake(vault, role, messages, op="chat", on_delta=None, session=None):
         seen.append([dict(m) for m in messages])
+        seen.sessions.append(session)
         text = box.pop(0) if box else "没话说了"
         if on_delta:
             on_delta(text)
@@ -2252,6 +2343,258 @@ def tool_block(name: str, args: dict) -> str:
 
 def sse_events(resp) -> list[dict]:
     return [json.loads(x[6:]) for x in resp.text.splitlines() if x.startswith("data: ")]
+
+
+@case
+def web_构建产物带no_cache头且能走304():
+    """产物文件名**不带 content hash**（见 web/vite.config.js）：改一行源码只有 index.js 变，
+    git 只存那一个 delta，而不是 57 个新文件。代价是"文件换了"没法靠名字告诉浏览器——
+    只能靠这个头。丢了它，改完前端刷新页面看到的还是旧界面。
+
+    no-cache 不是不缓存：浏览器照旧存着，只是每次拿 ETag 问一句，没变就 304。
+    """
+    from server.app import app as real_app
+    from fastapi.testclient import TestClient as TC
+    web_dist = Path(__file__).resolve().parents[2] / "web" / "dist" / "assets" / "index.js"
+    if not web_dist.exists():
+        return                                   # 没构建过就跳过，别让自测依赖构建产物
+    c = TC(real_app)
+    r = c.get("/assets/index.js")
+    assert r.status_code == 200, r.status_code
+    assert r.headers.get("cache-control") == "no-cache", dict(r.headers)
+    etag = r.headers.get("etag")
+    assert etag, "没有 ETag 就没法 304，no-cache 会退化成每次全量重下"
+    assert c.get("/assets/index.js", headers={"If-None-Match": etag}).status_code == 304
+    assert c.get("/").headers.get("cache-control") == "no-cache", "index.html 是那张清单，更不能缓存"
+
+
+def stub_years_llm(payload: str):
+    from server import years as years_mod
+    original = years_mod.ask
+    years_mod.ask = lambda vault, role, prompt, op="?": payload
+    return original
+
+
+@case
+def years_只认问过的节点且拿不准的不填():
+    """批量补 year 最怕的是**往 md 里写没核对过的东西**。
+
+    模型偶尔会顺手给一个没问过的节点，甚至编一个不存在的 id——放它过去就等于
+    凭一句话改 frontmatter。而错的 year 比空的 year 难发现：它会把节点摆到时间轴上
+    一个看起来很正常的位置，没人会回头核。
+    """
+    from server import years as years_mod
+    c, _ = client({"nodes/组A/a.md": node_md("A"), "nodes/组A/b.md": node_md("B")})
+    original = stub_years_llm(json.dumps({"years": [
+        {"id": "a", "year": 1980, "confidence": 0.9, "why": "某论文 1980 年发表"},
+        {"id": "不存在的点", "year": 1999, "confidence": 0.9},     # 编出来的 id
+        {"id": "b", "year": "1970年代", "confidence": 0.9},        # 不是四位数年份
+    ]}, ensure_ascii=False))
+    try:
+        r = c.post("/api/years/propose", json={})
+    finally:
+        years_mod.ask = original
+
+    data = r.json()
+    assert [s["id"] for s in data["suggestions"]] == ["a"], data["suggestions"]
+    assert data["suggestions"][0]["year"] == 1980 and data["suggestions"][0]["picked"] is True
+    assert "b" in data["skipped"], data["skipped"]          # 问过、没给 → 如实报出来
+    assert "不存在的点" not in data["skipped"], data["skipped"]
+
+
+@case
+def years_把握低的列出来但默认不勾():
+    """低把握的不能直接丢掉（人可能一眼就知道对），但也不能默认勾上。"""
+    from server import years as years_mod
+    c, _ = client({"nodes/组A/a.md": node_md("A")})
+    original = stub_years_llm(json.dumps({"years": [
+        {"id": "a", "year": 2017, "confidence": 0.3, "why": "不太确定"}]}, ensure_ascii=False))
+    try:
+        data = c.post("/api/years/propose", json={}).json()
+    finally:
+        years_mod.ask = original
+    assert len(data["suggestions"]) == 1 and data["suggestions"][0]["picked"] is False, data
+
+
+@case
+def years_已经填了year的不再问():
+    c, _ = client({"nodes/组A/a.md": node_md("A", extra="year: 1980\n"),
+                   "nodes/组A/b.md": node_md("B")})
+    missing = c.get("/api/years/missing").json()
+    assert [x["id"] for x in missing["items"]] == ["b"], missing
+    assert missing["count"] == 1, missing
+
+
+@case
+def years_提议不碰md():
+    """propose 只读。真写回走 /api/changes 的 update_frontmatter，那条路才有备份和 diff。"""
+    from server import years as years_mod
+    c, vault = client({"nodes/组A/a.md": node_md("A")})
+    before = md_digest(vault)
+    original = stub_years_llm(json.dumps({"years": [{"id": "a", "year": 1980, "confidence": 0.9}]}))
+    try:
+        c.post("/api/years/propose", json={})
+    finally:
+        years_mod.ask = original
+    assert md_digest(vault) == before, "提议阶段改了 md"
+
+    r = c.post("/api/changes", json={"base_revision": c.get("/api/index").json()["revision"],
+                                     "dry_run": False,
+                                     "changes": [{"type": "update_frontmatter", "source": "a",
+                                                  "fields": {"year": 1980}}]})
+    assert r.status_code == 200, r.text
+    assert "year: 1980" in (vault / "nodes/组A/a.md").read_text("utf-8")
+    assert r.json()["backup"], "写回没留备份"
+
+
+@case
+def llm_会变的那块system排在缓存断点之后():
+    """system 里混着会变的东西（节点数、项目列表），而教练的用途就是聊着聊着把新点入库。
+
+    断点要是打在整段结尾，图谱一动，前面 9000 字静态指令（工具表、关系类型表、教练侧写）
+    全部作废重买。所以会变的那块单独排最后，断点打在它前面。
+    """
+    import llm_backend as backend
+    seen: dict = {}
+
+    def fake_post(url, headers, payload):
+        seen["payload"] = payload
+        return {"content": [{"type": "text", "text": "好"}], "usage": {"input_tokens": 1}}
+
+    original = backend._post_json
+    backend._post_json = fake_post
+    try:
+        backend._chat_anthropic([{"role": "system", "content": "静态指令" * 20},
+                                 {"role": "system", "content": "84 个节点、44 条关系"},
+                                 {"role": "user", "content": "在么"}],
+                                {"api_key": "k"}, "claude-haiku-4-5-20251001", None)
+    finally:
+        backend._post_json = original
+
+    blocks = seen["payload"]["system"]
+    assert len(blocks) == 2, blocks
+    assert blocks[0]["cache_control"] == {"type": "ephemeral"}, blocks[0]
+    assert "cache_control" not in blocks[1], blocks[1]        # 会变的那块在断点之后
+    assert blocks[1]["text"] == "84 个节点、44 条关系", blocks[1]
+
+
+@case
+def chat_图谱现状单独成一条system而不是混在静态指令里():
+    """节点数一变就会让整条静态 system 作废，所以它必须是**独立的最后一条**。"""
+    c, vault, _ = with_inbox_node()
+    original, seen = stub_chat(["好"])
+    try:
+        c.post("/api/chat", json={"messages": [{"role": "user", "content": "在么"}]})
+    finally:
+        restore_chat(original)
+    systems = [m for m in seen[0] if m["role"] == "system"]
+    assert len(systems) == 2, [m["role"] for m in seen[0]]
+    assert "图谱现在是什么样" in systems[1]["content"], systems[1]["content"][:80]
+    assert "个节点" in systems[1]["content"], systems[1]["content"][:80]
+    # 静态那条里**提到**这一节是可以的（口径提示词要给模型指路），
+    # 不能有的是**渲染出来的数据本身**——断言盯的是数据，不是措辞
+    assert "（建新项目前先看这里）" not in systems[0]["content"], "项目列表会变，不该留在静态那条"
+    assert "条关系，其中" not in systems[0]["content"], "节点数/边数会变，不该留在静态那条"
+    assert seen[0][2]["role"] == "user", [m["role"] for m in seen[0]]
+
+
+@case
+def chat_一轮里的几次工具往返共用同一段会话():
+    """一个用户回合常常夹着三四次工具往返，**那几次才是账单的大头**。
+
+    它们之间只差末尾几百个字，所以必须是同一个会话钥匙——claude-cli 才能 `--resume`
+    只发新增的那几条。钥匙要是每次都变，就悄悄退回了"每轮重发全文"。
+    """
+    c, _, _ = with_inbox_node()
+    original, seen = stub_chat([tool_block("search_nodes", {"q": "A"}),
+                                tool_block("overview", {}), "讲完了"])
+    try:
+        c.post("/api/chat", json={"messages": [{"role": "user", "content": "我图里有什么"}],
+                                  "session": "s1", "project": "llm", "stance": "教练"})
+    finally:
+        restore_chat(original)
+    assert len(seen.sessions) == 3, seen.sessions
+    assert len(set(seen.sessions)) == 1, seen.sessions
+    assert seen.sessions[0] == "llm|s1|教练", seen.sessions[0]
+
+
+@case
+def chat_换了口径或项目就不是同一段会话():
+    """口径换了系统提示词就换了，项目换了图的范围也变了——续同一段会让模型看着别人的上下文答题。"""
+    from server import chat as chat_mod
+    from server.contracts import ChatRequest
+    msg = [{"role": "user", "content": "在么"}]
+    keys = {chat_mod.llm_session_key(ChatRequest(messages=msg, session="s1", project=p, stance=st))
+            for p, st in (("llm", "教练"), ("llm", "面试"), ("ai", "教练"))}
+    assert len(keys) == 3, keys
+    solo = chat_mod.llm_session_key(ChatRequest(messages=msg))
+    assert solo == "_scratch|_|教练", solo
+
+
+@case
+def llm_会话前缀对不上就重开一段():
+    """续会话唯一的风险是**续错**：模型会拿着别人的上下文答题，比多花那点钱糟得多。
+
+    所以只在能证明"CLI 那一侧已知的消息和我手上的前缀逐字相同"时才 --resume。
+    """
+    import llm_backend as backend
+    key = "t|t|教练"
+    backend.drop_cli_session(key)
+    msgs = [{"role": "system", "content": "S"}, {"role": "user", "content": "A"}]
+
+    extra, start = backend._cli_session(key, msgs, "haiku")
+    assert extra[0] == "--session-id" and start == 0, (extra, start)
+    backend._remember_cli_session(key, msgs, "答A")
+
+    # 接着往下聊：前缀（含模型自己那条回复）没变，续上，只发新增的
+    grown = msgs + [{"role": "assistant", "content": "答A"}, {"role": "user", "content": "B"}]
+    extra, start = backend._cli_session(key, grown, "haiku")
+    assert extra == ["--resume", extra[1]] and start == 3, (extra, start)
+
+    # 前缀被改过（换了系统提示词 / 裁掉了几轮）→ 重开
+    tampered = [{"role": "system", "content": "换了"}] + grown[1:]
+    extra, start = backend._cli_session(key, tampered, "haiku")
+    assert extra[0] == "--session-id" and start == 0, (extra, start)
+
+    # 换了模型也不能续：会话是绑在模型上的
+    backend.drop_cli_session(key)
+    backend._cli_session(key, msgs, "haiku")
+    backend._remember_cli_session(key, msgs, "答A")
+    extra, start = backend._cli_session(key, msgs + [{"role": "assistant", "content": "答A"}], "opus")
+    assert extra[0] == "--session-id" and start == 0, (extra, start)
+    backend.drop_cli_session(key)
+
+
+@case
+def llm_anthropic给系统提示和对话末尾打缓存断点():
+    """system 是整条链路上最大也最稳定的一段，不标 cache_control 就是每轮原价重买一次。
+
+    末尾那个断点管的是工具往返：一轮里三四次调用之间只差几百个字，
+    断点打在末尾，后面几次就都是缓存命中。
+    """
+    import llm_backend as backend
+    seen: dict = {}
+
+    def fake_post(url, headers, payload):
+        seen["payload"] = payload
+        return {"content": [{"type": "text", "text": "好"}], "usage": {"input_tokens": 1}}
+
+    original = backend._post_json
+    backend._post_json = fake_post
+    try:
+        backend._chat_anthropic([{"role": "system", "content": "S" * 50},
+                                 {"role": "user", "content": "A"},
+                                 {"role": "assistant", "content": "B"},
+                                 {"role": "user", "content": "C"}],
+                                {"api_key": "k"}, "claude-haiku-4-5-20251001", None)
+    finally:
+        backend._post_json = original
+
+    payload = seen["payload"]
+    assert payload["system"][0]["cache_control"] == {"type": "ephemeral"}, payload["system"]
+    msgs = payload["messages"]
+    assert msgs[-1]["content"][0]["cache_control"] == {"type": "ephemeral"}, msgs[-1]
+    assert msgs[0]["content"] == "A", msgs[0]          # 只在末尾打一个，中间的照旧
 
 
 @case
@@ -2420,7 +2763,7 @@ def chat_口径决定提示词与工具白名单():
     from server import chat as chat_mod
     original = chat_mod.llm_chat
 
-    def spy(vault, role, messages, op="chat", on_delta=None):
+    def spy(vault, role, messages, op="chat", on_delta=None, session=None):
         seen[op] = messages[0]["content"]
         if on_delta:
             on_delta("知道了")
@@ -2516,8 +2859,9 @@ def chat_建项目时会看见已有的项目():
     from server import chat as chat_mod
     original = chat_mod.llm_chat
 
-    def spy(vault, role, messages, op="chat", on_delta=None):
-        seen[op] = messages[0]["content"]
+    def spy(vault, role, messages, op="chat", on_delta=None, session=None):
+        # 两条 system：静态指令 + 图谱现状（会变的那块单独排后面，见 _graph_snapshot）
+        seen[op] = "\n\n".join(m["content"] for m in messages if m["role"] == "system")
         if on_delta:
             on_delta("好")
         return "好", {}
@@ -2610,7 +2954,7 @@ def chat_这一轮炸了留档里也有记号():
     import llm_backend
     real = llm_backend.chat
 
-    def boom(messages, provider, model_override=None, on_delta=None):
+    def boom(messages, provider, model_override=None, on_delta=None, session=None):
         raise SystemExit("HTTP 503")
 
     llm_backend.chat = boom

@@ -4,12 +4,12 @@ import { Graph } from '@antv/x6'
 import { Selection } from '@antv/x6-plugin-selection'
 import { Snapline } from '@antv/x6-plugin-snapline'
 import { Transform } from '@antv/x6-plugin-transform'
-import { clusterSummary, containerOf } from './lod'
+import { clusterSummary, containerOf } from './lod.js'
 import { CLUSTER_H, CLUSTER_W, CURSOR_ID, CURSOR_W, FAMILY_STYLE, clusterBox, NODE_H, NODE_W, aggregateAttrs,
          aggregateLabel, clusterAttrs, activationAttrs, dotAttrs, edgeAttrs, groupAttrs, imageAttrs, laneAttrs, nodeAttrs,
-         noteAttrs, paletteFor, NEUTRAL, refAttrs, registerShapes, sizeFor, tickAttrs, tokens } from './shapes'
-import { AXIS_H, TICK_OFFSET, activeAt, buildTimeline } from './timeline'
-import { buildLineage } from './lineage'
+         noteAttrs, paletteFor, NEUTRAL, refAttrs, registerShapes, sizeFor, tickAttrs, tokens } from './shapes.js'
+import { AXIS_H, TICK_OFFSET, activeAt, buildTimeline } from './timeline.js'
+import { buildLineage } from './lineage.js'
 
 /**
  * 历史视图的画布元素：泳道 + 年份刻度 + 有 year 的节点 + 两端都在图里的边。

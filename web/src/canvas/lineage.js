@@ -9,7 +9,7 @@
 // 2. **枝丫粗细 = 这条枝上挂着多少东西**（可达节点数），一眼看出主干在哪。
 // 3. **有环就断环**，并且报出来——图上真的有反向边（诊断里那 13 处环），
 //    不断环这里会死循环。断掉的边不画，但要让人知道断了哪几条。
-import { NODE_H, NODE_W } from './shapes'
+import { NODE_H, NODE_W } from './shapes.js'
 
 export const FAMILY = '演化'
 export const LEVEL_H = 150         // 一层多高

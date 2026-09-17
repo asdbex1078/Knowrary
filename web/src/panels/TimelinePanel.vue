@@ -3,7 +3,7 @@
 // 原来是顶栏下面一整条 chips，分组一多就换行把画布压矮。
 import Drawer from '../ui/Drawer.vue'
 import Icon from '../ui/Icon.vue'
-import { BY_LAYER as TL_BY_LAYER } from '../canvas/timeline'
+import { BY_LAYER as TL_BY_LAYER } from '../canvas/timeline.js'
 
 defineProps({
   options: { type: Array, default: () => [] },

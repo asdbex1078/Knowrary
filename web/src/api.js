@@ -67,6 +67,14 @@ export const postQuiz = (body) => request('/api/quiz', {
   body: JSON.stringify(body),
 })
 
+/** year 批量回填：一次调用把缺 year 的节点一起问完（走 LLM 的 review 角色）。
+ *  只提议不写盘——写回仍然走 postChanges 的 update_frontmatter。 */
+export const postYearsPropose = (body = {}) => request('/api/years/propose', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify(body),
+})
+
 /** 把落在父框里的草稿挪进它那一层的泳道（`layer` 是后加的字段，早先的点没有）。 */
 export const postRegroup = (body) => request('/api/place/regroup', {
   method: 'POST',

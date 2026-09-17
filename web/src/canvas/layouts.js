@@ -5,7 +5,7 @@
 // 55% 的边不是树边。所以不强行做成一棵树，而是每个根各生成一棵脑图并排摆，
 // 非树边交给画布的跨组聚合去表达。这正是"多主题板"的做法。
 import Hierarchy from '@antv/hierarchy'
-import { NODE_H, NODE_W } from './shapes'
+import { NODE_H, NODE_W } from './shapes.js'
 
 const STRUCT_FAMILY = '结构'
 const V_GAP = 18

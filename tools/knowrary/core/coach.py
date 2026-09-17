@@ -4,9 +4,9 @@
 
 优先级固定：
 
-    逾期错题 > 到期复习 > 当前阶段「未建」的点 > 「只有壳」的点 > Inbox 里待上图的
+    逾期错题 > 到期复习 > 当前阶段「未建」的点 > 「只有壳」的点 > 孤点 > Inbox 里待上图的
 
-前两项属于**线 B 保鲜**（图谱不腐烂），中间两项属于**线 A 建设**（图谱长出来）。
+前两项属于**线 B 保鲜**（图谱不腐烂），中间几项属于**线 A 建设**（图谱长出来）。
 空图时前两项自然为空，清单从第三项开始照样排得出东西——学习计划本来就不需要图里先有节点。
 
 同一个节点只出现一次：按上面的顺序，先被谁捡走就算谁的。
@@ -16,6 +16,7 @@ from __future__ import annotations
 import datetime as dt
 from pathlib import Path
 
+from .digest import link_hints
 from .placement import inbox_ids, target_group
 from .projects import (SHELL, UNBUILT, done_ids, load_hours, lists_of, point_ids,
                        progress_of_project, schedule_of, states_of)
@@ -24,7 +25,9 @@ from .review import due_nodes, load_log
 
 WRONG_TOP = 5        # 错题一次最多摆出几个：一屏看得完才会真去做
 INBOX_TOP = 5
+LONELY_TOP = 3       # 孤点：优先级最低的一类，摆多了会把上面几类挤出视线
 REVIEW_MINUTES = 3   # 复习一个点大致几分钟：晨间简报要给个"今天大概多久"的数
+LINK_MINUTES = 2     # 连一条边大致几分钟
 
 
 def current_stage(ls: dict, points: dict[str, str]) -> tuple[int, dict] | None:
@@ -78,6 +81,44 @@ def _stage_items(pid: str, project: dict, prog: dict) -> list[dict]:
                                    "list": ls.get("name") or "", "stage": stage.get("name") or "",
                                    "detail": "图里还没有，先把它建出来" if kind == UNBUILT else "只有壳，去写正文"})
     return picked[: max(1, int(project.get("daily_quota") or 2))]
+
+
+def _lonely_items(index: dict, by_id: dict) -> list[dict]:
+    """一条关系都没有的点。
+
+    **这是今日清单里唯一一类"连"的任务**，别的全是"写"和"考"。加它是因为实盘上
+    84 个节点里 50 个度为 0——整个产品（画布、最短解释链、历史视图、跨组桥）都建在边上，
+    而欠的正是边。它排在最后：孤点不会腐烂，今天不连明天也在，不该挤掉到期复习。
+
+    只算**已经建出来**的点：stub 和幽灵占位没有正文，还谈不上"该连谁"。
+    顺手带上 digest 算出来的那条建议（名字摆明了有关系的），点一下就能连——
+    没有建议的也照样摆出来，那种更需要人自己想或者问 AI。
+    """
+    hint_of: dict[str, dict] = {}
+    for h in link_hints(index):
+        for side, other in ((h["source"], h["target"]), (h["target"], h["source"])):
+            hint_of.setdefault(side, {"relation": h["relation"], "target": other, "why": h["reason"]})
+    rows = [n for n in index["nodes"]
+            if not n.get("virtual") and not n.get("stub") and n.get("path") and not n.get("degree")]
+    # 有现成建议的排前面：同样是孤点，能一键连的那个今天真会被连
+    rows.sort(key=lambda n: (n["id"] not in hint_of, -(n.get("rank") or 0), n["id"]))
+    out, covered = [], set()
+    for n in rows:
+        if len(out) >= LONELY_TOP:
+            break
+        # 互为建议的一对（Intel平台 / Intel手册）只摆一个：连那一条边，两个一起脱离孤岛，
+        # 摆两次等于用掉两个坑办同一件事
+        if n["id"] in covered:
+            continue
+        hint = hint_of.get(n["id"]) or {}
+        if hint:
+            covered.add(hint["target"])
+        out.append({"kind": "lonely", "id": n["id"],
+                    "name": (by_id.get(n["id"]) or {}).get("name") or n["id"],
+                    "detail": "一条关系都没有，还是座孤岛",
+                    "why": hint.get("why") or "",
+                    "link": {"relation": hint["relation"], "target": hint["target"]} if hint else {}})
+    return out
 
 
 def _inbox_items(index: dict, layout: dict, by_id: dict) -> list[dict]:
@@ -172,6 +213,11 @@ def build_today(vault: Path, index: dict, layout: dict, doc: dict,
         if project and pid != project:
             continue
         ordered += _stage_items(pid, pr, progress[pid])
+    lonely = _lonely_items(index, by_id)
+    if project:
+        mine = set(point_ids(doc, project))
+        lonely = [i for i in lonely if i["id"] in mine]
+    ordered += lonely
     ordered += _inbox_items(index, layout, by_id) if not project else []
 
     items, seen = [], set()
@@ -211,4 +257,6 @@ def _estimate(items: list[dict], doc: dict) -> float:
             hours += load_hours(loads.get(it["id"]) or {})
         elif it["kind"] in ("due", "wrong"):
             hours += REVIEW_MINUTES / 60
+        elif it["kind"] == "lonely":
+            hours += LINK_MINUTES / 60
     return round(hours, 1)

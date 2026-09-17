@@ -851,7 +851,10 @@ def _project_level(vault: Path, project: str | None) -> str:
 
 def _system_prompt(vault: Path, stance: str | None, project: str | None = None) -> str:
     """基底一份 + 口径一份。工具表从白名单渲染——**说明书和实际权限是同一份数据**，
-    两边各写一遍迟早对不上（"表里写着能用、调了却说没有"是最让人发火的那种 bug）。"""
+    两边各写一遍迟早对不上（"表里写着能用、调了却说没有"是最让人发火的那种 bug）。
+
+    **图谱现状不在这里**，它单独走 `_graph_snapshot`（见那个函数的注释）。
+    """
     conf = stance_of(stance)
     body = _prompt_file(conf["file"])
     intro, _, rules = body.partition("## 规矩")
@@ -859,13 +862,26 @@ def _system_prompt(vault: Path, stance: str | None, project: str | None = None) 
     formats = "\n\n".join(FORMAT_DOC[t] for t in conf["tools"] if t in FORMAT_DOC)
     return (_prompt_file("chat")
             .replace("{{level}}", level_fragment(_project_level(vault, project), "chat"))
-            .replace("{{overview}}", _overview(vault))
             .replace("{{tools}}", table)
             .replace("{{formats}}", formats)
             .replace("{{relations}}", _relations_brief(vault))
             .replace("{{me}}", _me_brief(vault, project))
             .replace("{{stance_intro}}", intro.strip())
             .replace("{{stance_rules}}", rules.strip() or "（没有额外规矩）"))
+
+
+def _graph_snapshot(vault: Path) -> str:
+    """图谱现状：节点数、边数、领域分布、已有项目。**单独一条 system 消息，排在静态那条后面。**
+
+    它原来就写在 `prompts/chat.md` 中间。问题是这几个数字**会变**——教练的整个用途
+    就是聊着聊着把新点入库，一旦采纳了一张变更卡，节点数就变了。而提示词缓存认的是
+    **逐字节的前缀**：中间插一个会变的数字，等于每次图谱一动，它后面那 9000 字静态
+    指令（工具表、格式、关系类型表、教练侧写）全部作废重买。
+
+    挪到末尾单独成块之后，缓存断点就打在静态那条的结尾（见 llm_backend._chat_anthropic）：
+    数字怎么变都只影响它自己这 261 字。
+    """
+    return f"## 我的图谱现在是什么样\n\n{_overview(vault)}"
 
 
 def strip_tools(text: str) -> str:
@@ -932,7 +948,16 @@ def _parse_tool(text: str) -> tuple[str, dict] | None:
     return (name, call.get("args") or {}) if name else None
 
 
-def _stream(vault: Path, messages: list[dict], op: str = "chat"):
+def llm_session_key(req: ChatRequest) -> str:
+    """给 LLM 后端认这一段对话的钥匙。
+
+    和留档用的 `req.session` 不是一回事：口径换了系统提示词就换了，不能续同一段；
+    项目换了图的范围也变了。三样拼起来才是"同一段上下文"。
+    """
+    return f"{req.project or '_scratch'}|{req.session or '_'}|{req.stance or DEFAULT_STANCE}"
+
+
+def _stream(vault: Path, messages: list[dict], op: str = "chat", session: str | None = None):
     """在后台线程里跑一次 LLM 调用，把增量从队列里取出来往外 yield。
 
     生成器里没法从回调 yield，所以只能用队列过一道。
@@ -943,7 +968,7 @@ def _stream(vault: Path, messages: list[dict], op: str = "chat"):
     def work() -> None:
         try:
             box["text"], box["usage"] = llm_chat(vault, "learn", messages, op=op,
-                                                 on_delta=lambda t: q.put(t))
+                                                 on_delta=lambda t: q.put(t), session=session)
         except BaseException as exc:             # SystemExit 是 llm_backend 的报错方式
             box["error"] = str(exc)
         finally:
@@ -990,14 +1015,16 @@ def _run(vault: Path, req: ChatRequest):
 
     conf = stance_of(req.stance)
     allowed = set(conf["tools"])
-    messages = [{"role": "system",
-                 "content": _system_prompt(vault, req.stance, req.project)}] + history
+    # 两条 system：**静态的在前、会变的在后**。缓存断点打在两者之间，
+    # 图谱一动只作废后面那一小块（见 _graph_snapshot）。
+    messages = [{"role": "system", "content": _system_prompt(vault, req.stance, req.project)},
+                {"role": "system", "content": _graph_snapshot(vault)}] + history
     if dropped:
         # **截断要说出来**，不能让它默默失忆：模型不知道自己少了上下文时，
         # 会拿半截记忆当完整的用，比直接说"我没看到"糟得多。
         # 真正的长期记忆本来就不该是上下文窗口——聊清楚的东西应该已经进 md 了，
         # 所以这里顺便告诉它：缺的部分去图里查，或者问我。
-        messages.insert(1, {"role": "user", "content":
+        messages.insert(2, {"role": "user", "content":
             f"（提醒：这一段之前还有 {dropped} 轮没带过来。你缺的上下文别猜——"
             f"先 `search_nodes` / `read_node` 去图里找，找不到就直接问我。）"})
     said: list[str] = []      # 过程：每一次"还要接着调工具"的那段话
@@ -1008,7 +1035,8 @@ def _run(vault: Path, req: ChatRequest):
     for step in range(MAX_STEPS):
         text = ""
         usage: dict = {}
-        for ev in _stream(vault, messages, op=f"chat-{req.stance or DEFAULT_STANCE}"):
+        for ev in _stream(vault, messages, op=f"chat-{req.stance or DEFAULT_STANCE}",
+                          session=llm_session_key(req)):
             if ev["type"] == "delta":
                 yield ev
             else:

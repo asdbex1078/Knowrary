@@ -11,6 +11,7 @@ from __future__ import annotations
 import datetime as dt
 import logging
 import re
+import shutil
 
 from pathlib import Path
 
@@ -19,7 +20,7 @@ from .contracts import (ID_PATTERN, PlanPoint, PlanProposal, PlanProposeRequest,
 from .index_service import current_index
 from .levels import fragment as level_fragment
 from .llm_call import ask, clean_layer, clean_year, parse_json
-from .paths import core
+from .paths import core, layout_path
 
 
 log = logging.getLogger(__name__)
@@ -79,10 +80,34 @@ def write(vault: Path, req: ProjectsWrite) -> ProjectsSaved:
     doc = core.load_projects(vault)
     if req.base_revision != doc.get("revision", 0):
         raise PlansConflict(doc.get("revision", 0))
+    gone = set(doc.get("projects") or {}) - set(req.projects)
     doc["projects"] = {pid: pr.model_dump() for pid, pr in req.projects.items()}
     doc = core.save_projects(vault, doc)
+    retire_layouts(vault, gone)
     progress, schedules = _derived(vault, doc)
     return ProjectsSaved(revision=doc["revision"], progress=progress, schedules=schedules)
+
+
+def retire_layouts(vault: Path, gone: set[str]) -> list[str]:
+    """项目被删掉时，把它那张画布挪进 .knowrary/backup/。
+
+    原来删项目只从 projects.json 里抹掉一行，`.knowrary/layouts/<项目>.json`
+    没人管——实盘上就留下了一个 `mha.json`（0 分组 0 节点），谁也想不起它是谁的。
+
+    **挪走而不是删掉**：手工摆位是攒出来的成果，和写回 md 前先备份是同一个道理；
+    删项目本来就可能是误点，而误点不该让半小时的摆位跟着消失。
+    """
+    moved = []
+    for pid in sorted(gone):
+        path = layout_path(vault, pid)
+        if not path.exists():
+            continue
+        stamp = dt.datetime.now().strftime("%Y%m%d-%H%M%S")
+        target = vault / ".knowrary" / "backup" / stamp / "layouts" / path.name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(path), target)
+        moved.append(target.relative_to(vault).as_posix())
+    return moved
 
 
 # ---------------------------------------------------------------- 目标 → 知识点清单（LLM）

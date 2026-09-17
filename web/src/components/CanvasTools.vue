@@ -4,7 +4,7 @@
  */
 import Icon from '../ui/Icon.vue'
 import Popover from '../ui/Popover.vue'
-import { FAMILIES, FAMILY_STYLE } from '../canvas/shapes'
+import { FAMILIES, FAMILY_STYLE } from '../canvas/shapes.js'
 
 defineProps({
   visible: { type: Object, required: true },

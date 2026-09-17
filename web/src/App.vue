@@ -1,9 +1,9 @@
 <script setup>
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, shallowRef, watch } from 'vue'
 import {
-  fetchCalendar, fetchChatHistory, fetchChatSessions, fetchDigest, postSyncToGlobal, fetchDue, fetchProjects, putProjects, postPlanPropose, fetchToday, fetchUsage, postMerge, postRename, postQuiz, postQuizDiagnose, postQuizGrade, fetchOpenQuiz, dropOpenQuiz, renameChatSession, postRegroup, fetchHealth, fetchIndex, fetchInbox, fetchLayout, fetchNode,
-  patchLayout, postChanges, postPlace, postReview, postSuggest, streamChat, markChatTidied,
-} from './api'
+  fetchCalendar, fetchDigest, postSyncToGlobal, fetchDue, fetchProjects, putProjects, postPlanPropose, fetchToday, fetchUsage, postMerge, postRename, postQuiz, postQuizDiagnose, postQuizGrade, fetchOpenQuiz, dropOpenQuiz, postRegroup, fetchHealth, fetchIndex, fetchInbox, fetchLayout, fetchNode,
+  patchLayout, postChanges, postPlace, postReview, postSuggest, postYearsPropose,
+} from './api.js'
 import AppHeader from './components/AppHeader.vue'
 import ActivityBar from './components/ActivityBar.vue'
 import CanvasTools from './components/CanvasTools.vue'
@@ -19,6 +19,7 @@ import QuizDialog from './components/QuizDialog.vue'
 import UsageDialog from './components/UsageDialog.vue'
 import RenameDialog from './components/RenameDialog.vue'
 import MergeDialog from './components/MergeDialog.vue'
+import YearDialog from './components/YearDialog.vue'
 import GroupBar from './components/GroupBar.vue'
 import MiniMap from './components/MiniMap.vue'
 import ToastHost from './ui/ToastHost.vue'
@@ -34,21 +35,22 @@ import ProjectsPanel from './panels/ProjectsPanel.vue'
 import ImagePicker from './panels/ImagePicker.vue'
 import TimelinePanel from './panels/TimelinePanel.vue'
 import TourPanel from './components/TourPanel.vue'
-import { clone, createHistory, diffPatch, isEmptyPatch } from './canvas/history'
-import { createPatcher } from './canvas/patcher'
-import { ancestors as groupAncestors, computeCollapsed } from './canvas/lod'
+import { clone, createHistory, diffPatch, isEmptyPatch } from './canvas/history.js'
+import { createPatcher } from './canvas/patcher.js'
+import { useHistory } from './composables/useHistory.js'
+import { useChat } from './composables/useChat.js'
+import { useCamera } from './composables/useCamera.js'
+import { usePathSearch } from './composables/usePathSearch.js'
+import { ancestors as groupAncestors, computeCollapsed } from './canvas/lod.js'
 import {
-  LABEL_ZOOM, applyEdgeLabels, applyViewport, buildCells, buildHistoryCells, buildLineageCells,
-  contentBBox, createGraph,
-  clearPath, currentViewport, highlightEdges, highlightPath, markStop, mount, movedPositions,
-  paintHistoryTime, setSnap, snapDelta,
-} from './canvas/render'
-import { timelineOptions } from './canvas/timeline'
-import { communityLayout, compareWithGroups } from './canvas/communities'
-import { mindmapLayout, toPatch } from './canvas/layouts'
-import { describePath, shortestPath } from './canvas/paths'
-import { GROUP_LAYOUTS, hasSubGroups, layoutGroup, membersOf } from './canvas/groupLayout'
-import { FAMILIES, HEAD_MAX as GROUP_HEAD, setTheme } from './canvas/shapes'
+  applyViewport, buildCells, contentBBox, createGraph,
+  highlightEdges, highlightPath, mount, movedPositions, setSnap, snapDelta,
+} from './canvas/render.js'
+import { communityLayout, compareWithGroups } from './canvas/communities.js'
+import { mindmapLayout, toPatch } from './canvas/layouts.js'
+import { GROUP_LAYOUTS, layoutGroup, membersOf } from './canvas/groupLayout.js'
+import { buildMenu } from './canvas/menus.js'
+import { FAMILIES, HEAD_MAX as GROUP_HEAD, setTheme } from './canvas/shapes.js'
 
 const canvasEl = ref(null)
 const headerEl = ref(null)
@@ -66,6 +68,9 @@ const pending = ref([])                  // 待提交的 ChangeSet（本地攒�
 const changePreview = shallowRef(null)   // 预览结果（每个文件的 diff）
 const suggestions = shallowRef(null)    // SuggestResult from /api/suggest
 const suggesting = ref(false)           // LLM 正在生成建议
+const yearsOpen = ref(false)            // year 批量回填对话框
+const yearProposal = shallowRef(null)   // YearProposal；null = 还在问
+const yearsBusy = ref(false)
 const stats = reactive({ nodes: 0, edges: 0, stubs: 0 })
 /**
  * 哪些关系族画出来。
@@ -98,62 +103,12 @@ const placing = ref(false)
 // 四个模式（三期）：对话 / 项目图 / 全局图 / 历史。
 // **默认落在「对话」**——启动成本最低的入口应该是默认入口。
 const mode = ref(localStorage.getItem('knowrary-mode') || 'chat')
-const hist = reactive({ compact: false, validity: false, upto: null, trunk: false,
-                        演化: true, 依赖: false, 对照: false })
-const histPlan = shallowRef(null)
-const linPlan = shallowRef(null)   // 谱系树算出来的那份
-/** 演化链＝一个系列：不另设 series 字段，谱系树里那几块连通块本来就是"一家子"。 */
-const lineageChains = computed(() => {
-  if (!indexDoc.value) return []
-  const edges = indexDoc.value.edges.filter((e) => e.family === '演化')
-  const near = new Map()
-  const touch = (a, b) => { if (!near.has(a)) near.set(a, []); near.get(a).push(b) }
-  for (const e of edges) { touch(e.source, e.target); touch(e.target, e.source) }
-  const seen = new Set()
-  const out = []
-  for (const id of near.keys()) {
-    if (seen.has(id)) continue
-    const bag = []
-    const stack = [id]
-    seen.add(id)
-    while (stack.length) {
-      const cur = stack.pop()
-      bag.push(cur)
-      for (const t of near.get(cur) || []) if (!seen.has(t)) { seen.add(t); stack.push(t) }
-    }
-    const names = bag.map((x) => indexDoc.value.nodes.find((n) => n.id === x))
-      .filter(Boolean).sort((a, b) => (a.year ?? 9999) - (b.year ?? 9999))
-    out.push({ ids: bag, name: `${names[0]?.name || bag[0]} 一系（${bag.length}）` })
-  }
-  return out.sort((a, b) => b.ids.length - a.ids.length)
-})
-const histChain = computed(() => histPlan.value?.trunk || null)
-// 游标停在当前年份时"已发生"的那批节点。留着当下一站的对照，才知道该点亮谁。
-let histActive = null
-const histActiveCount = ref(0)
-const timelines = ref([])          // 选中的 layout 分组 id（空 = 全部）
-let playing = null
-const isPlaying = ref(false)
-const STEP_MS = 760        // 回放每站停多久。跳的是"有事发生的年份"，不是日历年，所以可以停久一点
-// 倍速：讲给别人听时要能放慢。存 localStorage——分享前调好，下次还是它
-const speed = ref(Number(localStorage.getItem('knowrary-speed')) || 1)
-const stepMs = () => Math.round(STEP_MS / speed.value)
-let enterTimer = null
-
-// 沿演化链导览：跟着 plan.chain 一站站走。年份回放管"到哪一年"，导览管"走到哪一站"——
-// 两者共用同一条时间游标（导览每到一站就把游标挪到那年），所以镜头、游标、讲解永远对得上。
-const tour = reactive({ on: false, i: 0, auto: false })
-let tourTimer = null
-const TOUR_MS = 3200       // 每站停多久：够读完一句 desc
-const TOUR_ZOOM = 0.85
 const autoLod = ref(true)                // 缩小自动折叠成簇卡片（设计文档 3.7）
 // 对齐线 + 落点吸附：和主题、小地图一样是"这台机器上怎么摆图"的偏好，不进 layout.json
 const snap = ref(localStorage.getItem('knowrary-snap') !== '0')
 // 连线绕开卡片：默认不开，它会把线掰成直角，是另一种观感
 // 默认**开**：线被卡片盖住是实打实看不见信息，直角走线只是观感问题
 const avoidNodes = ref(localStorage.getItem('knowrary-avoid') !== '0')
-const pathFrom = ref(null)               // 路径搜索的起点（右键选定），等着第二个节点
-const pathHit = shallowRef(null)         // 找到的路径 { nodes, edges }，纯展示态，不落盘
 const focusGroup = ref(null)             // 聚焦的域：点簇卡片进入，只展开它
 const search = ref('')                   // 顶栏搜索词
 let panorama = null                      // 进入聚焦前的视口，退出时还原
@@ -167,24 +122,62 @@ const histVer = ref(0)                   // 栈深度变化时触发按钮可用
 let dirtyBefore = null                   // 当前这批未保存改动之前的快照（撤销用）
 const canUndo = computed(() => histVer.value >= 0 && history.depth()[0] > 0)
 const canRedo = computed(() => histVer.value >= 0 && history.depth()[1] > 0)
-const labelsOn = ref(false)
-const zoom = ref(1)                      // 给右下角缩放条读数用，随 scale 事件更新
 // 只有用户真的操作过画布才允许落盘：既避免"打开页面就涨 revision"，
 // 也不依赖 requestAnimationFrame（后台标签页 / 无头浏览器里 rAF 不触发）
 const ready = ref(false)
-let applyingViewport = false   // 程序化设置视口期间不落盘，否则切族/展开都白涨一个 revision
+// 程序化设置视口期间不落盘，否则切族/展开都白涨一个 revision。
+// 是 ref 不是裸 let：结构视图和历史视图（composables/useHistory）共用同一把闸。
+const applyingViewport = ref(false)
+
+// 镜头：视口读写、缩放、平滑飞行、小地图取景框、域工具条定位。
+// 它们共用同一把写盘闸（applyingViewport）——程序化挪镜头不该把视口写回 layout.json。
+const {
+  zoom, labelsOn, viewBox, activeGroup, groupBarAt,
+  activeGroupBox, activeGroupCount, activeFolded,
+  saveViewport, setActiveGroup, placeGroupBar, syncView, onZoom,
+  stepZoom, resetZoom, jumpTo, boxOf, flyToPair, flyTo, cancelFly,
+} = useCamera({
+  graph, indexDoc, layoutDoc, patcher, mode, collapsedIds, autoLod, focusGroup,
+  ready, applyingViewport,
+  writable: () => writable(),
+  render: (...a) => render(...a),
+})
+
+// 路径搜索：两个知识点之间最短的那条解释链
+const {
+  pathFrom, pathHit, nodeName, edgeCellId, applyPath, clearPathHighlight, startPath, endPath,
+} = usePathSearch({
+  graph, indexDoc, layoutDoc, aggregate, expanded,
+  visibleFamilies: () => visibleFamilies(),
+  setBanner: (...a) => setBanner(...a),
+})
+
+// 历史 / 谱系 / 回放 / 导览：整块在 composables/useHistory.js。
+// 它们共用同一条时间游标，所以是一个整体；这里只把画布那几样递进去。
+const {
+  hist, histPlan, linPlan, timelines, histActiveCount, isPlaying, speed, tour,
+  histChain, timelineChoices, yearRange, layeredHint, lineageChains,
+  tourChain, tourStopId, tourStop, tourVia,
+  renderHistory, renderLineage, paintTime, markHistoryContainer, setUpto,
+  togglePlay, setSpeed, stopPlay, evoGap, startTour, tourGo, paintTour, scheduleTour,
+  toggleTourAuto, stopTour, toggleTimeline, toggleHistFamily, histActiveIds,
+} = useHistory({
+  graph, indexDoc, layoutDoc, zoom, applyingViewport,
+  setBanner: (...a) => setBanner(...a),
+  flyTo: (...a) => flyTo(...a),
+  cancelFly: () => cancelFly(),
+})
 
 // —— 右键菜单 / 建立关系 / 小地图 / 只看邻居 ——
 const ctx = ref(null)          // 菜单浮层的 props：{ x, y, title, subtitle, items }
 let ctxTarget = null           // 菜单指着谁：{ kind, id, at }，不进 props（会漏成 DOM 属性）
 const relating = shallowRef(null)        // 建立关系对话框的源节点
+const relatePreset = shallowRef(null)    // 欠账清单的连边建议带过来的默认类型与目标
+watch(relating, (v) => { if (!v) relatePreset.value = null })
 const creating = shallowRef(null)        // 新建知识点对话框：{ at, group }
-const activeGroup = ref(null)            // 工具条正指着哪个域
-const groupBarAt = ref(null)             // 工具条的屏幕坐标，跟着缩放平移重算
 const writeNonce = ref(0)                // ++ 一次 = 让检查器展开正文编辑框
 const neighbor = ref(null)               // 只看这个节点和它的直接邻居
 const showMap = ref(localStorage.getItem('knowrary-map') !== '0')
-const viewBox = ref({ cx: 0, cy: 0, w: 0, h: 0 })   // 当前视口（图坐标），小地图用
 
 // —— 界面状态：左侧工具窗口、右侧检查器、浮层提示、帮助 ——
 const panel = ref('')                    // '' | inbox | plans | study | digest | assets | timeline
@@ -377,48 +370,19 @@ const plansProgress = shallowRef({})     // 每个知识点的掌握度，服务
 const plansSchedules = shallowRef({})     // 时间账：装不装得下、每阶段排到哪天、落后几个；同样现算
 
 // —— 阶段 12：对话式教练 ——
-// 会话状态在前端：每次把整段对话发给服务端，它不持有会话。刷新丢的是这一段，
-// 但每一轮都已经留档在 .knowrary/chat/YYYY-MM.jsonl（F10.7）。
-const chatLog = ref([])                  // [{ role, content, tools?, cards?, streaming? }]
-const chatBusy = ref(false)
-const chatSessions = ref([])             // 会话列表：从留档行聚合出来的，不是一张表
-const chatSession = ref(newSessionId())
-// 梳理游标：这一段整理到哪一条为止了（`{ upto, turns, at }`，没梳理过是 null）。
-// **它只在变更卡真写进 md 之后才推进**——梳理是这个应用里最贵的一次动作
-// （MAX_STEPS 的工具循环，每一步都把整段对话再发一遍），第二天打开同一段再点一次，
-// 没有游标就是把昨天那笔钱原样再付一遍。
-const chatTidied = shallowRef(null)
-/** 游标之后还有几条没梳理。0 = 这一段已经整理干净了，按钮该是灰的。 */
-const chatFresh = computed(() => {
-  const cut = Date.parse(chatTidied.value?.upto || '')
-  const rows = chatLog.value.filter((m) => (m.content || '').trim())
-  if (!Number.isFinite(cut)) return rows.length
-  return rows.filter((m) => !m.ts || Date.parse(m.ts) > cut).length
+// 会话、留档回放、流式收发、梳理游标整块在 composables/useChat.js。
+// **卡片落地不在那儿**：写 md、上画布、补进清单要同时动图谱和项目，留在这里编排。
+const {
+  chatLog, chatBusy, chatSessions, chatSession, chatTidied, chatStance, chatFocus,
+  graphPane, chatFresh,
+  setStance, toggleGraphPane, loadChatHistory, renameSession,
+  newChatSession, pickChatSession, sendChat, advanceTidied, stopChat,
+} = useChat({
+  graph, currentProject,
+  setBanner: (...a) => setBanner(...a),
+  pushToast: (...a) => pushToast(...a),
+  onReview: () => refreshDue(),
 })
-// 口径：教练 / 面试 / 聊天。**不是三个 agent**，是三套提示词 + 三份工具白名单。
-const chatStance = ref(localStorage.getItem('knowrary-stance') || '教练')
-
-/** 换口径就新开一段。混在同一段里，前半截是面试后半截是闲聊，模型会被自己的历史带跑。 */
-function setStance(next) {
-  if (!next || next === chatStance.value) return
-  chatStance.value = next
-  try { localStorage.setItem('knowrary-stance', next) } catch { /* 无痕模式 */ }
-  if (chatLog.value.length) newChatSession()
-  setBanner(`切到「${next}」口径`)
-}
-const chatFocus = shallowRef(null)       // 从图上点过来的节点，带进下一轮上下文
-const graphPane = ref(localStorage.getItem('knowrary-chat-graph') !== 'off')
-let chatAbort = null
-
-function newSessionId() {
-  return `s${Date.now().toString(36)}`
-}
-
-function toggleGraphPane() {
-  graphPane.value = !graphPane.value
-  try { localStorage.setItem('knowrary-chat-graph', graphPane.value ? 'on' : 'off') } catch { /* 无痕模式 */ }
-  nextTick(() => window.dispatchEvent(new Event('resize')))   // 画布跟着重新量宽
-}
 const plansBusy = ref(false)
 const planProposal = shallowRef(null)    // AI 拆出的要点；纯提议，人采纳了才进 draft
 const planProposing = ref(false)
@@ -519,9 +483,9 @@ async function load() {
   const refit = !storedViewportUsable()
   render({ view: refit ? 'fit' : 'stored' })
   if (refit) {
-    applyingViewport = true      // 自动贴合不算用户操作，别把视口写回去
+    applyingViewport.value = true      // 自动贴合不算用户操作，别把视口写回去
     fitStable()
-    applyingViewport = false
+    applyingViewport.value = false
   }
   reportProblems(index, layout, refit)
 }
@@ -542,7 +506,7 @@ function render({ view = 'keep' } = {}) {
   edgesShown.value = cells.edges.filter((e) => e.data.kind === 'edge').length
   aggShown.value = cells.edges.length - edgesShown.value
   const keep = view === 'keep' ? { zoom: g.zoom(), translate: g.translate() } : null
-  applyingViewport = true
+  applyingViewport.value = true
   mount(g, cells)
   if (keep) {
     g.zoomTo(keep.zoom)
@@ -552,7 +516,7 @@ function render({ view = 'keep' } = {}) {
   } else {
     applyViewport(g, layoutDoc.value.viewport)
   }
-  applyingViewport = false
+  applyingViewport.value = false
   zoom.value = g.zoom()
   if (pathHit.value) applyPath()   // 重绘会重建 cell，高亮得重新贴一遍
   syncView()
@@ -584,16 +548,6 @@ function toggleNeighbor(id) {
 }
 
 /** 一组节点在 layout 里占的框（带一点留白）。 */
-function boxOf(ids, pad = 120) {
-  const boxes = ids.map((id) => layoutDoc.value?.nodes?.[id]).filter(Boolean)
-  if (!boxes.length) return null
-  const x0 = Math.min(...boxes.map((b) => b.x)) - pad
-  const y0 = Math.min(...boxes.map((b) => b.y)) - pad
-  const x1 = Math.max(...boxes.map((b) => b.x + (b.w || 160))) + pad
-  const y1 = Math.max(...boxes.map((b) => b.y + (b.h || 60))) + pad
-  return { x: x0, y: y0, w: Math.max(x1 - x0, 1), h: Math.max(y1 - y0, 1) }
-}
-
 /**
  * 存下来的视口还值得恢复吗。
  *
@@ -621,83 +575,7 @@ function storedViewportUsable() {
 
 const staleDays = (n) => (n.placedAt ? Math.floor((Date.now() - Date.parse(n.placedAt)) / 86400000) : 0)
 
-// —— 阶段 6：历史视图 ——
 
-const histFamilies = () => new Set(['演化', '依赖', '对照'].filter((f) => hist[f]))
-const yearRange = computed(() => {
-  const years = (indexDoc.value?.nodes || []).filter((n) => typeof n.year === 'number').map((n) => n.year)
-  return years.length ? [Math.min(...years), Math.max(...years)] : [0, 0]
-})
-const timelineChoices = computed(() => timelineOptions(layoutDoc.value))
-/** 「按抽象层」那一档旁边的提示：有多少节点填了 layer。没填的会全挤进「未分层」。 */
-const layeredHint = computed(() => {
-  const withYear = (indexDoc.value?.nodes || []).filter((n) => !n.virtual && typeof n.year === 'number')
-  const n = withYear.filter((x) => x.layer).length
-  return withYear.length ? `${n}/${withYear.length} 已分层` : ''
-})
-
-/**
- * 重建整张历史图。
- *
- * **只在"图本身变了"时调用**：换时间线 / 切主干道 / 改紧凑 / 改关系族。
- * 拖滑块和回放不走这里——那两件事只挪游标（paintTime），一个 cell 都不重建。
- */
-function renderHistory({ view = 'fit' } = {}) {
-  const g = graph.value
-  const cells = buildHistoryCells(indexDoc.value, layoutDoc.value, {
-    timelines: timelines.value, families: histFamilies(), compact: hist.compact, trunk: hist.trunk,
-  })
-  histPlan.value = cells.plan
-  applyingViewport = true
-  // 先定视口再建 cell：时间轴的宽高比极端，先按算好的框定缩放，mount 出来就是完整一屏
-  if (view !== 'keep') {
-    g.zoomToRect({ x: -80, y: 0, width: cells.plan.width + 160, height: cells.plan.height + 60 },
-                 { maxScale: 1, minScale: 0.35 })
-  }
-  mount(g, cells)
-  applyingViewport = false
-  zoom.value = g.zoom()
-  histActive = null                 // cell 是新的，class 也没了；这一帧不做点亮动画
-  paintTime()
-  paintTour()
-  const d = cells.plan.diagnostics
-  const parts = [`${cells.plan.placed.size} 个有 year 的节点 · ${cells.edges.length} 条边`]
-  if (d.noYear) parts.push(`${d.noYear} 个节点没有 year，不进历史图`)
-  if (d.missingYear.length) parts.push(`${d.missingYear.length} 条演化边缺年份（${d.missingYear[0]} …）`)
-  setBanner(parts.join('；'), d.missingYear.length ? 'error' : '')
-}
-
-/**
- * 谱系树：只画演化族，根在下、叶在上，枝丫粗细按这条枝上挂着多少东西算。
- *
- * 和历史视图一样**不持久化坐标**：它是算出来的视图，不是人摆的图。
- */
-function renderLineage({ view = 'fit' } = {}) {
-  const g = graph.value
-  const cells = buildLineageCells(indexDoc.value, layoutDoc.value)
-  linPlan.value = cells.plan
-  applyingViewport = true
-  if (view !== 'keep') {
-    g.zoomToRect({ x: -60, y: -40, width: cells.plan.width + 120, height: cells.plan.height + 80 },
-                 { maxScale: 1, minScale: 0.25 })
-  }
-  mount(g, cells)
-  applyingViewport = false
-  zoom.value = g.zoom()
-  const p = cells.plan
-  const parts = [`演化族 ${cells.edges.length} 条边 · ${p.placed.size} 个点 · ${p.levels} 层`,
-                 `根：${p.roots.slice(0, 3).join('、')}${p.roots.length > 3 ? ` 等 ${p.roots.length} 个` : ''}`]
-  if (p.dropped.length) parts.push(`断掉 ${p.dropped.length} 条环边（${p.dropped[0].id} ${p.dropped[0].why}）`)
-  setBanner(parts.join('；'), p.dropped.length ? 'error' : '')
-}
-
-/** 把游标挪到当前年份。拖滑块、回放、切有效期都只走这条路——不重建任何 cell。 */
-function paintTime({ pulse = true } = {}) {
-  histActive = paintHistoryTime(graph.value, histPlan.value,
-                                { upto: hist.upto, validity: hist.validity,
-                                  prev: pulse ? histActive : null })
-  histActiveCount.value = histActive?.size ?? 0
-}
 
 async function switchMode(next) {
   // 切到全局图时，如果正选着项目，顺手把它的点高亮出来——
@@ -751,170 +629,6 @@ async function switchMode(next) {
   }
 }
 
-/**
- * 历史视图给容器加个类名，游标相关的样式只在这个模式下生效。
- *
- * kg-enter 是一次性的：进场淡入只该在刚切进来那一下放一次。留着的话，
- * 每次重建 cell（换时间线、改关系族）都会整屏重放一遍。
- */
-function markHistoryContainer(next) {
-  const el = graph.value?.container
-  if (!el) return
-  const on = next === 'history'
-  el.classList.toggle('kg-history', on)
-  clearTimeout(enterTimer)
-  el.classList.toggle('kg-enter', on)
-  if (on) enterTimer = setTimeout(() => el.classList.remove('kg-enter'), 400)
-}
-
-function setUpto(value) {
-  hist.upto = value === '' || value === null ? null : Number(value)
-  paintTime()
-}
-
-/**
- * 按年回放。
- *
- * 跳的是"有事发生的年份"而不是日历年：真实数据 1936–2018 跨 83 年，
- * 其中只有 22 年有节点——逐年走的话 73% 的站什么都不会变，纯粹在空转。
- */
-function togglePlay() {
-  if (playing) return stopPlay()
-  stopTour()                        // 两个都在推游标会打架，同一时刻只留一个
-  const years = histPlan.value?.eventYears || []
-  if (years.length < 2) return setBanner('这张图上只有一个年份，没什么可回放的', 'error')
-  // 已经放到最后一站（或压根没设年份）就从头来，否则接着当前位置往下走
-  let i = hist.upto === null ? -1 : years.findIndex((y) => y > hist.upto)
-  if (i < 0) i = 0
-  isPlaying.value = true
-  setUpto(years[i])
-  playing = setInterval(() => {
-    i += 1
-    if (i >= years.length) return stopPlay()
-    setUpto(years[i])
-  }, stepMs())
-}
-
-/** 换倍速：正在放就重起一次定时器，否则要等下一站才生效。 */
-function setSpeed(x) {
-  speed.value = x
-  try { localStorage.setItem('knowrary-speed', String(x)) } catch { /* 无痕模式 */ }
-  if (playing) { stopPlay(); togglePlay() }
-  setBanner(`回放速度 ${x}×`, 'success')
-}
-
-function stopPlay() {
-  if (playing) clearInterval(playing)
-  playing = null
-  isPlaying.value = false
-}
-
-// —— 沿演化链导览 ——
-//
-// 技术史的叙事单位是"谁接谁"，不是"哪一年"：年份只是坐标轴。
-// 实盘 1936–2018 里 61 年是空的，按年走一路都是空档；按演化链走，站站有内容。
-
-const tourChain = computed(() => histPlan.value?.chain || [])
-const tourStopId = computed(() => tourChain.value[tour.i] || null)
-const tourStop = computed(() => {
-  const id = tourStopId.value
-  if (!id) return null
-  const meta = (indexDoc.value?.nodes || []).find((n) => n.id === id) || {}
-  return { id, name: meta.name || id, desc: meta.desc || '', year: histPlan.value?.placed.get(id)?.year }
-})
-/** 上一站是怎么接到这一站的：把那条演化边的类型写出来，"谁接谁"才算讲清楚。 */
-const tourVia = computed(() => {
-  if (tour.i <= 0) return '起点'
-  const eid = histPlan.value?.chainEdges?.[tour.i - 1]
-  const edge = eid ? (indexDoc.value?.edges || []).find((e) => e.id === eid) : null
-  const from = tourChain.value[tour.i - 1]
-  return edge ? `${from} —${edge.type || edge.family}→` : `接 ${from}`
-})
-
-/** 链走不长时，把原因摆出来：是"图里就这么点演化边"，而不是功能坏了。 */
-function evoGap() {
-  const d = histPlan.value?.diagnostics || {}
-  return `图上一共 ${d.evoAll ?? 0} 条演化边，其中 ${d.evoUsable ?? 0} 条两端都有 year`
-}
-
-function startTour() {
-  stopPlay()
-  const chain = histPlan.value?.chain || []
-  if (chain.length < 2) {
-    return setBanner(`找不到连续的演化链，导览走不起来——${evoGap()}。`
-      + '给发展史节点补上 year，再用「演化为 / 源自 / 被激活」把它们串起来', 'error')
-  }
-  // 导览走的就是演化边，关着的话先打开——否则用户只看到镜头在跳，看不到"沿着什么走"
-  if (!hist.演化) {
-    hist.演化 = true
-    renderHistory({ view: 'keep' })
-  }
-  tour.on = true
-  tour.auto = true
-  tourGo(0)
-  const head = `沿演化链导览：${chain.length} 站，${chain[0]} → ${chain[chain.length - 1]}（Esc 退出）`
-  // 三站以下基本讲不出故事，顺手把欠账报出来，别让人以为是功能没做好
-  setBanner(chain.length < 4 ? `${head}。链这么短是因为${evoGap()}` : head,
-            chain.length < 4 ? 'error' : '')
-}
-
-function tourGo(i) {
-  const chain = histPlan.value?.chain || []
-  if (!chain.length) return stopTour()
-  tour.i = Math.max(0, Math.min(chain.length - 1, i))
-  const box = histPlan.value.placed.get(chain[tour.i])
-  if (!box) return stopTour()
-  setUpto(box.year)                 // 游标跟着走：导览管节奏，游标管坐标，两边永远一致
-  paintTour()
-  flyTo({ cx: box.x + box.w / 2, cy: box.y + box.h / 2, zoom: TOUR_ZOOM }, 520)
-  scheduleTour()
-}
-
-/** 重建过图之后（换时间线 / 关系族）也要重新点上，否则 class 和高亮都随着旧 cell 没了。 */
-function paintTour() {
-  if (!tour.on) return
-  markStop(graph.value, tourStopId.value)
-  highlightEdges(graph.value, new Set(histPlan.value?.chainEdges || []), { flow: true })
-}
-
-function scheduleTour() {
-  clearTimeout(tourTimer)
-  tourTimer = null
-  if (!tour.on || !tour.auto) return
-  // 走到最后一站就停下，不回头重播：导览是"讲完一条线"，不是循环屏保
-  if (tour.i >= tourChain.value.length - 1) { tour.auto = false; return }
-  tourTimer = setTimeout(() => tourGo(tour.i + 1), Math.round(TOUR_MS / speed.value))
-}
-
-function toggleTourAuto() {
-  tour.auto = !tour.auto
-  // 停在最后一站时再点"自动走"，就是从头再讲一遍
-  if (tour.auto && tour.i >= tourChain.value.length - 1) return tourGo(0)
-  scheduleTour()
-}
-
-function stopTour() {
-  clearTimeout(tourTimer)
-  tourTimer = null
-  tour.on = false
-  tour.auto = false
-  markStop(graph.value, null)
-  cancelFly()
-  highlightEdges(graph.value, null)
-}
-
-function toggleTimeline(id) {
-  timelines.value = timelines.value.includes(id)
-    ? timelines.value.filter((x) => x !== id)
-    : [...timelines.value, id]
-  renderHistory({ view: 'fit' })
-}
-
-function toggleHistFamily(f) {
-  hist[f] = !hist[f]
-  renderHistory({ view: 'keep' })
-}
-
 function reportProblems(index, layout, refit = false) {
   const parts = []
   if (refit) parts.push('上次关掉时画面缩得太小（或平移出了图外），已自动适应窗口')
@@ -965,7 +679,6 @@ function safe(fn) {
 }
 
 let recoveringAt = 0
-let lastBucket = 0
 
 /** 画布出错时自愈：重建 X6 实例并按服务端状态重画，避免"卡死只能刷新"。 */
 function rebuildGraph(reason = '') {
@@ -1192,99 +905,6 @@ function editVertices(edge) {
   setBanner('拖动边上的圆点调拐点，双击这条边清掉拐点')
 }
 
-function saveViewport() {
-  if (!ready.value || applyingViewport || !writable()) return
-  patcher.value.queueViewport(currentViewport(graph.value))
-}
-
-// ---- 域工具条：浮在当前这个域的上沿 ----
-
-const activeGroupBox = computed(() => (activeGroup.value
-  ? layoutDoc.value?.groups?.[activeGroup.value] || null : null))
-
-const activeGroupCount = computed(() => (activeGroup.value
-  ? Object.values(layoutDoc.value?.nodes || {}).filter((n) => n.group === activeGroup.value).length : 0))
-
-const activeFolded = computed(() => !!activeGroup.value && collapsedIds.value.has(activeGroup.value))
-
-function setActiveGroup(gid) {
-  activeGroup.value = layoutDoc.value?.groups?.[gid] ? gid : null
-  placeGroupBar()
-}
-
-/**
- * 把工具条摆到域的上沿。
- *
- * 按"域与可视区的交集"算而不是只看左上角：放大之后域往往比屏幕还大，左上角早就在
- * 视口外，但你明明正看着它——那时也得给工具条。整块都挪出屏幕了才收起来。
- */
-function placeGroupBar() {
-  const g = graph.value
-  const box = activeGroupBox.value
-  if (!g || !box) { groupBarAt.value = null; return }
-  const cell = g.getCellById(activeGroup.value)
-  const at = cell ? cell.position() : box          // 折叠时簇卡片的位置才是它现在的样子
-  const size = cell ? cell.size() : { width: box.w, height: box.h }
-  const tl = g.localToClient(at.x, at.y)
-  const br = g.localToClient(at.x + size.width, at.y + size.height)
-  const view = g.container.getBoundingClientRect()
-  const x0 = Math.max(tl.x, view.left + 8)
-  const x1 = Math.min(br.x, view.right - 8)
-  const y0 = Math.max(tl.y, view.top + 52)         // 至少给工具条自己留出一条的高度
-  const y1 = Math.min(br.y, view.bottom - 8)
-  groupBarAt.value = x1 > x0 && y1 > y0 ? { x: x0, y: y0 - 44 } : null
-}
-
-/** 当前视口换算成图坐标，小地图靠它画那个白框。 */
-function syncView() {
-  const g = graph.value
-  if (!g) return
-  const z = g.zoom() || 1
-  const el = g.container
-  const c = currentViewport(g)
-  viewBox.value = { cx: c.cx, cy: c.cy, w: (el.clientWidth || 1200) / z, h: (el.clientHeight || 800) / z }
-  placeGroupBar()
-}
-
-function onZoom() {
-  const g = graph.value
-  zoom.value = g.zoom()
-  saveViewport()
-  syncView()
-  // 历史视图没有 LOD 折叠：缩放就只是看大看小，走结构视图那套会每滚一格就整图重建，
-  // 还会把结构视图的折叠集合改掉（切回去时折叠状态就错了）
-  if (mode.value === 'history') return
-  const next = computeCollapsed(layoutDoc.value, g.zoom(),
-    { auto: autoLod.value, focus: focusGroup.value })
-  const changed = next.size !== collapsedIds.value.size
-    || [...next].some((id) => !collapsedIds.value.has(id))
-  // 折叠集合变了要重画；有簇卡片时缩放跨档（卡片尺寸分档跟随缩放）也要重画
-  const bucket = Math.round(Math.min(3, Math.max(1, 1 / Math.max(g.zoom(), 0.05))) * 2)
-  if (changed || (next.size && bucket !== lastBucket)) {
-    lastBucket = bucket
-    render()
-    return
-  }
-  const shouldShow = g.zoom() > LABEL_ZOOM
-  if (shouldShow !== labelsOn.value) {
-    labelsOn.value = shouldShow
-    applyEdgeLabels(g, indexDoc.value, shouldShow)
-  }
-}
-
-/** 右下角缩放条：按固定倍率缩放，落点夹在 X6 的上下限内。 */
-function stepZoom(factor) {
-  const g = graph.value
-  if (!g) return
-  ready.value = true
-  g.zoomTo(Math.min(3, Math.max(0.05, g.zoom() * factor)))
-}
-
-function resetZoom() {
-  ready.value = true
-  graph.value?.zoomTo(1)
-}
-
 // 某个节点的边在画布上的 cell id：组内边是本身，跨组边是它所属的那一束聚合边
 function relatedEdgeIds(nodeId) {
   const layout = layoutDoc.value
@@ -1308,57 +928,15 @@ function focus(nodeId) {
   highlightEdges(graph.value, nodeId ? relatedEdgeIds(nodeId) : null, { flow: true })
 }
 
-// ---- 路径搜索：两个知识点之间最短的那条解释链 ----
-
-/** 索引里的一条边，在画布上对应哪个 cell（跨组时是那一束聚合边）。 */
-function edgeCellId(e) {
-  const layout = layoutDoc.value
-  const a = layout.nodes[e.source]?.group || null
-  const b = layout.nodes[e.target]?.group || null
-  const pair = a && b ? `${a}->${b}` : null
-  return !aggregate.value || !pair || a === b || expanded.value.has(pair) ? e.id : `agg:${pair}`
-}
-
-function applyPath() {
-  const hit = pathHit.value
-  if (!hit) return
-  highlightPath(graph.value, new Set(hit.nodes), new Set(hit.edges.map(edgeCellId)))
-}
-
-function clearPathHighlight(quiet = false) {
-  pathFrom.value = null
-  if (!pathHit.value) return
-  pathHit.value = null
-  clearPath(graph.value)
-  if (!quiet) setBanner('已取消路径高亮')
-}
-
-function startPath(id) {
-  if (pathFrom.value === id) { clearPathHighlight(true); setBanner('已取消路径起点'); return }
-  clearPathHighlight(true)
-  pathFrom.value = id
-  setBanner(`路径起点：「${nodeName(id)}」——右键另一个知识点选「找到这里的路径」`, 'success')
-}
-
-function endPath(id) {
-  const from = pathFrom.value
-  if (!from || from === id) return
-  const hit = shortestPath(indexDoc.value, layoutDoc.value, from, id, visibleFamilies())
-  if (!hit) {
-    setBanner(`「${nodeName(from)}」和「${nodeName(id)}」之间在当前可见的关系族里走不通`, 'error')
-    return
-  }
-  pathHit.value = hit
-  pathFrom.value = null
-  applyPath()
-  setBanner(`${hit.edges.length} 跳：${describePath(indexDoc.value, hit)}`, 'success')
-}
-
-function nodeName(id) {
-  return indexDoc.value?.nodes.find((n) => n.id === id)?.name || id
-}
-
 // ---- 右键菜单：画布上每类元素一套动作 ----
+
+/** 给菜单 builder 的一份状态快照。builder 是纯函数（canvas/menus.js），
+ *  它不认识 ref——这里把要用到的那几样摊平递进去。 */
+function menuCtx() {
+  return { index: indexDoc.value, layout: layoutDoc.value, dueIds: dueIds.value,
+           pathFrom: pathFrom.value, pathHit: !!pathHit.value, neighbor: neighbor.value,
+           focusGroup: focusGroup.value, showMap: showMap.value, nodeName }
+}
 
 function openMenu(kind, id, ev) {
   // 历史视图是只读浏览视图；项目画布和全局图一样可操作。
@@ -1366,118 +944,7 @@ function openMenu(kind, id, ev) {
   //   会出现"拖得动却右键不出菜单"这种半瘫状态。）
   if (!writable()) return
   ctxTarget = { kind, id, at: graph.value.clientToLocal(ev.clientX, ev.clientY) }
-  const build = { node: nodeMenu, group: groupMenu, cluster: groupMenu, edge: edgeMenu,
-                  deco: decoMenu, blank: blankMenu }[kind]
-  ctx.value = { x: ev.clientX, y: ev.clientY, ...build(id, kind === 'cluster') }
-}
-
-function nodeMenu(id) {
-  const meta = indexDoc.value?.nodes.find((n) => n.id === id)
-  const place = layoutDoc.value?.nodes?.[id]
-  // 幽灵占位（计划里有、还没建）：能建、能**被**连到，但不能从它出发连边——
-  // 关系行要写进源节点的 md，而它连 md 都还没有。
-  if (!meta && place?.state === 'ghost') {
-    return { title: id, subtitle: '计划里的点，还没建出来',
-             items: [{ id: 'build-ghost', label: '现在把它建出来…', icon: 'plus', hint: '写 md' },
-                     { id: 'drop-ghost', label: '从这块画布上去掉', icon: 'x',
-                       hint: '不动清单' }] }
-  }
-  const items = [{ id: 'relate', label: '建立关系…', icon: 'link', hint: '⌘L' },
-                 { id: 'ref', label: '放引用卡', icon: 'bookmark' }]
-  if (place?.state === 'draft') items.push({ id: 'finalize', label: '定稿', icon: 'check' })
-  else if (place) items.push({ id: 'draft', label: '标记为草稿（待关联）', icon: 'pencil' })
-  if (dueIds.value.has(id)) items.push({ id: 'review', label: '复习过了', icon: 'rotate' })
-  items.push(
-    { sep: true },
-    ...(pathFrom.value && pathFrom.value !== id
-      ? [{ id: 'path-to', label: `找「${nodeName(pathFrom.value)}」到这里的路径`, icon: 'timeline' }]
-      : [{ id: 'path-from', label: pathFrom.value === id ? '取消路径起点' : '以它为路径起点',
-           icon: 'timeline', on: pathFrom.value === id }]),
-    ...(pathHit.value ? [{ id: 'path-clear', label: '取消路径高亮', icon: 'x' }] : []),
-    { sep: true },
-    { id: 'detail', label: '查看详情', icon: 'file' },
-    { id: 'neighbor', label: neighbor.value === id ? '退出只看邻居' : '只看它的邻居',
-      icon: 'eye', on: neighbor.value === id },
-    { id: 'obsidian', label: '在 Obsidian 打开', icon: 'external' },
-    { id: 'copy', label: `复制 [[${meta?.name || id}]]`, icon: 'copy' },
-    ...(place?.group ? [{ id: 'as-doc', label: `设为「${layoutDoc.value.groups[place.group]?.name}」的总览`,
-                          icon: 'bookmark', on: layoutDoc.value.groups[place.group]?.doc === id }] : []),
-    { sep: true },
-    { id: 'unplace', label: '移出画布（不删 md）', icon: 'trash', danger: true },
-  )
-  const deg = meta?.degree || 0
-  return { title: meta?.name || id, subtitle: `${meta?.field || '未归类'} · ${deg} 条关系`, items }
-}
-
-function groupMenu(gid, folded) {
-  const g = layoutDoc.value?.groups?.[gid]
-  const count = Object.values(layoutDoc.value?.nodes || {}).filter((n) => n.group === gid).length
-  const items = folded
-    ? [{ id: 'enter', label: '展开这个域（放大进去）', icon: 'unfold' }]
-    : [{ id: 'collapse', label: '折叠成簇卡片', icon: 'fold' },
-       { id: 'enter', label: '放大到这个域', icon: 'target' }]
-  const doc = g?.doc || null
-  items.push(
-    { sep: true },
-    doc ? { id: 'open-doc', label: `打开总览「${doc}」`, icon: 'file' }
-        : { id: 'new-doc', label: '给这个域加总览文档…', icon: 'file', hint: '写 md' },
-    ...(doc ? [{ id: 'unbind-doc', label: '解除总览文档绑定', icon: 'x' }] : []),
-    { sep: true },
-    { id: 'pin-expanded', label: '一直展开（缩小也不折叠）', icon: 'pin', on: g?.pinned === 'expanded' },
-    { id: 'pin-auto', label: '恢复自动折叠', icon: 'rotate', disabled: !g?.pinned },
-    { sep: true },
-    { id: 'new-node', label: '在这里新建知识点…', icon: 'plus', hint: '写 md' },
-    { id: 'new-subgroup', label: '在这里新建子簇', icon: 'grid' },
-    { id: 'rename', label: '重命名这个域', icon: 'pencil' },
-  )
-  // 组内重排：每个域自己挑摆法。子域各摆各的，父域里只剩框，重排它没有意义。
-  const inner = !folded && count >= 2 && !hasSubGroups(layoutDoc.value, gid)
-  if (inner) {
-    items.push({ sep: true })
-    for (const [kind, spec] of Object.entries(GROUP_LAYOUTS)) {
-      items.push({ id: `inner-${kind}`, label: `组内重排：${spec.label}`, icon: 'grid' })
-    }
-  }
-  if (focusGroup.value) items.push({ id: 'exit-focus', label: '返回全景', icon: 'arrowLeft', hint: 'Esc' })
-  const pinned = g?.pinned === 'expanded' ? '已钉住展开' : g?.pinned === 'collapsed' ? '已钉住折叠' : '自动折叠'
-  return { title: g?.name || gid,
-           subtitle: `${count} 个知识点 · ${doc ? '有总览文档' : '没有总览文档'} · ${pinned}`, items }
-}
-
-function edgeMenu(id) {
-  const e = indexDoc.value?.edges.find((x) => x.id === id)
-  return {
-    title: e ? `${e.source} → ${e.target}` : id,
-    subtitle: e ? `${e.type}（${e.family}族）` : '',
-    items: [
-      { id: 'edge-delete', label: '删除这条关系（写回 md）', icon: 'trash', danger: true },
-      { id: 'edge-clear', label: '清掉手工拐点', icon: 'rotate', disabled: !layoutDoc.value?.edges?.[id] },
-      { sep: true },
-      { id: 'edge-source', label: `打开 ${e?.source || ''}`, icon: 'file' },
-      { id: 'edge-target', label: `打开 ${e?.target || ''}`, icon: 'file' },
-    ],
-  }
-}
-
-function decoMenu(cellId) {
-  const [kind] = cellId.split(':')
-  const label = { note: '便签', img: '贴图', ref: '引用卡' }[kind] || '元素'
-  return { title: label, subtitle: '只存在 layout 里，不碰 md',
-           items: [...(kind === 'note' ? [{ id: 'deco-edit', label: '编辑便签', icon: 'pencil' }] : []),
-                   { id: 'deco-delete', label: `删除这张${label}`, icon: 'trash', danger: true }] }
-}
-
-function blankMenu() {
-  return { title: '画布', subtitle: '右键落点就是新元素的位置', items: [
-    { id: 'new-node', label: '新建知识点…', icon: 'plus', hint: '写 md' },
-    { id: 'new-group', label: '新建簇（分组框）', icon: 'grid' },
-    { id: 'note', label: '贴便签', icon: 'note' },
-    { id: 'image', label: '贴图…', icon: 'image' },
-    { sep: true },
-    { id: 'fit', label: '适应窗口', icon: 'fit', hint: 'F' },
-    { id: 'map', label: showMap.value ? '隐藏小地图' : '显示小地图', icon: 'map', on: showMap.value },
-    { id: 'inbox', label: '打开 Inbox', icon: 'inbox', hint: 'I' },
-  ] }
+  ctx.value = { x: ev.clientX, y: ev.clientY, ...buildMenu(kind, id, menuCtx()) }
 }
 
 const MENU_ACTIONS = {
@@ -1816,6 +1283,52 @@ async function placeNew(ids, spot) {
 
 // ---- AI 建议 ----
 
+/**
+ * 欠账清单里点「让 AI 补一轮」：**一次调用**问完一批缺 year 的节点。
+ *
+ * 不做成"逐个节点在检查器里问"：实盘 41 个点缺 year，那样是 41 次调用；
+ * 而判断"这个概念哪年出现"用不着候选节点和关系类型表，一次问完几毛钱。
+ */
+async function openYears() {
+  yearsOpen.value = true
+  yearProposal.value = null
+  yearsBusy.value = true
+  try {
+    yearProposal.value = await postYearsPropose({})
+  } catch (err) {
+    yearsOpen.value = false
+    setBanner(`补 year 失败：${err.body?.detail || err.message}`, 'error')
+  } finally {
+    yearsBusy.value = false
+    refreshUsage()
+  }
+}
+
+/** 勾好的那些写回 md 的 frontmatter。走 /api/changes 这唯一入口，备份和 diff 一样不少。 */
+async function applyYears(rows) {
+  yearsBusy.value = true
+  try {
+    const res = await writeChanges(rows.map((r) => ({ type: 'update_frontmatter', source: r.id,
+                                                      fields: { year: r.year } })))
+    yearsOpen.value = false
+    await load()
+    refreshDigest()
+    setBanner(`已给 ${rows.length} 个节点补上 year（${res.files.length} 个文件），`
+              + `原文备份在 ${res.backup}。历史视图里它们现在有位置了`, 'success')
+  } catch (err) {
+    setBanner(`写回失败：${err.body?.detail?.message || err.body?.detail || err.message}`, 'error')
+  } finally {
+    yearsBusy.value = false
+  }
+}
+
+/** 欠账清单里点「问 AI 连什么」：先定位过去（检查器跟着选中它），再要建议。
+ *  **不另造一套建议 UI**——检查器里那一套已经能逐条采纳，再做一份只会两边不一致。 */
+async function suggestFromDigest(id) {
+  await gotoNode(id)
+  if (selected.value?.id === id) fetchSuggestions(id)
+}
+
 async function fetchSuggestions(nodeId) {
   if (!nodeId) return
   suggesting.value = true
@@ -1857,6 +1370,26 @@ const linkedOf = computed(() => {
   }
   return out
 })
+
+/** 今日清单里的孤点点「连边」。清单里带着现成建议就预填，没有就只定位到它、
+ *  让人自己在对话框里搜目标——**孤点本身就是那条任务**，有没有建议都该能动手。 */
+async function linkFromToday(item) {
+  await gotoNode(item.id)
+  if (item.link?.target) relatePreset.value = { relation: item.link.relation, target: item.link.target }
+  relating.value = describe(item.id)
+}
+
+/**
+ * 欠账清单里点「连边」：把建议的类型和目标填进关系对话框，人确认了才写。
+ *
+ * **不直接写回**——建议算出来的 `包含` / `对比` 是按名字猜的（「堆内存」含着「内存」
+ * ⇒ 多半是它的一种），猜错了写进 md 就是一条骗人的边，而边一旦写进去，后面的
+ * 复习、出题、最短解释链全都会照着它跑。
+ */
+function linkFromDigest({ source, target, relation }) {
+  relatePreset.value = { relation, target }
+  relating.value = describe(source)
+}
 
 async function createRelation({ relation, target, swap }) {
   const src = relating.value
@@ -1944,53 +1477,6 @@ async function reloadIndex() {
   // ——派生数据不落盘，代价就是每次源数据变都得让它重算一遍。
   if (plansDoc.value) refreshPlans()
   if (selected.value) await loadDetail(selected.value.id)
-}
-
-// ---- 把目标"拉到眼前"：连完线自动飞过去，两端一起框进视口 ----
-
-function flyToPair(a, b) {
-  const box = boxOf([a, b], 140)
-  if (!box) return
-  const el = graph.value.container
-  const z = Math.min(1.2, (el.clientWidth || 1200) / box.w, (el.clientHeight || 800) / box.h)
-  flyTo({ cx: box.x + box.w / 2, cy: box.y + box.h / 2, zoom: z })
-}
-
-/**
- * 平滑飞过去。用 setTimeout 而不是 requestAnimationFrame：
- * 后台标签页和无头浏览器里 rAF 不触发，动画会卡在半路，视口再也存不回去（阶段 2 踩过）。
- *
- * 可打断：导览一站站走时，新的一站要能立刻接管镜头；用户自己拖画布时更要马上松手，
- * 否则下一帧又把他拽回去——两个人抢方向盘比不动还糟。
- */
-let flyGen = 0
-function cancelFly() { flyGen += 1 }
-
-function flyTo({ cx, cy, zoom: to }, ms = 420) {
-  const g = graph.value
-  const gen = ++flyGen
-  const from = currentViewport(g)
-  const end = Math.max(0.05, Math.min(3, to))
-  const t0 = Date.now()
-  const step = () => {
-    if (gen !== flyGen) return                    // 已经被下一次 flyTo / cancelFly 接管
-    const p = Math.min(1, (Date.now() - t0) / ms)
-    const e = 1 - (1 - p) ** 3                    // easeOutCubic
-    g.zoomTo(from.zoom + (end - from.zoom) * e)
-    g.centerPoint(from.cx + (cx - from.cx) * e, from.cy + (cy - from.cy) * e)
-    if (p < 1) { setTimeout(step, 16); return }
-    zoom.value = g.zoom()
-    syncView()
-    saveViewport()
-  }
-  step()
-}
-
-/** 小地图上点一下 / 拖一把：视口中心跟着走。 */
-function jumpTo({ x, y }) {
-  ready.value = true
-  graph.value?.centerPoint(x, y)
-  syncView()
 }
 
 /** 落点取整：开了吸附就贴到网格，没开就照旧四舍五入到整数像素。 */
@@ -2171,10 +1657,10 @@ function gotoNode(id) {
     focusGroup.value = place.group
   }
   render()
-  applyingViewport = true
+  applyingViewport.value = true
   g.zoomTo(Math.max(g.zoom(), 0.8))
   g.centerPoint(place.x + 90, place.y + 30)
-  applyingViewport = false
+  applyingViewport.value = false
   zoom.value = g.zoom()
   const cell = g.getCellById(id)
   if (cell) {
@@ -2440,9 +1926,10 @@ async function switchProject(id) {
     setBanner('「全局」不绑项目，没有项目画布——已经切到全局图')
   }
   if (mode.value === 'chat') {
-    // 对话按项目分线：换项目等于换一条线。上一段没丢——它一直在 .knowrary/chat/<项目>/ 里
-    chatLog.value = []
-    chatSession.value = newSessionId()
+    // 对话按项目分线：换项目等于换一条线。上一段没丢——它一直在 .knowrary/chat/<项目>/ 里。
+    // 走 newChatSession 而不是手写"清空 + 换 id"：梳理游标是跟着会话走的，
+    // 漏掉它的话换过项目之后按钮的灰/亮状态还停在上一段。
+    newChatSession()
     loadChatHistory()
   }
 }
@@ -2466,161 +1953,6 @@ function briefStart(item) {
   else gotoNode(item.id)
 }
 
-// —— 阶段 12：对话式教练 ——
-
-const TOOL_LABEL = {
-  search_nodes: '在图里搜了一下', read_node: '读了一个节点', overview: '看了图谱概况',
-  today: '看了今日清单', plans: '看了学习计划', quiz: '出了几道题',
-  record_review: '记了一次复习', propose_changes: '拟了一张变更卡',
-}
-
-/** 刷新页面后接着聊：把留档里最近几轮读回来。**不是多会话**——
- *  只是别把上下文弄丢。变更卡和工具痕迹不恢复（它们是当时那一刻的东西，过期了）。 */
-async function loadChatHistory(session = null) {
-  if (chatBusy.value) return
-  try {
-    const [hist, list] = await Promise.all([
-      fetchChatHistory(currentProject.value || null, session),
-      fetchChatSessions(currentProject.value || null),
-    ])
-    chatSessions.value = list.sessions
-    chatLog.value = hist.messages.map((m) => ({
-      ...m, cards: [], resumed: true,
-      trace: (m.trace || []).map((t) => ({ kind: 'say', text: t })) }))
-    // 接着最近那一段聊：服务端不给 session 时返回的就是它，这里把 id 对上
-    if (!session && hist.messages.length) chatSession.value = list.sessions[0]?.id || chatSession.value
-    else if (session) chatSession.value = session
-    // 游标跟着这一段一起回来：**第二天重开时按钮该不该是灰的，全靠它**
-    chatTidied.value = list.sessions.find((s) => s.id === chatSession.value)?.tidied || null
-  } catch { /* 读不到就当新开一段，不值得为此报错 */ }
-}
-
-/** 给当前这段对话改个名字。留空 = 回到自动取的名字（第一句我说的话）。 */
-async function renameSession({ session, title }) {
-  if (!session) return
-  try {
-    await renameChatSession(session, title, currentProject.value || null)
-    const list = await fetchChatSessions(currentProject.value || null)
-    chatSessions.value = list.sessions
-  } catch (err) {
-    setBanner(`改名失败：${err.message}`, 'error')
-  }
-}
-
-/** 新开一段：旧的还在留档里，随时切回来。 */
-function newChatSession() {
-  chatSession.value = newSessionId()
-  chatLog.value = []
-  chatFocus.value = null
-  chatTidied.value = null                 // 新的一段从零开始，没有梳理过
-}
-
-function pickChatSession(id) {
-  if (!id || id === chatSession.value) return
-  chatLog.value = []
-  loadChatHistory(id)
-}
-
-/** 梳理时只发游标之后那一段：前面的已经采纳入库了，再喂一遍纯粹是重复付钱。
- *  **本段第一句我说的话仍然带上**——不给话题锚的话，模型看着半截对话不知道这是在聊什么，
- *  搜出来的节点和连出来的边都会跑偏。 */
-function sinceTidied(msgs) {
-  const cut = Date.parse(chatTidied.value?.upto || '')
-  if (!Number.isFinite(cut)) return msgs
-  const fresh = msgs.filter((m) => !m.ts || Date.parse(m.ts) > cut)
-  const old = msgs.length - fresh.length
-  if (old <= 0) return msgs
-  const anchor = (msgs.find((m) => m.role === 'user')?.content || '').slice(0, 120)
-  return [{ role: 'user', content:
-    `（这一段前面 ${old} 条已经梳理并入库过了，不用再看一遍。当时开头问的是：「${anchor}」。`
-    + `下面是入库之后新聊的部分，只梳理这些。）` }, ...fresh]
-}
-
-/** 发一句话。服务端流式回，边收边渲染；工具调用和变更卡挂在这条回复下面。
- *  `opts.tidy` = 这一轮是「梳理这段」，走增量口径。 */
-async function sendChat(body, opts = {}) {
-  if (chatBusy.value) return
-  // 从图上点过来的节点：把摘要和出入边拼进这一轮。模型不用再自己 search 一次。
-  const focus = chatFocus.value
-  const text = focus
-    ? `${body}\n\n（我正在看图上的「${focus.name || focus.id}」：${focus.desc || '没写摘要'}）`
-    : body
-  // ts 由服务端在留档时盖（done 事件带回来）：梳理游标停在某一条留档上，
-  // 前端自己按本地时钟盖一个和它对不齐，判"这条在游标前还是后"就会差一截。
-  const mine = reactive({ role: 'user', content: text, ts: '' })
-  chatLog.value = [...chatLog.value, mine]
-  // trace = 过程（"我先查一下"、工具调用、工具报错），content = 最终那段答案。
-  // 混在一起的话，每次都要在一堆过程里找那几句有营养的——真实使用里最费时间的一点。
-  const reply = reactive({ role: 'assistant', content: '', trace: [], cards: [], projects: [],
-                           points: [], questions: [], streaming: true, ts: '' })
-  chatLog.value = [...chatLog.value, reply]
-  chatBusy.value = true
-  chatAbort = new AbortController()
-  // 只把 role/content 发过去：tools / cards 是本地渲染用的，喂回模型只会干扰它
-  const feed = chatLog.value.filter((m) => m.content || m.role === 'user')
-  const wire = (opts.tidy ? sinceTidied(feed) : feed)
-    .map((m) => ({ role: m.role, content: m.content }))
-    .filter((m) => m.content.trim())
-  chatFocus.value = null
-  try {
-    await streamChat(wire, (ev) => {
-      if (ev.type === 'delta') reply.content = stripToolBlocks(reply.content + ev.text)
-      else if (ev.type === 'tool') {
-        // 还要接着调工具 = 刚才那段是过程，收进折叠区，正文腾空给最后那段答案
-        if (reply.content.trim()) { reply.trace.push({ kind: 'say', text: reply.content }); reply.content = '' }
-        reply.trace.push({ kind: 'tool', label: TOOL_LABEL[ev.name] || ev.name, summary: ev.summary })
-      }
-      else if (ev.type === 'card') reply.cards.push({ ...ev.card, applied: false })
-      else if (ev.type === 'project') reply.projects.push({ ...ev.project, applied: false })
-      else if (ev.type === 'points') reply.points.push({ ...ev.points, applied: false })
-      else if (ev.type === 'question') reply.questions.push({ stem: ev.stem, points: ev.points })
-      else if (ev.type === 'question') reply.questions.push({ stem: ev.stem, points: ev.points })
-      else if (ev.type === 'review') { refreshDue(); pushToast(`已记一次「忘了」：${ev.id}`, 'info') }
-      else if (ev.type === 'done') {
-        // 服务端也分好了过程和答案；流式那边分错了以它为准
-        if (ev.trace?.length && !reply.trace.some((t) => t.kind === 'say')) {
-          reply.trace.unshift(...ev.trace.map((t) => ({ kind: 'say', text: t })))
-        }
-        reply.content = stripToolBlocks(ev.text) || reply.content
-        // 留档的 ts 认回来：梳理游标就停在这上面，没有它这一轮在前端是"没有坐标"的
-        if (ev.ts) reply.ts = ev.ts
-        if (ev.user_ts) mine.ts = ev.user_ts
-        // 聊到哪，图上亮哪（重构方案 §5.2）。走已有的 highlightPath，不新写高亮逻辑。
-        if (ev.node_ids?.length && graph.value) {
-          highlightPath(graph.value, new Set(ev.node_ids), new Set())
-        }
-      }
-      else if (ev.type === 'error') setBanner(`对话失败：${ev.message}`, 'error')
-    }, chatAbort.signal, currentProject.value || null, chatSession.value, chatStance.value)
-  } catch (err) {
-    if (err.name !== 'AbortError') setBanner(`对话失败：${err.body?.detail || err.message}`, 'error')
-  } finally {
-    reply.streaming = false
-    chatBusy.value = false
-    chatAbort = null
-  }
-}
-
-/** 把梳理游标推到第 i 条回复为止。**只在写盘成功之后调**。
- *  服务端只进不退，所以这里不用操心先写后面那张卡、再回头写前面那张的顺序。 */
-async function advanceTidied(i) {
-  const upto = chatLog.value[i]?.ts
-    || [...chatLog.value.slice(0, i + 1)].reverse().find((m) => m.ts)?.ts
-  if (!upto || !chatSession.value) return          // 没有坐标就不动游标，下次全量重梳
-  try {
-    const res = await markChatTidied({ session: chatSession.value, upto,
-                                       turns: i + 1, project: currentProject.value || null })
-    chatTidied.value = res.tidied || chatTidied.value
-  } catch { /* 游标是优化不是真值：推不动只是下次多花一次钱，不该打断写入的成功提示 */ }
-}
-
-/** 工具块是给服务端看的，不该在屏幕上闪过——和 server/chat.py 的 strip_tools 同一个形状。
- *  流式时块可能只到一半，所以未闭合的也要藏掉。 */
-function stripToolBlocks(text) {
-  return text.replace(/```knowrary[\s\S]*?```/g, '').replace(/```knowrary[\s\S]*$/, '').trim()
-}
-
-function stopChat() { chatAbort?.abort() }
 
 /** 变更卡上的「写入」：走的仍然是 /api/changes 这唯一入口，和详情面板一模一样。 */
 async function applyChatCard({ card, i, j }) {
@@ -2986,9 +2318,9 @@ function enterGroup(gid) {
   focusGroup.value = gid
   render()
   setActiveGroup(gid)
-  applyingViewport = true
+  applyingViewport.value = true
   g.zoomToRect({ x: box.x - 60, y: box.y - 60, width: box.w + 120, height: box.h + 120 }, { maxScale: 1.4 })
-  applyingViewport = false
+  applyingViewport.value = false
   zoom.value = g.zoom()
 }
 
@@ -3000,14 +2332,14 @@ function exitGroup() {
   activeGroup.value = null
   groupBarAt.value = null
   render()
-  applyingViewport = true
+  applyingViewport.value = true
   if (panorama) {
     g.zoomTo(panorama.zoom)
     g.translate(panorama.translate.tx, panorama.translate.ty)
   } else {
     g.zoomToFit({ padding: 60, maxScale: 1 })
   }
-  applyingViewport = false
+  applyingViewport.value = false
   panorama = null
   zoom.value = g.zoom()
 }
@@ -3199,7 +2531,7 @@ onMounted(async () => {
     write: writeChanges,          // 排查"写回为什么失败"时，能在控制台直接打一发
     // 历史视图：布局是一次算定的，游标停在哪由 upto 决定——排查"点该亮没亮"只看这两个
     get histPlan() { return histPlan.value },
-    get histActive() { return histActive ? [...histActive] : null },
+    get histActive() { return histActiveIds() },
     // 往对话里塞一条假回复：图文渲染（Markdown / mermaid）不调模型也能验
     fakeReply(text) {
       chatLog.value = [...chatLog.value,
@@ -3275,6 +2607,7 @@ onBeforeUnmount(() => {
                   :open-quiz="openQuiz" @resume-quiz="resumeQuiz" @drop-quiz="discardQuiz"
                   @goto="gotoNode" @quiz="startQuiz($event.id ? [$event.id] : $event)"
                   @build="buildPoint" @write="writeBody" @place="placeFromToday"
+                  @link="linkFromToday"
                   @plans="panel = 'plans'; refreshPlans()" @global="switchProject('')"
                   @refresh="refreshToday" @close="panel = ''" />
       <StatsPanel v-else-if="panel === 'stats'" class="study" :index="indexDoc" :chains="lineageChains"
@@ -3282,7 +2615,8 @@ onBeforeUnmount(() => {
       <CalendarPanel v-else-if="panel === 'calendar'" class="study" :data="calendar"
                      @goto="gotoNode" @refresh="refreshCalendar" @close="panel = ''" />
       <DigestPanel v-else-if="panel === 'digest'" :busy="status === 'saving'" @regroup="regroupDrafts" class="digest" :digest="digest"
-                   @goto="gotoNode" @refresh="refreshDigest" @merge="openMerge" @close="panel = ''" />
+                   @goto="gotoNode" @refresh="refreshDigest" @merge="openMerge" @link="linkFromDigest"
+                   @suggest="suggestFromDigest" @years="openYears" @close="panel = ''" />
       <ImagePicker v-else-if="panel === 'assets'" class="picker" @pick="addImage" @add-note="addNote"
                    @error="setBanner($event, 'error')" @close="panel = ''" />
       <TimelinePanel v-else-if="panel === 'timeline'" class="timeline" :options="timelineChoices"
@@ -3414,11 +2748,15 @@ onBeforeUnmount(() => {
 
     <RelationDialog v-if="relating" :source="relating" :families="relationTypes"
                     :nodes="indexDoc?.nodes || []" :placed="placedIds" :linked="linkedOf"
+                    :preset="relatePreset"
                     @create="createRelation" @close="relating = null" />
 
     <QuizDialog v-if="quiz" :questions="quiz.questions" :names="nodeNames" :diagnosis="quizDiag"
                 :busy="quizBusy" @diagnose="diagnoseQuiz" @submit="submitQuiz"
                 @goto="gotoNode($event); quiz = null" @close="quiz = null; quizDiag = null" />
+
+    <YearDialog v-if="yearsOpen" :proposal="yearProposal" :busy="yearsBusy"
+                @apply="applyYears" @goto="gotoNode" @close="yearsOpen = false" />
 
     <MergeDialog v-if="merging" :pair="merging" :impact="mergeImpact" :busy="mergeBusy"
                  @preview="previewMerge" @apply="applyMerge" @swap="swapMerge"
