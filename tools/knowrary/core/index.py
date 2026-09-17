@@ -18,12 +18,12 @@ from pathlib import Path
 from .analysis import find_cycles, pagerank
 from .diagnostics import Diagnostics
 from .mdio import RE_LINK, json_safe, load_json
-from .parser import Node, load_vault, validate_frontmatter
+from .parser import Node, load_vault, validate_frontmatter, parse_params
 from .relations import NormalizedEdge, RelationTypes, load_relation_types, normalize_direction
 
 INDEX_SCHEMA_VERSION = 1
 NODE_FM_FIELDS = ("name", "field", "type", "status", "desc", "year", "start_year", "end_year",
-                  "aliases", "tags", "learned", "source", "layer")
+                  "aliases", "tags", "learned", "source", "layer", "params")
 
 
 @dataclass
@@ -178,6 +178,11 @@ def _node_payload(vault: Path, node: Node) -> dict:
         v = node.fm.get(k)
         if v not in (None, "", []):
             d[k] = json_safe(v)
+    # 参数量在索引里存**解析好的数值**：前端画图不该各写一遍"175B 是多少"，
+    # 而 md 里仍然是人写得顺手的那种写法
+    n = parse_params(node.fm.get("params"))
+    if n is not None:
+        d["params_n"] = n
     d.setdefault("status", "active")
     if node.is_stub:
         d["stub"] = True

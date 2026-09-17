@@ -48,7 +48,12 @@ MAX_STEPS = 8
 MAX_MESSAGES = 60
 MAX_HISTORY_CHARS = 24000
 SEARCH_TOP = 8
-BODY_CHARS = 1200
+# read_node 的正文预算。**以前是 1200 字，那是个会吃掉笔记的数**：模型拿到的是截断过的原文，
+# 再用 `update_body`（整段替换）写回去，超出那 1200 字的后半截就被抹掉了。
+# 现在放到 8000，并且真截断时会在结果里直说、明令只准用 `append_body`。
+READ_CHARS = 8000
+READ_BUDGET = 16000      # 一次读多个节点时的总预算：省步数不能换来把 prompt 撑爆
+READ_MAX_IDS = 5
 _PROMPTS: dict[str, str] = {}
 
 # ```knowrary {...}``` —— 非贪婪，只认第一个块（prompt 里要求一次一个工具）
@@ -143,22 +148,48 @@ def _tool_search(vault: Path, args: dict) -> tuple[str, dict]:
     return json.dumps(out, ensure_ascii=False), {"hits": len(rows) + len(planned)}
 
 
-def _tool_read(vault: Path, args: dict) -> tuple[str, dict]:
-    nid = str(args.get("id") or "").strip()
-    index = current_index(vault)
+def _read_one(vault: Path, index: dict, nid: str, budget: int) -> tuple[str, bool]:
+    """读一个节点的原文 + 关系。返回 (给模型看的文本, 是否被截断)。"""
     meta = next((n for n in index["nodes"] if n["id"] == nid), None)
     if meta is None:
-        return f"图里没有 `{nid}` 这个节点。", {}
+        return f"图里没有 `{nid}` 这个节点。", False
     if meta.get("virtual") or not meta.get("path"):
-        return f"`{nid}` 只是被别的节点引用的占位，还没有 md 文件。", {}
+        return f"`{nid}` 只是被别的节点引用的占位，还没有 md 文件。", False
     try:
         raw = core.read(vault / meta["path"])
     except OSError as exc:
-        return f"读不到 `{nid}` 的文件：{exc}", {}
+        return f"读不到 `{nid}` 的文件：{exc}", False
+    cap = max(400, min(READ_CHARS, budget))
+    cut = len(raw) > cap
     edges = {e["id"]: e for e in index["edges"]}
     rel = [f"{edges[i]['type']} → {edges[i]['target']}" for i in meta.get("out", []) if i in edges]
     rel += [f"{edges[i]['source']} → {edges[i]['type']} 本节点" for i in meta.get("in", []) if i in edges]
-    return f"{raw[:BODY_CHARS]}\n\n（关系：{'；'.join(rel) or '还没有'}）", {"id": nid}
+    warn = ("\n\n**注意：这份原文被截断了，你看到的不是全文。**"
+            "所以这个节点只准用 `append_body` 追加，**绝对不许 update_body**——"
+            "整段替换会把你没看到的那部分永久删掉。" if cut else "")
+    return f"{raw[:cap]}{warn}\n\n（关系：{'；'.join(rel) or '还没有'}）", cut
+
+
+def _tool_read(vault: Path, args: dict) -> tuple[str, dict]:
+    """读节点正文。**支持一次读几个**：要往 5 个已有节点里补内容，一个一个读要花 5 步，
+    而一轮总共只有 MAX_STEPS 步——模型会在读到第三个的时候放弃后面两个。"""
+    raw_ids = args.get("ids") if isinstance(args.get("ids"), list) else []
+    ids = [str(x).strip() for x in [*raw_ids, args.get("id")] if str(x or "").strip()]
+    ids = list(dict.fromkeys(ids))[:READ_MAX_IDS]        # 去重后保序，多给的截掉
+    if not ids:
+        return "没给 id，不知道读哪个节点。", {}
+    index = current_index(vault)
+    budget, parts, cuts = READ_BUDGET, [], 0
+    for nid in ids:
+        text, cut = _read_one(vault, index, nid, budget)
+        cuts += int(cut)
+        budget -= len(text)
+        parts.append(f"### {nid}\n{text}" if len(ids) > 1 else text)
+        if budget <= 0 and nid != ids[-1]:
+            parts.append(f"（余下的 {len(ids) - len(parts)} 个没读：这一次的字数预算用完了，"
+                         f"要的话分开再读一次。）")
+            break
+    return "\n\n".join(parts), {"id": ids[0], "ids": ids, "truncated": cuts}
 
 
 def _tool_overview(vault: Path, args: dict) -> tuple[str, dict]:
@@ -360,8 +391,11 @@ def _tool_propose(vault: Path, args: dict) -> tuple[str, dict]:
             "files": [f.model_dump() for f in files], "into": into}
     tail = (f"写入时会顺手把 {'、'.join(into['points'])} 加进「{into['project_name']}·{into['list_name']}」清单。"
             if into else "")
+    # 末尾这句是给"一轮一张卡"解锁的：链路本来就支持一轮摆好几张（每张一个「写入」按钮），
+    # 但上一版的措辞只说"等他点写入"，模型读完就收尾了——于是互不相关的几件事被迫拆成好几轮。
     return (f"变更卡已经摆在他面前了（{len(files)} 个文件）。**还没有写盘**，"
-            f"等他点「写入」。{tail}你不要再说已经存好了。"), {"card": card}
+            f"等他点「写入」。{tail}你不要再说已经存好了。"
+            f"\n\n**还有别的事要提就接着提**——一轮里可以摆好几张卡，他一张一张点。"), {"card": card}
 
 
 def _into_list(vault: Path, project: str | None, born: list[str]) -> dict | None:
@@ -385,7 +419,8 @@ def _into_list(vault: Path, project: str | None, born: list[str]) -> dict | None
 # 表里没有的调了会被退回去（`run` 里那句"没有 xx 这个工具"）。
 TOOL_DOC = {
     "search_nodes": "`q`、`limit`（默认 8） | 按关键字找节点。**讲任何一个概念之前先搜一下**，看我图里有没有",
-    "read_node": "`id` | 读某个节点的正文和关系。要引用我已有的笔记就先读它，别凭印象说「你笔记里写过」",
+    "read_node": ("`id` 或 `ids`（一次最多 5 个） | 读节点的正文和关系。要引用我已有的笔记就先读它，"
+                  "别凭印象说「你笔记里写过」。**要往好几个节点补内容时一次把它们全读进来**，别一个一个读"),
     "overview": "无 | 图谱概况：节点数、领域、还有多少壳",
     "today": "无 | 今日清单：错题 / 到期复习 / 计划里还没建的点",
     "projects": "无 | 我的项目、清单、进度和时间账（还剩多少、来不来得及）",
@@ -412,22 +447,73 @@ FORMAT_DOC = {
 
 一个项目下可以有好几份清单，`kind` 决定怎么拆：`学习`（按依赖顺序）/ `面试`（按会怎么问）/
 `领域`（按覆盖度铺地图）。**先建项目，再拆点**——拆点是另一步，别在同一条消息里全干完。""",
-    "propose_changes": """`propose_changes` 的 `changes` 和图谱的 ChangeSet 同一个形状，三种改动：
+    "propose_changes": """`propose_changes` 的 `changes` 和图谱的 ChangeSet 同一个形状，七种改动：
 
 ```knowrary
 {"tool": "propose_changes", "args": {"changes": [
   {"type": "create_node", "source": "NPU", "path": "nodes/02-计算机硬件/NPU.md",
    "fields": {"name": "NPU", "field": "计算机系统", "layer": "硬件", "year": 2017,
               "desc": "一句话摘要"},
-   "body": "正文：讲清楚这个概念"},
+   "body": "（按下面的正文骨架写）"},
+  {"type": "append_body", "source": "GPU", "body": "## 和 NPU 的分工\\n（只写这次补的这一段）"},
   {"type": "update_body", "source": "GPU", "body": "（这个节点的**完整**新正文）"},
-  {"type": "add_edge", "source": "NPU", "relation": "对比", "target": "GPU"}
+  {"type": "add_edge", "source": "NPU", "relation": "对比", "target": "GPU"},
+  {"type": "remove_edge", "source": "GQA", "relation": "演化为", "target": "MLA"},
+  {"type": "update_edge", "source": "GQA", "target": "MLA", "from_relation": "对比",
+   "note": "两条路，不是一条线上的先后"},
+  {"type": "update_frontmatter", "source": "内存墙", "fields": {"desc": "改过的一句话摘要"}}
 ]}}
 ```
 
-**`update_body` 会整段替换正文，不是追加。** 所以改之前**必须先 `read_node`**，
-把原文一字不落地带上，再把这次聊出来的东西补进去——直接写一段新的会把我以前记的东西抹掉。
-改哪儿也要克制：只补真正聊清楚了的那一点，别顺手重写整篇。
+**往已有节点里补东西，默认用 `append_body`**：它只往正文尾部接一段，不动我原来写的字，
+所以不要求你把全文背回来。补的那一段自己带个 `##` 小标题，让笔记看得出层次。
+
+`update_body` 是**整段替换**，只在真要重写/合并/删错字时才用，而且**必须先 `read_node` 读到全文**——
+`read_node` 说了原文被截断的，这个节点就只准 `append_body`，替换会把你没看见的那半篇永久删掉。
+
+**图上错的东西你有权提议改掉，不是只能问我。** 后三种就是干这个的，和「补内容」完全对称：
+同样只出卡片、同样要我点，所以**看出问题就直接提，别把选择题丢回给我**。
+
+- `remove_edge`：这条边本来就不该在。`relation` + `target` 定位，同名的多条会一起删。
+- `update_edge`：边的类型 / 年份 / 注写错了。`from_relation` 定位原来那条，`relation` 给新类型
+  （不改类型就填一样的）；`year` 和 `note` **给了才动，没给就保持原样**。
+- `update_frontmatter`：`fields` 里逐个字段给新值。能改的只有 `name / field / layer / params /
+  type / status / year / start_year / end_year / aliases / tags / desc / learned / source`；
+  `id` 和画布坐标（`x / y / w / h / group / collapsed / pinned`）永远改不了，提了整批退回。
+  给空串等于删掉这一行。`status` 只能填 `active / deprecated / disputed / stub`；
+  `params` 是参数量、按 `175B` / `340M` / `1.3万亿` 这样写（拿来在图上比大小，不是规格表）。
+
+**`desc` 尤其要盯。** 正文改完、`desc` 还停在旧说法上，是这套图最容易攒下的烂账——
+`update_body` / `append_body` **碰不到 frontmatter**，摘要只能靠 `update_frontmatter` 单独改。
+所以每次动完正文回头看一眼那句摘要还对不对，不对就在同一张卡里一起改掉。
+
+**删之前把理由说在卡外面。** 卡片上只看得见 diff，看不见你为什么这么想；
+「这条边和 X 打架，所以建议删」这句话得你自己说出来，不然删了像误触。
+拿不准的也照样提卡、把理由写足——**一张我可以不点的卡，比一个我得回答的问题省事**。
+
+**互不相关的几件事，分开提成几张卡。** 一张卡是**整份写入**的：里面夹着一条我还没想好的，
+整张卡就卡在那儿，已经想好的那几条跟着一起等。所以「删这条边」和「顺手清四个节点的 tags」
+该是两张卡，不是一张——**一轮里连着提几张完全可以**，我一张一张点。
+只有同一个主题下的几处改动（补正文 + 跟着改 `desc` + 补一条边）才并进同一张卡。
+
+**正文要写成能过半年回看的笔记，不是一行标题。** 新建节点的 `body` 按这个骨架写，
+哪一节这次没聊到就整节不要，别写占位话：
+
+```
+（开头一两句：它是什么、解决什么问题）
+
+## 为什么需要它
+没有它之前是怎么做的、卡在哪。
+
+## 怎么运作
+关键机制，能画就画（代码块 / 步骤 / 简图）。
+
+## 容易搞混的
+和哪个概念长得像、区别在哪。
+
+## 我的理解
+我当时是怎么想通的；**还没懂的地方直接写「没懂：…」留在这儿**，别替我编圆。
+```
 
 `create_node` 的 `fields` 里带上 `layer`（`理论 / 硬件 / 体系结构 / 汇编接口 / 系统软件 /
 高级语言 / AI应用`）和 `year`（有确切年份的技术才填），这两个字段决定它在历史视图里站哪儿。""",
@@ -475,12 +561,15 @@ def chat_log_path(vault: Path, project: str | None = None, today: dt.date | None
 
 def append_log(vault: Path, role: str, text: str, node_ids: list[str] | None = None,
                project: str | None = None, session: str | None = None,
-               stance: str | None = None, trace: list[str] | None = None) -> None:
+               stance: str | None = None, trace: list[str] | None = None) -> str:
     """一行一轮，按月分文件。**不建库、不切分、不做 embedding**（F10.7）：
     对话是过程不是知识，检索系统已经存在，就是那张图。找旧对话用 grep。
 
     `session` 只是行上的一个标签——**不建会话表、不存会话元数据**。
     会话列表是从这些行里聚合出来的，和进度、时间账一样是派生的（不落第二份真值）。
+
+    返回这一行的 `ts`：它是「梳理游标」唯一的坐标（见 `mark_tidied`），
+    界面上要拿它来判断"这条在游标前还是游标后"。
     """
     path = chat_log_path(vault, project)
     row = {"ts": dt.datetime.now().astimezone().isoformat(timespec="seconds"),
@@ -495,6 +584,7 @@ def append_log(vault: Path, role: str, text: str, node_ids: list[str] | None = N
             fh.write(json.dumps(row, ensure_ascii=False) + "\n")
     except OSError as exc:                       # 留档是旁路，坏了不能拖垮对话
         log.warning("对话没记上：%s", exc)
+    return row["ts"]
 
 
 def _read_rows(vault: Path, project: str | None, months: int = 2) -> list[dict]:
@@ -554,6 +644,65 @@ def rename_session(vault: Path, session: str, title: str, project: str | None = 
     return title
 
 
+# ---------------------------------------------------------------- 梳理游标
+
+def tidied_path(vault: Path, project: str | None = None) -> Path:
+    slot = project if project and core.ID_OK.match(project) else SCRATCH
+    return vault / ".knowrary" / "chat" / slot / "tidied.json"
+
+
+def load_tidied(vault: Path, project: str | None = None) -> dict:
+    """「这一段梳理到哪儿了」。**和 titles.json 一样是张贴纸，不是真值**：
+    删掉它只会退回全量重梳，一个字的知识都不会丢。
+
+    存在的理由很实在：梳理是整个应用里最贵的一次动作（MAX_STEPS 的工具循环，
+    每一步都把整段对话再发一遍）。第二天打开同一段对话再点一次「梳理这段」，
+    没有游标的话就是把昨天那笔钱原样再付一遍。
+    """
+    path = tidied_path(vault, project)
+    if not path.exists():
+        return {}
+    try:
+        data = core.load_json(path)
+    except (ValueError, OSError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    return {str(k): v for k, v in data.items() if isinstance(v, dict) and v.get("upto")}
+
+
+def _not_after(ts: str, other: str | None) -> bool:
+    """`ts` 是不是没有越过 `other`。**按时间比，不按字符串比**——留档的 ts 带本地时区偏移，
+    夏令时切换或换时区之后，字符串序和时间序就不是一回事了。"""
+    if not other:
+        return False
+    try:
+        return dt.datetime.fromisoformat(ts) <= dt.datetime.fromisoformat(other)
+    except ValueError:
+        return str(ts) <= str(other)
+
+
+def mark_tidied(vault: Path, session: str, upto: str, project: str | None = None,
+                turns: int = 0) -> dict:
+    """推进某一段的梳理游标。**只进不退**：一次对话里先写入了后面那张卡、
+    再回头写前面那张，游标不该被拖回去。
+    """
+    session = (session or "").strip()
+    upto = (upto or "").strip()
+    if not session or not upto:
+        raise ChatRejected("推进游标要同时给 session 和 upto")
+    marks = load_tidied(vault, project)
+    old = marks.get(session) or {}
+    if _not_after(upto, old.get("upto")):
+        return old
+    marks[session] = {"upto": upto, "turns": int(turns or 0),
+                      "at": dt.datetime.now().astimezone().isoformat(timespec="seconds")}
+    path = tidied_path(vault, project)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    core.write_json_atomic(path, marks)
+    return marks[session]
+
+
 def sessions(vault: Path, project: str | None = None) -> list[dict]:
     """会话列表，**从留档行聚合出来**，不存第二份。
 
@@ -576,10 +725,12 @@ def sessions(vault: Path, project: str | None = None) -> list[dict]:
     # 而追加顺序本身就是真正的"最近"。
     out = sorted(buckets.values(), key=lambda b: b["seq"], reverse=True)
     mine = load_titles(vault, project)
+    marks = load_tidied(vault, project)
     for b in out:
         b["auto"] = b["title"] or "（没说什么）"      # 自动取的那个：改名框里当占位符
         b["title"] = mine.get(b["id"]) or b["auto"]
         b["renamed"] = b["id"] in mine
+        b["tidied"] = marks.get(b["id"]) or None    # 梳理到哪儿了；没梳理过就是 None
     return out
 
 
@@ -596,8 +747,9 @@ def history(vault: Path, project: str | None = None, limit: int = 40,
     elif rows:
         newest = rows[-1].get("session") or "legacy"
         rows = [r for r in rows if (r.get("session") or "legacy") == newest]
+    # ts 从留档原样带出来：界面靠它判断"这条在梳理游标前还是后"，没有它就只能全量重梳
     return [{"role": r["role"], "content": r["text"], "node_ids": r.get("node_ids") or [],
-             "trace": r.get("trace") or []}
+             "trace": r.get("trace") or [], "ts": r.get("ts") or ""}
             for r in rows][-limit:]
 
 
@@ -822,8 +974,8 @@ def _run(vault: Path, req: ChatRequest):
     history, dropped = _fit_history([m.model_dump() for m in req.messages])
     if not history or history[-1]["role"] != "user":
         raise ChatRejected("最后一条必须是我说的话")
-    append_log(vault, "user", history[-1]["content"], project=req.project, session=req.session,
-               stance=req.stance or DEFAULT_STANCE)
+    user_ts = append_log(vault, "user", history[-1]["content"], project=req.project,
+                         session=req.session, stance=req.stance or DEFAULT_STANCE)
 
     conf = stance_of(req.stance)
     allowed = set(conf["tools"])
@@ -914,10 +1066,12 @@ def _run(vault: Path, req: ChatRequest):
             continue
         if row:
             yield {"type": "question", "stem": row["stem"], "points": row["points"]}
-    append_log(vault, "assistant", answer, node_ids=touched, project=req.project,
-               session=req.session, stance=req.stance or DEFAULT_STANCE, trace=trace)
+    ts = append_log(vault, "assistant", answer, node_ids=touched, project=req.project,
+                    session=req.session, stance=req.stance or DEFAULT_STANCE, trace=trace)
     # node_ids 从调试信息升级成了界面契约：「聊到哪、图上亮哪」靠它（重构方案 §8 第 4 条）
-    yield {"type": "done", "text": answer, "trace": trace, "usage": usage, "node_ids": touched}
+    # ts / user_ts 同理：梳理游标就停在某一条留档上，界面得知道这两条各自是哪一条。
+    yield {"type": "done", "text": answer, "trace": trace, "usage": usage, "node_ids": touched,
+           "ts": ts, "user_ts": user_ts}
 
 
 def _mentioned(vault: Path, text: str) -> list[str]:

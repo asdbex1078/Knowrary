@@ -32,6 +32,8 @@ const props = defineProps({
   session: { type: String, default: '' },
   focus: { type: Object, default: null },         // 从图上点过来的节点：带进下一轮上下文
   graphOpen: { type: Boolean, default: true },
+  tidied: { type: Object, default: null },        // 梳理游标：{ upto, turns, at }，没梳理过是 null
+  fresh: { type: Number, default: 0 },            // 游标之后还有几条没梳理
 })
 const emit = defineEmits(['send', 'stop', 'apply', 'apply-project', 'apply-points', 'goto',
                           'new-session', 'pick-session', 'drop-focus', 'toggle-graph', 'stance',
@@ -62,9 +64,11 @@ const STARTERS = [
 const TIDY = `把我们刚才这一段对话梳理一遍，整理进我的知识图谱：
 
 1. 先 search_nodes 看哪些概念图里已经有、哪些在计划里还没建、哪些完全没有；
-2. 已经有正文的：如果这次聊出了笔记里没有的东西，read_node 拿到原文，
-   再 update_body 把**原文带上**补一段（别重写整篇，只补这次聊清楚的那点）；
-3. 还没建的：create_node，正文写**我们刚才真的聊清楚的内容**，我没懂的地方留白；
+2. 已经有正文的：**一次 read_node 把它们全读进来**（\`ids\` 一次最多 5 个，别一个一个读），
+   这次聊出了笔记里没有的东西，就用 append_body 往正文尾部补一段，
+   带个 \`##\` 小标题（比如「## 和 X 的区别」）。只补这次真聊清楚的那点，别重写整篇；
+3. 还没建的：create_node，正文按格式说明里那个骨架写——它是什么、为什么需要它、
+   怎么运作、容易和什么搞混、我当时是怎么想通的。**我没懂的地方写「没懂：…」留着**，别替我编圆。
    带上 layer 和 year（有确切年份才填）；
 4. 概念之间这次聊到的关系，用 add_edge 连上。
 
@@ -82,10 +86,10 @@ watch(() => props.messages.map((m) => m.content).join('|'), async () => {
   if (el && el.scrollHeight - el.scrollTop - el.clientHeight < 260) el.scrollTop = el.scrollHeight
 })
 
-function send(q) {
+function send(q, opts = {}) {
   const body = (q ?? text.value).trim()
   if (!body || props.busy) return
-  emit('send', body)
+  emit('send', body, opts)              // opts.tidy = 这一轮是梳理，上层只发游标之后那一段
   text.value = ''
 }
 
@@ -113,6 +117,21 @@ function saveName() {
   naming.value = false
   emit('rename-session', { session: props.session, title: nameDraft.value.trim() })
 }
+
+// 梳理是这里最贵的一次动作（一轮工具循环，每一步都把整段对话再发一遍）。
+// 游标之后没有新内容就直接置灰：**第二天重开同一段再点一次，等于把昨天那笔钱再付一遍。**
+const tidyReady = computed(() => props.messages.length >= 2 && props.fresh > 0)
+const tidyTip = computed(() => {
+  if (props.messages.length < 2) return '先聊几句，再让我整理'
+  if (!props.fresh) {
+    const at = (props.tidied?.at || '').slice(5, 16).replace('T', ' ')
+    return `这一段已经梳理并入库过了${at ? `（${at}）` : ''}，没有新内容——再点一次只是重复花钱。`
+      + '接着聊几句，按钮就会亮回来'
+  }
+  return props.tidied
+    ? `只梳理上次入库之后新聊的 ${props.fresh} 条：该新建的新建、该补的往已有节点里补，出一张变更卡`
+    : '回头看这一整段：该新建的新建、该补的往已有节点里补，出一张变更卡'
+})
 
 function starter(s) {
   if (s.q.endsWith('：')) { text.value = s.q; return }   // 要我补一句的，只填进输入框
@@ -151,11 +170,10 @@ function onKey(e) {
         <Icon name="plus" :size="13" />新的一段
       </button>
       <!-- 一直摆着（聊之前是灰的）：藏起来的入口等于没有入口 -->
-      <button class="btn subtle tiny" :disabled="busy || messages.length < 2"
-              :title="messages.length < 2 ? '先聊几句，再让我整理'
-                : '回头看这一整段：该新建的新建、该补的往已有节点里补，出一张变更卡'"
-              @click="send(TIDY)">
-        <Icon name="checklist" :size="13" />梳理这段
+      <button class="btn subtle tiny" :disabled="busy || !tidyReady" :title="tidyTip"
+              @click="send(TIDY, { tidy: true })">
+        <Icon name="checklist" :size="13" />梳理这段<span v-if="tidied && fresh" class="dim">
+          · 新 {{ fresh }}</span>
       </button>
       <span class="grow" />
       <button class="icon-btn ghost tiny" :title="graphOpen ? '收起右侧的图' : '展开右侧的图'"

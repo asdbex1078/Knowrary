@@ -1292,6 +1292,7 @@ kbd.key {
   max-width: 230px; padding: 4px 21px 4px 7px; border-radius: 7px; border: 1px solid var(--line);
   background-color: var(--bg-1); color: var(--text-1); font: inherit; font-size: 11.5px;
 }
+.speed-pick { max-width: 76px; }
 .sess-name { max-width: 230px; padding: 4px 8px; background-color: var(--surface); }
 .chat-view .chat-wrap { flex: 1; min-height: 0; padding: 14px 16px 12px; }
 .focus-chip {
@@ -1360,3 +1361,35 @@ kbd.key {
   border-radius: 8px; border: 1px dashed var(--accent); background: var(--accent-soft);
   font-size: 11.5px; }
 .open-quiz > span { flex: 1; min-width: 0; }
+
+/* 时间轴上的圆点：挤不下的全名平时藏着，悬停或者回放扫到它时现形。
+   底下垫一圈同色描边，压在连线上也读得清。 */
+.kg-dot-name { pointer-events: none; paint-order: stroke; stroke: var(--surface); stroke-width: 3px;
+  transition: opacity .12s var(--ease); }
+.x6-node:hover .kg-dot-name, .kg-lit .kg-dot-name { opacity: 1 !important; }
+.kg-lit .kg-dot-name { font-weight: 700; }
+
+/* 参数量面板：两张手画的图。不引图表库——几十个点不值得再背一个包 */
+.chart { width: 100%; height: auto; display: block; margin: 2px 0 4px; overflow: visible; }
+.chart .axis line { stroke: var(--line); stroke-width: 1; stroke-dasharray: 3 3; }
+.chart .axis text { fill: var(--text-3); font-size: 9px; }
+.chart .ln { fill: none; stroke-width: 1.8; stroke-linejoin: round; }
+.chart .pt { cursor: pointer; stroke: var(--surface); stroke-width: 1.4; }
+.chart .s0 .ln, .chart .s0 .pt { stroke: var(--accent); fill: var(--accent); }
+.chart .s1 .ln, .chart .s1 .pt { stroke: #e0891f; fill: #e0891f; }
+.chart .s2 .ln, .chart .s2 .pt { stroke: #2f9e62; fill: #2f9e62; }
+.chart .s3 .ln, .chart .s3 .pt { stroke: #9169cf; fill: #9169cf; }
+.chart .s4 .ln, .chart .s4 .pt { stroke: #b4332c; fill: #b4332c; }
+.chart .s5 .ln, .chart .s5 .pt { stroke: #4a5b6d; fill: #4a5b6d; }
+.chart .pt { stroke: var(--surface); }
+
+.bars { margin: 4px 0 0; }
+.bar-row { display: flex; align-items: center; gap: 7px; padding: 3px 0; cursor: pointer;
+  font-size: 11.5px; }
+.bar-row:hover .nm { color: var(--accent-text); }
+.bar-row .nm { flex: none; width: 92px; overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; color: var(--text-2); }
+.bar-row .track { flex: 1; height: 9px; border-radius: 999px; background: var(--surface-2);
+  overflow: hidden; }
+.bar-row .track i { display: block; height: 100%; background: var(--accent); border-radius: 999px; }
+.bar-row .val { flex: none; width: 46px; text-align: right; color: var(--text-3); }

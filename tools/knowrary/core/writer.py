@@ -19,10 +19,10 @@ from .parser import LAYERS, LAYOUT_KEYS, STATUS_VALUES, digest_of
 from .relations import Edge, parse_relations
 
 # 允许通过 ChangeSet 修改的 frontmatter 字段；布局字段和 id 永远不许改
-EDITABLE_FIELDS = ("name", "field", "layer", "type", "status", "year", "start_year", "end_year",
+EDITABLE_FIELDS = ("name", "field", "layer", "params", "type", "status", "year", "start_year", "end_year",
                    "aliases", "tags", "desc", "learned", "source")
 CHANGE_TYPES = ("add_edge", "remove_edge", "update_edge", "update_frontmatter", "create_node",
-                "update_body")
+                "update_body", "append_body")
 # 新建的知识点只允许落在这两棵树下（规范 2：nodes/ 是知识点，fields/ 是领域总览）
 NODE_ROOTS = ("nodes", "fields")
 MAX_BODY = 40000      # 正文写回的上限：编辑框写崩了也不至于把一个文件撑爆
@@ -83,6 +83,18 @@ def _same_edge(e: Edge, change: dict) -> bool:
         change.get("relation") in (None, e.type) or change.get("from_relation") in (None, e.type))
 
 
+def _checked_body(change: dict) -> str:
+    """正文类变更共用的校验：非空、长度上限，以及绝不许自带 `## 关系`。"""
+    text = str(change.get("body") or "")
+    if not text.strip():
+        raise ChangeRejected(f"`{change['type']}` 没给 body，没什么可写的")
+    if len(text) > MAX_BODY:
+        raise ChangeRejected(f"正文太长（{len(text)} 字，上限 {MAX_BODY}）")
+    if RE_REL_HEADER.search(text):
+        raise ChangeRejected("正文里不能再出现 `## 关系`：关系区块由关系解析器独占，只能改关系行")
+    return text
+
+
 def apply_to_text(text: str, node_id: str, changes: list[dict]) -> tuple[str, list[str]]:
     """把这一批变更作用到单个文件的原文上，返回 (新原文, 变更说明)。"""
     fm_text, body, section, tail = split_sections(text)
@@ -120,15 +132,25 @@ def apply_to_text(text: str, node_id: str, changes: list[dict]) -> tuple[str, li
                     e.note = (change["note"] or "").strip()
                 notes.append(f"~ {old}  →  {e.line()}")
         elif kind == "update_body":
-            new_body = str(change.get("body") or "")
-            if len(new_body) > MAX_BODY:
-                raise ChangeRejected(f"正文太长（{len(new_body)} 字，上限 {MAX_BODY}）")
-            if RE_REL_HEADER.search(new_body):
-                raise ChangeRejected("正文里不能再出现 `## 关系`：关系区块由关系解析器独占，只能改关系行")
+            new_body = _checked_body(change)
             # 只换 frontmatter 与 `## 关系` 之间这一段；关系区块和它后面的
             # `## 参考资料` / `## 待办` 由下面的 rebuilt 原样接回去。
+            # **缩水要在卡片上喊出来**：整段替换最典型的事故不是写错字，是模型带回来的"原文"
+            # 少了一截，一按写入就把我以前记的东西删了。diff 里看得见，但卡片上的一行字更看得见。
+            if len(new_body) < len(body) * 0.6 and len(body) > 200:
+                notes.append(f"⚠️ 正文从 {len(body)} 字缩到 {len(new_body)} 字——"
+                             f"确认是有意重写，不是原文没带全（补内容该用 append_body）")
             body = new_body.strip("\n") + "\n"
             notes.append(f"改写正文（{len(new_body)} 字）")
+        elif kind == "append_body":
+            # **只追加不替换**：`update_body` 要求把原文一字不落地带回来，而模型看到的原文
+            # 随时可能是被截断过的——带少了，写回去就是把我以前记的东西抹掉。
+            # 往笔记里补一段本来就不需要读全篇，这条路径从根上免掉那个风险。
+            add = _checked_body(change)
+            if len(body) + len(add) > MAX_BODY:
+                raise ChangeRejected(f"追加后正文太长（{len(body) + len(add)} 字，上限 {MAX_BODY}）")
+            body = body.rstrip("\n") + "\n\n" + add.strip("\n") + "\n"
+            notes.append(f"正文追加一段（+{len(add)} 字）")
         elif kind == "update_frontmatter":
             for key, value in (change.get("fields") or {}).items():
                 if key in LAYOUT_KEYS or key == "id":

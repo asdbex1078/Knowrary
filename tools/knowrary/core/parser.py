@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import re
 
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -34,6 +35,28 @@ REQUIRED_FIELDS = ("name", "field", "desc")
 # 可选字段：不填就落「未分层」，不影响任何既有功能。
 LAYERS = ("理论", "硬件", "体系结构", "汇编接口", "系统软件", "高级语言", "AI应用")
 UNLAYERED = "未分层"
+
+
+# 参数量：`params: 175B` 这样写。**只认一个数量级后缀**，不做单位大全——
+# 这个字段是拿来画图比大小的，不是拿来存规格表的。
+# 解析不出来只警告不报错：它是可选字段，写错了不该让整份 index 变成"有错误"。
+PARAMS_UNITS = {"k": 1e3, "m": 1e6, "b": 1e9, "t": 1e12,
+                "万": 1e4, "亿": 1e8, "千亿": 1e11, "万亿": 1e12}
+RE_PARAMS = re.compile(r"^\s*([0-9]+(?:\.[0-9]+)?)\s*(k|m|b|t|万亿|千亿|万|亿)?\s*$", re.I)
+
+
+def parse_params(value) -> float | None:
+    """`175B` / `7.5b` / `340M` / `1.3万亿` / 纯数字 → 参数个数。看不懂返回 None。"""
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        out = float(value)
+    else:
+        m = RE_PARAMS.match(str(value or ""))
+        if not m:
+            return None
+        out = float(m.group(1)) * PARAMS_UNITS.get((m.group(2) or "").lower(), 1.0)
+    # 合理区间：一千到一千万亿。超出的基本是敲错了量级（把 1750 亿写成 1.75e17），
+    # 而一个"参数量 12"的模型不存在——与其画进图里误导人，不如当没填
+    return out if 1e3 <= out <= 1e15 else None
 
 
 @dataclass
@@ -124,6 +147,9 @@ def validate_frontmatter(vault: Path, node: Node, diags: Diagnostics) -> None:
         diags.warn("unknown_layer", f"layer `{layer}` 不在已知的抽象层里"
                                     f"（{' / '.join(LAYERS)}）", **loc)
     _validate_years(node, diags, loc)
+    if node.fm.get("params") is not None and parse_params(node.fm["params"]) is None:
+        diags.warn("bad_params", f"params `{node.fm['params']}` 看不懂"
+                                 f"（写成 175B / 340M / 1.3万亿 这样）", **loc)
 
 
 def _validate_years(node: Node, diags: Diagnostics, loc: dict) -> None:

@@ -199,12 +199,16 @@ class Page:
         return res.get("result", {}).get("value")
 
 
-async def wait_render(page: Page, expect_nodes: int, timeout: float = 20.0) -> int:
-    """等 X6 把节点画出来再动手（冷启动的无头 Chrome 首屏可能要好几秒）。"""
+async def wait_render(page: Page, expect_nodes: int, timeout: float = 20.0,
+                      shape: str = "kg-node") -> int:
+    """等 X6 把节点画出来再动手（冷启动的无头 Chrome 首屏可能要好几秒）。
+
+    历史视图里的知识点是圆点（kg-dot），不是卡片，所以形状要能指定。
+    """
     deadline = time.time() + timeout
     seen = 0
     while time.time() < deadline:
-        seen = await page.ev("document.querySelectorAll('[data-shape=\"kg-node\"]').length") or 0
+        seen = await page.ev(f"document.querySelectorAll('[data-shape=\"{shape}\"]').length") or 0
         if seen >= expect_nodes:
             return seen
         await asyncio.sleep(0.5)
@@ -857,7 +861,7 @@ async def case_project_view(page: Page, ck: Check, api: str) -> None:
     scopes = await page.ev("""JSON.stringify([...document.querySelectorAll('.topbar .seg')]
       .map(g => [...g.querySelectorAll('button')].map(b => b.textContent.trim())))""")
     ck.add("顶栏按作用域分成两组（项目级 / 全局级）",
-           json.loads(scopes or "[]") == [["对话", "项目图"], ["全局图", "历史"]], str(scopes))
+           json.loads(scopes or "[]") == [["对话", "项目图"], ["全局图", "历史", "谱系"]], str(scopes))
 
     ck.add("顶栏只有一个「全局图」（tab 自己就是那座桥，不另设按钮）",
            await page.ev("""[...document.querySelectorAll('.topbar button')]
@@ -1286,6 +1290,47 @@ async def case_edge_vertices(page: Page, ck: Check) -> None:
     ck.add("双击清掉手工拐点", picked not in ck.layout()["edges"], str(ck.layout()["edges"]))
 
 
+# ---------------------------------------------------------------- 线不许从卡片身上穿过去
+
+CROSS_PROBE = """(() => {
+  const g = __kg.graph
+  const boxes = g.getNodes().filter((n) => (n.getData() || {}).kind === 'node')
+                 .map((n) => ({ id: n.id, ...n.getBBox() }))
+  const hits = []
+  for (const e of g.getEdges()) {
+    const view = g.findViewByCell(e)
+    const path = view && view.container.querySelector('path')
+    if (!path) continue
+    const len = path.getTotalLength()
+    if (!len) continue
+    const ends = new Set([e.getSourceCellId(), e.getTargetCellId()])
+    const crossed = new Set()
+    for (let i = 0; i <= 60; i++) {
+      const p = path.getPointAtLength((len * i) / 60)
+      for (const b of boxes) {
+        if (ends.has(b.id)) continue
+        if (p.x > b.x + 3 && p.x < b.x + b.width - 3 && p.y > b.y + 3 && p.y < b.y + b.height - 3) crossed.add(b.id)
+      }
+    }
+    if (crossed.size) hits.push(e.id + ' 穿过 ' + [...crossed].join('/'))
+  }
+  return JSON.stringify({ edges: g.getEdges().length, hits })
+})()"""
+
+
+async def case_edges_dodge(page: Page, ck: Check) -> None:
+    """连线不许从别的卡片身上穿过去——这是"卡片挡住连线"那个抱怨的可量化版本。
+
+    量的是**渲染出来的 path**，不是配置：manhattan 搜不出路时会悄悄退回直线，
+    只断言"路由挂上了"根本发现不了（真实图上 17 条边有 10 条是这么穿过去的）。
+    """
+    await switch_mode(page, "全局图")
+    await asyncio.sleep(0.8)
+    got = json.loads(await page.ev(CROSS_PROBE) or "{}")
+    ck.add("连线绕开卡片，一条都不穿模",
+           got.get("edges", 0) > 0 and not got.get("hits"), str(got)[:200])
+
+
 # ---------------------------------------------------------------- 外部改过文件之后还能继续写
 
 async def case_stale_index(page: Page, ck: Check, vault: Path, api: str) -> None:
@@ -1390,6 +1435,43 @@ graph LR
     ck.add("模型写的 HTML 不会变成真标签（先转义再解析）",
            not shape.get("xss") and shape.get("img") == 0, str(shape))
 
+    # 流式时每来一个增量整条消息的 text 都会重新赋值。按段序号缓存的话，已经画好的图
+    # 会被清掉重画——屏幕上闪一下，而且每张图 15~140 ms 全是白烧的。claude-cli 是块级增量
+    # 所以只闪几下，换成逐 token 的 provider 就是几百次重画，直接卡死。
+    ids_expr = """JSON.stringify([...document.querySelectorAll('.msg.assistant .mmd svg')]
+      .map((s) => s.id))"""
+    # 每张画好的 svg 带一个自增 id，重画就会换一个新的。**先确认真有图**——
+    # 一张都没有时 [] == [] 会让这条断言自己骗自己（第一版就是这么假通过的）。
+    before = json.loads(await page.ev(ids_expr) or "[]")
+    for _ in range(10):
+        await page.ev("__kg.growReply('，再补一句解释')")
+        await asyncio.sleep(0.08)
+    await asyncio.sleep(0.8)
+    grew = await page.ev("""(() => { const b = [...document.querySelectorAll('.msg.assistant .bubble')].pop();
+      return (b.textContent.match(/再补一句解释/g) || []).length })()""")
+    after = json.loads(await page.ev(ids_expr) or "[]")
+    ck.add("正文一路变长时，已经画好的图一次都不重画（流式不闪、不白烧）",
+           bool(before) and grew == 10 and after == before,
+           f"追加 {grew} 次，id {before} → {after}")
+
+    # mermaid 把配色烤进 svg 里：引擎只 initialize 一次的话，切到深色后图还是浅色那张惨白的
+    # 重画的那一瞬间图是空的，取到的会是 'no-rect'。**必须要求拿到一个真的 rgb 值**，
+    # 否则"换主题了"和"图正好不见了"这两件事在断言眼里长得一模一样。
+    fill_expr = """(() => { const s = [...document.querySelectorAll('.msg.assistant .mmd svg')].pop();
+      const n = s && s.querySelector('.node rect, rect');
+      return n ? getComputedStyle(n).fill : 'no-rect' })()"""
+    is_color = lambda v: bool(v) and str(v).startswith("rgb")
+    light = await poll(page, fill_expr, is_color, timeout=10)
+    # 直接改属性而不是去点切换按钮：这一条验的是"图跟不跟主题"，不是"按钮点不点得动"。
+    # 改完要还原成进来时那个值——后面还有几个用例，别给它们留一个和 app 状态对不上的 DOM。
+    was = await page.ev("document.documentElement.dataset.theme || 'light'")
+    await page.ev("document.documentElement.dataset.theme = 'dark'")
+    dark = await poll(page, fill_expr, lambda v: is_color(v) and v != light, timeout=10)
+    ck.add("切深色后图跟着换主题（不是浅色底那张惨白的）",
+           is_color(light) and is_color(dark) and dark != light, f"{light} → {dark}")
+    await page.ev(f"document.documentElement.dataset.theme = {json.dumps(was)}")
+    await poll(page, fill_expr, lambda v: v == light, timeout=10)
+
 
 # ---------------------------------------------------------------- 阶段 6：历史视图
 
@@ -1410,6 +1492,7 @@ async def case_history(page: Page, ck: Check, vault: Path) -> None:
         "---\nname: 辛\nfield: 另一域\ndesc: 辛\nyear: 2000\nstart_year: 2000\nend_year: 2010\n---\n"
         "# 辛\n\n正文\n", "utf-8")
     await menu_click(page, "重新加载")
+    await switch_mode(page, "全局图")          # 结构图上是卡片，历史图上才是圆点
     await wait_render(page, 4)
     before = ck.layout()["revision"]
 
@@ -1420,15 +1503,33 @@ async def case_history(page: Page, ck: Check, vault: Path) -> None:
     ticks = await poll(page, "document.querySelectorAll('[data-shape=\"kg-tick\"]').length",
                        lambda v: (v or 0) >= 4, timeout=8)
     ck.add("X 轴画出年份刻度", (ticks or 0) == 4, f"{ticks} 个刻度（1990/2000/2005/2015）")
-    shown = await page.ev("""JSON.stringify([...document.querySelectorAll('[data-shape="kg-node"]')]
+    shown = await page.ev("""JSON.stringify([...document.querySelectorAll('[data-shape="kg-dot"]')]
       .map((e) => e.getAttribute('data-cell-id')).sort())""")
     ck.add("没有 year 的节点不进历史图", json.loads(shown) == ["丙", "庚", "甲", "辛"], shown)
+    # 圆心必须**正对年份刻度**：以前放的是 196px 宽的卡片、左沿对齐年份，
+    # 一张卡横跨好几年，看不出它到底是哪一年的
+    align = json.loads(await page.ev("""JSON.stringify((() => {
+      const dot = (id) => { const e = document.querySelector(`[data-cell-id="${id}"] circle`);
+        const r = e.getBoundingClientRect(); return r.x + r.width / 2 };
+      const tick = (y) => { const e = document.querySelector(`[data-cell-id="tick:${y}"] rect`);
+        const r = e.getBoundingClientRect(); return r.x + r.width / 2 };
+      return { 甲: Math.round(dot('甲') - tick(1990)), 丙: Math.round(dot('丙') - tick(2005)),
+               庚: Math.round(dot('庚') - tick(2015)) };
+    })())"""))
+    ck.add("圆心对准年份刻度", all(abs(v) <= 2 for v in align.values()), str(align))
+    named = json.loads(await page.ev("""JSON.stringify([...document.querySelectorAll('[data-shape="kg-dot"]')]
+      .map((e) => ({ id: e.getAttribute('data-cell-id'),
+                     首字: e.querySelector('text')?.textContent || '',
+                     全名: [...e.querySelectorAll('text')].pop()?.textContent || '' })))"""))
+    ck.add("圆里是名字的第一个字，全名在旁边",
+           all(x["首字"] == x["id"][0] and x["全名"] == x["id"] for x in named), str(named))
+
     gold = await page.ev("document.querySelectorAll('.x6-edge path.kg-flow').length")
     ck.add("被激活画成金色流动虚线", (gold or 0) == 1, f"{gold} 条")
 
     # 只数个数抓不到"全叠在原点"这种错（CSS transform 会盖掉 SVG 的 transform 属性），
     # 所以要按屏幕坐标核对：年份越晚的节点越靠右，且彼此不重叠。
-    rects = json.loads(await page.ev("""JSON.stringify([...document.querySelectorAll('[data-shape="kg-node"]')]
+    rects = json.loads(await page.ev("""JSON.stringify([...document.querySelectorAll('[data-shape="kg-dot"]')]
       .map((e) => { const r = e.getBoundingClientRect();
         return [e.getAttribute('data-cell-id'), Math.round(r.x), Math.round(r.y)]; }))"""))
     at = dict((r[0], r[1]) for r in rects)
@@ -1438,7 +1539,7 @@ async def case_history(page: Page, ck: Check, vault: Path) -> None:
 
     # 记住 1990 之前那个节点的 DOM 元素，等会儿用它验"拖滑块没有重建 cell"
     await page.ev("""(() => { window.__probe = document.querySelector('[data-cell-id="甲"]');
-      window.__probeCount = document.querySelectorAll('[data-shape="kg-node"]').length; return 'ok'; })()""")
+      window.__probeCount = document.querySelectorAll('[data-shape="kg-dot"]').length; return 'ok'; })()""")
 
     # 滑块拖到 1990：节点**不消失**，只是 1990 之后的淡成"未来"
     await page.ev("""(() => {
@@ -1448,8 +1549,8 @@ async def case_history(page: Page, ck: Check, vault: Path) -> None:
       return 'moved';
     })()""")
     now = await poll(page, """JSON.stringify({
-      all: document.querySelectorAll('[data-shape="kg-node"]').length,
-      on: document.querySelectorAll('[data-shape="kg-node"]:not(.kg-future)').length })""",
+      all: document.querySelectorAll('[data-shape="kg-dot"]').length,
+      on: document.querySelectorAll('[data-shape="kg-dot"]:not(.kg-future)').length })""",
                      lambda v: v and json.loads(v)["on"] == 1, timeout=12)
     got = json.loads(now or "{}")
     ck.add("时间游标把未来的点淡下去（而不是删掉）",
@@ -1487,11 +1588,11 @@ async def case_history(page: Page, ck: Check, vault: Path) -> None:
     ck.add("游标随年份右移", (moved or 0) > cur.get("x", 0), f"1990 在 {cur.get('x')}，2015 在 {moved}")
 
     # 有效期过滤：辛 2000 年起、2010 年废止，2015 年时它该被划进"未来/已失效"那一边
-    await poll(page, "document.querySelectorAll('[data-shape=\"kg-node\"]:not(.kg-future)').length",
+    await poll(page, "document.querySelectorAll('[data-shape=\"kg-dot\"]:not(.kg-future)').length",
                lambda v: v == 4, timeout=12)
     await click_text(page, ".float.player button", "有效期")
     ids = await poll(page, """JSON.stringify([...document.querySelectorAll(
-      '[data-shape="kg-node"]:not(.kg-future)')].map((e) => e.getAttribute('data-cell-id')).sort())""",
+      '[data-shape="kg-dot"]:not(.kg-future)')].map((e) => e.getAttribute('data-cell-id')).sort())""",
                      lambda v: v and "辛" not in v, timeout=12)
     ck.add("有效期把当年已废止的节点淡掉", "辛" not in (ids or "x"), f"2015 年仍有效的是 {ids}")
     ck.add("已废止的节点仍留在图上（看得见它曾经存在）",
@@ -1571,7 +1672,79 @@ async def case_history(page: Page, ck: Check, vault: Path) -> None:
     await switch_mode(page, "全局图")
     back = await poll(page, "document.querySelectorAll('[data-shape=\"kg-node\"]').length",
                       lambda v: (v or 0) >= 4, timeout=15)
-    ck.add("切回结构视图恢复原图", (back or 0) >= 4, f"{back} 个节点")
+    ck.add("切回结构视图恢复原图（卡片，不是圆点）", (back or 0) >= 4, f"{back} 个节点")
+
+
+# ---------------------------------------------------------------- 谱系树
+
+async def case_lineage(page: Page, ck: Check) -> None:
+    """谱系树：只画演化族，根在下、叶在上，枝越粗挂的东西越多。
+
+    和历史视图的区别要钉住：历史的 X 轴是年份，谱系的 Y 轴是"从什么长出什么"。
+    """
+    await switch_mode(page, "谱系")
+    got = json.loads(await poll(page, """JSON.stringify((() => {
+      const g = __kg.graph
+      const ns = g.getNodes()
+      if (!ns.length) return null
+      const box = (id) => { const c = g.getCellById(id); return c ? c.getBBox() : null }
+      const fam = g.getEdges().map((e) => (e.getData() || {}).family)
+      const w = (id) => { const c = g.getCellById(id); return c ? c.attr('line/strokeWidth') : null }
+      return { 节点: ns.length, 边族: [...new Set(fam)],
+               甲y: box('甲')?.y, 丙y: box('丙')?.y, 庚y: box('庚')?.y,
+               甲丙: w('甲->丙#被激活'), 丙庚: w('丙->庚#演化为') };
+    })())""", lambda v: v and v != "null", timeout=12) or "{}")
+    ck.add("谱系树只画演化族", got.get("边族") == ["演化"], str(got.get("边族")))
+    ck.add("根在下、叶在上（甲 1990 → 丙 2005 → 庚 2015）",
+           got.get("甲y") > got.get("丙y") > got.get("庚y"),
+           f"y：甲 {got.get('甲y')} > 丙 {got.get('丙y')} > 庚 {got.get('庚y')}")
+    # 甲 这条枝下面挂着丙和庚两个点，丙 那条只挂着庚一个——所以甲那条必须更粗
+    ck.add("枝越粗，挂在上面的东西越多",
+           (got.get("甲丙") or 0) > (got.get("丙庚") or 0),
+           f"甲→丙 {got.get('甲丙')} > 丙→庚 {got.get('丙庚')}")
+    # 结构布局不受影响：谱系树和历史一样是算出来的视图，不落盘
+    await switch_mode(page, "全局图")
+    await poll(page, "document.querySelectorAll('[data-shape=\"kg-node\"]').length",
+               lambda v: (v or 0) >= 4, timeout=12)
+
+
+# ---------------------------------------------------------------- 参数量图表
+
+async def case_stats(page: Page, ck: Check, vault: Path) -> None:
+    """params 字段 → 两张图。**只画填了的那些**，并且把"多少个没填"写在脸上。"""
+    for nid, path, val in (("甲", "nodes/组A/甲.md", "175B"), ("丙", "nodes/组B/丙.md", "340M"),
+                           ("庚", "nodes/组B/庚.md", "1.3万亿")):
+        f = vault / path
+        f.write_text(f.read_text("utf-8").replace("desc:", f"params: {val}\ndesc:", 1), "utf-8")
+    # 看不懂的写法：只警告，不该让这个点消失，也不该让 index 变成"有错误"
+    bad = vault / "nodes/组B/丁.md"
+    bad.write_text(bad.read_text("utf-8").replace("desc:", "params: 大概很多\ndesc:", 1), "utf-8")
+    await menu_click(page, "重新加载")
+    await asyncio.sleep(1.2)
+
+    await switch_mode(page, "全局图")
+    await open_rail(page, "参数量")
+    got = json.loads(await poll(page, """JSON.stringify((() => {
+      const box = document.querySelector('aside.study')
+      if (!box || !box.querySelector('.chart')) return null
+      return { 点: box.querySelectorAll('.chart .pt').length,
+               线: box.querySelectorAll('.chart .ln').length,
+               柱: [...box.querySelectorAll('.bar-row')].map((r) =>
+                 [r.querySelector('.nm').textContent.trim(), r.querySelector('.val').textContent.trim()]),
+               刻度: [...box.querySelectorAll('.chart .axis text')].map((t) => t.textContent.trim()),
+               说明: box.querySelector('.dim')?.textContent.replace(/\\s+/g, '') || '' };
+    })())""", lambda v: v and v != "null", timeout=12) or "{}")
+    ck.add("填了 params 的点都进了图", got.get("点") == 3, str(got.get("点")))
+    ck.add("柱状按参数量从大到小排",
+           [x[1] for x in got.get("柱", [])] == ["1.3T", "175B", "340M"], str(got.get("柱")))
+    ck.add("Y 轴是对数（刻度按 10 的幂走）",
+           any(t in ("100M", "1B", "10B", "100B", "1T") for t in got.get("刻度", [])), str(got.get("刻度")))
+    ck.add("说清楚多少个没填", "个填了参数量" in got.get("说明", ""), got.get("说明", "")[:60])
+    idx = get(page.api + "/api/index")
+    ck.add("看不懂的 params 只警告、不丢节点",
+           any(d["code"] == "bad_params" for d in idx["warnings"]) and not idx["errors"],
+           str(idx["warnings"])[:120])
+    await open_rail(page, "参数量")
 
 
 async def case_tour(page: Page, ck: Check) -> None:
@@ -1580,7 +1753,7 @@ async def case_tour(page: Page, ck: Check) -> None:
     fixture 里的链是 甲(1990) —被激活→ 丙(2005) —演化为→ 庚(2015)，共 3 站。
     """
     await switch_mode(page, "历史")
-    await wait_render(page, 4)
+    await wait_render(page, 4, shape="kg-dot")
     chain = await poll(page, "JSON.stringify(__kg.histPlan?.chain || [])",
                        lambda v: v and v != "[]", timeout=12)
     ck.add("泳道布局下也算得出演化链（导览不依赖主干道）",
@@ -1962,6 +2135,14 @@ async def case_group_doc(page: Page, ck: Check, vault: Path) -> None:
                      lambda v: bool(v), timeout=6)
     ck.add("点一个域浮出工具条", bool(bar), f"工具条标题「{bar}」")
 
+    # 标题条上常常正好压着一条绕行的线（边的热区有十来像素宽）：点它必须仍然选中这个域
+    on_edge = await page.ev(f"""(() => {{
+      const el = document.querySelector('[data-cell-id="{gid}"]');
+      const r = el.getBoundingClientRect();
+      const t = document.elementFromPoint(r.x + 40, r.y + 12);
+      return (t && t.closest('[data-cell-id]')?.getAttribute('data-shape')) || '';
+    }})()""")
+    ck.add("标题条压着连线时也点得开工具条", bool(bar), f"点到的是 {on_edge or '分组本身'}")
     await click_text(page, ".float.groupbar .btn", "加总览文档")
     await asyncio.sleep(0.5)
     ck.add("工具条能开新建总览文档", bool(await page.ev("!!document.querySelector('.node-dialog')")))
@@ -2042,11 +2223,14 @@ async def scenarios(page: Page, api: str, results: list) -> None:
     await case_create_node(page, ck, VAULT_HOLDER[0])
     await case_subgroup(page, ck)
     await case_group_doc(page, ck, VAULT_HOLDER[0])
+    await case_edges_dodge(page, ck)
     await case_stale_index(page, ck, VAULT_HOLDER[0], api)
     await case_form_look(page, ck)
     await case_chat_markdown(page, ck, VAULT_HOLDER[0])
     await case_history(page, ck, VAULT_HOLDER[0])
     await case_tour(page, ck)
+    await case_lineage(page, ck)
+    await case_stats(page, ck, VAULT_HOLDER[0])
     results.extend(ck.items)
 
 

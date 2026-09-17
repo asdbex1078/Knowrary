@@ -168,9 +168,16 @@ export const fetchChatHistory = (project, session = null) => {
   return request(`/api/chat/history${q.toString() ? `?${q}` : ''}`)
 }
 
-/** 聊过几段：从留档行聚合，不存会话表。 */
+/** 聊过几段：从留档行聚合，不存会话表。每段带 `tidied`（梳理游标）。 */
 export const fetchChatSessions = (project) =>
   request(`/api/chat/sessions${project ? `?project=${encodeURIComponent(project)}` : ''}`)
+
+/** 推进梳理游标。**只在变更卡真写进 md 之后调**：梳理过但没采纳不算整理过。 */
+export const markChatTidied = ({ session, upto, turns, project }) => request('/api/chat/tidied', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ session, upto, turns: turns || 0, project: project || null }),
+})
 
 /** 对话式教练：SSE 流式。事件形状见 server/chat.py，onEvent 每收到一条就调一次。
  *  用 fetch + ReadableStream 而不是 EventSource：EventSource 只能 GET，发不了整段对话。 */

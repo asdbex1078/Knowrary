@@ -6,9 +6,10 @@ import { Snapline } from '@antv/x6-plugin-snapline'
 import { Transform } from '@antv/x6-plugin-transform'
 import { clusterSummary, containerOf } from './lod'
 import { CLUSTER_H, CLUSTER_W, CURSOR_ID, CURSOR_W, FAMILY_STYLE, clusterBox, NODE_H, NODE_W, aggregateAttrs,
-         aggregateLabel, clusterAttrs, activationAttrs, edgeAttrs, groupAttrs, imageAttrs, laneAttrs, nodeAttrs,
+         aggregateLabel, clusterAttrs, activationAttrs, dotAttrs, edgeAttrs, groupAttrs, imageAttrs, laneAttrs, nodeAttrs,
          noteAttrs, paletteFor, NEUTRAL, refAttrs, registerShapes, sizeFor, tickAttrs, tokens } from './shapes'
-import { AXIS_H, activeAt, buildTimeline } from './timeline'
+import { AXIS_H, TICK_OFFSET, activeAt, buildTimeline } from './timeline'
+import { buildLineage } from './lineage'
 
 /**
  * 历史视图的画布元素：泳道 + 年份刻度 + 有 year 的节点 + 两端都在图里的边。
@@ -26,17 +27,19 @@ export function buildHistoryCells(index, layout, options = {}) {
                  data: { kind: 'lane' } })
   }
   for (const tick of plan.ticks) {
-    nodes.push({ id: `tick:${tick.year}`, shape: 'kg-tick', x: tick.x + 40, y: AXIS_H,
+    nodes.push({ id: `tick:${tick.year}`, shape: 'kg-tick', x: tick.x + TICK_OFFSET, y: AXIS_H,
                  width: 1, height: Math.max(plan.height - AXIS_H, 80), zIndex: 2,
                  attrs: tickAttrs(tick.year), data: { kind: 'tick' } })
   }
   for (const [id, box] of plan.placed) {
     const meta = byId.get(id)
     const group = layout.nodes?.[id]?.group
+    const color = paletteFor(group || (meta?.field ? `field:${meta.field}` : null), colorKeys)
     nodes.push({
-      id, shape: 'kg-node', x: box.x, y: box.y, width: box.w, height: box.h, zIndex: 10,
-      attrs: nodeAttrs(meta, null, paletteFor(group || (meta?.field ? `field:${meta.field}` : null), colorKeys)),
-      data: { kind: 'node', group: group || null, field: meta?.field || null },
+      id, shape: 'kg-dot', x: box.x, y: box.y, width: box.w, height: box.h, zIndex: 10,
+      attrs: dotAttrs(meta, color, { showName: box.showName !== false, year: box.year }),
+      data: { kind: 'node', group: group || null, field: meta?.field || null,
+              name: meta?.name || id, year: box.year },
     })
   }
   // 时间游标：位置由 paintHistoryTime 每次挪，这里只负责把它建出来
@@ -57,7 +60,6 @@ export function buildHistoryCells(index, layout, options = {}) {
   return { nodes, edges, plan }
 }
 
-const TICK_OFFSET = 40    // 年份刻度线相对节点左沿的偏移，游标要和它对齐
 const LIT_MS = 620               // "刚被游标扫过"的点亮时长，和 CSS 里的 kg-lit 对齐
 
 /** 一个 cell 对应的那个 <g>，取不到就返回 null（还没挂载 / 已经被换掉）。 */
@@ -258,6 +260,41 @@ function groupDepth(groups, id, seen = new Set()) {
   return 1 + groupDepth(groups, g.parent, seen)
 }
 
+/**
+ * 谱系树的 cell：节点还是那张卡片（和全局图认得出是同一个东西），
+ * 边按"这条枝上挂着多少"加粗。
+ */
+export function buildLineageCells(index, layout, options = {}) {
+  const plan = buildLineage(index, options)
+  const byId = new Map(index.nodes.map((n) => [n.id, n]))
+  const fields = [...new Set(index.nodes.map((n) => n.field).filter(Boolean))].sort().map((f) => `field:${f}`)
+  const colorKeys = [...Object.keys(layout.groups || {}), ...fields]
+  const nodes = []
+  for (const [id, box] of plan.placed) {
+    const meta = byId.get(id)
+    const group = layout.nodes?.[id]?.group
+    nodes.push({
+      id, shape: 'kg-node', x: box.x, y: box.y, width: box.w, height: box.h, zIndex: 10,
+      attrs: nodeAttrs(meta, null, paletteFor(group || (meta?.field ? `field:${meta.field}` : null), colorKeys)),
+      data: { kind: 'node', group: group || null, field: meta?.field || null, rank: box.rank },
+    })
+  }
+  const edges = plan.edges.map((e) => {
+    const gold = e.type === '被激活'
+    const base = gold ? activationAttrs() : edgeAttrs(e.family)
+    const attrs = { ...base, line: { ...base.line, strokeWidth: e.width } }
+    return {
+      id: e.id, source: e.source, target: e.target, zIndex: gold ? 8 : 5,
+      // 竖向 S 弯：树是从下往上长的，横向的 smooth 会把枝拧成麻花
+      attrs, connector: { name: 'smooth', args: { direction: 'V' } },
+      data: { kind: 'edge', family: e.family, type: e.type, year: e.year ?? null, count: e.count,
+              baseWidth: e.width, baseDash: base.line.strokeDasharray || null,
+              baseClass: base.line.class || null, baseZ: gold ? 8 : 5 },
+    }
+  })
+  return { nodes, edges, plan }
+}
+
 export function buildCells(index, layout, options = {}) {
   const { families = null, showLabels = false, collapsed = new Set(), zoom = 1, due = new Set(),
           states = {}, only = null, avoidNodes = false } = options
@@ -385,7 +422,7 @@ export function buildCells(index, layout, options = {}) {
       // 是另一种观感；而且手工拐过的边必须听人的，不能被自动路由推翻。
       router: style?.router ? { name: style.router }
         : (avoidNodes && !style?.vertices?.length
-            ? { name: 'manhattan', args: { padding: 14, step: 16 } }
+            ? MANHATTAN
             : undefined),
       connector: style?.router || (avoidNodes && !style?.vertices?.length)
         ? { name: 'rounded', args: { radius: 8 } }
@@ -403,7 +440,7 @@ export function buildCells(index, layout, options = {}) {
       id: `agg:${pair}`, source: from, target: to, zIndex: 4,
       attrs, labels: showLabels ? [aggregateLabel(items.length)] : [],   // 缩小时不画数字，避免满屏小标签
       // 聚合边一样要绕：跨组的那几条最长，也最容易横穿别人的卡片
-      router: avoidNodes ? { name: 'manhattan', args: { padding: 14, step: 16 } } : undefined,
+      router: avoidNodes ? MANHATTAN : undefined,
       connector: avoidNodes ? { name: 'rounded', args: { radius: 8 } } : undefined,
       data: { kind: 'agg', pair, count: items.length, baseWidth: attrs.line.strokeWidth, baseDash: null,
               baseClass: null, baseZ: 4, families: [...new Set(items.map((e) => e.family))] },
@@ -416,6 +453,16 @@ export function buildCells(index, layout, options = {}) {
 // 「NPU 对比 GPU」这种具体关系——人看图就是在看这个。聚合是治"几十条长斜线糊成一片"的药，
 // 不是默认形态；按层分泳道之后几乎每条边都跨组，一刀切聚合会让整张图只剩卡片之间的灰线。
 const AGG_MIN = 3
+
+// 绕开卡片的路由。参数是实测调出来的，不是抄默认值：
+// manhattan 在网格上跑 A*，**搜不出路就悄悄退回直线**（那时线照样穿卡片）。
+// step 决定网格粗细，而卡片之间的缝只有三四十像素——step 28 时格子比缝还宽，
+// 于是一条路都找不到：项目画布 17 条边有 9 条穿模。step 12 才穿得过去，实测 0 条穿模。
+// excludeTerminals：自己的两端不当障碍物，否则出发点就被判成"在障碍里"。
+// 代价是重算一次全图的线要十几毫秒，只在这张图重画时发生，值。
+const MANHATTAN = { name: 'manhattan',
+                    args: { padding: 12, step: 20, maximumLoops: 50000,
+                            excludeTerminals: ['source', 'target'] } }
 
 // 分流：两端在同一分组（或该组对已展开、或这对分组之间线本来就不多）的边照常画；
 // 只有密到 AGG_MIN 条以上的跨分组边才按「源分组 → 目标分组」并成一束。
@@ -522,6 +569,21 @@ export function mount(graph, cells) {
     const parent = graph.getCellById(parentId)
     const child = graph.getCellById(cell.id)
     if (parent && child) parent.addChild(child)
+  }
+  // **建完父子关系必须让绕行路由重算一遍。**
+  // 路由是在 fromJSON 那一刻算的，那时节点还不是分组的孩子，于是分组框自己
+  // 成了一个盖住全场的障碍物——一条路都找不到，manhattan 静静退回直线，
+  // 线照样从卡片身上穿过去（全局图 2 条、项目图 10 条，肉眼还不容易发现）。
+  // 重算一次十几毫秒，只在重画时发生。
+  const routed = cells.edges.filter((e) => e.router)
+  if (routed.length) {
+    for (const spec of routed) {
+      const edge = graph.getCellById(spec.id)
+      if (!edge) continue
+      // 先静默清掉再设回去：X6 对 prop 做深比较，设一个"一模一样"的值不会触发重算
+      edge.prop('router', undefined, { silent: true })
+      edge.prop('router', { ...spec.router, args: { ...spec.router.args } })
+    }
   }
 }
 

@@ -193,6 +193,33 @@ export function registerShapes() {
     },
   }, true)
 
+  // 历史视图里的节点：一枚**圆点**，圆心精确钉在年份刻度上。
+  //
+  // 为什么不是卡片：卡片 196px 宽，而一年通常只有三四十像素——一张卡片横跨好几个年份，
+  // 看不出它到底是哪一年的（实测 1971 的 EPROM 和 1972 的 C语言 在图上左右错开半张卡片，
+  // 谁也说不清谁先谁后）。圆点没有宽度歧义：圆心落在哪一年就是哪一年。
+  // 圆里只放**名字的第一个字**（缩写会变成 KVC 这种没人认得的东西），
+  // 全名画在旁边；挤到放不下时藏起来，靠悬停和播放时的点亮显示。
+  Graph.registerNode('kg-dot', {
+    inherit: 'rect',
+    width: DOT, height: DOT,
+    markup: [
+      { tagName: 'circle', selector: 'body' },
+      { tagName: 'text', selector: 'initial' },
+      { tagName: 'text', selector: 'name' },
+      { tagName: 'title', selector: 'tip' },      // 原生 tooltip，兜底用
+    ],
+    attrs: {
+      body: { r: DOT / 2, refCx: '50%', refCy: '50%', fill: '#fff', stroke: '#c6d0da',
+              strokeWidth: 1.6, class: 'kg-card' },
+      initial: { refX: '50%', refY: '50%', textAnchor: 'middle', textVerticalAnchor: 'middle',
+                 fontSize: 13, fontWeight: 700 },
+      name: { refX: DOT + 6, refY: '50%', textAnchor: 'start', textVerticalAnchor: 'middle',
+              fontSize: 12, class: 'kg-dot-name' },
+      tip: { text: '' },
+    },
+  }, true)
+
   // 历史视图的年份刻度：一根竖线加年份标签
   Graph.registerNode('kg-tick', {
     inherit: 'rect',
@@ -265,6 +292,7 @@ export function registerShapes() {
 
 // 分组标题条的上限 = 布局给标题留的内边距（core.layout.PAD_TOP），超了会被子分组压住
 export const HEAD_MAX = 44
+export const DOT = 28            // 时间轴上一个知识点的直径
 export const CLUSTER_W = 260
 export const CLUSTER_H = 128
 
@@ -343,6 +371,28 @@ export function activationAttrs() {
 
 // 双态的四个颜色。和面板上的 .sq.s-* 是同一套语义，只是这里画在 SVG 上。
 const STATE_FILL = { 灰: 'transparent', 红: '#d9534f', 黄: '#e0891f', 绿: '#3f9e5d' }
+
+/** 名字的第一个字：中文取首字，英文取首字母（大写）。缩写会变成没人认得的 KVC。 */
+export function initialOf(name = '') {
+  const t = String(name).trim()
+  if (!t) return '?'
+  const first = [...t][0]
+  return /[a-z]/.test(first) ? first.toUpperCase() : first
+}
+
+/** 时间轴上的圆点：圆 + 首字 + 旁边的全名（挤的时候由 showName 关掉）。 */
+export function dotAttrs(meta, color = NEUTRAL, { showName = true, year = null } = {}) {
+  const name = meta?.name || meta?.id || ''
+  return {
+    body: { fill: color.fill, stroke: color.line, strokeWidth: 1.8 },
+    initial: { text: initialOf(name), fill: color.text },
+    // 文本**永远画出来**，只把 opacity 压成 0：这样悬停和回放点亮时，
+    // CSS 一句 opacity:1 就能让它现形（presentation 属性打不过 CSS）。
+    // 真删掉文本的话，DOM 里没东西可现。
+    name: { text: name, fill: tokens().title, opacity: showName ? 1 : 0 },
+    tip: { text: year ? `${name}（${year}）` : name },
+  }
+}
 
 export function nodeAttrs(indexNode, layoutNode, color = NEUTRAL, due = false, state = null,
                           ghost = false) {

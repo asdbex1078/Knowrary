@@ -61,6 +61,7 @@ learned: 2026-09-10
 | `status` | 否 | enum | `active`、`deprecated`、`disputed`、`stub` |
 | `year` | 否 | integer | 进入历史视图的核心年份 |
 | `start_year/end_year` | 否 | integer/null | 有效期场景，区间左闭右开 |
+| `params` | 否 | string/number | 参数量，写成 `175B` / `340M` / `1.3万亿` / 纯数字。只认一个数量级后缀（K/M/B/T、万/亿/千亿/万亿），解析成数值后进索引的 `params_n`，供参数量面板画图；看不懂只警告不报错，合理区间 1e3–1e15（一个「参数量 12」的模型不存在，与其画进图里误导人不如当没填） |
 | `aliases/tags` | 否 | string[] | 检索和合并，不承担布局语义 |
 | `desc` | 是 | string | 一句话摘要 |
 | `learned` | 否 | date | 首次加入知识库的日期；复习记录不进 md，在 `.knowrary/review-log.json` |

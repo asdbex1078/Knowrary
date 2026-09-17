@@ -218,7 +218,7 @@ class IndexDoc(BaseModel):
 
 class Change(Strict):
     type: Literal["add_edge", "remove_edge", "update_edge", "update_frontmatter", "create_node",
-                  "update_body"]
+                  "update_body", "append_body"]
     source: str                        # create_node 时是新节点的 id（= 文件名）
     path: str | None = None            # create_node 时的落点，vault 相对路径，必须在 nodes/ 下
     target: str | None = None
@@ -227,7 +227,7 @@ class Change(Strict):
     year: int | None = None
     note: str | None = None
     fields: dict[str, Any] | None = None
-    body: str | None = None            # update_body：frontmatter 与 `## 关系` 之间那一段的新原文
+    body: str | None = None            # update_body：整段替换的新正文；append_body：往正文尾部补的那一段
     evidence: list[str] = Field(default_factory=list)
     confidence: float = 1.0
 

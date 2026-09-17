@@ -93,6 +93,13 @@ defineExpose({ focus: () => inputEl.value?.focus() })
               @click="emit('switch-mode', 'history')">
         <Icon name="clock" :size="14" />历史
       </button>
+      <!-- 谱系和历史不是同一张图的两种皮肤：历史的 X 轴锁死在年份上，
+           同一年冒出来的三个分支会挤成一列；谱系树才看得出那是三条独立的枝。 -->
+      <button :class="{ on: mode === 'lineage' }" role="tab"
+              title="全局 · 只画演化族：从什么长出什么，枝越粗挂的东西越多（5）"
+              @click="emit('switch-mode', 'lineage')">
+        <Icon name="network" :size="14" />谱系
+      </button>
     </div>
 
     <span class="divider" />

@@ -249,6 +249,23 @@ def patch_chat_session(session: str, body: dict) -> dict:
     return {"session": session, "title": title}
 
 
+@app.post("/api/chat/tidied")
+def post_chat_tidied(body: dict) -> dict:
+    """推进某一段对话的「梳理游标」。**只在变更卡真写进 md 之后才调**——
+    梳理过但没采纳的内容不算整理过，游标不能动。
+
+    和改名一样存的是一张贴纸（`.knowrary/chat/<项目>/tidied.json`），不是真值：
+    删掉它只会退回全量重梳，一个字的知识都不会丢。
+    """
+    try:
+        mark = chat_svc.mark_tidied(vault_path(), str(body.get("session") or ""),
+                                    str(body.get("upto") or ""), body.get("project") or None,
+                                    int(body.get("turns") or 0))
+    except chat_svc.ChatRejected as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"session": body.get("session"), "tidied": mark or None}
+
+
 @app.get("/api/llm/usage", response_model=UsageRead)
 def get_llm_usage() -> UsageRead:
     """模型调用账本：今天 / 累计 / 分功能 + 最近几十条明细。只读。"""

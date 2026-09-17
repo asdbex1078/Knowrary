@@ -15,8 +15,12 @@ const props = defineProps({
   active: { type: Number, default: 0 },     // 游标左边（已发生）的节点数
   total: { type: Number, default: 0 },
   touring: { type: Boolean, default: false },
+  speed: { type: Number, default: 1 },        // 回放倍速：讲给别人听时要能放慢
 })
-const emit = defineEmits(['toggle-play', 'set-upto', 'toggle-compact', 'toggle-validity', 'tour'])
+const emit = defineEmits(['toggle-play', 'set-upto', 'toggle-compact', 'toggle-validity', 'tour',
+                          'speed'])
+// 讲的时候要慢、自己扫一眼要快。倍速同时作用于回放和导览。
+const SPEEDS = [0.5, 1, 2]
 
 const cur = computed(() => (props.upto === null ? props.range[1] : props.upto))
 const pct = computed(() => {
@@ -39,6 +43,10 @@ const pct = computed(() => {
     <button v-if="upto !== null" class="icon-btn ghost tiny" title="放开年份限制" @click="emit('set-upto', null)">
       <Icon name="x" :size="13" />
     </button>
+    <select class="sess-pick speed-pick" :value="speed" title="回放 / 导览的速度。讲给别人听时放慢一档"
+            @change="emit('speed', Number($event.target.value))">
+      <option v-for="x in SPEEDS" :key="x" :value="x">{{ x }}×</option>
+    </select>
     <span class="sep" />
     <button class="btn tiny" :class="{ active: compact }" title="空白超过 20 年的区段压缩成固定宽度"
             @click="emit('toggle-compact')">紧凑</button>
