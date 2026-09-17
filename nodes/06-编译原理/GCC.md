@@ -19,3 +19,4 @@ source: 知识图谱zhis.jpg
 Dragon Egg 可让 GCC 前端接入 LLVM。
 
 ## 关系
+- 对比:: [[LLVM]] — 同代的两套工具链：GCC 单体、LLVM 模块化可嵌。LLVM 不是 GCC 的后继，冲着替掉 GCC 前端去的是 [[Clang]]

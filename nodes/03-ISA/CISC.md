@@ -25,3 +25,4 @@ source: 知识图谱zhis.jpg
 > （`year` 取「历史视图锚点年」口径，不是唯一发明年。）
 
 ## 关系
+- 演化为:: [[RISC]] (1980) — Patterson《The Case for the RISC》正面针对的就是 CISC 这一路的复杂化
