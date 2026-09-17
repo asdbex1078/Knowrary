@@ -10,13 +10,15 @@ const props = defineProps({
   digest: { type: Object, default: null },
   busy: { type: Boolean, default: false },
 })
-const emit = defineEmits(['goto', 'close', 'refresh', 'merge', 'regroup'])
+const emit = defineEmits(['goto', 'close', 'refresh', 'merge', 'link', 'suggest', 'years', 'regroup'])
 
 const total = () => {
   const c = props.digest?.counts
   if (!c) return 0
-  return (c.drafts || 0) + (c.duplicates || 0) + (c.stubs || 0) + (c.cycles || 0)
-    + (c.bad_years || 0) + (c.issues || 0)
+  // 孤点不计进总数：47 个孤点会把角标顶成一个吓人的数字，而它们是**长期欠账**，
+  // 不是"今天冒出来的待办"。它有自己那一节的计数。
+  return (c.drafts || 0) + (c.links || 0) + (c.duplicates || 0) + (c.stubs || 0)
+    + (c.cycles || 0) + (c.bad_years || 0) + (c.issues || 0)
 }
 </script>
 
@@ -64,6 +66,66 @@ const total = () => {
             <li v-for="b in digest.bridges" :key="`${b.from}->${b.to}`" class="edge-row">
               <span class="to">{{ b.from_name }} → {{ b.to_name }}</span>
               <span class="yr">{{ b.count }} 条</span>
+            </li>
+          </ul>
+        </section>
+
+        <!-- 连边建议：名字摆明了有关系、图上却没连的那些对。
+             这些**原来是"重复候选"**——中文复合词天生共享中心语（内存 / 堆内存 / 栈内存
+             字面重合度 0.8），相似度只能说"这俩像"，说不出像在哪。而像在哪正是答案：
+             含着对方 ⇒ 上下位，掐掉公共词缀还各剩一点 ⇒ 同级兄弟。都不是重复，是缺边。 -->
+        <section v-if="digest.links?.length" class="section">
+          <div class="section-head">
+            <Icon name="link" :size="13" />连边建议 <span class="count">{{ digest.counts.links }}</span>
+          </div>
+          <p class="dim" style="font-size: 11.5px; margin-bottom: 6px">
+            名字看着有关系、图上却没连。孤点排在前面——它们连一条就从孤岛回到图里。
+          </p>
+          <ul>
+            <li v-for="h in digest.links" :key="`${h.source}|${h.target}`" class="card"
+                style="padding: 8px 10px">
+              <div>
+                <span class="link" @click="emit('goto', h.source)">{{ h.source }}</span>
+                <span class="dim"> {{ h.relation }} → </span>
+                <span class="link" @click="emit('goto', h.target)">{{ h.target }}</span>
+                <span v-if="h.lonely" class="tag warn" style="margin-left: 6px"
+                      :title="h.lonely === 2 ? '两端都还没有任何边' : '有一端还没有任何边'">
+                  {{ h.lonely === 2 ? '两端都是孤点' : '有一端是孤点' }}
+                </span>
+              </div>
+              <div class="dim" style="font-size: 11.5px">{{ h.reason }}</div>
+              <button class="btn subtle tiny" style="margin-top: 6px"
+                      title="打开关系对话框，类型和目标已经填好——方向和类型仍然由你定"
+                      @click="emit('link', { source: h.source, target: h.target, relation: h.relation })">
+                <Icon name="link" :size="12" />连边
+              </button>
+            </li>
+          </ul>
+        </section>
+
+        <!-- 孤点：一条关系都没有的已建节点。**这张图最大的一笔欠账**——整个产品都建在
+             边上，实盘却有六成节点度为 0。上面的连边建议只认得出名字有线索的那些，
+             `eBPF`、`乐观锁` 这种名字上看不出亲戚的一条都提不出来，那正是要问 AI 的部分。 -->
+        <section v-if="digest.lonely?.length" class="section">
+          <div class="section-head">
+            <Icon name="warn" :size="13" />孤点 <span class="count">{{ digest.counts.lonely }}</span>
+          </div>
+          <p class="dim" style="font-size: 11.5px; margin-bottom: 6px">
+            一条关系都没有。「问 AI」会定位过去并在右侧检查器里给出连边建议——
+            <b>一次一个点</b>，不批量：47 个点跑一轮就是 47 次模型调用。
+          </p>
+          <ul>
+            <li v-for="n in digest.lonely" :key="n.id" class="card" style="padding: 8px 10px">
+              <div>
+                <span class="link" @click="emit('goto', n.id)">{{ n.name }}</span>
+                <span v-if="n.field" class="dim" style="font-size: 11px"> · {{ n.field }}</span>
+              </div>
+              <div v-if="n.desc" class="dim" style="font-size: 11.5px">{{ n.desc }}</div>
+              <button class="btn subtle tiny" style="margin-top: 6px" :disabled="busy"
+                      title="定位到它，并让模型看着图里的候选节点提几条关系"
+                      @click="emit('suggest', n.id)">
+                <Icon name="rotate" :size="12" />问 AI 连什么
+              </button>
             </li>
           </ul>
         </section>
@@ -122,6 +184,27 @@ const total = () => {
           </p>
         </section>
 
+        <!-- 缺 year：和「年份可疑」分开——那个是算得出来的矛盾（两端倒挂），
+             这个只是没填。没填不是错，但它是历史视图的开关：一个节点没有 year
+             就根本不出现在时间轴上，而"时间轴上少了谁"最不容易看出来。 -->
+        <section v-if="digest.counts?.no_year" class="section">
+          <div class="section-head">
+            <Icon name="clock" :size="13" />缺 year <span class="count">{{ digest.counts.no_year }}</span>
+          </div>
+          <p class="dim" style="font-size: 11.5px; margin-bottom: 6px">
+            没填 year 的节点不进历史视图。「让 AI 补一轮」是<b>一次调用</b>问完一批，
+            不是一个一个问（那样是 {{ digest.counts.no_year }} 次）。逐条勾选后才写回。
+          </p>
+          <button class="btn subtle tiny" :disabled="busy" @click="emit('years')">
+            <Icon name="clock" :size="12" />让 AI 补一轮
+          </button>
+          <ul style="margin-top: 6px">
+            <li v-for="id in digest.no_year" :key="id" class="edge-row">
+              <span class="to link" @click="emit('goto', id)">{{ id }}</span>
+            </li>
+          </ul>
+        </section>
+
         <!-- 年份可疑：唯一不依赖外部知识的年份矫正——不问"1997 对不对"，
              只问"这条演化线自己自洽吗"。口述的年份没人能核，倒挂能算出来。 -->
         <section v-if="digest.bad_years?.length" class="section">
@@ -146,7 +229,7 @@ const total = () => {
         <div v-if="!total()" class="empty">
           <Icon name="check" :size="30" :width="1.3" />
           <span class="t">没有欠账</span>
-          <span class="s">草稿、桥、重复和 stub 都清空了。</span>
+          <span class="s">草稿、连边建议、重复和 stub 都清空了。</span>
         </div>
 
         <p class="dim" style="font-size: 11px; margin-top: 16px">统计于 {{ digest.generated_at }}</p>

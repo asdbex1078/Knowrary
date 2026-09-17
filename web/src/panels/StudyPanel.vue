@@ -2,9 +2,9 @@
 /**
  * 今日清单（教练）：今天可以动手的事，按固定优先级排。
  *
- *     逾期错题 > 到期复习 > 当前阶段「未建」的点 > 「只有壳」的点 > Inbox 里待上图的
+ *     逾期错题 > 到期复习 > 当前阶段「未建」的点 > 「只有壳」的点 > 孤点 > Inbox 里待上图的
  *
- * 前两项是**保鲜**（图谱不腐烂），中间两项是**建设**（图谱长出来）。
+ * 前两项是**保鲜**（图谱不腐烂），中间几项是**建设**（图谱长出来）。
  * 空图时前两项自然为空，清单从第三项开始照样排得出东西——学习计划本来就不需要图里先有节点。
  *
  * **这一屏不调 LLM。** "今天干什么"是排序不是生成，模型只在制定计划、出题、批改时出场。
@@ -18,7 +18,7 @@ const props = defineProps({
   busy: { type: Boolean, default: false },   // 出题中
   openQuiz: { type: Object, default: null }, // 上次出了还没交卷的那份题
 })
-const emit = defineEmits(['goto', 'quiz', 'review', 'build', 'write', 'place', 'plans', 'global',
+const emit = defineEmits(['goto', 'quiz', 'review', 'build', 'write', 'place', 'link', 'plans', 'global',
                           'refresh', 'close', 'resume-quiz', 'drop-quiz'])
 
 // 每一类怎么呈现、点下去干什么。act 为空的只跳转定位。
@@ -27,9 +27,11 @@ const KIND = {
   due:     { label: '待复习', icon: 'rotate',    cls: 'm-due',      act: '考一下',   event: 'quiz' },
   unbuilt: { label: '未建',   icon: 'plus',      cls: 'm-unbuilt',  act: '建',       event: 'build' },
   shell:   { label: '只有壳', icon: 'pencil',    cls: 'm-shell',    act: '写正文',   event: 'write' },
+  // 唯一一类"连"的任务，别的全是"写"和"考"。整个产品都建在边上，而欠的正是边。
+  lonely:  { label: '孤点',   icon: 'link',      cls: 'm-shell',    act: '连边',     event: 'link' },
   inbox:   { label: 'Inbox',  icon: 'inbox',     cls: 'm-learned',  act: '放上去',   event: 'place' },
 }
-const ORDER = ['wrong', 'due', 'unbuilt', 'shell', 'inbox']
+const ORDER = ['wrong', 'due', 'unbuilt', 'shell', 'lonely', 'inbox']
 
 const items = computed(() => props.today?.items || [])
 const groups = computed(() =>

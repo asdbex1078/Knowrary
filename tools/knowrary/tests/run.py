@@ -1046,17 +1046,152 @@ def digest_汇总欠账():
     assert any(b["count"] >= 1 for b in d["bridges"]) or not d["bridges"], d["bridges"]
 
 
+def _digest_of(files: dict) -> dict:
+    vault, r = build(files)
+    return core.build_digest(vault, r.data, core.build_initial_layout(r.data), _dt.date(2026, 9, 12))
+
+
+def _links(d: dict) -> dict:
+    return {(h["source"], h["target"]): h["relation"] for h in d["links"]}
+
+
 @case
-def digest_重复候选认出近似名字():
-    vault, r = build({
+def digest_同族兄弟是缺边不是重复():
+    """`专用寄存器` / `通用寄存器` 字面重合度 0.8，可它们是两个东西，不是一个东西的两份。
+
+    中文复合词天生共享中心语，字面相似度在这里判不了重复——它判出来的是"同族"，
+    而同族缺的是一条 `对比` 边。这条测试锁的就是这个翻转。
+    """
+    d = _digest_of({
         "nodes/x/通用寄存器.md": node_md("通用寄存器"),
         "nodes/x/专用寄存器.md": node_md("专用寄存器"),
         "nodes/x/完全无关的东西.md": node_md("完全无关的东西"),
     })
-    d = core.build_digest(vault, r.data, core.build_initial_layout(r.data), _dt.date(2026, 9, 12))
-    pairs = {tuple(sorted((x["a"], x["b"]))) for x in d["duplicates"]}
-    assert ("专用寄存器", "通用寄存器") in pairs, d["duplicates"]
-    assert all("完全无关的东西" not in p for p in pairs), pairs
+    assert _links(d).get(("专用寄存器", "通用寄存器")) == "对比", d["links"]
+    assert not d["duplicates"], d["duplicates"]
+    assert all("完全无关的东西" not in (h["source"], h["target"]) for h in d["links"]), d["links"]
+
+
+@case
+def digest_名字里含着另一个是上下位():
+    d = _digest_of({
+        "nodes/x/内存.md": node_md("内存"),
+        "nodes/x/堆内存.md": node_md("堆内存"),
+    })
+    assert _links(d).get(("内存", "堆内存")) == "包含", d["links"]   # 短的那个是上位
+    assert not d["duplicates"], d["duplicates"]
+
+
+@case
+def digest_多出来的尾巴加了等于没加才算重复():
+    """`MHA` / `MHA机制` 和 `内存` / `堆内存` 字面上都是包含关系，差别只在多出来的那一截。"""
+    d = _digest_of({
+        "nodes/x/MHA.md": node_md("MHA"),
+        "nodes/x/MHA机制.md": node_md("MHA机制"),
+    })
+    assert not d["links"], d["links"]
+    assert {tuple(sorted((x["a"], x["b"]))) for x in d["duplicates"]} == {("MHA", "MHA机制")}
+
+
+@case
+def digest_已经连过边的对不再提醒():
+    d = _digest_of({
+        "nodes/x/内存.md": node_md("内存", rels="- 包含:: [[堆内存]]\n"),
+        "nodes/x/堆内存.md": node_md("堆内存"),
+    })
+    assert not d["links"] and not d["duplicates"], (d["links"], d["duplicates"])
+
+
+@case
+def digest_共享一个类别后缀不算同族():
+    """单个「器」是中文的类别后缀，不是共同的意思——按它算，满图的 XX器 两两成"同族"。"""
+    d = _digest_of({
+        "nodes/x/寄存器.md": node_md("寄存器"),
+        "nodes/x/控制器.md": node_md("控制器"),
+    })
+    assert not d["links"], d["links"]
+
+
+@case
+def digest_缩写两头各共一个字算同族():
+    """`RAM` / `ROM` 共享的是 R…M，前后缀各一个字——合计够两个，不该被后缀长度那道闸误伤。"""
+    d = _digest_of({
+        "nodes/x/RAM.md": node_md("RAM"),
+        "nodes/x/ROM.md": node_md("ROM"),
+    })
+    assert _links(d).get(("RAM", "ROM")) == "对比", d["links"]
+
+
+@case
+def digest_连边建议把孤点排在前面():
+    """连边建议最大的用处是把 degree 0 的点接回图里，两端都孤的那条最该先连。"""
+    d = _digest_of({
+        "nodes/x/内存.md": node_md("内存"),
+        "nodes/x/堆内存.md": node_md("堆内存"),
+        "nodes/x/栈内存.md": node_md("栈内存", rels="- 相关:: [[别处]]\n"),
+        "nodes/x/别处.md": node_md("别处"),
+    })
+    assert [h["lonely"] for h in d["links"]] == sorted((h["lonely"] for h in d["links"]), reverse=True), d["links"]
+    assert d["links"][0]["lonely"] == 2, d["links"][0]
+
+
+@case
+def digest_孤点只算已经建出来的():
+    """stub 和还没建的点没有正文，谈不上"该连谁"——把它们混进孤点，
+    这份清单就成了"图里所有不完整的东西"，而不是"有内容却没接上的那些"。"""
+    d = _digest_of({
+        "nodes/x/独行侠.md": node_md("独行侠"),
+        "nodes/x/甲.md": node_md("甲", rels="- 相关:: [[乙]]\n"),
+        "nodes/x/乙.md": node_md("乙"),
+        "nodes/x/丙.md": node_md("丙", rels="- 相关:: [[还没建的]]\n"),
+    })
+    ids = [x["id"] for x in d["lonely"]]
+    assert ids == ["独行侠"], d["lonely"]          # 甲乙丙都连着；"还没建的"是 stub，不算
+    assert d["counts"]["lonely"] == 1, d["counts"]
+
+
+@case
+def digest_缺year和年份可疑是两回事():
+    """`bad_years` 是**算得出来的矛盾**（演化边两端倒挂），`no_year` 只是没填。
+    没填不是错，但它是历史视图的开关——没有 year 的节点根本不出现在时间轴上。"""
+    d = _digest_of({
+        "nodes/x/早.md": node_md("早", extra="year: 1990\n"),
+        "nodes/x/晚.md": node_md("晚"),
+    })
+    assert d["no_year"] == ["晚"], d["no_year"]
+    assert d["counts"]["no_year"] == 1 and not d["bad_years"], (d["counts"], d["bad_years"])
+
+
+@case
+def coach_今日清单里的孤点带着现成建议():
+    """今日清单里唯一一类"连"的任务。带上 digest 算出来的建议，点一下就能连；
+    互为建议的一对只摆一个——连那条边两个一起脱离孤岛。"""
+    vault, r = build({
+        "nodes/x/内存.md": node_md("内存"),
+        "nodes/x/堆内存.md": node_md("堆内存"),
+    })
+    layout = core.build_initial_layout(r.data)
+    t = core.build_today(vault, r.data, layout, core.empty_projects(), _dt.date(2026, 9, 12))
+    lonely = [it for it in t["items"] if it["kind"] == "lonely"]
+    assert len(lonely) == 1, lonely                     # 两个互为建议，只占一个坑
+    assert lonely[0]["id"] == "内存", lonely[0]
+    assert lonely[0]["link"] == {"relation": "包含", "target": "堆内存"}, lonely[0]
+
+
+@case
+def digest_跨分组桥给重名分组带上父级():
+    """布局里 `硬件` 有两个（计算机系统下一个、AI 下一个）。只取 name 的话，最有价值的
+    那条桥会显示成"硬件 → 硬件"——看不出在说什么，等于把这条线藏了。"""
+    groups = {
+        "g-sys": {"name": "计算机系统"}, "g-ai": {"name": "AI"},
+        "g-sys--hw": {"name": "硬件", "parent": "g-sys"},
+        "g-ai--hw": {"name": "硬件", "parent": "g-ai"},
+        "g-sys--sw": {"name": "系统软件", "parent": "g-sys"},
+    }
+    labels = core.group_labels(groups)
+    assert labels["g-sys--hw"] == "计算机系统/硬件" and labels["g-ai--hw"] == "AI/硬件", labels
+    assert labels["g-sys--sw"] == "系统软件", labels        # 不重名的不加前缀，加了反而啰嗦
+    assert labels["g-sys"] == "计算机系统", labels           # 顶层没父级，照原样
 
 
 @case

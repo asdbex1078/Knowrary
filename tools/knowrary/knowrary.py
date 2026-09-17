@@ -329,7 +329,23 @@ def cmd_layout(args: argparse.Namespace) -> None:
         print(f"  ⚠ [{o['kind']}] {o['id']}：{o['reason']}")
     for nid in inbox[:10]:
         print(f"  · Inbox：{nid}")
+    for stray in _stray_layouts(vault) if name == "layout" else []:
+        print(f"  ⚠ 孤儿画布：{stray} 没有对应的项目（项目删掉了，画布没人管）")
     sys.exit(0)
+
+
+def _stray_layouts(vault: Path) -> list[str]:
+    """`.knowrary/layouts/` 里没有对应项目的画布文件。
+
+    删项目的路径现在会把画布挪进 backup（server/projects.py 的 retire_layouts），
+    但**在那之前删掉的项目留下的孤儿还在盘上**，而且谁也不会主动去翻那个目录。
+    全局 `layout check` 顺手报一句，是唯一会被跑到的地方。
+    """
+    folder = vault / ".knowrary" / "layouts"
+    if not folder.is_dir():
+        return []
+    known = set(load_projects(vault).get("projects") or {})
+    return sorted(f"{f.parent.name}/{f.name}" for f in folder.glob("*.json") if f.stem not in known)
 
 
 def _layout_doc(vault: Path, index: dict) -> dict:
@@ -359,14 +375,15 @@ def cmd_review(args: argparse.Namespace) -> None:
 
 
 def cmd_digest(args: argparse.Namespace) -> None:
-    """图谱欠账清单：Inbox / 草稿 / 待复习 / stub / 跨分组桥 / 重复候选 / 方向矛盾。"""
+    """图谱欠账清单：Inbox / 草稿 / 待复习 / stub / 跨分组桥 / 连边建议 / 重复候选 / 方向矛盾。"""
     vault = Path(args.vault).resolve()
     index = build_index(vault, load_previous(index_path(vault))).data
     d = build_digest(vault, index, _layout_doc(vault, index))
     c = d["counts"]
     print(f"{d['generated_at']} 的欠账：Inbox {c['inbox']}，草稿 {c['drafts']}"
           f"（放久了 {c['stale_drafts']}），待复习 {c['due']}，stub {c['stubs']}，"
-          f"跨分组桥 {c['bridges']}，重复候选 {c['duplicates']}，方向矛盾 {c['cycles']}")
+          f"跨分组桥 {c['bridges']}，孤点 {c['lonely']}，缺 year {c['no_year']}，连边建议 {c['links']}，"
+          f"重复候选 {c['duplicates']}，方向矛盾 {c['cycles']}")
     n = args.top
     for nid in d["inbox"][:n]:
         print(f"  · Inbox：{nid}")
@@ -376,6 +393,12 @@ def cmd_digest(args: argparse.Namespace) -> None:
         print(f"  · 待复习：{item['id']}（逾期 {item['overdue_days']} 天）")
     for b in d["bridges"][:n]:
         print(f"  · 跨分组桥：{b['from_name']} → {b['to_name']}（{b['count']} 条）")
+    if d["lonely"]:
+        names = "、".join(x["id"] for x in d["lonely"][:6])
+        print(f"  · 孤点：{c['lonely']} 个一条关系都没有（{names}{' …' if c['lonely'] > 6 else ''}）")
+    for h in d["links"][:n]:
+        alone = "（两端都还是孤点）" if h["lonely"] == 2 else "（有一端是孤点）" if h["lonely"] else ""
+        print(f"  · 连边建议：{h['source']} {h['relation']} → {h['target']}{alone} — {h['reason']}")
     for x in d["duplicates"][:n]:
         print(f"  · 重复候选：{x['a']} / {x['b']} — {x['reason']}")
     for msg in d["cycles"][:n]:
@@ -717,7 +740,7 @@ def add_data_parsers(sub: argparse._SubParsersAction) -> None:
     r.add_argument("--max-warn", type=int, default=20)
     r.set_defaults(fn=cmd_review)
 
-    g = sub.add_parser("digest", help="图谱欠账清单（Inbox / 草稿 / 待复习 / 桥 / 重复）")
+    g = sub.add_parser("digest", help="图谱欠账清单（Inbox / 草稿 / 待复习 / 桥 / 连边建议 / 重复）")
     g.add_argument("--vault", required=True)
     g.add_argument("--top", type=int, default=5, help="每类最多列几条")
     g.set_defaults(fn=cmd_digest)

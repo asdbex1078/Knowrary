@@ -1,7 +1,7 @@
 <script setup>
 // 统一的图标渲染器：只认 icons.js 里的名字，尺寸 / 线宽由外部给。
 import { computed } from 'vue'
-import { ICONS } from './icons'
+import { ICONS } from './icons.js'
 
 const props = defineProps({
   name: { type: String, required: true },

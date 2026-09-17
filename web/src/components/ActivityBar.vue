@@ -37,7 +37,7 @@ const ITEMS = [
   { id: 'inbox', icon: 'inbox', name: 'Inbox', badge: 'inbox', scopes: ['global'],
     tip: '待上全局图的知识点', modes: ['project', 'structure'] },
   { id: 'digest', icon: 'layers', name: '欠账', scopes: ['global'],
-    tip: '草稿 / 桥 / 重复 / stub（整张图的）', modes: ['chat', 'project', 'structure', 'lineage'] },
+    tip: '草稿 / 桥 / 连边建议 / 重复 / stub（整张图的）', modes: ['chat', 'project', 'structure', 'lineage'] },
   { id: 'stats', icon: 'chart', name: '参数量', scopes: ['global'],
     tip: '填了 params 的知识点：怎么涨上来的、谁更大', modes: ['structure', 'lineage', 'history'] },
   { id: 'calendar', icon: 'clock', name: '日历', scopes: ['global'],

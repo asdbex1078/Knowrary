@@ -1,6 +1,6 @@
 // layout 写入队列：拖拽过程中不写盘，松手后 300ms 节流合并，一次 PATCH 发完。
 // revision 冲突（409）时重新拉取服务端 layout，再用最新 revision 重放本地待写项。
-import { fetchLayout, patchLayout } from '../api'
+import { fetchLayout, patchLayout } from '../api.js'
 
 const DELAY = 300
 const VIEWPORT_DELAY = 1000

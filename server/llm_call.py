@@ -18,6 +18,19 @@ import llm_backend  # noqa: E402  （必须在 paths 之后）
 log = logging.getLogger(__name__)
 
 
+class LLMFailed(Exception):
+    """模型这一次没答上来（连不上、超时、配置错、被拒）。
+
+    **为什么要换个类型**：`llm_backend` 是先有 CLI 后有服务的，报错一路用的都是
+    `SystemExit`——在命令行里那是对的（打一句话然后退出）。但 `SystemExit` 是
+    `BaseException`，Starlette 的异常中间件只接 `Exception`，于是它会**一路穿过请求
+    处理层**：客户端拿到的不是"模型挂了"，而是连接莫名其妙断掉，服务端日志里横着一段
+    asyncio 的 ExceptionGroup。自测里那段一直挂着的 traceback 就是它。
+
+    所有 LLM 调用都从这个模块过，所以在这里换一次类型就够了，不必去每条路由上补 try。
+    """
+
+
 def ask(vault: Path, role: str, prompt: str, op: str = "?") -> str:
     """按角色取 provider 问一次，并把用量记进账本。
 
@@ -38,17 +51,20 @@ def ask(vault: Path, role: str, prompt: str, op: str = "?") -> str:
     return text
 
 
-def chat(vault: Path, role: str, messages: list[dict], op: str = "chat", on_delta=None) -> tuple[str, dict]:
+def chat(vault: Path, role: str, messages: list[dict], op: str = "chat", on_delta=None,
+         session: str | None = None) -> tuple[str, dict]:
     """多轮对话版的 `ask`。同一套 provider 配置、同一本用量账。
 
     `on_delta(text)` 逐段回调，用来把增量推给 SSE；不传就整段返回。
+    `session` 给 claude-cli 用来续上同一段会话，只发新增的几条（省的是缓存写）；
+    别的 provider 收到它也无妨——它们本来就每次发全量 messages 数组。
     """
     cfg, _ = llm_backend.load_config(vault)
     name, provider = llm_backend.resolve_provider(cfg, role)
     started = time.monotonic()
     row = {"op": op, "role": role, "provider": name, "model": provider.get("model")}
     try:
-        text, used = llm_backend.chat(messages, provider, on_delta=on_delta)
+        text, used = llm_backend.chat(messages, provider, on_delta=on_delta, session=session)
     except BaseException as exc:
         _record(vault, {**row, "ok": False, "ms": _ms(started), "error": str(exc)[:200]})
         raise _with_context(exc, role, name, provider) from None
@@ -58,13 +74,15 @@ def chat(vault: Path, role: str, messages: list[dict], op: str = "chat", on_delt
 
 
 def _with_context(exc: BaseException, role: str, name: str, provider: dict) -> BaseException:
-    """报错里带上**是哪个角色、哪个 provider、哪个模型**在报。
+    """报错里带上**是哪个角色、哪个 provider、哪个模型**在报，顺便换成 `LLMFailed`。
 
     原来只有一句 "LLM 请求失败 HTTP 503（某个 url）"，而 url 上看不出这是 learn 还是 review、
     用的是配置里哪一条——配了多个 provider 时，第一件事就是猜"到底是谁炸了"。
     """
     head = f"[{role} 角色 · provider `{name}` · 模型 {provider.get('model') or '(默认)'}] "
-    return type(exc)(head + str(exc)) if isinstance(exc, SystemExit) else exc
+    if isinstance(exc, SystemExit):
+        return LLMFailed(head + str(exc))
+    return exc
 
 
 def _ms(started: float) -> int:

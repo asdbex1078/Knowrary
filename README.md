@@ -30,7 +30,7 @@ python3 tools/knowrary/knowrary.py llm test --vault .      # 连通性测试（�
 | `relation-types.json` | 关系类型表：5 个族，具体类型可增长 |
 | `tools/knowrary/` | CLI 与核心库（解析、索引、布局生成），见其 README |
 | `server/` | 本地服务（FastAPI）：只读 index、读写 layout、托管前端产物，见其 README |
-| `web/` | 结构视图前端（Vue 3 + Vite + X6）；`web/dist/` 是入库的构建产物，运行期零 Node |
+| `web/` | 结构视图前端（Vue 3 + Vite + X6）；`web/dist/` 是入库的构建产物，运行期零 Node（**文件名不带 content hash**：Rollup 的 hash 是传递的，改一行就级联换掉几十个文件名，一次小改往 .git 里塞 6MB；缓存失效改由服务端发 `Cache-Control: no-cache` 负责，浏览器照旧缓存、每次拿 ETag 问一句，没变就 304）。`src/canvas/` 是不碰 DOM 的算法（布局、LOD、时间线、菜单内容），`src/composables/` 是按功能抽出来的成块状态（历史/回放/导览、对话），`App.vue` 只做编排 |
 | `.claude/skills/knowrary-import/` | Claude Code skill：把文章拆成节点存进 Knowrary |
 | `doc/` | 规范文档、设计文档、开发实施计划 |
 | `harness/`、`llm/` | 学习笔记原文（不是图谱节点，导入图谱靠 knowrary-import） |
@@ -51,7 +51,23 @@ python3 tools/knowrary/knowrary.py llm test --vault .      # 连通性测试（�
 #   缩小自动折叠成簇卡片（点卡片放大进该域，Esc 回全景）· 搜索框定位 · ＋便签 · ＋图片 · 详情面板「放引用卡」
 #   点一条边挂上拐点手柄，拖圆点调走线，双击这条边清掉
 #   Inbox：写好还没上画布的节点，点「放进去」或直接拖到某个分组框里（落下是金色虚线的草稿，确认位置后「定稿」）
-#   欠账：草稿 / 跨分组桥 / 重复候选 / stub / 方向矛盾 / **年份可疑** / **最近出的错**，点一条就定位过去
+#   欠账：草稿 / 跨分组桥 / **连边建议** / 重复候选 / stub / 方向矛盾 / **年份可疑** / **最近出的错**，点一条就定位过去
+#     连边建议 = 名字摆明了有关系、图上却没连的那些对。**这一类原来叫「重复候选」**：
+#     中文复合词天生共享中心语（`内存` / `堆内存` / `栈内存` 字面重合度 0.8），相似度只
+#     能说"这俩像"，说不出像在哪——而像在哪正是答案。含着对方 ⇒ 上下位（`包含`）；
+#     掐掉公共词缀两边还各剩一点 ⇒ 同级兄弟（`对比`）；邻居几乎一样 ⇒ 同族（`相关`）。
+#     三种都不是重复，是图上缺的边。**孤点排在最前**——它们连一条就从孤岛回到图里
+#     点「连边」打开关系对话框，类型和目标已填好，但**方向和类型仍由你定**：建议是按
+#     名字猜的，猜错了写进 md 就是一条骗人的边。真重复只剩一种——多出来的那截加了
+#     等于没加（`MHA` / `MHA机制`），那才走「合并」
+#     跨分组桥的重名分组会带上父级（`计算机系统/硬件 → AI/硬件`），否则显示成"硬件 → 硬件"
+#     **孤点** = 一条关系都没有的已建节点，这张图最大的一笔欠账（整个产品都建在边上）。
+#     连边建议只认得出名字有线索的那些，`eBPF`、`乐观锁` 这种得点「问 AI 连什么」——
+#     **一次一个点，不批量**：47 个点跑一轮就是 47 次模型调用
+#     **缺 year** 和「年份可疑」是两回事：那个是算得出来的矛盾，这个只是没填，
+#     而没填的节点根本不出现在历史视图上。「让 AI 补一轮」是**一次调用**问完一批
+#     （逐个问是 41 次），把握低于 0.6 的默认不勾，模型说拿不准的会如实列出来——
+#     错的 year 比空的 year 难发现：它把节点摆到时间轴上一个看起来很正常的位置
 #     出错流水在 .knowrary/issues.jsonl（工具失败 / 写回被拒 / LLM 挂了，只留最近 500 条）——
 #     同一类反复出现，多半是工具本身有问题，不是手滑
 #     年份可疑 = 演化边两端倒挂（A 演化为 B 却比 B 晚）或年份在未来——**不依赖外部知识**，
@@ -97,7 +113,9 @@ python3 tools/knowrary/knowrary.py llm test --vault .      # 连通性测试（�
 #   开场弹一次晨间简报：今天建什么、复习什么、大概几小时，点一条直接动手（一天只弹一次）
 #   左侧栏按作用域给工具：**项目下**＝清单 / 今日 / 素材；**全局下**＝项目管理 / Inbox / 欠账 / 日历
 #     站在全局图或历史视图时照给全局工具（那两个视图本来就是全局的）
-#   今日：错题 > 到期复习 > 当前阶段未建的点 > 只有壳 > Inbox，每条都能直接动手（这一屏不调 LLM）
+#   今日：错题 > 到期复习 > 当前阶段未建的点 > 只有壳 > **孤点** > Inbox，每条都能直接动手（这一屏不调 LLM）
+#     孤点是唯一一类「连」的任务（其余全是「写」和「考」），带着现成建议，点「连边」直接预填；
+#     互为建议的一对只摆一个——连那条边两个一起脱离孤岛
 #     选着某个项目时**整屏只看这个项目**（含到期与错题），但会写明"另有 N 个在别的项目"——藏起来的复习等于没有复习
 #     点「开始测验」让模型按节点正文和关系出题；
 #     一题一屏「写答案 → 对答案 → 自评三档」，答完整轮比对：漏掉了什么、有没有记反；
@@ -112,11 +130,12 @@ python3 tools/knowrary/knowrary.py layout check --vault . --layout <项目>   # 
 python3 tools/knowrary/knowrary.py check .                     # 按规范校验全部节点（含密钥泄露检查）
 python3 tools/knowrary/knowrary.py projects migrate --vault . --dry-run   # 旧 plans.json → projects.json（先看迁成什么样）
 python3 tools/knowrary/knowrary.py review due --vault .        # 今天该复习什么；review done <id> 记一次复习
-python3 tools/knowrary/knowrary.py digest --vault .            # 欠账清单：Inbox / 草稿 / 待复习 / 桥 / 重复 / 方向矛盾
+python3 tools/knowrary/knowrary.py digest --vault .            # 欠账清单：Inbox / 草稿 / 待复习 / 桥 / 连边建议 / 重复 / 方向矛盾
 #   出题与交卷在画布的「学习」面板里（走 LLM 的 review 角色；没配 llm.local.json 就用 claude -p）
-python3 tools/knowrary/tests/run.py                            # core 自测（零依赖，45 个用例）
-.venv/bin/python server/tests/run.py                           # 服务层自测（42 个用例）
-.venv/bin/python web/tests/e2e_canvas.py                       # 画布端到端自测（真无头 Chrome 拖拽 → 落盘，临时 vault，不碰你的布局，95 个用例）
+python3 tools/knowrary/tests/run.py                            # core 自测（零依赖，77 个用例）
+node web/tests/unit.mjs                                        # 前端纯函数自测（零依赖，不用测试框架，17 个用例）
+.venv/bin/python server/tests/run.py                           # 服务层自测（164 个用例）
+.venv/bin/python web/tests/e2e_canvas.py                       # 画布端到端自测（真无头 Chrome 拖拽 → 落盘，临时 vault，不碰你的布局，196 个用例）
 cd web && npm run dev                                          # 改前端（5173，/api 代理到 8765）；改完 npm run build 提交 dist
 python3 tools/knowrary/knowrary.py article <文章.md> --vault . --field <领域> [--dry-run] [--llm <provider>]   # 无人值守：文章 → 节点
 # 在 Claude Code 里：/knowrary-import <文章路径>  或  "把这篇文章融入我的图谱"

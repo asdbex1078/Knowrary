@@ -5,8 +5,8 @@
 // 刚导入还没理清关系的域，网格最整齐。全图统一跑一种算法，总有一半的域被摆坏。
 //
 // 只动**直属于这个组的节点**：子域有自己的框和自己的摆法，不该被父域的算法推着走。
-import { NODE_H, NODE_W, sizeFor } from './shapes'
-import { runMindmap } from './layouts'
+import { NODE_H, NODE_W, sizeFor } from './shapes.js'
+import { runMindmap } from './layouts.js'
 
 const STRUCT_FAMILY = '结构'
 const TOP = 44          // 组名占的高度，节点从这条线以下开始摆

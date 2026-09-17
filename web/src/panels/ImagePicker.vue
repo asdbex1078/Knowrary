@@ -4,7 +4,7 @@
 import { onMounted, ref } from 'vue'
 import Drawer from '../ui/Drawer.vue'
 import Icon from '../ui/Icon.vue'
-import { fetchAssets, uploadAsset } from '../api'
+import { fetchAssets, uploadAsset } from '../api.js'
 
 const emit = defineEmits(['pick', 'close', 'error', 'add-note'])
 const items = ref([])

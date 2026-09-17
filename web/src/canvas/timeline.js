@@ -1,6 +1,6 @@
 // 历史视图布局（设计文档 3.8）：X 轴锁死在年份上，所以这里可以放心自动布局——
 // 位置不是算法乱猜的，是数据本身决定的。历史视图的坐标不持久化，每次进入重算。
-import { DOT, NODE_H, NODE_W } from './shapes'
+import { DOT, NODE_H, NODE_W } from './shapes.js'
 
 export const YEAR_W = 130          // 一年最多占多少像素（跨度小时用这个）
 export const YEAR_W_MIN = 30       // 一年最少占多少像素
