@@ -2,7 +2,6 @@
 name: 分组查询注意力GQA
 field: AI
 year: 2023
-tags: AI应用
 desc: MHA 与 MQA 之间的插值：分 g 组、组内共用 K/V，且能从现成 MHA checkpoint 续训出来
 layer: AI应用
 ---
@@ -13,5 +12,4 @@ MHA 与 MQA 之间的插值：分 g 组、组内共用 K/V，且能从现成 MHA
 
 ## 关系
 - 基于:: [[KV-Cache]]
-- 对比:: [[MLA]]
-- 演化为:: [[MLA]] (2024) — 不再共用 K/V，改成压成低维 latent
+- 对比:: [[MLA]] — 同一堵墙的两条路：GQA 共用 K/V 少存几份，MLA 压成低维 latent；MLA 不是从 GQA 走出来的下一步

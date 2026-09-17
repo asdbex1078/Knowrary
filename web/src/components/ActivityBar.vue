@@ -25,21 +25,23 @@ const emit = defineEmits(['select', 'toggle-theme'])
 // `modes`  = 在哪几个视图下有意义（贴图要有画布，时间线只属于历史）。
 const ITEMS = [
   { id: 'plans', icon: 'checklist', name: '清单', scopes: ['project'],
-    tip: '这个项目的学习计划 / 面试方案 / 领域地图', modes: ['chat', 'project', 'structure'] },
+    tip: '这个项目的学习计划 / 面试方案 / 领域地图', modes: ['chat', 'project', 'structure', 'lineage'] },
   { id: 'study', icon: 'rotate', name: '今日', gold: true, badge: 'due', scopes: ['project', 'global'],
     tip: '今天该建什么、该复习什么（复习是全局的，建设按当前项目过滤）',
-    modes: ['chat', 'project', 'structure'] },
+    modes: ['chat', 'project', 'structure', 'lineage'] },
   { id: 'assets', icon: 'image', name: '素材', scopes: ['project', 'global'],
     tip: '往当前这块画布上贴图、加便签', modes: ['project', 'structure'] },
 
   { id: 'plans', icon: 'checklist', name: '项目', scopes: ['global'], key: 'plans-global',
-    tip: '所有项目：新建、切换、改配置', modes: ['chat', 'project', 'structure'] },
+    tip: '所有项目：新建、切换、改配置', modes: ['chat', 'project', 'structure', 'lineage'] },
   { id: 'inbox', icon: 'inbox', name: 'Inbox', badge: 'inbox', scopes: ['global'],
     tip: '待上全局图的知识点', modes: ['project', 'structure'] },
   { id: 'digest', icon: 'layers', name: '欠账', scopes: ['global'],
-    tip: '草稿 / 桥 / 重复 / stub（整张图的）', modes: ['chat', 'project', 'structure'] },
+    tip: '草稿 / 桥 / 重复 / stub（整张图的）', modes: ['chat', 'project', 'structure', 'lineage'] },
+  { id: 'stats', icon: 'chart', name: '参数量', scopes: ['global'],
+    tip: '填了 params 的知识点：怎么涨上来的、谁更大', modes: ['structure', 'lineage', 'history'] },
   { id: 'calendar', icon: 'clock', name: '日历', scopes: ['global'],
-    tip: '每天建了多少、复习了多少（全是算出来的）', modes: ['chat', 'project', 'structure', 'history'] },
+    tip: '每天建了多少、复习了多少（全是算出来的）', modes: ['chat', 'project', 'structure', 'history', 'lineage'] },
   { id: 'timeline', icon: 'timeline', name: '时间线', scopes: ['global'],
     tip: '历史视图的泳道与过滤', modes: ['history'] },
 ]

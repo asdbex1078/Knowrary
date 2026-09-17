@@ -2577,12 +2577,207 @@ def chat_能往已有节点补正文而不是只会新建():
     # 仍然没落盘
     assert "这次聊出来的新理解" not in core.read(vault / "nodes/组A/a.md")
 
-    # 三种改动都写进了说明书，模型才可能用得上
+    # **说明书要盖满 writer 支持的每一种改动**，而不是手抄一份会漂的清单。
+    # 真出过这个事故：说明书上只写了四种，`remove_edge` / `update_edge` /
+    # `update_frontmatter` 三种它根本看不见——于是"这条边该删"只能变成一个问句丢回给人，
+    # 一件十秒的事要来回好几轮。漏一种就当它不存在，所以这里对着源头断言。
     from server import chat as chat_mod
     prompt = chat_mod._system_prompt(vault, "教练")
-    for kind in ("create_node", "update_body", "add_edge"):
-        assert kind in prompt, kind
+    for kind in core.CHANGE_TYPES:
+        assert kind in prompt, f"`{kind}` 没写进说明书，模型不会用"
     assert "整段替换" in prompt, "没告诉模型 update_body 会覆盖，它迟早把我的笔记抹掉"
+    assert "正文要写成能过半年回看的笔记" in prompt, "没给正文骨架，它只会写两句话交差"
+    # frontmatter 白名单同理：少列一个字段，那个字段就永远改不成
+    for f in core.EDITABLE_FIELDS:
+        assert f in prompt, f"frontmatter 字段 `{f}` 没写进说明书"
+    assert "碰不到 frontmatter" in prompt, "没说清 update_body 改不到 desc，摘要会一直停在旧说法上"
+
+
+@case
+def chat_能提议删边和改摘要而不是把选择题丢回来():
+    """改图不是只有"往里加"：删错边、改 desc 同样该出卡片。
+
+    这三种（remove_edge / update_edge / update_frontmatter）writer 一直支持，
+    漏的只是说明书。补上之后要保证整条链路真的走得通——尤其 `desc`，
+    正文改完摘要还停在旧说法上，是这套图最容易攒下的烂账。
+    """
+    c, vault, _ = with_inbox_node()
+    core.write(vault / "nodes/组A/a.md", "---\nname: a\nfield: F\ndesc: 旧摘要\n---\n"
+               "# a\n\n正文\n\n## 关系\n- 相关:: [[b]]\n")
+    original, _ = stub_chat([tool_block("propose_changes", {"changes": [
+        {"type": "remove_edge", "source": "a", "relation": "相关", "target": "b"},
+        {"type": "update_frontmatter", "source": "a", "fields": {"desc": "改过的摘要"}}]}),
+        "这条边和正文打架，建议删；摘要也一起改了"])
+    try:
+        r = c.post("/api/chat", json={"messages": [{"role": "user", "content": "这条边不对"}]})
+    finally:
+        restore_chat(original)
+    cards = [e for e in sse_events(r) if e["type"] == "card"]
+    assert cards, [e["type"] for e in sse_events(r)]
+    diff = json.dumps(cards[0]["card"], ensure_ascii=False)
+    assert "改过的摘要" in diff and "相关" in diff, diff[:300]
+
+    # 仍然一个字都没落盘：卡片是提议，写盘只能靠人点
+    raw = core.read(vault / "nodes/组A/a.md")
+    assert "旧摘要" in raw and "- 相关:: [[b]]" in raw, raw
+
+
+@case
+def chat_一轮里能摆好几张卡各点各的():
+    """一张卡是**整份写入**的：夹着一条还没想好的，已经想好的那几条也跟着一起等。
+
+    所以互不相关的几件事要拆成几张卡。链路一直支持（每个 card 事件一张，各带一个「写入」），
+    真正拦住它的是措辞——上一版工具返回语只说"等他点写入"，模型读完就收尾，
+    于是三件小事被迫拆成三轮。这里把"能摆几张"和"说明书有没有教它这么干"一起钉住。
+    """
+    c, vault, _ = with_inbox_node()
+    original, _ = stub_chat([
+        tool_block("propose_changes", {"changes": [
+            {"type": "update_frontmatter", "source": "a", "fields": {"desc": "改摘要这件事"}}]}),
+        tool_block("propose_changes", {"changes": [
+            {"type": "add_edge", "source": "a", "relation": "相关", "target": "b"}]}),
+        "两张卡都摆出来了，各点各的",
+    ])
+    try:
+        r = c.post("/api/chat", json={"messages": [{"role": "user", "content": "两件事一起办"}]})
+    finally:
+        restore_chat(original)
+    cards = [e for e in sse_events(r) if e["type"] == "card"]
+    assert len(cards) == 2, f"一轮只摆出了 {len(cards)} 张卡"
+    kinds = [c_["card"]["changes"][0]["type"] for c_ in cards]
+    assert kinds == ["update_frontmatter", "add_edge"], kinds
+    # 两张卡各自独立：谁都还没落盘，人点哪张写哪张
+    raw = core.read(vault / "nodes/组A/a.md")
+    assert "改摘要这件事" not in raw and "- 相关:: [[b]]" not in raw, raw
+
+    from server import chat as chat_mod
+    prompt = chat_mod._system_prompt(vault, "教练")
+    assert "分开提成几张卡" in prompt, "没教它拆卡，互不相关的几件事还会被塞进同一张"
+
+
+@case
+def chat_口径提示词不跟说明书抢着教补内容():
+    """「往已有节点补一段」的默认路径，整份提示词里只能有一个说法。
+
+    真出过事：`chat-talk` / `chat-coach` 写的是「`read_node` 拿原文 → `update_body` 把原文带上补一段」，
+    而 `FORMAT_DOC` 写的是「默认 `append_body`，`update_body` 只在真要重写时才用」。
+    两份是拼在一起喂给模型的，它照哪份走全看运气——偏偏打架的那条是危险的那条：
+    整段替换，模型把"原文"带少一截，我以前记的就永久没了。
+    """
+    _, vault, _ = with_inbox_node()
+    from server import chat as chat_mod
+    # 这两句是原来那个说法的原文，回来一句就说明又漂回去了
+    strayed = ("`update_body` 把原文带上补一段", "再 `update_body` **把原文带上**补一段")
+    for stance in ("教练", "聊天"):
+        prompt = chat_mod._system_prompt(vault, stance)
+        assert "append_body" in prompt, f"{stance} 口径没提 append_body"
+        assert "默认用 `append_body`" in prompt, f"{stance} 口径没说清默认走哪条"
+        for phrase in strayed:
+            assert phrase not in prompt, f"{stance} 口径又在教模型用 update_body 补内容：{phrase}"
+
+
+@case
+def append_body_只追加不覆盖原文():
+    """**为什么要有这条路径**：`update_body` 是整段替换，要求模型把原文一字不落带回来，
+    而它看到的原文随时可能是截断过的——带少了就等于把我以前记的东西删了。
+    往笔记里补一段本来不需要读全篇，append_body 从根上免掉那个风险。
+    """
+    c, vault, _ = with_inbox_node()
+    rev = c.get("/api/index").json()["revision"]
+    r = c.post("/api/changes", json={"base_revision": rev, "dry_run": False, "changes": [
+        {"type": "append_body", "source": "a", "body": "## 和 B 的区别\n这次聊清楚的那点。"}]})
+    assert r.status_code == 200, r.text
+    text = core.read(vault / "nodes/组A/a.md")
+    assert "正文" in text, "原来的正文被抹掉了，追加变成了替换"
+    assert "## 和 B 的区别" in text and "这次聊清楚的那点。" in text, text
+    # 追加的那段要落在 `## 关系` 之前，关系区块仍然由关系解析器独占
+    assert text.index("这次聊清楚的那点。") < text.index("## 关系"), text
+    assert len(c.get("/api/index").json()["edges"]) >= 0     # 索引还认得这个文件
+
+    # update_body 把正文改短一大截时，卡片上要喊出来——最典型的事故是模型带回来的
+    # "原文"少了一截，一按写入就把以前记的东西删了
+    rev = c.get("/api/index").json()["revision"]
+    c.post("/api/changes", json={"base_revision": rev, "dry_run": False, "changes": [
+        {"type": "append_body", "source": "b", "body": "细节" * 200}]})
+    r = c.post("/api/changes", json={"base_revision": c.get("/api/index").json()["revision"],
+                                     "dry_run": True, "changes": [
+        {"type": "update_body", "source": "b", "body": "就剩这一句了"}]})
+    notes = " ".join(r.json()["files"][0]["notes"])
+    assert "⚠️" in notes and "append_body" in notes, notes
+
+    # 空 body 和自带 `## 关系` 的都要被挡回去
+    for bad in ("", "  ", "## 关系\n- 部件:: [[b]]"):
+        r = c.post("/api/changes", json={"base_revision": c.get("/api/index").json()["revision"],
+                                         "dry_run": False, "changes": [
+            {"type": "append_body", "source": "a", "body": bad}]})
+        assert r.status_code == 422, (bad, r.status_code)
+
+
+@case
+def read_node_一次读多个且长正文不再被截断():
+    """两件事凑一起原来是会吃掉笔记的：正文被截到 1200 字，模型再用 update_body 整段写回去，
+    超出的后半截就没了。现在不截到那么短，真截断时也会在结果里直说「只准 append_body」。
+
+    一次能读多个则是为了省步数：一轮只有 MAX_STEPS 步，5 个节点一个一个读根本走不完。
+    """
+    from server import chat as chat_mod
+    c, vault, _ = with_inbox_node()
+    long_body = "细节" * 1500                                  # 3000 字，早先会被砍到 1200
+    core.write(vault / "nodes/组A/长文.md",
+               node_md("长文", extra="", rels="") .replace("正文", long_body))
+    index_service.invalidate()
+
+    text, meta = chat_mod._tool_read(vault, {"id": "长文"})
+    assert long_body in text, "正文又被截断了：update_body 写回去会把后半截删掉"
+    assert not meta["truncated"], meta
+
+    text, meta = chat_mod._tool_read(vault, {"ids": ["a", "b", "长文", "a"]})
+    assert meta["ids"] == ["a", "b", "长文"], meta          # 去重保序
+    assert "### a" in text and "### b" in text and "### 长文" in text, text[:200]
+
+    # 真截断了，必须明说而且禁掉 update_body
+    saved = chat_mod.READ_CHARS
+    try:
+        chat_mod.READ_CHARS = 500
+        text, meta = chat_mod._tool_read(vault, {"id": "长文"})
+    finally:
+        chat_mod.READ_CHARS = saved
+    assert meta["truncated"] == 1, meta
+    assert "不许 update_body" in text and "截断" in text, text[-300:]
+
+
+@case
+def 梳理游标_写入之后才推进且只进不退():
+    """梳理是这里最贵的一次动作（一轮工具循环，每一步都把整段对话再发一遍）。
+    第二天打开同一段再点一次「梳理这段」，没有游标就是把昨天那笔钱原样再付一遍。
+
+    **游标只在变更卡真写进 md 之后才推进**：梳理过但没采纳的内容不算整理过。
+    """
+    c, vault, _ = with_inbox_node()
+    original, _ = stub_chat(["记下了"])
+    try:
+        c.post("/api/chat", json={"messages": [{"role": "user", "content": "聊一句"}],
+                                  "session": "s1"})
+    finally:
+        restore_chat(original)
+    rows = c.get("/api/chat/history?session=s1").json()["messages"]
+    assert all(m["ts"] for m in rows), "留档的 ts 没带出来，前端就没有游标坐标"
+    assert c.get("/api/chat/sessions").json()["sessions"][0]["tidied"] is None
+
+    upto = rows[-1]["ts"]
+    assert c.post("/api/chat/tidied", json={"session": "s1", "upto": upto, "turns": 2}
+                  ).json()["tidied"]["upto"] == upto
+    hit = next(s for s in c.get("/api/chat/sessions").json()["sessions"] if s["id"] == "s1")
+    assert hit["tidied"]["upto"] == upto, hit
+
+    # 只进不退：先写了后面那张卡、再回头写前面那张，游标不该被拖回去
+    older = "2020-01-01T00:00:00+08:00"
+    assert c.post("/api/chat/tidied", json={"session": "s1", "upto": older}
+                  ).json()["tidied"]["upto"] == upto
+    assert c.post("/api/chat/tidied", json={"session": "s1", "upto": ""}).status_code == 400
+    # 贴纸删掉只是退回全量重梳，一个字的知识都不会丢
+    (vault / ".knowrary/chat/_scratch/tidied.json").unlink()
+    assert c.get("/api/chat/sessions").json()["sessions"][0]["tidied"] is None
 
 
 @case

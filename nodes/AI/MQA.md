@@ -2,7 +2,6 @@
 name: 多查询注意力MQA
 field: AI
 year: 2019
-tags: AI应用
 desc: 所有 head 共用一组 K/V，KV cache 直接缩到 1/h——砍得最狠，也最掉质量
 layer: AI应用
 ---

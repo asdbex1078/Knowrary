@@ -2,7 +2,6 @@
 name: KV-Cache
 field: AI
 year: 2017
-tags: AI应用
 desc: 自回归解码复用历史 K/V，把每步重算换成常驻显存——MQA/GQA/MLA 三条路线的共同改造对象
 layer: 系统软件
 ---

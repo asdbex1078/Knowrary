@@ -30,8 +30,8 @@ from .usage import load_usage, record as record_usage, summary as usage_summary
 from .merge import MergeRejected, apply_merge, plan_merge
 from .rename import RenameRejected, apply_rename, backup_rename, plan_rename
 from .review import GRADES, due_nodes, load_log, next_due_for, record_review
-from .writer import (ChangeRejected, FileEdit, WriteConflict, apply_to_text, backup, commit, plan,
-                     split_sections)
+from .writer import (CHANGE_TYPES, EDITABLE_FIELDS, ChangeRejected, FileEdit, WriteConflict,
+                     apply_to_text, backup, commit, plan, split_sections)
 from .relations import Edge, NormalizedEdge, RelationTypes, load_relation_types, normalize_direction, parse_relations
 from .schema import validate_index
 

@@ -1,13 +1,19 @@
 // 历史视图布局（设计文档 3.8）：X 轴锁死在年份上，所以这里可以放心自动布局——
 // 位置不是算法乱猜的，是数据本身决定的。历史视图的坐标不持久化，每次进入重算。
-import { NODE_H, NODE_W, sizeFor } from './shapes'
+import { DOT, NODE_H, NODE_W } from './shapes'
 
 export const YEAR_W = 130          // 一年最多占多少像素（跨度小时用这个）
 export const YEAR_W_MIN = 30       // 一年最少占多少像素
 export const TARGET_W = 2800       // 整条时间轴的目标宽度：跨度越大，年宽自动越窄
 export const COMPACT_GAP = 20      // 紧凑模式下，空白超过这么多年就压缩
 export const COMPACT_W = 180       // 压缩后的固定宽度
-export const ROW_H = 86            // 泳道内一行的高度
+export const ROW_H = 46            // 泳道内一行的高度（放的是圆点，不是卡片）
+export const TICK_OFFSET = 40      // 刻度线相对布局坐标的偏移；圆点要和它对齐
+export const DOT_GAP = 12          // 两个圆点之间至少留这么多
+// 估算全名要占多宽。中英文必须分开算：一个汉字约 12px，一个字母约 7px，
+// 一律按 13 算的话「TPU」会被当成 39px 宽，明明放得下也判成放不下（反过来也一样）。
+export const CJK_W = 12
+export const ASCII_W = 7
 export const LANE_PAD = 30         // 泳道上下留白
 export const LANE_TITLE_H = 26     // 泳道标题占的高度，节点从它下面开始排
 export const LANE_GAP = 24
@@ -107,25 +113,51 @@ function laneOf(node, layout, selected) {
  * 存在盒子里就不用回头再查一遍 index。
  */
 function boxOf(node, scale) {
-  const size = sizeFor(node)
+  // **圆心对准年份刻度**：以前放的是 196px 宽的卡片，左沿对齐年份，
+  // 于是一张卡横跨好几年，谁也说不清它是哪一年的。圆点没有这个歧义。
   return {
-    id: node.id, year: node.year, w: size.w, h: size.h, x: scale.at(node.year),
+    id: node.id, year: node.year, w: DOT, h: DOT,
+    x: scale.at(node.year) + TICK_OFFSET - DOT / 2,
+    name: node.name || node.id,
     start: typeof node.start_year === 'number' ? node.start_year : node.year,
     end: typeof node.end_year === 'number' ? node.end_year : null,
   }
 }
 
-/** 泳道内的扫描线放置：按年份从左到右，撞上了就往下挪一行。 */
+/** 全名画出来大概多宽。 */
+function nameWidth(name = '') {
+  return [...String(name)].reduce((w, c) => w + (c.charCodeAt(0) < 256 ? ASCII_W : CJK_W), 0)
+}
+
+/**
+ * 泳道内的扫描线放置：按年份从左到右，撞上了就往下挪一行。
+ *
+ * 放完还要决定**谁的全名写得出来**：名字画在圆点右边，右边那个点离得太近就写不下。
+ * 写不下的不硬挤（那会糊成一片），留给悬停和播放时的点亮去显示。
+ */
 function packLane(items) {
   const rows = []
-  for (const item of items.sort((a, b) => a.year - b.year || a.id.localeCompare(b.id))) {
+  const sorted = items.sort((a, b) => a.year - b.year || a.id.localeCompare(b.id))
+  for (const item of sorted) {
     let row = rows.findIndex((end) => end <= item.x)
     if (row < 0) {
       row = rows.length
       rows.push(0)
     }
-    rows[row] = item.x + item.w + 24
+    rows[row] = item.x + item.w + DOT_GAP
     item.row = row
+  }
+  const byRow = new Map()
+  for (const item of sorted) {
+    if (!byRow.has(item.row)) byRow.set(item.row, [])
+    byRow.get(item.row).push(item)
+  }
+  for (const list of byRow.values()) {
+    list.forEach((item, i) => {
+      const need = item.w + 14 + nameWidth(item.name)   // 留一点余量，压着邻居的点更难看
+      const next = list[i + 1]
+      item.showName = !next || next.x - item.x >= need
+    })
   }
   return rows.length || 1
 }

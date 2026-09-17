@@ -2,7 +2,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, shallowRef, watch } from 'vue'
 import {
   fetchCalendar, fetchChatHistory, fetchChatSessions, fetchDigest, postSyncToGlobal, fetchDue, fetchProjects, putProjects, postPlanPropose, fetchToday, fetchUsage, postMerge, postRename, postQuiz, postQuizDiagnose, postQuizGrade, fetchOpenQuiz, dropOpenQuiz, renameChatSession, postRegroup, fetchHealth, fetchIndex, fetchInbox, fetchLayout, fetchNode,
-  patchLayout, postChanges, postPlace, postReview, postSuggest, streamChat,
+  patchLayout, postChanges, postPlace, postReview, postSuggest, streamChat, markChatTidied,
 } from './api'
 import AppHeader from './components/AppHeader.vue'
 import ActivityBar from './components/ActivityBar.vue'
@@ -27,6 +27,7 @@ import InboxTray from './panels/InboxTray.vue'
 import DigestPanel from './panels/DigestPanel.vue'
 import StudyPanel from './panels/StudyPanel.vue'
 import CalendarPanel from './panels/CalendarPanel.vue'
+import StatsPanel from './panels/StatsPanel.vue'
 import ChatView from './views/ChatView.vue'
 import MorningBrief from './components/MorningBrief.vue'
 import ProjectsPanel from './panels/ProjectsPanel.vue'
@@ -37,7 +38,8 @@ import { clone, createHistory, diffPatch, isEmptyPatch } from './canvas/history'
 import { createPatcher } from './canvas/patcher'
 import { ancestors as groupAncestors, computeCollapsed } from './canvas/lod'
 import {
-  LABEL_ZOOM, applyEdgeLabels, applyViewport, buildCells, buildHistoryCells, contentBBox, createGraph,
+  LABEL_ZOOM, applyEdgeLabels, applyViewport, buildCells, buildHistoryCells, buildLineageCells,
+  contentBBox, createGraph,
   clearPath, currentViewport, highlightEdges, highlightPath, markStop, mount, movedPositions,
   paintHistoryTime, setSnap, snapDelta,
 } from './canvas/render'
@@ -46,7 +48,7 @@ import { communityLayout, compareWithGroups } from './canvas/communities'
 import { mindmapLayout, toPatch } from './canvas/layouts'
 import { describePath, shortestPath } from './canvas/paths'
 import { GROUP_LAYOUTS, hasSubGroups, layoutGroup, membersOf } from './canvas/groupLayout'
-import { FAMILIES, setTheme } from './canvas/shapes'
+import { FAMILIES, HEAD_MAX as GROUP_HEAD, setTheme } from './canvas/shapes'
 
 const canvasEl = ref(null)
 const headerEl = ref(null)
@@ -99,6 +101,32 @@ const mode = ref(localStorage.getItem('knowrary-mode') || 'chat')
 const hist = reactive({ compact: false, validity: false, upto: null, trunk: false,
                         演化: true, 依赖: false, 对照: false })
 const histPlan = shallowRef(null)
+const linPlan = shallowRef(null)   // 谱系树算出来的那份
+/** 演化链＝一个系列：不另设 series 字段，谱系树里那几块连通块本来就是"一家子"。 */
+const lineageChains = computed(() => {
+  if (!indexDoc.value) return []
+  const edges = indexDoc.value.edges.filter((e) => e.family === '演化')
+  const near = new Map()
+  const touch = (a, b) => { if (!near.has(a)) near.set(a, []); near.get(a).push(b) }
+  for (const e of edges) { touch(e.source, e.target); touch(e.target, e.source) }
+  const seen = new Set()
+  const out = []
+  for (const id of near.keys()) {
+    if (seen.has(id)) continue
+    const bag = []
+    const stack = [id]
+    seen.add(id)
+    while (stack.length) {
+      const cur = stack.pop()
+      bag.push(cur)
+      for (const t of near.get(cur) || []) if (!seen.has(t)) { seen.add(t); stack.push(t) }
+    }
+    const names = bag.map((x) => indexDoc.value.nodes.find((n) => n.id === x))
+      .filter(Boolean).sort((a, b) => (a.year ?? 9999) - (b.year ?? 9999))
+    out.push({ ids: bag, name: `${names[0]?.name || bag[0]} 一系（${bag.length}）` })
+  }
+  return out.sort((a, b) => b.ids.length - a.ids.length)
+})
 const histChain = computed(() => histPlan.value?.trunk || null)
 // 游标停在当前年份时"已发生"的那批节点。留着当下一站的对照，才知道该点亮谁。
 let histActive = null
@@ -107,6 +135,9 @@ const timelines = ref([])          // 选中的 layout 分组 id（空 = 全部�
 let playing = null
 const isPlaying = ref(false)
 const STEP_MS = 760        // 回放每站停多久。跳的是"有事发生的年份"，不是日历年，所以可以停久一点
+// 倍速：讲给别人听时要能放慢。存 localStorage——分享前调好，下次还是它
+const speed = ref(Number(localStorage.getItem('knowrary-speed')) || 1)
+const stepMs = () => Math.round(STEP_MS / speed.value)
 let enterTimer = null
 
 // 沿演化链导览：跟着 plan.chain 一站站走。年份回放管"到哪一年"，导览管"走到哪一站"——
@@ -345,6 +376,18 @@ const chatLog = ref([])                  // [{ role, content, tools?, cards?, st
 const chatBusy = ref(false)
 const chatSessions = ref([])             // 会话列表：从留档行聚合出来的，不是一张表
 const chatSession = ref(newSessionId())
+// 梳理游标：这一段整理到哪一条为止了（`{ upto, turns, at }`，没梳理过是 null）。
+// **它只在变更卡真写进 md 之后才推进**——梳理是这个应用里最贵的一次动作
+// （MAX_STEPS 的工具循环，每一步都把整段对话再发一遍），第二天打开同一段再点一次，
+// 没有游标就是把昨天那笔钱原样再付一遍。
+const chatTidied = shallowRef(null)
+/** 游标之后还有几条没梳理。0 = 这一段已经整理干净了，按钮该是灰的。 */
+const chatFresh = computed(() => {
+  const cut = Date.parse(chatTidied.value?.upto || '')
+  const rows = chatLog.value.filter((m) => (m.content || '').trim())
+  if (!Number.isFinite(cut)) return rows.length
+  return rows.filter((m) => !m.ts || Date.parse(m.ts) > cut).length
+})
 // 口径：教练 / 面试 / 聊天。**不是三个 agent**，是三套提示词 + 三份工具白名单。
 const chatStance = ref(localStorage.getItem('knowrary-stance') || '教练')
 
@@ -479,6 +522,7 @@ async function load() {
 // view: 'stored' 用 layout 里存的视口（首次加载）/ 'fit' 适应内容（换布局后）/ 'keep' 保持当前（切族、展开聚合束）
 function render({ view = 'keep' } = {}) {
   if (mode.value === 'history') return renderHistory({ view })
+  if (mode.value === 'lineage') return renderLineage({ view })
   const g = graph.value
   collapsedIds.value = computeCollapsed(layoutDoc.value, g.zoom(),
     { auto: autoLod.value, focus: focusGroup.value })
@@ -616,6 +660,30 @@ function renderHistory({ view = 'fit' } = {}) {
   setBanner(parts.join('；'), d.missingYear.length ? 'error' : '')
 }
 
+/**
+ * 谱系树：只画演化族，根在下、叶在上，枝丫粗细按这条枝上挂着多少东西算。
+ *
+ * 和历史视图一样**不持久化坐标**：它是算出来的视图，不是人摆的图。
+ */
+function renderLineage({ view = 'fit' } = {}) {
+  const g = graph.value
+  const cells = buildLineageCells(indexDoc.value, layoutDoc.value)
+  linPlan.value = cells.plan
+  applyingViewport = true
+  if (view !== 'keep') {
+    g.zoomToRect({ x: -60, y: -40, width: cells.plan.width + 120, height: cells.plan.height + 80 },
+                 { maxScale: 1, minScale: 0.25 })
+  }
+  mount(g, cells)
+  applyingViewport = false
+  zoom.value = g.zoom()
+  const p = cells.plan
+  const parts = [`演化族 ${cells.edges.length} 条边 · ${p.placed.size} 个点 · ${p.levels} 层`,
+                 `根：${p.roots.slice(0, 3).join('、')}${p.roots.length > 3 ? ` 等 ${p.roots.length} 个` : ''}`]
+  if (p.dropped.length) parts.push(`断掉 ${p.dropped.length} 条环边（${p.dropped[0].id} ${p.dropped[0].why}）`)
+  setBanner(parts.join('；'), p.dropped.length ? 'error' : '')
+}
+
 /** 把游标挪到当前年份。拖滑块、回放、切有效期都只走这条路——不重建任何 cell。 */
 function paintTime({ pulse = true } = {}) {
   histActive = paintHistoryTime(graph.value, histPlan.value,
@@ -654,6 +722,8 @@ async function switchMode(next) {
     render({ view: 'stored' })          // 右侧那块图照常画
   } else if (next === 'history') {
     renderHistory({ view: 'fit' })
+  } else if (next === 'lineage') {
+    renderLineage({ view: 'fit' })
   } else {
     expanded.value = new Set()
     render({ view: next === 'project' ? 'fit' : 'stored' })
@@ -715,7 +785,15 @@ function togglePlay() {
     i += 1
     if (i >= years.length) return stopPlay()
     setUpto(years[i])
-  }, STEP_MS)
+  }, stepMs())
+}
+
+/** 换倍速：正在放就重起一次定时器，否则要等下一站才生效。 */
+function setSpeed(x) {
+  speed.value = x
+  try { localStorage.setItem('knowrary-speed', String(x)) } catch { /* 无痕模式 */ }
+  if (playing) { stopPlay(); togglePlay() }
+  setBanner(`回放速度 ${x}×`, 'success')
 }
 
 function stopPlay() {
@@ -798,7 +876,7 @@ function scheduleTour() {
   if (!tour.on || !tour.auto) return
   // 走到最后一站就停下，不回头重播：导览是"讲完一条线"，不是循环屏保
   if (tour.i >= tourChain.value.length - 1) { tour.auto = false; return }
-  tourTimer = setTimeout(() => tourGo(tour.i + 1), TOUR_MS)
+  tourTimer = setTimeout(() => tourGo(tour.i + 1), Math.round(TOUR_MS / speed.value))
 }
 
 function toggleTourAuto() {
@@ -974,6 +1052,23 @@ function bindEvents(g) {
   g.on('node:mouseenter', safe(({ node }) => { if (node.shape === 'kg-node') focus(node.id) }))
   g.on('node:mouseleave', safe(() => { focus(selected.value?.id || null) }))
   // 点簇卡片 → 放大进这个域（只展开它）；再点「返回全景」或按 Esc 缩回去
+  /** 点在哪个分组的标题条里（图坐标）。嵌套时取最深的那个——点的是里层。 */
+  const depthOf = (gid) => {
+    let n = 0
+    let cur = layoutDoc.value?.groups?.[gid]?.parent
+    while (cur && n < 12) { n += 1; cur = layoutDoc.value?.groups?.[cur]?.parent }
+    return n
+  }
+  const groupHeadAt = (x, y) => {
+    let hit = null
+    for (const [gid, box] of Object.entries(layoutDoc.value?.groups || {})) {
+      if (collapsedIds.value.has(gid)) continue
+      if (x < box.x || x > box.x + box.w || y < box.y || y > box.y + GROUP_HEAD) continue
+      if (!hit || depthOf(gid) > depthOf(hit)) hit = gid
+    }
+    return hit
+  }
+
   g.on('node:click', safe(({ node }) => {
     if (node.shape === 'kg-cluster') enterGroup(node.id)
     else if (node.shape === 'kg-group') setActiveGroup(node.id)
@@ -1007,7 +1102,12 @@ function bindEvents(g) {
     if (node.shape === 'kg-group') resizeGroup(node)
   }))
   // 点聚合边展开这对分组之间的明细，再点收起；点普通边则挂上拐点手柄
-  g.on('edge:click', safe(({ edge }) => {
+  g.on('edge:click', safe(({ edge, x, y }) => {
+    // 绕行路由让线贴着分组框的上沿走，而边的点击热区有十来像素宽——
+    // 于是**点域标题条会点到线上**，工具条再也弹不出来（e2e 抓到的：点中的是 `丁->乙#依赖`）。
+    // 标题条是那个域唯一的把手，必须赢：点在标题条范围内就当点了这个域。
+    const head = groupHeadAt(x, y)
+    if (head) { setActiveGroup(head); return }
     const data = edge.getData() || {}
     if (data.kind === 'agg') {
       const next = new Set(expanded.value)
@@ -2376,6 +2476,8 @@ async function loadChatHistory(session = null) {
     // 接着最近那一段聊：服务端不给 session 时返回的就是它，这里把 id 对上
     if (!session && hist.messages.length) chatSession.value = list.sessions[0]?.id || chatSession.value
     else if (session) chatSession.value = session
+    // 游标跟着这一段一起回来：**第二天重开时按钮该不该是灰的，全靠它**
+    chatTidied.value = list.sessions.find((s) => s.id === chatSession.value)?.tidied || null
   } catch { /* 读不到就当新开一段，不值得为此报错 */ }
 }
 
@@ -2396,6 +2498,7 @@ function newChatSession() {
   chatSession.value = newSessionId()
   chatLog.value = []
   chatFocus.value = null
+  chatTidied.value = null                 // 新的一段从零开始，没有梳理过
 }
 
 function pickChatSession(id) {
@@ -2404,26 +2507,46 @@ function pickChatSession(id) {
   loadChatHistory(id)
 }
 
-/** 发一句话。服务端流式回，边收边渲染；工具调用和变更卡挂在这条回复下面。 */
-async function sendChat(body) {
+/** 梳理时只发游标之后那一段：前面的已经采纳入库了，再喂一遍纯粹是重复付钱。
+ *  **本段第一句我说的话仍然带上**——不给话题锚的话，模型看着半截对话不知道这是在聊什么，
+ *  搜出来的节点和连出来的边都会跑偏。 */
+function sinceTidied(msgs) {
+  const cut = Date.parse(chatTidied.value?.upto || '')
+  if (!Number.isFinite(cut)) return msgs
+  const fresh = msgs.filter((m) => !m.ts || Date.parse(m.ts) > cut)
+  const old = msgs.length - fresh.length
+  if (old <= 0) return msgs
+  const anchor = (msgs.find((m) => m.role === 'user')?.content || '').slice(0, 120)
+  return [{ role: 'user', content:
+    `（这一段前面 ${old} 条已经梳理并入库过了，不用再看一遍。当时开头问的是：「${anchor}」。`
+    + `下面是入库之后新聊的部分，只梳理这些。）` }, ...fresh]
+}
+
+/** 发一句话。服务端流式回，边收边渲染；工具调用和变更卡挂在这条回复下面。
+ *  `opts.tidy` = 这一轮是「梳理这段」，走增量口径。 */
+async function sendChat(body, opts = {}) {
   if (chatBusy.value) return
   // 从图上点过来的节点：把摘要和出入边拼进这一轮。模型不用再自己 search 一次。
   const focus = chatFocus.value
   const text = focus
     ? `${body}\n\n（我正在看图上的「${focus.name || focus.id}」：${focus.desc || '没写摘要'}）`
     : body
-  chatLog.value = [...chatLog.value, { role: 'user', content: text }]
+  // ts 由服务端在留档时盖（done 事件带回来）：梳理游标停在某一条留档上，
+  // 前端自己按本地时钟盖一个和它对不齐，判"这条在游标前还是后"就会差一截。
+  const mine = reactive({ role: 'user', content: text, ts: '' })
+  chatLog.value = [...chatLog.value, mine]
   // trace = 过程（"我先查一下"、工具调用、工具报错），content = 最终那段答案。
   // 混在一起的话，每次都要在一堆过程里找那几句有营养的——真实使用里最费时间的一点。
   const reply = reactive({ role: 'assistant', content: '', trace: [], cards: [], projects: [],
-                           points: [], questions: [], streaming: true })
+                           points: [], questions: [], streaming: true, ts: '' })
   chatLog.value = [...chatLog.value, reply]
   chatBusy.value = true
   chatAbort = new AbortController()
   // 只把 role/content 发过去：tools / cards 是本地渲染用的，喂回模型只会干扰它
-  const wire = chatLog.value.filter((m) => m.content || m.role === 'user')
-                            .map((m) => ({ role: m.role, content: m.content }))
-                            .filter((m) => m.content.trim())
+  const feed = chatLog.value.filter((m) => m.content || m.role === 'user')
+  const wire = (opts.tidy ? sinceTidied(feed) : feed)
+    .map((m) => ({ role: m.role, content: m.content }))
+    .filter((m) => m.content.trim())
   chatFocus.value = null
   try {
     await streamChat(wire, (ev) => {
@@ -2445,6 +2568,9 @@ async function sendChat(body) {
           reply.trace.unshift(...ev.trace.map((t) => ({ kind: 'say', text: t })))
         }
         reply.content = stripToolBlocks(ev.text) || reply.content
+        // 留档的 ts 认回来：梳理游标就停在这上面，没有它这一轮在前端是"没有坐标"的
+        if (ev.ts) reply.ts = ev.ts
+        if (ev.user_ts) mine.ts = ev.user_ts
         // 聊到哪，图上亮哪（重构方案 §5.2）。走已有的 highlightPath，不新写高亮逻辑。
         if (ev.node_ids?.length && graph.value) {
           highlightPath(graph.value, new Set(ev.node_ids), new Set())
@@ -2459,6 +2585,19 @@ async function sendChat(body) {
     chatBusy.value = false
     chatAbort = null
   }
+}
+
+/** 把梳理游标推到第 i 条回复为止。**只在写盘成功之后调**。
+ *  服务端只进不退，所以这里不用操心先写后面那张卡、再回头写前面那张的顺序。 */
+async function advanceTidied(i) {
+  const upto = chatLog.value[i]?.ts
+    || [...chatLog.value.slice(0, i + 1)].reverse().find((m) => m.ts)?.ts
+  if (!upto || !chatSession.value) return          // 没有坐标就不动游标，下次全量重梳
+  try {
+    const res = await markChatTidied({ session: chatSession.value, upto,
+                                       turns: i + 1, project: currentProject.value || null })
+    chatTidied.value = res.tidied || chatTidied.value
+  } catch { /* 游标是优化不是真值：推不动只是下次多花一次钱，不该打断写入的成功提示 */ }
 }
 
 /** 工具块是给服务端看的，不该在屏幕上闪过——和 server/chat.py 的 strip_tools 同一个形状。
@@ -2483,6 +2622,9 @@ async function applyChatCard({ card, i, j }) {
     // 顺手补进项目清单：**一次点击两件事一起落**。节点建出来了、清单却没列它的话，
     // 项目进度不认它，今日清单也不会再提它。
     if (card.into?.points?.length) await addToList(card.into)
+    // 采纳并且真落了文件 —— 这才算"整理过了"，游标推到这条回复为止。
+    // 放在这里而不是梳理那一轮结束时：梳理完没点写入的，下次还得重梳。
+    await advanceTidied(i)
     setBanner(`已写回 ${res.files.length} 个文件${born.length ? `，${born.length} 个新点已落到画布上（草稿）` : ''}，`
               + `原文备份在 ${res.backup}`, 'success')
   } catch (err) {
@@ -2917,6 +3059,7 @@ function onKeydown(e) {
   else if (e.key === '2') switchMode('project')
   else if (e.key === '3') switchMode('structure')
   else if (e.key === '4') switchMode('history')
+  else if (e.key === '5') switchMode('lineage')
   else if (e.key.toLowerCase() === 'f') fit()
   else if (e.key.toLowerCase() === 'i' && mode.value === 'structure') openPanel('inbox')
   else if (e.key.toLowerCase() === 'd') openPanel('digest')
@@ -3041,6 +3184,12 @@ onMounted(async () => {
       chatLog.value = [...chatLog.value,
                        { role: 'assistant', content: text, trace: [], cards: [] }]
     },
+    // 往最后那条回复上接一段，形状和流式增量一模一样。**「图不该被重画」只能这么验**：
+    // 生产构建里 `__vueParentComponent` 是不挂的，从 DOM 摸不到这条消息。
+    growReply(text) {
+      const last = chatLog.value[chatLog.value.length - 1]
+      if (last) last.content += text
+    },
   }
   try {
     await load()
@@ -3107,6 +3256,8 @@ onBeforeUnmount(() => {
                   @build="buildPoint" @write="writeBody" @place="placeFromToday"
                   @plans="panel = 'plans'; refreshPlans()" @global="switchProject('')"
                   @refresh="refreshToday" @close="panel = ''" />
+      <StatsPanel v-else-if="panel === 'stats'" class="study" :index="indexDoc" :chains="lineageChains"
+                  @goto="gotoNode" @close="panel = ''" />
       <CalendarPanel v-else-if="panel === 'calendar'" class="study" :data="calendar"
                      @goto="gotoNode" @refresh="refreshCalendar" @close="panel = ''" />
       <DigestPanel v-else-if="panel === 'digest'" :busy="status === 'saving'" @regroup="regroupDrafts" class="digest" :digest="digest"
@@ -3126,7 +3277,7 @@ onBeforeUnmount(() => {
         <ChatView v-if="mode === 'chat'" :messages="chatLog" :busy="chatBusy"
                   :sessions="chatSessions" :session="chatSession" :focus="chatFocus"
                   :stance="chatStance" @stance="setStance"
-                  :graph-open="graphPane"
+                  :graph-open="graphPane" :tidied="chatTidied" :fresh="chatFresh"
                   @send="sendChat" @stop="stopChat" @apply="applyChatCard"
                   @apply-project="applyProjectCard" @apply-points="applyPointsCard" @goto="gotoNode"
                   @new-session="newChatSession" @pick-session="pickChatSession" @rename-session="renameSession"
@@ -3159,6 +3310,7 @@ onBeforeUnmount(() => {
                  @zoom-out="stepZoom(0.8)" @reset="resetZoom" @fit="fit" @toggle-map="toggleMap" />
 
         <HistoryPlayer v-if="mode === 'history'" :playing="isPlaying" :upto="hist.upto" :range="yearRange"
+                       :speed="speed" @speed="setSpeed"
                        :compact="hist.compact" :validity="hist.validity"
                        :active="histActiveCount" :total="histPlan?.placed.size || 0"
                        @toggle-play="togglePlay" @set-upto="setUpto"

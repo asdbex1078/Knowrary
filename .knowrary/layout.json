@@ -1,11 +1,11 @@
 {
   "schema_version": 2,
-  "revision": 14,
-  "updated_at": "2026-09-16T15:56:55Z",
+  "revision": 18,
+  "updated_at": "2026-09-17T07:13:00Z",
   "viewport": {
-    "zoom": 0.15,
-    "cx": 1221.0,
-    "cy": 2288.0
+    "zoom": 1.2,
+    "cx": 1974.0,
+    "cy": 2460.0
   },
   "groups": {
     "g-Agent": {
