@@ -36,7 +36,25 @@ def _empty_day() -> dict:
 
 
 def _day_of(ts: str | None) -> str:
-    return (ts or "")[:10]
+    """把一条记录归到哪一天。
+
+    日历的"一天"是**本地的一天**，但两份日志的时间口径不一样：
+    `learned` 与 `review-log.date` 存的是本地日期（`2026-09-16`），
+    `quiz-log.answers[].ts` 存的是 UTC 时间戳（`2026-09-16T16:03:00Z`）。
+    直接切前 10 个字符会把两者错位——在 UTC+8 的 00:00~08:00 之间，
+    刚答完的题记进"昨天"，而同一次提交触发的复习记进"今天"，
+    日历那一格于是 reviews=1 / answers=0。带时区的先落到本地再取日期。
+    """
+    s = (ts or "").strip()
+    if len(s) <= 10:
+        return s[:10]                       # 已经是本地日期，原样用
+    try:
+        moment = dt.datetime.fromisoformat(s.replace("Z", "+00:00"))
+    except ValueError:
+        return s[:10]                       # 认不出的格式不猜，保持旧行为
+    if moment.tzinfo is None:
+        return s[:10]                       # 不带时区的按本地时间读，前 10 位就是它的日期
+    return moment.astimezone().date().isoformat()
 
 
 def build_calendar(vault: Path, index: dict, start: dt.date, end: dt.date) -> dict:
