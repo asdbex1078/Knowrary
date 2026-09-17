@@ -871,15 +871,20 @@ def _system_prompt(vault: Path, stance: str | None, project: str | None = None) 
 
 
 def _graph_snapshot(vault: Path) -> str:
-    """图谱现状：节点数、边数、领域分布、已有项目。**单独一条 system 消息，排在静态那条后面。**
+    """图谱现状：节点数、边数、领域分布、已有项目。**单独一条 system 消息，挂在 messages 队尾。**
 
     它原来就写在 `prompts/chat.md` 中间。问题是这几个数字**会变**——教练的整个用途
     就是聊着聊着把新点入库，一旦采纳了一张变更卡，节点数就变了。而提示词缓存认的是
     **逐字节的前缀**：中间插一个会变的数字，等于每次图谱一动，它后面那 9000 字静态
     指令（工具表、格式、关系类型表、教练侧写）全部作废重买。
 
-    挪到末尾单独成块之后，缓存断点就打在静态那条的结尾（见 llm_backend._chat_anthropic）：
-    数字怎么变都只影响它自己这 261 字。
+    第一版把它拆成第二条顶层 system，断点打在两者之间。但**顶层 system 整体排在
+    所有 messages 之前**：静态那块是保住了，图谱一动整段对话的缓存照样全丢。
+    所以现在它是 mid-conversation system message，坐在历史之后（见 _run 里的 append
+    与 llm_backend._split_system）——变了只作废它自己这 261 字。
+
+    顺带一个安全性收益：user 消息里的「（系统提示）」谁都能伪造，`role: "system"` 不能，
+    它是不可冒充的操作指令通道。
     """
     return f"## 我的图谱现在是什么样\n\n{_overview(vault)}"
 
@@ -1015,18 +1020,19 @@ def _run(vault: Path, req: ChatRequest):
 
     conf = stance_of(req.stance)
     allowed = set(conf["tools"])
-    # 两条 system：**静态的在前、会变的在后**。缓存断点打在两者之间，
-    # 图谱一动只作废后面那一小块（见 _graph_snapshot）。
-    messages = [{"role": "system", "content": _system_prompt(vault, req.stance, req.project)},
-                {"role": "system", "content": _graph_snapshot(vault)}] + history
+    messages = [{"role": "system", "content": _system_prompt(vault, req.stance, req.project)}] + history
     if dropped:
         # **截断要说出来**，不能让它默默失忆：模型不知道自己少了上下文时，
         # 会拿半截记忆当完整的用，比直接说"我没看到"糟得多。
         # 真正的长期记忆本来就不该是上下文窗口——聊清楚的东西应该已经进 md 了，
         # 所以这里顺便告诉它：缺的部分去图里查，或者问我。
-        messages.insert(2, {"role": "user", "content":
+        messages.insert(1, {"role": "user", "content":
             f"（提醒：这一段之前还有 {dropped} 轮没带过来。你缺的上下文别猜——"
             f"先 `search_nodes` / `read_node` 去图里找，找不到就直接问我。）"})
+    # 图谱现状挂在**队尾**，不进顶层 system（见 _graph_snapshot）。
+    # 工具循环随后往后追加 assistant / 工具结果，它就夹在中间——这是允许的位置
+    # （mid-conversation system message 要么是最后一条，要么后面跟着 assistant）。
+    messages.append({"role": "system", "content": _graph_snapshot(vault)})
     said: list[str] = []      # 过程：每一次"还要接着调工具"的那段话
     answer = ""
     # 同一轮里同参数的工具调用只真跑一次：模型确实会连着用一模一样的参数再搜一遍

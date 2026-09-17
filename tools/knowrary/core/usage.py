@@ -84,11 +84,47 @@ def record(vault: Path, row: dict) -> dict:
     return log
 
 
+# 缓存命中的常设监控 -------------------------------------------------
+#
+# 缓存失效**没有任何报错**：请求照样成功、答案照样对，只有账单在涨。
+# 2026-09-16 就是这么烧掉 $8 的（读写比 1.43×，等于每一轮都在重写缓存而不是读它）。
+# 所以它只能靠一个摆在明面上的数盯着——测试钉不住"线上真的命中了"这件事。
+HEALTHY_RATIO = 3.0      # 健康的多轮循环在 5-10×；留出余量，低于 3 才报
+MIN_CALLS = 5            # 样本太少的比值没意义
+MULTI_TURN = ("chat",)   # 只有多轮的才该有高比值；出题 / 建议那类一问一答天然接近 0
+
+
+def _ratio(bucket: dict) -> float | None:
+    """读 ÷ 写。没写过缓存就没有比值可言（不是 0，是"不适用"）。"""
+    write = bucket.get("cache_write_tokens") or 0
+    return round((bucket.get("cache_read_tokens") or 0) / write, 2) if write else None
+
+
+def cache_health(log: dict) -> dict:
+    """挑出**多轮对话里**比值最难看的那个 op。
+
+    单轮调用（quiz / suggest / plan-*）每次都是新前缀，比值天然贴着 0，
+    混在总账里算会把信号冲没——所以只看 `MULTI_TURN` 那几个，而且要够样本量。
+    """
+    worst = None
+    for op, b in (log.get("by_op") or {}).items():
+        if not op.startswith(MULTI_TURN) or (b.get("calls") or 0) < MIN_CALLS:
+            continue
+        r = _ratio(b)
+        if r is not None and (worst is None or r < worst["ratio"]):
+            worst = {"op": op, "ratio": r, "calls": b["calls"]}
+    return {"ratio": _ratio(log.get("totals") or {}), "worst": worst,
+            "healthy": HEALTHY_RATIO,
+            "ok": worst is None or worst["ratio"] >= HEALTHY_RATIO}
+
+
 def summary(log: dict, today: str | None = None) -> dict:
-    """今天 + 累计 + 分功能，给前端直接摆出来。"""
+    """今天 + 累计 + 分功能 + 缓存健康度，给前端直接摆出来。"""
     today = today or dt.date.today().isoformat()
+    by_op = {op: {**b, "cache_ratio": _ratio(b)} for op, b in (log.get("by_op") or {}).items()}
     return {"today": {**_zero(), **(log.get("by_day", {}).get(today) or {})},
             "totals": {**_zero(), **(log.get("totals") or {})},
-            "by_op": log.get("by_op") or {},
+            "by_op": by_op,
+            "cache": cache_health(log),
             "recent": (log.get("recent") or [])[:30],
             "date": today}

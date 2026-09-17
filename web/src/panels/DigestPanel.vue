@@ -10,7 +10,7 @@ const props = defineProps({
   digest: { type: Object, default: null },
   busy: { type: Boolean, default: false },
 })
-const emit = defineEmits(['goto', 'close', 'refresh', 'merge', 'link', 'suggest', 'years', 'regroup'])
+const emit = defineEmits(['goto', 'close', 'refresh', 'merge', 'link', 'suggest', 'years', 'misplace', 'regroup'])
 
 const total = () => {
   const c = props.digest?.counts
@@ -18,7 +18,7 @@ const total = () => {
   // 孤点不计进总数：47 个孤点会把角标顶成一个吓人的数字，而它们是**长期欠账**，
   // 不是"今天冒出来的待办"。它有自己那一节的计数。
   return (c.drafts || 0) + (c.links || 0) + (c.duplicates || 0) + (c.stubs || 0)
-    + (c.cycles || 0) + (c.bad_years || 0) + (c.issues || 0)
+    + (c.cycles || 0) + (c.bad_years || 0) + (c.misplaced || 0) + (c.issues || 0)
 }
 </script>
 
@@ -201,6 +201,39 @@ const total = () => {
           <ul style="margin-top: 6px">
             <li v-for="id in digest.no_year" :key="id" class="edge-row">
               <span class="to link" @click="emit('goto', id)">{{ id }}</span>
+            </li>
+          </ul>
+        </section>
+
+        <!-- 域不符：和「年份可疑」同一类——算得出来的矛盾，不依赖任何外部知识。
+             分组 id 的生成规则就是 g-<field>--<layer>，所以"该归哪个域"是机械可算的。
+             会走散是因为 field 在 md、group 在 layout.json，改 md 不动画布——那条分界
+             是对的（否则手工摆位会被一次改 frontmatter 冲掉），代价是两边能悄悄不一致。 -->
+        <section v-if="digest.misplaced?.length" class="section">
+          <div class="section-head">
+            <Icon name="warn" :size="13" />域不符 <span class="count">{{ digest.counts.misplaced }}</span>
+          </div>
+          <p class="dim" style="font-size: 11.5px; margin-bottom: 6px">
+            md 里的 <code>field</code> 和它在画布上待的域对不上。改 field 不会自动挪画布——
+            <b>这是故意的</b>，否则你手工摆的位置会被一次改 frontmatter 冲掉。
+          </p>
+          <ul>
+            <li v-for="m in digest.misplaced" :key="m.id" class="card" style="padding: 8px 10px">
+              <div>
+                <span class="link" @click="emit('goto', m.id)">{{ m.id }}</span>
+                <span class="dim" style="font-size: 11.5px">
+                  field={{ m.field }}，却摆在「{{ m.group_name }}」
+                </span>
+              </div>
+              <div class="dim" style="font-size: 11.5px">
+                该去 {{ m.field }}{{ m.layer ? `/${m.layer}` : '' }}
+                <b v-if="!m.want_exists" class="warn-text">（那条道还没建）</b>
+              </div>
+              <button class="btn subtle tiny" style="margin-top: 6px" :disabled="busy"
+                      :title="m.want_exists ? '挪进那条道' : '现开一条道，再把它挪进去（只往下长，不动已有的框）'"
+                      @click="emit('misplace', m)">
+                <Icon name="layers" :size="12" />{{ m.want_exists ? '挪过去' : '开一条道并挪过去' }}
+              </button>
             </li>
           </ul>
         </section>

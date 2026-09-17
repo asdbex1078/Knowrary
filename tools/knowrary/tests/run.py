@@ -1179,6 +1179,75 @@ def coach_今日清单里的孤点带着现成建议():
 
 
 @case
+def digest_field和所在域对不上要报出来():
+    """`field` 在 md、`group` 在 layout.json，改 md 不动画布——那条分界是对的，
+    代价是两边能**悄悄走散**，而唯一的发现方式原来是肉眼看出"咦怎么没动"。
+
+    这和「年份可疑」同一类：分组 id 就是 `g-<field>--<layer>`，矛盾算得出来。
+    """
+    vault, r = build({
+        "nodes/x/甲.md": node_md("甲", field="AI", extra="layer: 理论\n"),
+        "nodes/x/乙.md": node_md("乙", field="AI", extra="layer: 理论\n"),
+    })
+    layout = {"schema_version": 2, "revision": 1, "groups": {
+        "g-AI": {"name": "AI", "x": 0, "y": 0, "w": 800, "h": 400},
+        "g-AI--理论": {"name": "理论", "parent": "g-AI", "x": 24, "y": 44, "w": 300, "h": 200},
+        "g-计算机系统": {"name": "计算机系统", "x": 0, "y": 600, "w": 800, "h": 400},
+        "g-计算机系统--理论": {"name": "理论", "parent": "g-计算机系统", "x": 24, "y": 644, "w": 300, "h": 200},
+    }, "nodes": {
+        "甲": {"x": 40, "y": 60, "w": 196, "h": 64, "group": "g-AI--理论", "state": "final"},
+        "乙": {"x": 40, "y": 660, "w": 196, "h": 64, "group": "g-计算机系统--理论", "state": "final"},
+    }}
+    d = core.build_digest(vault, r.data, layout, _dt.date(2026, 9, 12))
+    ids = [m["id"] for m in d["misplaced"]]
+    assert ids == ["乙"], d["misplaced"]                  # 甲在对的域里，不该报
+    hit = d["misplaced"][0]
+    assert hit["field"] == "AI" and hit["group_name"] == "计算机系统", hit
+    assert hit["want"] == "g-AI--理论" and hit["want_exists"] is True, hit
+
+
+@case
+def digest_该去的那条道还没建时标出来():
+    """道不存在时 by_field_and_layer 会退回领域大框——那时按钮得说"开一条道"而不是"挪过去"。"""
+    vault, r = build({"nodes/x/甲.md": node_md("甲", field="AI", extra="layer: 理论\n")})
+    layout = {"schema_version": 2, "revision": 1, "groups": {
+        "g-AI": {"name": "AI", "x": 0, "y": 0, "w": 800, "h": 400},
+        "g-计算机系统": {"name": "计算机系统", "x": 0, "y": 600, "w": 800, "h": 400},
+        "g-计算机系统--理论": {"name": "理论", "parent": "g-计算机系统", "x": 24, "y": 644, "w": 300, "h": 200},
+    }, "nodes": {"甲": {"x": 40, "y": 660, "w": 196, "h": 64, "group": "g-计算机系统--理论", "state": "final"}}}
+    d = core.build_digest(vault, r.data, layout, _dt.date(2026, 9, 12))
+    hit = d["misplaced"][0]
+    assert hit["want"] == "g-AI" and hit["want_exists"] is False, hit
+
+
+@case
+def placement_并排的块排满了就另起一行():
+    """AI 那个域下面是**并排的块**不是泳道。新开一条道要跟着已有排法走，
+    右边塞得下就并上去，塞不下另起一行——而且只往下长父框，不动任何已有的框。"""
+    layout = {"groups": {
+        "g-AI": {"name": "AI", "x": 0, "y": 0, "w": 600, "h": 300},
+        "g-AI--硬件": {"name": "硬件", "parent": "g-AI", "x": 24, "y": 44, "w": 248, "h": 128},
+    }}
+    before = {gid: dict(g) for gid, g in layout["groups"].items()}
+    gid, lane, grown = core.plan_new_lane("g-AI", "理论", layout)
+    assert gid == "g-AI--理论" and lane["parent"] == "g-AI", (gid, lane)
+    assert lane["y"] == before["g-AI--硬件"]["y"], "右边还塞得下，应该并在同一行"
+    assert lane["x"] > before["g-AI--硬件"]["x"] + before["g-AI--硬件"]["w"], lane
+    assert layout["groups"]["g-AI--硬件"] == before["g-AI--硬件"], "不许动已有的框"
+
+
+@case
+def placement_长出来会压到隔壁的域就不建():
+    """宁可让人自己拖，也不能为了塞一条新道把旁边的域挤变形。"""
+    layout = {"groups": {
+        "g-AI": {"name": "AI", "x": 0, "y": 0, "w": 300, "h": 200},
+        "g-AI--硬件": {"name": "硬件", "parent": "g-AI", "x": 24, "y": 44, "w": 248, "h": 128},
+        "g-隔壁": {"name": "隔壁", "x": 0, "y": 210, "w": 300, "h": 200},   # 紧贴在 AI 下面
+    }}
+    assert core.plan_new_lane("g-AI", "理论", layout) is None
+
+
+@case
 def digest_跨分组桥给重名分组带上父级():
     """布局里 `硬件` 有两个（计算机系统下一个、AI 下一个）。只取 name 的话，最有价值的
     那条桥会显示成"硬件 → 硬件"——看不出在说什么，等于把这条线藏了。"""

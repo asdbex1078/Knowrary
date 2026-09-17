@@ -720,6 +720,25 @@ class UsageBucket(Strict):
     output_tokens: int = 0
     cache_read_tokens: int = 0
     cache_write_tokens: int = 0
+    cache_ratio: float | None = None   # 读 ÷ 写。没写过缓存就是 None（不适用），不是 0
+
+
+class CacheWorst(Strict):
+    op: str
+    ratio: float
+    calls: int
+
+
+class CacheHealth(Strict):
+    """缓存到底有没有命中——**唯一能在线上回答这件事的数**。
+
+    缓存失效不报错、答案也全对，测试够不着真实 API，所以只能靠账本上这个比值盯着。
+    """
+
+    ratio: float | None = None         # 总账的读写比
+    worst: CacheWorst | None = None    # 多轮对话里最难看的那个 op
+    healthy: float = 3.0               # 低于它就该查了（健康的多轮循环在 5-10×）
+    ok: bool = True
 
 
 class UsageRead(Strict):
@@ -727,6 +746,7 @@ class UsageRead(Strict):
     today: UsageBucket
     totals: UsageBucket
     by_op: dict[str, UsageBucket] = Field(default_factory=dict)
+    cache: CacheHealth = Field(default_factory=CacheHealth)
     recent: list[dict[str, Any]] = Field(default_factory=list)
     provider: str = ""                 # 当前各角色用的是谁，方便对账
     roles: dict[str, str] = Field(default_factory=dict)

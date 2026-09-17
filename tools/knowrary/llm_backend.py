@@ -339,6 +339,27 @@ def drop_cli_session(key: str | None) -> None:
     _CLI_SESSIONS.pop(key or "", None)
 
 
+def _hoist_system(messages: list[dict]) -> list[dict]:
+    """把中途的 system 挪回开头那一串 system 的末尾——给 anthropic 以外的后端。
+
+    图谱快照挂在队尾是 anthropic 专用的招（mid-conversation system message），为的是
+    保护顶层 system 的缓存（见 `_split_system`）。别的后端没有"顶层 system"这回事：
+    claude-cli 把整串拍平，位置只影响读起来顺不顺；openai 系是 token 前缀自动匹配。
+
+    真正的麻烦是**它会动**：这一轮在队尾，下一轮被新的对话挤到中间，消息列表就不再
+    只增不改。claude-cli 的会话续用靠指纹校验前缀，一动就续不上，**白白退回重发全文
+    而且不报错**。挪到开头它就钉住了：只有图谱真的变了才换指纹，那时候本来也该重开一段。
+    """
+    head = 0
+    while head < len(messages) and messages[head].get("role") == "system":
+        head += 1
+    moved = [m for m in messages[head:] if m.get("role") == "system"]
+    if not moved:
+        return messages
+    return [*messages[:head], *moved,
+            *(m for m in messages[head:] if m.get("role") != "system")]
+
+
 def _render_transcript(messages: list[dict]) -> str:
     """把多轮对话拍平成一段 prompt。
 
@@ -376,16 +397,25 @@ def chat(messages: list[dict], provider: dict, model_override: str | None = None
 
 
 def _split_system(messages: list[dict]) -> tuple[list[str], list[dict]]:
-    """anthropic 的 system 是顶层参数，不进 messages 数组。
+    """anthropic 的 system 是顶层参数——但**只有开头那几条**。
 
-    **分块返回，不拼成一坨**：调用方按约定把静态的排在前、会变的排在后
-    （server/chat.py 的 `_system_prompt` / `_graph_snapshot`），缓存断点才打得下去。
+    出现在对话中间或末尾的 system 是「对话中途的操作指令」（mid-conversation system
+    message），必须留在 messages 里的原位：顶层 system 整体渲染在所有 messages 之前，
+    把会变的东西放进去，等于它一变整段对话的缓存全丢；留在队尾就只作废它自己。
+    （server/chat.py 的 `_graph_snapshot` 走的就是这条路。）
     """
-    system = [t for m in messages if m.get("role") == "system"
-              for t in [(m.get("content") or "").strip()] if t]
-    rest = [{"role": m["role"], "content": m.get("content") or ""}
-            for m in messages if m.get("role") in ("user", "assistant") and (m.get("content") or "").strip()]
-    return system, rest
+    head: list[str] = []
+    rest: list[dict] = []
+    for m in messages:
+        role, text = m.get("role"), (m.get("content") or "")
+        if not text.strip() and role != "system":
+            continue
+        if role == "system" and not rest:
+            if text.strip():
+                head.append(text.strip())
+        elif role in ("user", "assistant", "system") and text.strip():
+            rest.append({"role": role, "content": text})
+    return head, rest
 
 
 def _chat_claude_cli(messages: list[dict], model: str | None, on_delta,
@@ -398,6 +428,7 @@ def _chat_claude_cli(messages: list[dict], model: str | None, on_delta,
     给了 `session` 就尽量续上已有的那一段，只发新增的几条（见 _cli_session）。
     续不上（进程重启、CLI 把会话清了）会退回重发全文，不让一次省钱把对话弄炸。
     """
+    messages = _hoist_system(messages)          # 队尾的 system 会动，钉回开头（见 _hoist_system）
     try:
         text, usage = _run_claude_cli(messages, model, on_delta, session)
     except SystemExit:
@@ -452,42 +483,89 @@ def _run_claude_cli(messages: list[dict], model: str | None, on_delta,
 
 
 def _cached_system(blocks: list[str]) -> list[dict]:
-    """system 分块，**断点打在最后一块之前**。
+    """顶层 system 整段打一个缓存断点。
 
-    system 是整条链路上最大的一段（工具表、格式说明、关系类型表、教练侧写，约 9000 字），
-    不标 cache_control 就等于每一轮原价重买一次。但它里面**混着会变的东西**——
-    图谱的节点数 / 边数 / 项目列表，而教练的整个用途就是聊着聊着把新点入库。
-    断点要是打在整段结尾，图谱一动，前面那 9000 字静态指令跟着一起作废。
+    它是整条链路上最大的一段（工具表、格式说明、关系类型表、教练侧写，约 9000 字），
+    不标 cache_control 就等于每一轮原价重买一次。
 
-    所以调用方把会变的那一小块单独排在最后（server/chat.py 的 `_graph_snapshot`，约 261 字），
-    断点打在它前面：数字怎么变都只影响它自己。只有一块时就照旧整块缓存。
+    **这里只剩不会变的东西**——会变的那块（图谱节点数 / 项目列表）已经被 `_split_system`
+    留在 messages 队尾当 mid-conversation system message 了，够不着这个断点。
     """
-    if len(blocks) == 1:
-        return [{"type": "text", "text": blocks[0], "cache_control": {"type": "ephemeral"}}]
-    *stable, volatile = blocks
-    return [{"type": "text", "text": "\n\n".join(stable),
-             "cache_control": {"type": "ephemeral"}},
-            {"type": "text", "text": volatile}]
+    return [{"type": "text", "text": "\n\n".join(blocks),
+             "cache_control": {"type": "ephemeral"}}]
 
 
 def _cached(messages: list[dict]) -> list[dict]:
-    """在最后一条消息上打一个缓存断点，把**到此为止的整段对话**存进缓存。
+    """在最后一条**非 system** 的消息上打缓存断点，把到此为止的整段对话存进缓存。
 
     一个用户回合里常常夹着三四次工具往返，每次都要把前面所有内容再发一遍——
-    断点打在末尾，后面那几次就都是缓存命中而不是重新计费。
+    断点打在这里，后面那几次就都是缓存命中而不是重新计费。
     前缀不够长时 API 直接忽略这个标记，不会报错，所以不用判长度。
+
+    **为什么跳过 system**：队尾那条 system 是会变的图谱快照，故意留在断点之后，
+    它怎么变都不动前面整段对话的缓存；而且 mid-conversation system message 上
+    打 cache_control 本身就会 400。
     """
-    if not messages:
+    idx = next((i for i in range(len(messages) - 1, -1, -1)
+                if messages[i].get("role") != "system"), None)
+    if idx is None:
         return messages
-    *head, last = messages
-    text = last.get("content") or ""
+    text = messages[idx].get("content") or ""
     if not isinstance(text, str):
         return messages                      # 已经是分块格式了，别去动它
-    return [*head, {**last, "content": [{"type": "text", "text": text,
-                                         "cache_control": {"type": "ephemeral"}}]}]
+    out = list(messages)
+    out[idx] = {**out[idx], "content": [{"type": "text", "text": text,
+                                         "cache_control": {"type": "ephemeral"}}]}
+    return out
+
+
+def _has_mid_system(messages: list[dict]) -> bool:
+    """有没有「不在开头」的 system 消息。"""
+    seen_turn = False
+    for m in messages:
+        if m.get("role") in ("user", "assistant"):
+            seen_turn = True
+        elif m.get("role") == "system" and seen_turn:
+            return True
+    return False
+
+
+def _fold_mid_system(messages: list[dict]) -> list[dict]:
+    """把对话中途的 system 折进前一条 user 里——给不支持这个用法的模型兜底。
+
+    退化的是**安全性**（user 文本里的 `<system-reminder>` 谁都能伪造）和**缓存**
+    （它并进了 user 消息，那条消息一变，断点就跟着动），但对话本身照常。
+    """
+    out: list[dict] = []
+    for m in messages:
+        text = (m.get("content") or "")
+        if m.get("role") != "system" or not out:
+            out.append(m)
+            continue
+        wrapped = f"<system-reminder>\n{text}\n</system-reminder>"
+        prev = out[-1]
+        if prev.get("role") == "user" and isinstance(prev.get("content"), str):
+            out[-1] = {**prev, "content": f"{prev['content']}\n\n{wrapped}"}
+        else:
+            out.append({"role": "user", "content": wrapped})
+    return out
 
 
 def _chat_anthropic(messages: list[dict], provider: dict, model: str, on_delta) -> tuple[str, dict]:
+    """**Sonnet 5 不支持 mid-conversation system message**（400），Opus 5 / 4.8 / Fable 5 支持。
+
+    与其维护一张"哪个模型行"的表（它一定会过期），不如撞上 400 再退一步：
+    折成 user 文本重发一次。只在报错确实是这件事、而且真有中途 system 时才重试。
+    """
+    try:
+        return _post_anthropic(messages, provider, model, on_delta)
+    except SystemExit as exc:
+        if "role" not in str(exc) or "system" not in str(exc) or not _has_mid_system(messages):
+            raise
+        return _post_anthropic(_fold_mid_system(messages), provider, model, on_delta)
+
+
+def _post_anthropic(messages: list[dict], provider: dict, model: str, on_delta) -> tuple[str, dict]:
     api_key = resolve_secret(provider.get("api_key")) or os.environ.get("ANTHROPIC_API_KEY")
     if not api_key:
         raise LLMConfigError("anthropic provider 缺少 api_key（也可设置 ANTHROPIC_API_KEY）")
@@ -526,6 +604,7 @@ def _chat_openai(messages: list[dict], provider: dict, model: str, on_delta) -> 
     api_key = resolve_secret(provider.get("api_key")) or "none"
     base = provider["base_url"].rstrip("/")
     headers = {"Authorization": f"Bearer {api_key}"}
+    messages = _hoist_system(messages)          # 自动前缀缓存要的是前缀别动（见 _hoist_system）
     payload = {"model": model, "messages": [{"role": m["role"], "content": m.get("content") or ""}
                                             for m in messages if (m.get("content") or "").strip()],
                "stream": on_delta is not None}

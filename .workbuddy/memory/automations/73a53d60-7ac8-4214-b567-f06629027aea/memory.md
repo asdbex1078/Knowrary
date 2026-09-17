@@ -13,3 +13,8 @@
 - 源告警 4 条：GitHub releases 限流（antvis/X6、G6、G6-extension-3d）+ HN SSL 超时。
 - HTTPS 推送失败后自动切 SSH 推送成功（提交 ef2008f）。
 - 新情况：publish.sh 未能切回 main，仓库停留在 day-info 分支，已在输出中提醒用户手动切回。
+
+## 2026-09-17 19:00
+- 硬失败（Exit 1，硬失败分支「需要在」）：main 上有未提交改动 .knowrary/layouts/ai.json（4 行变更），daily.sh 拒绝切到 day-info（脚本绝不用 -f 强切）。
+- 未重试（重试无效，非网络问题）；未触碰该改动，未切分支。
+- 本次采集与推送均未发生，池内数据无变化。需用户自行提交/stash 该文件后下次运行可恢复。

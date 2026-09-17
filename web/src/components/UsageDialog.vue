@@ -63,10 +63,22 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onKey, true))
         <dd>{{ kilo(cached) }}
           <span class="dim">（读 {{ kilo(usage.totals.cache_read_tokens) }} / 写
             {{ kilo(usage.totals.cache_write_tokens) }}）</span></dd>
+        <dt>读写比</dt>
+        <dd :class="{ 'warn-text': usage.cache && !usage.cache.ok }">
+          {{ usage.cache?.ratio ?? '—' }}<span class="dim">×</span>
+          <span v-if="usage.cache?.worst" class="dim">
+            · 最低 {{ OP_NAME[usage.cache.worst.op] || usage.cache.worst.op }}
+            {{ usage.cache.worst.ratio }}×</span></dd>
         <dt>角色 → provider</dt>
         <dd>{{ Object.entries(usage.roles).map(([r, p]) => `${r} → ${p}`).join('，') || '默认 claude-cli' }}</dd>
       </dl>
 
+      <p v-if="usage.cache && !usage.cache.ok" class="warn-text"
+         style="font-size: 11.5px; line-height: 1.6">
+        多轮对话的读写比低于 {{ usage.cache.healthy }}×，说明**每一轮都在重写缓存而不是读它**。
+        缓存失效不报错、答案也全对，只有账单在涨——健康的多轮循环应该在 5-10×。
+        先查前缀里是不是混进了会变的东西（时间、节点数、未排序的 JSON）。
+      </p>
       <p v-if="!usage.cost_known" class="dim" style="font-size: 11.5px; line-height: 1.6">
         当前 provider 不返回花销，所以这里只有 token 数。**不按型号估价**——价目表会过期，
         估出来的数字比没有更糟。

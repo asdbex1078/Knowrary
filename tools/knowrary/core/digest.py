@@ -9,7 +9,7 @@ import datetime as dt
 from collections import Counter, defaultdict
 from difflib import SequenceMatcher
 
-from .placement import inbox_ids
+from .placement import by_field_and_layer, inbox_ids
 from .issues import summary as issues_summary
 from .review import due_nodes, load_log
 
@@ -210,6 +210,57 @@ def no_year(index: dict) -> list[str]:
                   and not n.get("year"))
 
 
+def _top_group(gid: str | None, groups: dict) -> str | None:
+    """一路往上找到顶层分组的名字。分组 id 是 `g-<field>--<layer>`，顶层那个就该等于 field。"""
+    seen = 0
+    while gid and seen < 12:
+        g = groups.get(gid) or {}
+        if not g.get("parent"):
+            return g.get("name") or gid
+        gid = g["parent"]
+        seen += 1
+    return None
+
+
+def misplaced(index: dict, layout: dict) -> list[dict]:
+    """`field` 和它在画布上所属的顶层域对不上的点。
+
+    **和「年份可疑」同一类：算得出来的矛盾，不依赖任何外部知识。** 分组 id 的生成规则
+    就是 `g-<field>--<layer>`（core/layout.py），所以"这个点该归哪个域"是机械可算的。
+
+    为什么会对不上：`field` 是知识层的，`group` 是画布层的，改 md 不动画布——
+    那条分界是对的（否则手工摆位会被一次改 frontmatter 冲掉），但代价是**两边可以
+    悄悄走散**。实盘上就出现过：在对话里把「图灵测试」的 field 改成 AI，md 和索引都更新了，
+    画布上它还待在「计算机系统/理论」里，而唯一的发现方式是肉眼看出"咦怎么没动"。
+
+    `want` 是它该去的那条道；`want_exists` 为假表示那条道还没建（`by_field_and_layer`
+    找不到同名子框时会退回领域大框）。
+    """
+    groups = layout.get("groups", {})
+    by_id = {n["id"]: n for n in index["nodes"]}
+    out = []
+    for nid, place in sorted((layout.get("nodes") or {}).items()):
+        node = by_id.get(nid)
+        gid = place.get("group")
+        if not node or not gid or node.get("virtual") or not node.get("field"):
+            continue
+        top = _top_group(gid, groups)
+        if not top or top == node["field"]:
+            continue
+        want = by_field_and_layer(node, layout)
+        # 图上压根没有这个 field 的域 = 这张布局不是按 field 组织的（`layout init --by dir`
+        # 就是按目录建组的）。那时候"摆错了"无从谈起，报出来只会是满屏假阳性。
+        if want is None:
+            continue
+        want_name = (groups.get(want, {}).get("name") or want) if want else None
+        # want 退回了领域大框 = 该去的那条泳道还不存在，挪过去之前得先建一条
+        want_exists = bool(want and groups.get(want, {}).get("parent"))
+        out.append({"id": nid, "field": node["field"], "layer": node.get("layer") or "",
+                    "group": gid, "group_name": _top_group(gid, groups),
+                    "want": want, "want_name": want_name, "want_exists": want_exists})
+    return out[:MAX_ITEMS]
+
+
 def build_digest(vault, index: dict, layout: dict, today: dt.date | None = None) -> dict:
     """汇总一份 Digest。参数少而全：vault 只用来读复习记录。"""
     today = today or dt.date.today()
@@ -223,6 +274,7 @@ def build_digest(vault, index: dict, layout: dict, today: dt.date | None = None)
     dup_list, link_list = _pairs(index)
     lonely_list = lonely(index)
     no_year_list = no_year(index)
+    misplaced_list = misplaced(index, layout)
     # 年份可疑：演化边两端倒挂、或者年份落在未来。**它们是 index 算出来的结构性矛盾**，
     # 不依赖任何外部知识——口述一句"year 填 2017"没人能核，但"它比它的前身还早"能算。
     bad_years = [w["message"] for w in index.get("warnings", [])
@@ -237,6 +289,7 @@ def build_digest(vault, index: dict, layout: dict, today: dt.date | None = None)
         "links": link_list,
         "lonely": lonely_list[:MAX_ITEMS],
         "no_year": no_year_list[:MAX_ITEMS],
+        "misplaced": misplaced_list,
         "duplicates": dup_list,
         "cycles": [w["message"] for w in cycles][:MAX_ITEMS],
         "bad_years": bad_years,
@@ -245,7 +298,7 @@ def build_digest(vault, index: dict, layout: dict, today: dt.date | None = None)
                    "stale_drafts": sum(1 for d in draft_list if d["stale"]),
                    "due": len(due), "stubs": len(stubs), "bridges": len(bridge_list),
                    "links": len(link_list), "lonely": len(lonely_list),
-                   "no_year": len(no_year_list),
+                   "no_year": len(no_year_list), "misplaced": len(misplaced_list),
                    "duplicates": len(dup_list), "cycles": len(cycles),
                    "bad_years": len(bad_years),
                    "issues": issues_summary(vault)["count"]},

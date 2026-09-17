@@ -1555,6 +1555,32 @@ function editDesc() {
   queueChange({ type: 'update_frontmatter', source: detail.value.id, fields: { desc: value } })
 }
 
+/** 欠账清单里点「挪过去」：把 field 和所在域对不上的那个点挪回去，那条道不存在就现开一条。
+ *
+ * **只挪人点的这一个**（带 ids），不顺手扫全图：批量凭空长出几条道，会把手排的画布搅乱。
+ * "程序不动已定稿的东西"管的是背着人的批量行为，不是"人点了这一个"。
+ */
+async function fixMisplaced(item) {
+  await patcher.value.flush()
+  try {
+    const res = await postRegroup({ base_revision: revision.value, ids: [item.id], create_lane: true })
+    const fresh = await fetchLayout(layoutName())
+    layoutDoc.value = fresh.layout
+    revision.value = fresh.layout.revision
+    render()
+    refreshDigest()
+    if (res.placed.length) {
+      const lane = res.grown_groups?.length ? `（顺带新开了「${item.layer}」这条道）` : ''
+      setBanner(`已把「${item.id}」挪进 ${item.field}${item.layer ? `/${item.layer}` : ''}${lane}`, 'success')
+      gotoNode(item.id)
+    } else {
+      setBanner(res.skipped[0]?.reason || '没挪动', 'error')
+    }
+  } catch (err) {
+    setBanner(`挪动失败：${err.body?.detail?.message || err.body?.detail || err.message}`, 'error')
+  }
+}
+
 /** 按层归位：把落在领域大框里的草稿挪进对应泳道。只动草稿（4.1 程序不动定稿的东西）。 */
 async function regroupDrafts() {
   await patcher.value.flush()
@@ -2616,7 +2642,8 @@ onBeforeUnmount(() => {
                      @goto="gotoNode" @refresh="refreshCalendar" @close="panel = ''" />
       <DigestPanel v-else-if="panel === 'digest'" :busy="status === 'saving'" @regroup="regroupDrafts" class="digest" :digest="digest"
                    @goto="gotoNode" @refresh="refreshDigest" @merge="openMerge" @link="linkFromDigest"
-                   @suggest="suggestFromDigest" @years="openYears" @close="panel = ''" />
+                   @suggest="suggestFromDigest" @years="openYears" @misplace="fixMisplaced"
+                   @close="panel = ''" />
       <ImagePicker v-else-if="panel === 'assets'" class="picker" @pick="addImage" @add-note="addNote"
                    @error="setBanner($event, 'error')" @close="panel = ''" />
       <TimelinePanel v-else-if="panel === 'timeline'" class="timeline" :options="timelineChoices"
