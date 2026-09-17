@@ -383,7 +383,7 @@ def cmd_digest(args: argparse.Namespace) -> None:
     print(f"{d['generated_at']} 的欠账：Inbox {c['inbox']}，草稿 {c['drafts']}"
           f"（放久了 {c['stale_drafts']}），待复习 {c['due']}，stub {c['stubs']}，"
           f"跨分组桥 {c['bridges']}，孤点 {c['lonely']}，缺 year {c['no_year']}，连边建议 {c['links']}，"
-          f"重复候选 {c['duplicates']}，方向矛盾 {c['cycles']}")
+          f"重复候选 {c['duplicates']}，域不符 {c['misplaced']}，方向矛盾 {c['cycles']}")
     n = args.top
     for nid in d["inbox"][:n]:
         print(f"  · Inbox：{nid}")
@@ -399,6 +399,10 @@ def cmd_digest(args: argparse.Namespace) -> None:
     for h in d["links"][:n]:
         alone = "（两端都还是孤点）" if h["lonely"] == 2 else "（有一端是孤点）" if h["lonely"] else ""
         print(f"  · 连边建议：{h['source']} {h['relation']} → {h['target']}{alone} — {h['reason']}")
+    for m in d["misplaced"][:n]:
+        lane = f"{m['field']}/{m['layer']}" if m["layer"] else m["field"]
+        tail = "（那条道还没建）" if not m["want_exists"] else ""
+        print(f"  · 域不符：{m['id']} field={m['field']}，却摆在 {m['group_name']} — 该去 {lane}{tail}")
     for x in d["duplicates"][:n]:
         print(f"  · 重复候选：{x['a']} / {x['b']} — {x['reason']}")
     for msg in d["cycles"][:n]:

@@ -111,28 +111,53 @@ def place(vault: Path, req: PlaceRequest) -> PlaceResult:
                        grown_groups=sorted(patch_groups))
 
 
-def regroup(vault: Path, base_revision: int, only_draft: bool = True) -> PlaceResult:
-    """把落在**父框**里的节点挪进它那一层的泳道。
+def regroup(vault: Path, base_revision: int, only_draft: bool = True,
+            ids: list[str] | None = None, create_lane: bool = False) -> PlaceResult:
+    """把节点挪进它那一层的道。
 
     为什么需要它：`layer` 是后加的字段，早先建的点没有；一个连边都没有、又没分层的点
     只能落在 field 那个大框里，正好在所有泳道之外。等它补上 `layer` 之后，
     画布不会自己动——这个入口就是那一下"动"。
 
-    **只动 draft**（设计文档 4.1：程序不动已定稿的东西），只往**已有的**子框里挪，
-    挪不进去就原地不动。
+    两种用法：
+    · 不给 `ids` = 批量扫一遍，**只动 draft**（设计文档 4.1：程序不动已定稿的东西）；
+    · 给了 `ids` = 人在欠账清单上点了具体某个点，那就连定稿的也挪。
+      "程序不动定稿"管的是**背着人的批量行为**，不是"人点了这一个"。
+
+    `create_lane` 为真时，目标那条道不存在就现开一条（见 core.plan_new_lane）。
+    默认关着：批量扫描时凭空长出几条道，会把人手排的画布搅乱。
     """
     index, layout = load_pair(vault)
     plain = layout.model_dump()
     by_id = {n["id"]: n for n in index["nodes"]}
     today = dt.date.today().isoformat()
+    wanted = set(ids or [])
 
     moved, skipped, patch_nodes, patch_groups = [], [], {}, {}
     for nid, place in sorted(plain["nodes"].items()):
-        if only_draft and place.get("state") != "draft":
+        if wanted and nid not in wanted:
             continue
-        want = core.by_field_and_layer(by_id.get(nid) or {}, plain)
+        if not wanted and only_draft and place.get("state") != "draft":
+            continue
+        node = by_id.get(nid) or {}
+        want = core.by_field_and_layer(node, plain)
         if not want or want == place.get("group"):
             continue
+        # want 落在领域大框上 = 该去的那条道还没建。给了 create_lane 就现开一条。
+        if create_lane and node.get("layer") and not plain["groups"].get(want, {}).get("parent"):
+            plan = core.plan_new_lane(want, node["layer"], plain)
+            if plan is None:
+                skipped.append({"id": nid, "reason": f"「{node['layer']}」这条道开不出来"
+                                                     f"（往下长会压到隔壁的域）：先自己拖点地方出来"})
+                continue
+            new_gid, lane, grown = plan
+            plain["groups"][new_gid] = lane
+            patch_groups[new_gid] = GroupPatch(**lane)
+            for gid, h in grown.items():
+                plain["groups"][gid]["h"] = h
+                patch_groups[gid] = GroupPatch(**{**patch_groups.get(gid, GroupPatch()).model_dump(
+                    exclude_none=True), "h": h})
+            want = new_gid
         # 它想去的那条道还不存在时，by_field_and_layer 退回领域大框——
         # 那会把一个**已经待在某条道里**的点拽回大框，比原地不动更糟
         if plain["groups"].get(place.get("group"), {}).get("parent") == want:
@@ -145,7 +170,7 @@ def regroup(vault: Path, base_revision: int, only_draft: bool = True) -> PlaceRe
             skipped.append({"id": nid, "reason": f"「{plain['groups'][want]['name']}」这条道塞不下了"
                                                   f"（旁边的点压过来了）：整张按层重排一次再试"})
             continue
-        box["state"] = stash.get("state", "draft")
+        box["state"] = stash.get("state", "draft")     # 挪一下不改定稿状态
         _merge_patch(plain, patch_groups, patch_nodes, gpatch, npatch)
         plain["nodes"][nid] = box
         patch_nodes[nid] = NodePatch(**box)

@@ -35,8 +35,8 @@ def case(fn):
     return fn
 
 
-def node_md(name: str, *, rels: str = "", extra: str = "") -> str:
-    body = f"---\nname: {name}\nfield: 测试\ndesc: {name} 的摘要\n{extra}---\n# {name}\n\n正文\n"
+def node_md(name: str, *, rels: str = "", extra: str = "", field: str = "测试") -> str:
+    body = f"---\nname: {name}\nfield: {field}\ndesc: {name} 的摘要\n{extra}---\n# {name}\n\n正文\n"
     return body + (f"\n## 关系\n{rels}\n" if rels else "")
 
 
@@ -446,6 +446,67 @@ def digest_汇总草稿与跨分组桥与重复候选():
     assert bridges, "组A 到 组B 有边，桥不该是空的"
     assert d["counts"]["due"] >= 1, d["counts"]          # d 的 learned 是 2026-09-01，早就该复习了
     assert "links" in d and d["counts"]["links"] == len(d["links"]), d["counts"]
+
+
+@case
+def regroup_点名挪一个连定稿的也挪并现开一条道():
+    """批量扫描只动草稿（程序不动已定稿的东西），但**人点了具体某个点**是另一回事：
+    那条纪律管的是背着人的批量行为。道不存在时现开一条，只往下长，不动已有的框。
+    """
+    # 复现实盘那个顺序：**先有布局，再改 field**。布局按 field 建，所以改完之后
+    # 节点还待在原来那个域里，而 md 说它属于另一个域。
+    c, vault = client({"nodes/x/a.md": node_md("A", field="甲域"),
+                       "nodes/y/b.md": node_md("B", field="乙域")})
+    rev = get_layout(c)["layout"]["revision"]              # 先把布局生成出来
+    # 给「乙域」下面腾点空：开新道只往下长，紧贴着的隔壁域会让它整体作废（下一条用例验那个）
+    r = c.patch("/api/layout", json={"base_revision": rev, "groups": {"g-甲域": {"y": 1600}}})
+    rev = r.json()["revision"]
+    core.write(vault / "nodes/x/a.md", node_md("A", field="乙域", extra="layer: 理论\n"))
+    index_service.invalidate()
+    before = md_digest(vault)
+
+    d = c.get("/api/digest").json()
+    assert d["counts"]["misplaced"] >= 1, d["counts"]
+    hit = next(m for m in d["misplaced"] if m["id"] == "a")
+
+    r = c.post("/api/place/regroup", json={"base_revision": rev, "ids": ["a"], "create_lane": True})
+    assert r.status_code == 200, r.text
+    placed = r.json()["placed"]
+    assert len(placed) == 1 and placed[0]["id"] == "a", r.json()
+    assert placed[0]["state"] == "final", "挪一下不该把定稿改成草稿"
+    assert c.get("/api/digest").json()["counts"]["misplaced"] == 0, "挪完还报不符"
+    assert md_digest(vault) == before, "挪画布改了 md"
+
+
+@case
+def regroup_开道会压到隔壁的域就明说而不是硬挤():
+    """宁可让人自己拖，也不能为了塞一条新道把旁边的域挤变形——但得说清楚为什么没挪。"""
+    c, vault = client({"nodes/x/a.md": node_md("A", field="甲域"),
+                       "nodes/y/b.md": node_md("B", field="乙域")})
+    rev = get_layout(c)["layout"]["revision"]
+    core.write(vault / "nodes/x/a.md", node_md("A", field="乙域", extra="layer: 理论\n"))
+    index_service.invalidate()
+    groups_before = set(get_layout(c)["layout"]["groups"])
+
+    r = c.post("/api/place/regroup", json={"base_revision": rev, "ids": ["a"], "create_lane": True})
+    assert r.status_code == 200, r.text
+    assert not r.json()["placed"], r.json()
+    assert "压到" in r.json()["skipped"][0]["reason"], r.json()["skipped"]
+    assert set(get_layout(c)["layout"]["groups"]) == groups_before, "拒了还是建了半条道"
+
+
+@case
+def regroup_批量扫描不会凭空长出道来():
+    """create_lane 默认关着：批量时凭空长出几条道，会把人手排的画布搅乱。"""
+    c, vault = client({"nodes/x/a.md": node_md("A", field="甲域"),
+                       "nodes/y/b.md": node_md("B", field="乙域")})
+    rev = get_layout(c)["layout"]["revision"]
+    core.write(vault / "nodes/x/a.md", node_md("A", field="乙域", extra="layer: 理论\n"))
+    index_service.invalidate()
+    groups_before = set(get_layout(c)["layout"]["groups"])
+    r = c.post("/api/place/regroup", json={"base_revision": rev})
+    assert r.status_code == 200, r.text
+    assert set(get_layout(c)["layout"]["groups"]) == groups_before, "批量扫描长出了新分组"
 
 
 @case
@@ -2447,55 +2508,199 @@ def years_提议不碰md():
     assert r.json()["backup"], "写回没留备份"
 
 
-@case
-def llm_会变的那块system排在缓存断点之后():
-    """system 里混着会变的东西（节点数、项目列表），而教练的用途就是聊着聊着把新点入库。
-
-    断点要是打在整段结尾，图谱一动，前面 9000 字静态指令（工具表、关系类型表、教练侧写）
-    全部作废重买。所以会变的那块单独排最后，断点打在它前面。
-    """
+def _fake_anthropic(messages, model="claude-haiku-4-5-20251001", fail_first=None):
+    """替掉 _post_json 跑一次 _chat_anthropic，返回每次实际发出去的 payload。"""
     import llm_backend as backend
-    seen: dict = {}
+    sent: list = []
 
     def fake_post(url, headers, payload):
-        seen["payload"] = payload
+        sent.append(payload)
+        if fail_first and len(sent) == 1:
+            raise SystemExit(fail_first)
         return {"content": [{"type": "text", "text": "好"}], "usage": {"input_tokens": 1}}
 
     original = backend._post_json
     backend._post_json = fake_post
     try:
-        backend._chat_anthropic([{"role": "system", "content": "静态指令" * 20},
-                                 {"role": "system", "content": "84 个节点、44 条关系"},
-                                 {"role": "user", "content": "在么"}],
-                                {"api_key": "k"}, "claude-haiku-4-5-20251001", None)
+        backend._chat_anthropic(messages, {"api_key": "k"}, model, None)
     finally:
         backend._post_json = original
-
-    blocks = seen["payload"]["system"]
-    assert len(blocks) == 2, blocks
-    assert blocks[0]["cache_control"] == {"type": "ephemeral"}, blocks[0]
-    assert "cache_control" not in blocks[1], blocks[1]        # 会变的那块在断点之后
-    assert blocks[1]["text"] == "84 个节点、44 条关系", blocks[1]
+    return sent
 
 
 @case
-def chat_图谱现状单独成一条system而不是混在静态指令里():
-    """节点数一变就会让整条静态 system 作废，所以它必须是**独立的最后一条**。"""
+def llm_会变的那块不进顶层system而是挂在队尾():
+    """顶层 system **整体排在所有 messages 之前**，会变的东西放进去，它一变整段对话全作废。
+
+    第一版把它拆成第二条顶层 system、断点打在两者之间：静态那块保住了，messages 照样全丢。
+    所以现在它是 mid-conversation system message，坐在历史之后，变了只作废它自己。
+    """
+    payload = _fake_anthropic([{"role": "system", "content": "静态指令" * 20},
+                               {"role": "user", "content": "在么"},
+                               {"role": "system", "content": "84 个节点、44 条关系"}])[0]
+
+    blocks = payload["system"]
+    assert len(blocks) == 1, blocks                       # 顶层只剩不会变的那段
+    assert blocks[0]["cache_control"] == {"type": "ephemeral"}, blocks[0]
+    assert "84 个节点" not in blocks[0]["text"], blocks[0]["text"][-60:]
+
+    msgs = payload["messages"]
+    assert [m["role"] for m in msgs] == ["user", "system"], msgs
+    assert msgs[1]["content"] == "84 个节点、44 条关系", msgs[1]
+    # 断点打在最后一条**非 system** 上：会变的那条留在断点之后，它怎么变都不动前面的缓存
+    assert msgs[0]["content"][0]["cache_control"] == {"type": "ephemeral"}, msgs[0]
+    assert "cache_control" not in msgs[1], msgs[1]
+
+
+@case
+def llm_模型不认中途system就折进user重发():
+    """Sonnet 5 不支持 mid-conversation system message（400），Opus 5 支持。
+
+    与其维护一张"哪个模型行"的表（一定会过期），不如撞上 400 再退一步。
+    退化的是安全性和缓存，不是对话本身。
+    """
+    sent = _fake_anthropic([{"role": "system", "content": "静态指令" * 20},
+                            {"role": "user", "content": "在么"},
+                            {"role": "system", "content": "84 个节点"}],
+                           fail_first="LLM 请求失败 HTTP 400：role 'system' is not supported on this model")
+    assert len(sent) == 2, "没重发"
+    assert [m["role"] for m in sent[1]["messages"]] == ["user"], sent[1]["messages"]
+    assert "<system-reminder>" in str(sent[1]["messages"][0]["content"]), sent[1]["messages"][0]
+    assert "84 个节点" in str(sent[1]["messages"][0]["content"]), sent[1]["messages"][0]
+
+
+@case
+def llm_别的400不重发():
+    """只在报错确实是这件事时才退一步，别把所有 400 都当成它。"""
+    import llm_backend as backend
+    try:
+        _fake_anthropic([{"role": "system", "content": "静态" * 20},
+                         {"role": "user", "content": "在么"},
+                         {"role": "system", "content": "84 个节点"}],
+                        fail_first="LLM 请求失败 HTTP 400：credit balance is too low")
+    except SystemExit as exc:
+        assert "credit balance" in str(exc), exc
+    else:
+        raise AssertionError("余额不足也重发了一次，白花钱")
+
+
+@case
+def chat_图谱现状挂在队尾而不是混在静态指令里():
+    """节点数一变就会让它**前面**的一切作废，所以它必须排在最后一条。
+
+    放顶层 system（哪怕单独成块）也不行：顶层 system 整体排在 messages 之前，
+    它一变整段对话的缓存跟着全丢。只有挂在 messages 队尾才只作废它自己。
+    """
     c, vault, _ = with_inbox_node()
     original, seen = stub_chat(["好"])
     try:
         c.post("/api/chat", json={"messages": [{"role": "user", "content": "在么"}]})
     finally:
         restore_chat(original)
-    systems = [m for m in seen[0] if m["role"] == "system"]
-    assert len(systems) == 2, [m["role"] for m in seen[0]]
-    assert "图谱现在是什么样" in systems[1]["content"], systems[1]["content"][:80]
-    assert "个节点" in systems[1]["content"], systems[1]["content"][:80]
+    roles = [m["role"] for m in seen[0]]
+    assert roles == ["system", "user", "system"], roles      # 静态在头、会变的在尾
+    assert "图谱现在是什么样" in seen[0][-1]["content"], seen[0][-1]["content"][:80]
+    assert "个节点" in seen[0][-1]["content"], seen[0][-1]["content"][:80]
     # 静态那条里**提到**这一节是可以的（口径提示词要给模型指路），
     # 不能有的是**渲染出来的数据本身**——断言盯的是数据，不是措辞
-    assert "（建新项目前先看这里）" not in systems[0]["content"], "项目列表会变，不该留在静态那条"
-    assert "条关系，其中" not in systems[0]["content"], "节点数/边数会变，不该留在静态那条"
-    assert seen[0][2]["role"] == "user", [m["role"] for m in seen[0]]
+    assert "（建新项目前先看这里）" not in seen[0][0]["content"], "项目列表会变，不该留在静态那条"
+    assert "条关系，其中" not in seen[0][0]["content"], "节点数/边数会变，不该留在静态那条"
+
+
+@case
+def chat_第二轮的前缀和第一轮逐字节一样():
+    """**缓存命中的全部前提就这一条**，这里钉的是它，不是"断点打在哪"。
+
+    断点位置对、前缀却每轮都变，一样是零命中——而且不报错、答案全对，只有账单在涨
+    （2026-09-16 烧掉 $8，2026-09-17 把图谱快照挪到队尾又复发过一次）。
+    这条用例就是那两次的护栏：**第二轮必须原样包含第一轮的全部内容，位置都不许动。**
+
+    线上"真的命中了"由账本的读写比回答（core.usage.cache_health），测试够不着真实 API。
+    """
+    import llm_backend as backend
+    c, vault, _ = with_inbox_node()
+
+    def 发一轮(msgs):
+        original, seen = stub_chat(["好"])
+        try:
+            c.post("/api/chat", json={"messages": msgs, "session": "s1", "stance": "教练"})
+        finally:
+            restore_chat(original)
+        return backend._hoist_system(seen[0])       # 按 claude-cli 的口径摆好再比
+
+    第一轮 = 发一轮([{"role": "user", "content": "第一句"}])
+    第二轮 = 发一轮([{"role": "user", "content": "第一句"},
+                  {"role": "assistant", "content": "好"},
+                  {"role": "user", "content": "第二句"}])
+
+    n = len(第一轮)
+    assert len(第二轮) > n, "第二轮反而没变长，测试自己搭错了"
+    for i, (a, b) in enumerate(zip(第一轮, 第二轮)):
+        assert a["role"] == b["role"], f"第 {i} 条角色变了：{a['role']} → {b['role']}"
+        assert a["content"] == b["content"], (
+            f"第 {i} 条（{a['role']}）内容变了，前缀断在这里 —— "
+            f"要么系统提示里混进了会变的东西，要么有块被挤到了别的位置。\n"
+            f"  第一轮：{a['content'][:120]}\n  第二轮：{b['content'][:120]}")
+
+    # 两轮的顶层 system 也必须逐字节一样：它排在所有 messages 之前，一变整段全作废
+    assert backend._split_system(第一轮)[0] == backend._split_system(第二轮)[0], "顶层 system 变了"
+
+
+@case
+def llm_单轮功能的低比值不该报警():
+    """出题 / 关系建议那类一问一答每次都是新前缀，比值天然贴着 0。
+
+    把它们算进告警，等于天天在响——**一个天天响的告警等于没有告警**，
+    真正该看的多轮对话反而被淹了。
+    """
+    from core import usage as usage_mod
+    log = {"totals": {"cache_read_tokens": 100, "cache_write_tokens": 100},
+           "by_op": {"suggest": {"calls": 9, "cache_read_tokens": 0, "cache_write_tokens": 9000},
+                     "chat-教练": {"calls": 9, "cache_read_tokens": 90000, "cache_write_tokens": 9000}}}
+    health = usage_mod.cache_health(log)
+    assert health["ok"], health                      # 单轮的 0 比值不算数
+    assert health["worst"]["op"] == "chat-教练", health
+
+    log["by_op"]["chat-教练"]["cache_read_tokens"] = 9000      # 多轮掉到 1× = 每轮重写
+    assert not usage_mod.cache_health(log)["ok"], "多轮比值掉到 1 了还说健康"
+
+    log["by_op"]["chat-教练"]["calls"] = 2                     # 样本太少的比值没意义
+    assert usage_mod.cache_health(log)["ok"], "才 2 次调用就报警，噪声"
+
+
+@case
+def llm_会变的那块给别的后端要挪回开头():
+    """anthropic 把会变的块留在队尾（mid-conversation system），别的后端不能照抄。
+
+    因为**它会动**：这一轮在队尾，下一轮被新对话挤到中间，消息列表就不再只增不改。
+    claude-cli 的会话续用靠指纹校验前缀，一动就续不上，**白白退回重发全文而且不报错**。
+    这条用例钉的就是那次静默回归。
+    """
+    import llm_backend as backend
+    静态 = {"role": "system", "content": "静态指令"}
+    快照 = {"role": "system", "content": "85 个节点"}
+    第一轮 = backend._hoist_system([静态, {"role": "user", "content": "u1"}, 快照])
+    assert [m["role"] for m in 第一轮] == ["system", "system", "user"], 第一轮
+
+    key = "回归用例"
+    backend.drop_cli_session(key)
+    assert backend._cli_session(key, 第一轮, "m")[0][0] == "--session-id"
+    backend._remember_cli_session(key, 第一轮, "a1")
+
+    第二轮 = backend._hoist_system([静态, {"role": "user", "content": "u1"},
+                                  {"role": "assistant", "content": "a1"},
+                                  {"role": "user", "content": "u2"}, 快照])
+    extra, start = backend._cli_session(key, 第二轮, "m")
+    assert extra[0] == "--resume", (extra, "第二轮没续上 = 又在重发全文")
+    assert start == 4, (start, "续上了却还在重发前面几条")
+
+    # 图谱真变了就该重开：那时候前缀确实不一样了
+    变了 = backend._hoist_system([静态, {"role": "user", "content": "u1"},
+                                {"role": "assistant", "content": "a1"},
+                                {"role": "user", "content": "u2"},
+                                {"role": "system", "content": "86 个节点"}])
+    assert backend._cli_session(key, 变了, "m")[0][0] == "--session-id", "图谱变了还在续旧会话"
+    backend.drop_cli_session(key)
 
 
 @case
@@ -3352,7 +3557,8 @@ def chat_长对话按条数和字数两道闸裁_并且说出来():
     sent = seen[0]
     assert any("没带过来" in (m.get("content") or "") for m in sent), \
         "截断了却没告诉模型，它会默默失忆"
-    assert sent[-1]["content"] == "接着说", "最后一轮必须留着"
+    # 队尾那条是图谱快照（mid-conversation system），最后一句话在它前面
+    assert [m["content"] for m in sent if m["role"] == "user"][-1] == "接着说", "最后一轮必须留着"
     # 短对话不插提醒
     original, seen2 = stub_chat(["好"])
     try:

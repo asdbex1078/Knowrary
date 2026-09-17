@@ -8,7 +8,7 @@ from __future__ import annotations
 import datetime as dt
 import math
 
-from .layout import CELL_H, NODE_H, NODE_W
+from .layout import CELL_H, NODE_H, NODE_W, PAD_BOT, PAD_TOP, PAD_X
 from .parser import UNLAYERED
 
 FAMILY_WEIGHT = {"演化": 3.0, "依赖": 2.0, "结构": 2.0, "对照": 1.0, "弱关联": 0.5}
@@ -193,6 +193,56 @@ def plan_growth(gid: str, layout: dict, extra: float = CELL_H) -> dict[str, floa
         grown[cur] = candidate["h"]
         cur = box.get("parent")
     return grown or None
+
+
+def plan_new_lane(parent: str, name: str, layout: dict,
+                  gid: str | None = None) -> tuple[str, dict, dict] | None:
+    """在 `parent` 里开一块新的子域（那一层的道）。返回 (gid, 新框, 父框高度补丁)。
+
+    **什么时候需要**：`field` 改了、该去的那条道却还没建。实盘的例子是把「图灵测试」
+    的 field 改成 AI —— AI 下面只有 硬件 / 体系结构 / 系统软件 / AI应用，没有「理论」，
+    于是它只能留在原地，而没有任何地方会提醒你少了一条道。
+
+    摆法跟着**这个父框已有的排法走**，不自作主张：
+    · 兄弟是一摞泳道（各自满宽、上下码）→ 新的也满宽，接在最后一条下面；
+    · 兄弟是并排的块 → 右边还塞得下就并上去，塞不下就另起一行，落在左边。
+
+    只往下长父框，**不动任何已有的框**。长出来会压到父框的兄弟就整体作废（返回 None）——
+    宁可让人自己拖，也不能为了塞一条新道把旁边的域挤变形。
+    """
+    groups = layout.get("groups", {})
+    box = groups.get(parent)
+    if not box or any(g.get("name") == name and g.get("parent") == parent for g in groups.values()):
+        return None
+    kids = [g for g in groups.values() if g.get("parent") == parent]
+    gid = gid or f"{parent}--{name}"
+    if gid in groups:
+        gid = f"g-{name}-{len(groups)}"
+
+    inner_x = box["x"] + PAD_X
+    inner_right = box["x"] + box["w"] - PAD_X
+    if not kids:                                   # 头一个子域：铺满内宽
+        lane = {"x": inner_x, "y": box["y"] + PAD_TOP, "w": inner_right - inner_x, "h": CELL_H * 2}
+    elif is_lane_stack(parent, layout):
+        last = max(kids, key=lambda g: g["y"])
+        lane = {"x": last["x"], "y": last["y"] + last["h"] + GAP, "w": last["w"], "h": CELL_H * 2}
+    else:
+        row_y = min(g["y"] for g in kids)          # 并排的块：先看最上面那一行右边还有没有空
+        row = [g for g in kids if abs(g["y"] - row_y) < 1]
+        right = max(g["x"] + g["w"] for g in row)
+        width = min(g["w"] for g in kids)
+        if right + GAP * 2 + width <= inner_right:
+            lane = {"x": right + GAP * 2, "y": row_y, "w": width, "h": max(g["h"] for g in row)}
+        else:                                      # 右边满了：另起一行，落在左边
+            lane = {"x": inner_x, "y": max(g["y"] + g["h"] for g in kids) + GAP * 2,
+                    "w": width, "h": CELL_H * 2}
+
+    lane.update({"name": name, "parent": parent, "collapsed": False, "pinned": None, "color": None})
+    need = (lane["y"] + lane["h"] + PAD_BOT) - (box["y"] + box["h"])
+    grown = plan_growth(parent, layout, extra=need) if need > 0 else {}
+    if need > 0 and grown is None:
+        return None                                # 长出来会压到隔壁的域，宁可不建
+    return gid, lane, grown or {}
 
 
 def is_lane_stack(parent: str | None, layout: dict) -> bool:

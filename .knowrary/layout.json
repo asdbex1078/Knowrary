@@ -1,11 +1,11 @@
 {
   "schema_version": 2,
-  "revision": 18,
-  "updated_at": "2026-09-17T07:13:00Z",
+  "revision": 73,
+  "updated_at": "2026-09-17T15:59:09Z",
   "viewport": {
-    "zoom": 1.2,
-    "cx": 1974.0,
-    "cy": 2460.0
+    "zoom": 0.6,
+    "cx": 201.0,
+    "cy": 2962.0
   },
   "groups": {
     "g-Agent": {
@@ -121,7 +121,7 @@
       "x": 0.0,
       "y": 2308.0,
       "w": 2000.0,
-      "h": 296.0,
+      "h": 1028.0,
       "parent": null,
       "collapsed": false,
       "pinned": null,
@@ -157,7 +157,7 @@
       "x": 920.0,
       "y": 2352.0,
       "w": 488.0,
-      "h": 128.0,
+      "h": 228.0,
       "parent": "g-AI",
       "collapsed": false,
       "pinned": null,
@@ -168,8 +168,20 @@
       "name": "AI应用",
       "x": 1488.0,
       "y": 2352.0,
-      "w": 488.0,
-      "h": 228.0,
+      "w": 504.0,
+      "h": 336.0,
+      "parent": "g-AI",
+      "collapsed": false,
+      "pinned": null,
+      "color": null,
+      "doc": null
+    },
+    "g-AI--理论": {
+      "name": "理论",
+      "x": 24.0,
+      "y": 2612.0,
+      "w": 248.0,
+      "h": 500.0,
       "parent": "g-AI",
       "collapsed": false,
       "pinned": null,
@@ -289,13 +301,13 @@
       "anchor": null
     },
     "图灵测试": {
-      "x": 528.0,
-      "y": 684.0,
+      "x": 76.0,
+      "y": 2673.0,
       "w": 196.0,
       "h": 64.0,
-      "group": "g-计算机系统--理论",
+      "group": "g-AI--理论",
       "state": "final",
-      "placedAt": null,
+      "placedAt": "2026-09-17",
       "anchor": null
     },
     "数字逻辑": {
@@ -1006,6 +1018,56 @@
       "group": "g-AI--AI应用",
       "state": "final",
       "placedAt": null,
+      "anchor": null
+    },
+    "Prompt-Caching": {
+      "x": 1206.0,
+      "y": 2504.0,
+      "w": 196.0,
+      "h": 64.0,
+      "group": "g-AI--系统软件",
+      "state": "final",
+      "placedAt": "2026-09-17",
+      "anchor": "KV-Cache"
+    },
+    "MHA": {
+      "x": 1772.0,
+      "y": 2591.0,
+      "w": 196.0,
+      "h": 64.0,
+      "group": "g-AI--AI应用",
+      "state": "final",
+      "placedAt": "2026-09-17",
+      "anchor": "GQA"
+    },
+    "达特茅斯会议": {
+      "x": 72.0,
+      "y": 2808.0,
+      "w": 196.0,
+      "h": 64.0,
+      "group": "g-AI--理论",
+      "state": "final",
+      "placedAt": "2026-09-17",
+      "anchor": "图灵测试"
+    },
+    "阈值逻辑单元": {
+      "x": 56.0,
+      "y": 2920.0,
+      "w": 196.0,
+      "h": 64.0,
+      "group": "g-AI--理论",
+      "state": "final",
+      "placedAt": "2026-09-17",
+      "anchor": null
+    },
+    "感知器": {
+      "x": 48.0,
+      "y": 3016.0,
+      "w": 196.0,
+      "h": 64.0,
+      "group": "g-AI--理论",
+      "state": "final",
+      "placedAt": "2026-09-17",
       "anchor": null
     }
   },

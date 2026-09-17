@@ -160,10 +160,15 @@ def post_place(req: PlaceRequest) -> PlaceResult:
 
 @app.post("/api/place/regroup", response_model=PlaceResult)
 def post_regroup(body: dict) -> PlaceResult:
-    """把落在父框里的草稿挪进它那一层的泳道（`layer` 是后加的字段，早先的点没有）。"""
+    """把节点挪进它那一层的道。
+
+    不给 `ids` = 批量扫一遍，只动草稿；给了 `ids` = 人点了具体某个点，定稿的也挪。
+    `create_lane` 为真时，目标那条道不存在就现开一条。
+    """
     try:
         return curation.regroup(vault_path(), int(body.get("base_revision") or 0),
-                                only_draft=body.get("only_draft", True))
+                                only_draft=body.get("only_draft", True),
+                                ids=body.get("ids"), create_lane=bool(body.get("create_lane")))
     except RevisionConflict as exc:
         raise HTTPException(status_code=409, detail={
             "message": str(exc), "current_revision": exc.current.revision,
