@@ -23,6 +23,7 @@
 import { computed, nextTick, ref, watch } from 'vue'
 import Icon from '../ui/Icon.vue'
 import Markdown from '../ui/Markdown.vue'
+import { parseDiff } from '../ui/diff.js'
 
 const props = defineProps({
   busy: { type: Boolean, default: false },
@@ -357,8 +358,15 @@ function onKey(e) {
                 <span v-if="c.stale" class="dim" style="font-size: 11px">改过了，下面的 diff 还是旧的；直接写入也按改后的算</span>
               </div>
             </div>
-            <pre v-for="f in c.files" :key="f.path" class="cc-diff"><b>{{ f.path }}</b>
-{{ f.diff || '（新文件）' }}</pre>
+            <div v-for="f in c.files" :key="f.path" class="cc-file">
+              <div class="cc-file-head">
+                <b>{{ f.path }}</b>
+                <span v-if="parseDiff(f.diff).isNew" class="chip cc-new">新文件 · 全篇初稿</span>
+              </div>
+              <pre class="cc-diff"><span v-for="(l, k) in parseDiff(f.diff).lines" :key="k"
+                :class="l.cls">{{ l.text }}
+</span></pre>
+            </div>
             <p v-if="c.into" class="dim" style="font-size: 11px; margin: 0 0 6px">
               写入后同时把 <b>{{ c.into.points.join('、') }}</b> 加进
               「{{ c.into.project_name }}·{{ c.into.list_name }}」清单——

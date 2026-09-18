@@ -15,10 +15,9 @@ const props = defineProps({
   status: { type: String, default: 'saved' },
   statusText: { type: String, default: '' },
   theme: { type: String, default: 'light' },
-  has3d: { type: Boolean, default: false },
   busy: { type: Boolean, default: false },
 })
-const emit = defineEmits(['switch-mode', 'switch-project', 'search', 'goto', 'toggle-theme', 'reload', 'rebuild', 'open-3d', 'help'])
+const emit = defineEmits(['switch-mode', 'switch-project', 'search', 'goto', 'toggle-theme', 'reload', 'rebuild', 'help', 'settings'])
 
 const q = ref('')
 const cursor = ref(0)
@@ -129,6 +128,11 @@ defineExpose({ focus: () => inputEl.value?.focus() })
       <span class="dot" />{{ statusText }}
     </span>
 
+    <!-- 设置是常用入口，不该藏进「更多」菜单的第三层 -->
+    <button class="icon-btn" title="设置（复习与出题、画布、外观）" @click="emit('settings')">
+      <Icon name="grid" :size="16" />
+    </button>
+
     <Popover align="end" :width="212">
       <template #trigger="{ toggle, open }">
         <button class="icon-btn" :class="{ active: open }" title="更多" @click="toggle">
@@ -139,9 +143,6 @@ defineExpose({ focus: () => inputEl.value?.focus() })
         <button class="pop-item" @click="emit('toggle-theme'); close()">
           <Icon :name="theme === 'dark' ? 'sun' : 'moon'" :size="15" />
           {{ theme === 'dark' ? '切到浅色' : '切到深色' }}
-        </button>
-        <button v-if="has3d" class="pop-item" @click="emit('open-3d'); close()">
-          <Icon name="cube" :size="15" />3D 总览<span class="hint">新页面</span>
         </button>
         <div class="pop-sep" />
         <button class="pop-item" :disabled="busy" @click="emit('reload'); close()">

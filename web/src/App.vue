@@ -1,7 +1,7 @@
 <script setup>
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, shallowRef, watch } from 'vue'
 import {
-  fetchCalendar, fetchDigest, postSyncToGlobal, fetchDue, fetchProjects, putProjects, postPlanPropose, fetchToday, fetchUsage, postMerge, postRename, postQuiz, postQuizDiagnose, postQuizGrade, fetchOpenQuiz, dropOpenQuiz, postRegroup, fetchHealth, fetchIndex, fetchInbox, fetchLayout, fetchNode,
+  fetchSettings, putSettings, fetchCalendar, fetchDigest, postSyncToGlobal, fetchDue, fetchProjects, putProjects, postPlanPropose, fetchToday, fetchUsage, postMerge, postRename, postQuiz, postQuizDiagnose, postQuizGrade, fetchOpenQuiz, dropOpenQuiz, postRegroup, fetchIndex, fetchInbox, fetchLayout, fetchNode,
   patchLayout, postChanges, postPlace, postReview, postSuggest, postSummarize, postYearsPropose,
 } from './api.js'
 import AppHeader from './components/AppHeader.vue'
@@ -33,6 +33,7 @@ import CalendarPanel from './panels/CalendarPanel.vue'
 import StatsPanel from './panels/StatsPanel.vue'
 import ChatView from './views/ChatView.vue'
 import MorningBrief from './components/MorningBrief.vue'
+import SettingsDialog from './components/SettingsDialog.vue'
 import ProjectsPanel from './panels/ProjectsPanel.vue'
 import ImagePicker from './panels/ImagePicker.vue'
 import TimelinePanel from './panels/TimelinePanel.vue'
@@ -95,7 +96,6 @@ function loadFamilies() {
 }
 const edgesShown = ref(0)
 const aggShown = ref(0)
-const has3d = ref(false)          // 服务端有 web3d 构建产物时才显示 3D 入口
 const inboxCount = ref(0)
 const inboxItems = shallowRef([])        // GET /api/inbox：索引里有、画布上还没有的节点
 const digest = shallowRef(null)          // GET /api/digest：欠账清单
@@ -204,6 +204,13 @@ let projectPicked = false                // 是否已经定过当前项目（避
 // 换成布尔值的话，跨天要靠别的机制去重置，日期本身就是最简单的那把钥匙。
 const BRIEF_KEY = 'knowrary-brief-day'
 const briefOn = ref(false)
+// 设置：**只有"后端也要读"的开关在这里**（复习要不要出现）。
+// 画布 / 外观那些仍旧各自记在 localStorage——它们是"这台机器上怎么看图"。
+// 先给默认值（全开）：接口还没回来的那一瞬间不该先闪一下"关着"的样子。
+const settings = ref({ review_enabled: true, review_brief: true, review_marks: true })
+const settingsOn = ref(false)
+const reviewOn = computed(() => !!settings.value.review_enabled)
+const reviewMarks = computed(() => reviewOn.value && settings.value.review_marks !== false)
 
 const syncing = ref(false)
 const calendar = shallowRef(null)     // 学习日历：全派生，每次打开重算
@@ -483,7 +490,6 @@ async function load() {
   } else {
     layout = first
   }
-  fetchHealth().then((h) => { has3d.value = !!h.web3d }).catch(() => {})
   indexDoc.value = index
   layoutDoc.value = layout.layout
   revision.value = layout.layout.revision
@@ -2072,6 +2078,9 @@ async function refreshInbox() {
 }
 
 async function refreshDue() {
+  // 关掉「到期标记」时连拉都不拉：画布金点和活动栏角标读的是同一个 dueIds，
+  // 清空它一处就够，不用在两个组件里各写一遍判断
+  if (!reviewMarks.value) { dueList.value = []; dueIds.value = new Set(); return }
   try {
     const data = await fetchDue()
     dueList.value = data.due
@@ -2316,6 +2325,7 @@ async function switchProject(id) {
 function maybeBrief() {
   const day = todayList.value?.generated_at
   if (!day || briefOn.value) return
+  if (!reviewOn.value || settings.value.review_brief === false) return
   try {
     if (localStorage.getItem(BRIEF_KEY) === day) return
     localStorage.setItem(BRIEF_KEY, day)
@@ -2524,6 +2534,7 @@ const projectLevel = computed(() => plansDoc.value?.projects?.[currentProject.va
 
 /** 没交卷的那份题：出题花过钱，关掉对话框、刷新页面都不该让它蒸发。 */
 async function refreshOpenQuiz() {
+  if (!reviewOn.value) { openQuiz.value = null; return }   // 关着就别再提"你还有一份没交卷"
   try { openQuiz.value = (await fetchOpenQuiz()).quiz || null } catch { openQuiz.value = null }
 }
 
@@ -2840,6 +2851,28 @@ function applyThemeNow() {
   if (graph.value) rebuildGraph()
 }
 
+/** 拉一次设置。失败就保持默认（全开）——设置读不到不该让整个库变成"什么都关着"。 */
+async function loadSettings() {
+  try { settings.value = await fetchSettings() } catch { /* 保持默认 */ }
+}
+
+/** 改设置：先落盘再按新值刷新受影响的东西。
+ *
+ * **不做乐观更新**：这几个开关会改变教练的系统提示词（服务端拼），
+ * 界面先变、盘上没落的话，你以为关了、教练还在催，比慢半拍难受得多。
+ */
+async function saveSettings(patch) {
+  try {
+    settings.value = await putSettings(patch)
+  } catch (err) {
+    setBanner(`设置没存上：${err.message}`, 'error')
+    return
+  }
+  await Promise.all([refreshDue(), refreshToday(), refreshOpenQuiz()])
+  render()                                   // 到期金点要跟着一起消失 / 回来
+  setBanner(reviewOn.value ? '复习与出题已打开' : '复习与出题已关掉：教练也不会再提了', 'success')
+}
+
 function toggleTheme() {
   theme.value = theme.value === 'dark' ? 'light' : 'dark'
   applyThemeNow()
@@ -2887,9 +2920,6 @@ async function reload() {
   await load()
 }
 
-function open3d() {
-  window.location.href = './3d/'
-}
 
 watch(visible, () => {
   try {
@@ -2964,6 +2994,8 @@ onMounted(async () => {
     await load()
     // 开场就把这两份拉回来：双态要项目进度，晨间简报要今日清单。
     // 都是本地接口、都不调 LLM，不 await 是为了不挡首屏。
+    // 设置要先回来：今日清单、到期角标、简报都按它决定要不要拉
+    await loadSettings()
     refreshPlans()
     refreshToday()
     refreshOpenQuiz()
@@ -2996,14 +3028,22 @@ onBeforeUnmount(() => {
 <template>
   <div class="app">
     <AppHeader ref="headerEl" :mode="mode" :hits="searchHits" :status="status" :status-text="statusText"
-               :theme="theme" :has3d="has3d" :busy="placing"
+               :theme="theme" :busy="placing"
                :projects="plansDoc?.projects || {}" :project="currentProject"
-               @switch-mode="switchMode" @switch-project="switchProject"
+               @switch-mode="switchMode" @switch-project="switchProject" @settings="settingsOn = true"
                @search="search = $event" @goto="gotoNode"
                @toggle-theme="toggleTheme" @reload="reload" @rebuild="rebuildGraph('手动重建')"
-               @open-3d="open3d" @help="showHelp = true" />
+               @help="showHelp = true" />
 
     <div class="workbench">
+      <SettingsDialog v-if="settingsOn" :settings="settings" :snap="snap" :avoid-nodes="avoidNodes"
+                      :auto-lod="autoLod" :aggregate="aggregate" :show-map="showMap" :theme="theme"
+                      @close="settingsOn = false" @set="saveSettings"
+                      @toggle-snap="toggleSnap" @toggle-avoid="toggleAvoid" @toggle-map="toggleMap"
+                      @toggle-lod="autoLod = !autoLod; render()"
+                      @toggle-aggregate="aggregate = !aggregate; expanded = new Set(); render()"
+                      @toggle-theme="toggleTheme" />
+
       <MorningBrief v-if="briefOn" :today="todayList" @close="briefOn = false"
                     @start="briefStart" @quiz="briefOn = false; startQuiz($event)" />
 

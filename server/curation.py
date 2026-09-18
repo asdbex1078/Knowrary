@@ -220,15 +220,29 @@ def digest(vault: Path) -> dict:
     return core.build_digest(vault, index, layout.model_dump())
 
 
+REVIEW_KINDS = ("wrong", "due")      # 今日清单里属于"复习"的两类
+
+
 def coach_today(vault: Path, project: str | None = None) -> CoachToday:
     """今日清单：错题 > 到期 > 未建 > 只有壳 > Inbox。纯排序，不调 LLM，不写任何文件。
 
     `project` 只过滤**建设项**：到期复习和错题是全局的——同一个大脑，
     不会因为今天在看别的项目就不用复习（重构方案 §1）。
+
+    设置里关掉复习时，**错题和到期在这里就被摘掉**，不只是界面不画：
+    今日清单同时是教练 `today` 工具的数据源，只在前端过滤的话，
+    界面安静了、教练一调工具照样看见一串欠账，然后开口催。
     """
     index, layout = load_pair(vault)
-    return CoachToday(**core.build_today(vault, index, layout.model_dump(),
-                                         core.load_projects(vault), project=project))
+    today = core.build_today(vault, index, layout.model_dump(),
+                             core.load_projects(vault), project=project)
+    if not core.review_on(vault):
+        today["items"] = [it for it in today["items"] if it.get("kind") not in REVIEW_KINDS]
+        counts = dict(today.get("counts") or {})
+        for kind in REVIEW_KINDS:
+            counts.pop(kind, None)
+        today["counts"] = counts
+    return CoachToday(**today)
 
 
 def review_due(vault: Path) -> dict:

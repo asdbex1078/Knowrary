@@ -846,6 +846,28 @@ class CacheHealth(Strict):
     ok: bool = True
 
 
+class SettingsRead(Strict):
+    """偏好设置（`.knowrary/settings.json`，第六份契约）。
+
+    **只放"后端也要读"的开关**：教练的系统提示词在服务端拼，复习开关只存浏览器的话，
+    界面安静了教练照样每轮开场看 today、结尾出 check 题。
+    纯看图偏好（主题、对齐吸附、小地图、周边一跳）仍留 localStorage——那是"这台机器怎么看图"。
+    """
+
+    schema_version: int = 1
+    review_enabled: bool = True        # 总闸：关掉后复习 / 出题在界面和教练那儿都不主动出现
+    review_brief: bool = True          # 晨间简报
+    review_marks: bool = True          # 画布到期金点、活动栏「今日」角标
+
+
+class SettingsPatch(Strict):
+    """只改给到的那几个；没给的保持原样（前端不必把整份设置背回来）。"""
+
+    review_enabled: bool | None = None
+    review_brief: bool | None = None
+    review_marks: bool | None = None
+
+
 class UsageRead(Strict):
     date: str
     today: UsageBucket

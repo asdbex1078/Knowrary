@@ -8,6 +8,7 @@
 import { computed, reactive, ref, watch } from 'vue'
 import Drawer from '../ui/Drawer.vue'
 import Icon from '../ui/Icon.vue'
+import { parseDiff } from '../ui/diff.js'
 
 const props = defineProps({
   selected: { type: Object, default: null },
@@ -92,13 +93,6 @@ function describeChange(c) {
 
 const CHANGE_ICON = { add_edge: 'plus', remove_edge: 'trash', update_edge: 'pencil' }
 
-/** diff 按行上色：+ 绿、- 红，其余保持正文色。 */
-function diffLines(text) {
-  return String(text || '').split('\n').map((line) => ({
-    text: line,
-    cls: line.startsWith('+') ? 'add' : line.startsWith('-') ? 'del' : '',
-  }))
-}
 </script>
 
 <template>
@@ -373,7 +367,7 @@ function diffLines(text) {
                   <div class="section-head">将改动 <span class="count">{{ changePreview.files.length }}</span> 个文件</div>
                   <div v-for="f in changePreview.files" :key="f.path" style="margin-bottom: 10px">
                     <div class="dim" style="font-size: 11.5px">{{ f.path }}</div>
-                    <pre class="code diff scroll-thin"><span v-for="(l, i) in diffLines(f.diff)" :key="i"
+                    <pre class="code diff scroll-thin"><span v-for="(l, i) in parseDiff(f.diff).lines" :key="i"
                       :class="l.cls">{{ l.text }}
 </span></pre>
                   </div>

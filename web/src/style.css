@@ -580,6 +580,53 @@ select:disabled { cursor: not-allowed; opacity: .5; }
 .switch-row .sub { display: block; font-size: 11.5px; color: var(--text-3); }
 .switch-row input { position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; opacity: 0; pointer-events: none; }
 
+/* ---------- 设置弹窗 ---------- */
+/* 蒙层挡住整屏：设置是"停下来改一下"的动作，不该让人一边改一边还能拖画布 */
+.set-mask {
+  position: fixed; inset: 0; z-index: 120;
+  background: rgba(16, 20, 28, .38); backdrop-filter: blur(2px);
+  display: grid; place-items: center;
+  animation: fade-in .12s var(--ease) both;
+}
+.set-dialog {
+  display: flex; width: min(620px, calc(100vw - 32px)); height: min(430px, calc(100vh - 80px));
+  background: var(--surface); border: 1px solid var(--line);
+  border-radius: var(--r-lg); box-shadow: var(--sh-3); overflow: hidden;
+  animation: ctx-in .14s var(--ease) both;
+}
+/* 左边一条分类，右边内容：三组开关摞成一长条要滚，分开之后每屏都看得完 */
+.set-nav {
+  width: 152px; flex: none; padding: 10px 8px;
+  background: var(--surface-2); border-right: 1px solid var(--line);
+  display: flex; flex-direction: column; gap: 2px;
+}
+.set-brand {
+  display: flex; align-items: center; gap: 7px;
+  padding: 4px 8px 10px; font-size: 12px; font-weight: 600; color: var(--text-2);
+}
+.set-tab {
+  display: flex; align-items: center; gap: 8px;
+  padding: 7px 9px; border: none; background: transparent; color: var(--text-2);
+  border-radius: var(--r-xs); font-size: 12.5px; text-align: left; cursor: pointer;
+  transition: background .12s var(--ease), color .12s var(--ease);
+}
+.set-tab:hover { background: var(--surface); color: var(--text); }
+.set-tab.on { background: var(--accent-soft); color: var(--accent-text); font-weight: 500; }
+.set-main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+.set-main header {
+  display: flex; align-items: center; gap: 8px;
+  padding: 11px 10px 11px 14px; border-bottom: 1px solid var(--line);
+}
+.set-main header .who { font-weight: 600; font-size: 13px; }
+/* 标题旁边那句灰字写的是"这组存在哪"：跟着 vault 的和只存本机的混在一个弹窗里，
+   不说清楚，以后换台机器就会问"为什么有的设置跟过来了、有的没有" */
+.set-main header .dim { font-size: 11.5px; color: var(--text-3); }
+.set-main header .icon-btn { margin-left: auto; }
+.set-body { padding: 10px 8px; overflow: auto; }
+/* 总闸关掉时，下面两个子开关连同说明一起压暗——它们此刻不起作用，但留着能看见"还有这两项" */
+.switch-row.muted { opacity: .45; cursor: default; }
+.switch-row.muted:hover { background: transparent; }
+
 /* 复选：自绘方块 */
 .check {
   width: 15px; height: 15px; flex: none; border-radius: 4px;
@@ -664,8 +711,14 @@ pre.code {
   font: 11.5px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace;
   white-space: pre-wrap; word-break: break-all; color: var(--text-2);
 }
-pre.diff .add { color: var(--ok); }
-pre.diff .del { color: var(--danger); }
+/* diff 上色：整行底色 + 文字色，增删块连成片才看得出边界。
+   span 是 inline 的，底色只铺到行尾；display:block 让它占满一整行。 */
+/* 行比容器宽时会横向滚动：min-width 撑满可视宽，width:max-content 让底色跟到行尾，
+   不然长行滚出去那段就没底色了。 */
+pre.diff span, .cc-diff span { display: block; width: max-content; min-width: 100%; }
+pre.diff .add, .cc-diff .add { color: var(--ok); background: var(--ok-soft); }
+pre.diff .del, .cc-diff .del { color: var(--danger); background: var(--danger-soft); }
+pre.diff .hunk, .cc-diff .hunk { color: var(--text-3); }
 
 /* 空态 */
 .empty {
@@ -886,6 +939,7 @@ kbd.key {
   animation: ctx-in .12s var(--ease) both;
 }
 @keyframes ctx-in { from { opacity: 0; transform: scale(.97) translateY(-3px); } }
+@keyframes fade-in { from { opacity: 0; } }
 .ctx-head { padding: 5px 9px 6px; border-bottom: 1px solid var(--line); margin: -2px -6px 5px; }
 .ctx-head .t { display: block; font-weight: 600; font-size: 12.5px; }
 .ctx-head .s { display: block; font-size: 11px; color: var(--text-3); margin-top: 1px; }
@@ -1230,11 +1284,17 @@ kbd.key {
 }
 .cc-head { display: flex; align-items: center; gap: 6px; font-size: 11.5px; font-weight: 600;
   color: var(--text-2); margin-bottom: 6px; }
+.cc-file { margin: 0 0 6px; }
+.cc-file-head {
+  display: flex; align-items: center; gap: 6px; margin: 0 0 3px;
+  font-size: 11px; color: var(--text-1); font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.cc-new { background: var(--ok-soft); color: var(--ok); font-size: 10.5px; padding: 1px 7px; }
 .cc-diff {
-  margin: 0 0 6px; padding: 7px 8px; border-radius: 7px; background: var(--bg-2); overflow-x: auto;
+  margin: 0; padding: 7px 0; border-radius: 7px; background: var(--bg-2); overflow-x: auto;
   font-size: 10.5px; line-height: 1.55; color: var(--text-2); white-space: pre;
 }
-.cc-diff b { color: var(--text-1); }
+.cc-diff span { padding: 0 8px; }
 .cc-acts { display: flex; align-items: center; gap: 8px; }
 /* 变更卡上的编辑区：desc 一行、body 一块，写入前定稿 */
 .cc-edit { display: flex; flex-direction: column; gap: 8px; margin: 0 0 8px; }
