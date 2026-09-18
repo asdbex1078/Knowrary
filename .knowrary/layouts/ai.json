@@ -1,17 +1,17 @@
 {
   "schema_version": 2,
-  "revision": 82,
-  "updated_at": "2026-09-18T04:03:42Z",
+  "revision": 140,
+  "updated_at": "2026-09-18T09:40:20Z",
   "viewport": {
-    "zoom": 0.8,
-    "cx": 806.0,
-    "cy": 341.0
+    "zoom": 0.577,
+    "cx": 99.0,
+    "cy": 225.0
   },
   "groups": {},
   "nodes": {
     "GPU": {
       "x": 72.0,
-      "y": 92.0,
+      "y": 0.0,
       "w": 196.0,
       "h": 64.0,
       "group": null,
@@ -307,6 +307,56 @@
       "group": null,
       "state": "ghost",
       "placedAt": null,
+      "anchor": null
+    },
+    "符号主义": {
+      "x": -168.0,
+      "y": 192.0,
+      "w": 176.0,
+      "h": 52.0,
+      "group": null,
+      "state": "final",
+      "placedAt": "2026-09-18",
+      "anchor": null
+    },
+    "连接主义": {
+      "x": -296.0,
+      "y": 432.0,
+      "w": 176.0,
+      "h": 52.0,
+      "group": null,
+      "state": "final",
+      "placedAt": "2026-09-18",
+      "anchor": null
+    },
+    "Hodgkin-Huxley模型": {
+      "x": -288.0,
+      "y": 576.0,
+      "w": 176.0,
+      "h": 52.0,
+      "group": null,
+      "state": "final",
+      "placedAt": "2026-09-18",
+      "anchor": null
+    },
+    "Hebb学习规则": {
+      "x": -960.0,
+      "y": 264.0,
+      "w": 176.0,
+      "h": 52.0,
+      "group": null,
+      "state": "final",
+      "placedAt": "2026-09-18",
+      "anchor": null
+    },
+    "Adaline": {
+      "x": -456.0,
+      "y": -144.0,
+      "w": 176.0,
+      "h": 52.0,
+      "group": null,
+      "state": "final",
+      "placedAt": "2026-09-18",
       "anchor": null
     }
   },
