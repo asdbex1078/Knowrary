@@ -35,10 +35,31 @@ const props = defineProps({
   tidied: { type: Object, default: null },        // 梳理游标：{ upto, turns, at }，没梳理过是 null
   fresh: { type: Number, default: 0 },            // 游标之后还有几条没梳理
 })
-const emit = defineEmits(['send', 'stop', 'apply', 'apply-project', 'apply-points', 'goto',
+const emit = defineEmits(['send', 'stop', 'apply', 'preview', 'apply-project', 'apply-points', 'goto',
                           'new-session', 'pick-session', 'drop-focus', 'toggle-graph', 'stance',
                           'rename-session', 'close'])
 
+
+/**
+ * 变更卡上能改的字段：desc 是显示层（画布上就这一句），body 是笔记层（整篇落盘）。
+ * 模型写的只是初稿，**写入前在卡上改**比写完再去详情面板改省一步，而且 desc 还没上图。
+ * 只开放正文类字段；边和 layer/year 这些改错会带偏整张图，仍然让它重出一张卡。
+ */
+const KIND_LABEL = { create_node: '新建', update_body: '整篇替换', append_body: '尾部追加', update_frontmatter: '改摘要' }
+function editable(card) {
+  return (card.changes || []).filter((ch) =>
+    ch.type === 'create_node' || ch.type === 'update_body' || ch.type === 'append_body'
+    || (ch.type === 'update_frontmatter' && ch.fields && 'desc' in ch.fields))
+}
+function toggleEdit(card) {
+  card.editing = !card.editing
+  // 新建节点模型可能没给 body（只写了 desc）：给个空正文框，人可以自己补
+  for (const ch of editable(card)) {
+    if (ch.type === 'create_node') { ch.fields = ch.fields || {}; if (ch.body == null) ch.body = '' }
+  }
+}
+// 改过之后 diff 是旧的，真写入时服务端按 changes 现算，所以只是提示，不挡写入
+function touch(card) { card.stale = true }
 
 /** 折叠条上直接写清楚这一轮都动了什么，不点开也知道它去查了图还是出了题。 */
 function traceTools(m) {
@@ -68,8 +89,9 @@ const TIDY = `把我们刚才这一段对话梳理一遍，整理进我的知识
    这次聊出了笔记里没有的东西，就用 append_body 往正文尾部补一段，
    带个 \`##\` 小标题（比如「## 和 X 的区别」）。只补这次真聊清楚的那点，别重写整篇；
 3. 还没建的：create_node，正文按格式说明里那个骨架写——它是什么、为什么需要它、
-   怎么运作、容易和什么搞混、我当时是怎么想通的。**我没懂的地方写「没懂：…」留着**，别替我编圆。
-   带上 layer 和 year（有确切年份才填）；
+   怎么运作、容易和什么搞混、我当时是怎么想通的，最后一节「线头」列出聊到但没建成节点的
+   人物 / 学科 / 相邻概念并抄进 tags。**我没懂的地方写「没懂：…」留着**，别替我编圆；
+   但我说过的人物、年份、出处一个都别精简掉。带上 layer 和 year（有确切年份才填）；
 4. 概念之间这次聊到的关系，用 add_edge 连上。
 
 一次 propose_changes 出一张卡就行，别拆成好几条消息。没什么值得入库的就直说。`
@@ -303,6 +325,27 @@ function onKey(e) {
             <div class="cc-head">
               <Icon name="file" :size="13" />提议写入 {{ c.files.length }} 个文件
               <span v-if="c.applied" class="chip m-mastered">已写入</span>
+              <button v-if="!c.applied && editable(c).length" class="btn subtle tiny" style="margin-left: auto"
+                      :title="c.editing ? '收起编辑框' : '写入前先改摘要 / 正文'" @click="toggleEdit(c)">
+                <Icon :name="c.editing ? 'x' : 'pencil'" :size="12" />{{ c.editing ? '收起' : '改一改' }}
+              </button>
+            </div>
+            <!-- 写入前改：模型给的是初稿，desc（显示层）和 body（笔记层）都能在这儿定稿 -->
+            <div v-if="c.editing && !c.applied" class="cc-edit">
+              <div v-for="(ch, k) in editable(c)" :key="k" class="cc-edit-one">
+                <div class="cc-edit-head"><b>{{ ch.source }}</b><span class="dim">{{ KIND_LABEL[ch.type] }}</span></div>
+                <input v-if="ch.fields && 'desc' in ch.fields || ch.type === 'create_node'"
+                       v-model="ch.fields.desc" type="text" placeholder="一句话摘要（显示层，画布上就这一句）"
+                       @input="touch(c)">
+                <textarea v-if="ch.type !== 'update_frontmatter'" v-model="ch.body" class="scroll-thin" rows="12"
+                          placeholder="正文（笔记层，整篇落盘；## 关系 由系统管，别写）" @input="touch(c)"></textarea>
+              </div>
+              <div class="cc-acts">
+                <button class="btn subtle tiny" :disabled="busy" @click="emit('preview', { card: c, i, j })">
+                  <Icon name="refresh" :size="12" />重算 diff
+                </button>
+                <span v-if="c.stale" class="dim" style="font-size: 11px">改过了，下面的 diff 还是旧的；直接写入也按改后的算</span>
+              </div>
             </div>
             <pre v-for="f in c.files" :key="f.path" class="cc-diff"><b>{{ f.path }}</b>
 {{ f.diff || '（新文件）' }}</pre>

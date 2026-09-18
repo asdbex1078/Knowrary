@@ -1,33 +1,20 @@
 {
   "schema_version": 2,
-  "revision": 67,
-  "updated_at": "2026-09-17T16:08:36Z",
+  "revision": 82,
+  "updated_at": "2026-09-18T04:03:42Z",
   "viewport": {
-    "zoom": 0.675,
-    "cx": 505.0,
-    "cy": 382.0
+    "zoom": 0.8,
+    "cx": 806.0,
+    "cy": 341.0
   },
-  "groups": {
-    "g-list-0": {
-      "name": "AI技术发展史",
-      "x": 48.0,
-      "y": 48.0,
-      "w": 1008.0,
-      "h": 868.0,
-      "parent": null,
-      "collapsed": false,
-      "pinned": null,
-      "color": null,
-      "doc": null
-    }
-  },
+  "groups": {},
   "nodes": {
     "GPU": {
       "x": 72.0,
       "y": 92.0,
       "w": 196.0,
       "h": 64.0,
-      "group": "g-list-0",
+      "group": null,
       "state": "final",
       "placedAt": null,
       "anchor": null
@@ -37,7 +24,7 @@
       "y": 92.0,
       "w": 196.0,
       "h": 64.0,
-      "group": "g-list-0",
+      "group": null,
       "state": "final",
       "placedAt": null,
       "anchor": null
@@ -47,7 +34,7 @@
       "y": 92.0,
       "w": 196.0,
       "h": 64.0,
-      "group": "g-list-0",
+      "group": null,
       "state": "final",
       "placedAt": null,
       "anchor": null
@@ -57,7 +44,7 @@
       "y": 92.0,
       "w": 196.0,
       "h": 64.0,
-      "group": "g-list-0",
+      "group": null,
       "state": "ghost",
       "placedAt": null,
       "anchor": null
@@ -67,19 +54,19 @@
       "y": 192.0,
       "w": 196.0,
       "h": 64.0,
-      "group": "g-list-0",
+      "group": null,
       "state": "ghost",
       "placedAt": null,
       "anchor": null
     },
     "混合精度与量化": {
-      "x": 312.0,
+      "x": 336.0,
       "y": 192.0,
       "w": 196.0,
       "h": 64.0,
-      "group": "g-list-0",
-      "state": "ghost",
-      "placedAt": null,
+      "group": null,
+      "state": "final",
+      "placedAt": "2026-09-18",
       "anchor": null
     },
     "符号主义与连接主义": {
@@ -87,7 +74,7 @@
       "y": 192.0,
       "w": 196.0,
       "h": 64.0,
-      "group": "g-list-0",
+      "group": null,
       "state": "ghost",
       "placedAt": null,
       "anchor": null
@@ -97,7 +84,7 @@
       "y": 192.0,
       "w": 196.0,
       "h": 64.0,
-      "group": "g-list-0",
+      "group": null,
       "state": "ghost",
       "placedAt": null,
       "anchor": null
@@ -107,7 +94,7 @@
       "y": 292.0,
       "w": 196.0,
       "h": 64.0,
-      "group": "g-list-0",
+      "group": null,
       "state": "ghost",
       "placedAt": null,
       "anchor": null
@@ -117,7 +104,7 @@
       "y": 292.0,
       "w": 196.0,
       "h": 64.0,
-      "group": "g-list-0",
+      "group": null,
       "state": "ghost",
       "placedAt": null,
       "anchor": null
@@ -127,7 +114,7 @@
       "y": 292.0,
       "w": 196.0,
       "h": 64.0,
-      "group": "g-list-0",
+      "group": null,
       "state": "ghost",
       "placedAt": null,
       "anchor": null
@@ -137,7 +124,7 @@
       "y": 292.0,
       "w": 196.0,
       "h": 64.0,
-      "group": "g-list-0",
+      "group": null,
       "state": "ghost",
       "placedAt": null,
       "anchor": null
@@ -147,7 +134,7 @@
       "y": 392.0,
       "w": 196.0,
       "h": 64.0,
-      "group": "g-list-0",
+      "group": null,
       "state": "ghost",
       "placedAt": null,
       "anchor": null
@@ -157,7 +144,7 @@
       "y": 392.0,
       "w": 196.0,
       "h": 64.0,
-      "group": "g-list-0",
+      "group": null,
       "state": "ghost",
       "placedAt": null,
       "anchor": null
@@ -167,7 +154,7 @@
       "y": 392.0,
       "w": 196.0,
       "h": 64.0,
-      "group": "g-list-0",
+      "group": null,
       "state": "ghost",
       "placedAt": null,
       "anchor": null
@@ -177,7 +164,7 @@
       "y": 392.0,
       "w": 196.0,
       "h": 64.0,
-      "group": "g-list-0",
+      "group": null,
       "state": "ghost",
       "placedAt": null,
       "anchor": null
@@ -187,7 +174,7 @@
       "y": 492.0,
       "w": 196.0,
       "h": 64.0,
-      "group": "g-list-0",
+      "group": null,
       "state": "final",
       "placedAt": null,
       "anchor": null
@@ -197,7 +184,7 @@
       "y": 808.0,
       "w": 196.0,
       "h": 64.0,
-      "group": "g-list-0",
+      "group": null,
       "state": "ghost",
       "placedAt": null,
       "anchor": null
@@ -207,7 +194,7 @@
       "y": 492.0,
       "w": 196.0,
       "h": 64.0,
-      "group": "g-list-0",
+      "group": null,
       "state": "ghost",
       "placedAt": null,
       "anchor": null
@@ -217,7 +204,7 @@
       "y": 504.0,
       "w": 196.0,
       "h": 64.0,
-      "group": "g-list-0",
+      "group": null,
       "state": "ghost",
       "placedAt": null,
       "anchor": null
@@ -227,7 +214,7 @@
       "y": 592.0,
       "w": 196.0,
       "h": 64.0,
-      "group": "g-list-0",
+      "group": null,
       "state": "ghost",
       "placedAt": null,
       "anchor": null
@@ -237,7 +224,7 @@
       "y": 496.0,
       "w": 196.0,
       "h": 64.0,
-      "group": "g-list-0",
+      "group": null,
       "state": "ghost",
       "placedAt": null,
       "anchor": null
@@ -247,7 +234,7 @@
       "y": 672.0,
       "w": 196.0,
       "h": 64.0,
-      "group": "g-list-0",
+      "group": null,
       "state": "ghost",
       "placedAt": null,
       "anchor": null
@@ -257,7 +244,7 @@
       "y": 592.0,
       "w": 196.0,
       "h": 64.0,
-      "group": "g-list-0",
+      "group": null,
       "state": "ghost",
       "placedAt": null,
       "anchor": null
@@ -267,7 +254,7 @@
       "y": 692.0,
       "w": 196.0,
       "h": 64.0,
-      "group": "g-list-0",
+      "group": null,
       "state": "ghost",
       "placedAt": null,
       "anchor": null
@@ -277,7 +264,7 @@
       "y": 692.0,
       "w": 196.0,
       "h": 64.0,
-      "group": "g-list-0",
+      "group": null,
       "state": "ghost",
       "placedAt": null,
       "anchor": null
@@ -287,7 +274,7 @@
       "y": 808.0,
       "w": 196.0,
       "h": 64.0,
-      "group": "g-list-0",
+      "group": null,
       "state": "ghost",
       "placedAt": null,
       "anchor": null
@@ -297,7 +284,7 @@
       "y": 692.0,
       "w": 196.0,
       "h": 64.0,
-      "group": "g-list-0",
+      "group": null,
       "state": "ghost",
       "placedAt": null,
       "anchor": null
@@ -307,7 +294,7 @@
       "y": 792.0,
       "w": 196.0,
       "h": 64.0,
-      "group": "g-list-0",
+      "group": null,
       "state": "ghost",
       "placedAt": null,
       "anchor": null
@@ -317,7 +304,7 @@
       "y": 792.0,
       "w": 196.0,
       "h": 64.0,
-      "group": "g-list-0",
+      "group": null,
       "state": "ghost",
       "placedAt": null,
       "anchor": null

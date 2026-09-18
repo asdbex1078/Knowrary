@@ -2,7 +2,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, shallowRef, watch } from 'vue'
 import {
   fetchCalendar, fetchDigest, postSyncToGlobal, fetchDue, fetchProjects, putProjects, postPlanPropose, fetchToday, fetchUsage, postMerge, postRename, postQuiz, postQuizDiagnose, postQuizGrade, fetchOpenQuiz, dropOpenQuiz, postRegroup, fetchHealth, fetchIndex, fetchInbox, fetchLayout, fetchNode,
-  patchLayout, postChanges, postPlace, postReview, postSuggest, postYearsPropose,
+  patchLayout, postChanges, postPlace, postReview, postSuggest, postSummarize, postYearsPropose,
 } from './api.js'
 import AppHeader from './components/AppHeader.vue'
 import ActivityBar from './components/ActivityBar.vue'
@@ -24,6 +24,7 @@ import GroupBar from './components/GroupBar.vue'
 import MiniMap from './components/MiniMap.vue'
 import ToastHost from './ui/ToastHost.vue'
 import Icon from './ui/Icon.vue'
+import ImportPanel from './panels/ImportPanel.vue'
 import InboxTray from './panels/InboxTray.vue'
 import DigestPanel from './panels/DigestPanel.vue'
 import StudyPanel from './panels/StudyPanel.vue'
@@ -50,7 +51,7 @@ import { communityLayout, compareWithGroups } from './canvas/communities.js'
 import { mindmapLayout, toPatch } from './canvas/layouts.js'
 import { GROUP_LAYOUTS, layoutGroup, membersOf } from './canvas/groupLayout.js'
 import { buildMenu } from './canvas/menus.js'
-import { FAMILIES, HEAD_MAX as GROUP_HEAD, setTheme } from './canvas/shapes.js'
+import { FAMILIES, HEAD_MAX as GROUP_HEAD, NODE_H, NODE_W, setTheme } from './canvas/shapes.js'
 
 const canvasEl = ref(null)
 const headerEl = ref(null)
@@ -367,6 +368,12 @@ function layoutName() {
 const projectIds = computed(() =>
   new Set(Object.keys(plansProgress.value?.[currentProject.value]?.all?.points || {})))
 const plansProgress = shallowRef({})     // 每个知识点的掌握度，服务端现算
+/** 清单里有、这块项目画布上却没有的点：清单后来加的点、或被「从画布上去掉」的。只在项目画布上有意义。 */
+const missingPoints = computed(() => {
+  if (mode.value !== 'project' || !currentProject.value) return []
+  const on = layoutDoc.value?.nodes || {}
+  return [...projectIds.value].filter((id) => !on[id])
+})
 const plansSchedules = shallowRef({})     // 时间账：装不装得下、每阶段排到哪天、落后几个；同样现算
 
 // —— 阶段 12：对话式教练 ——
@@ -935,7 +942,13 @@ function focus(nodeId) {
 function menuCtx() {
   return { index: indexDoc.value, layout: layoutDoc.value, dueIds: dueIds.value,
            pathFrom: pathFrom.value, pathHit: !!pathHit.value, neighbor: neighbor.value,
-           focusGroup: focusGroup.value, showMap: showMap.value, nodeName }
+           focusGroup: focusGroup.value, showMap: showMap.value, nodeName, selectedIds: selectedNodeIds() }
+}
+
+/** 画布上当前框选 / 多选的知识点 id（Selection 插件只让 kg-node 进选区）。 */
+function selectedNodeIds() {
+  const cells = graph.value?.getSelectedCells?.() || []
+  return cells.filter((c) => c.shape === 'kg-node').map((c) => c.id)
 }
 
 function openMenu(kind, id, ev) {
@@ -985,6 +998,9 @@ const MENU_ACTIONS = {
   'pin-expanded': (gid) => setPinned(gid, layoutDoc.value.groups[gid]?.pinned === 'expanded' ? null : 'expanded'),
   'pin-auto': (gid) => setPinned(gid, null),
   rename: (gid) => renameGroup(gid),
+  dissolve: (gid) => dissolveGroup(gid),
+  summarize: (gid, at) => summarizeGroup(gid, at),
+  'summarize-selected': (_id, at) => summarizeSelected(selectedNodeIds(), at),
   ...Object.fromEntries(Object.keys(GROUP_LAYOUTS).map(
     (kind) => [`inner-${kind}`, (gid) => runGroupLayout(gid, kind)])),
   'exit-focus': () => exitGroup(),
@@ -1088,6 +1104,45 @@ function renameGroup(gid) {
 }
 
 /**
+ * 解散一个框：框没了，里面的东西一个不动——节点、子簇、便签都留在原坐标，只是不再归它。
+ *
+ * 为项目画布去父框而生（2026-09-18）：老项目画布还带着"一份清单一个框"的 g-list-N，
+ * 用这一下拆掉。全局图上也能用，等于"只删框不删内容"——删框从来不该连带删知识点的位置。
+ * 里面的东西改归外一层：有父框就归父框，没有就自由；子簇的 parent 同理。
+ */
+function dissolveGroup(gid) {
+  const box = layoutDoc.value.groups[gid]
+  if (!box || !writable()) return
+  if (!dirtyBefore) dirtyBefore = clone(layoutDoc.value)
+  const outer = box.parent || null
+  const groups = { ...layoutDoc.value.groups }
+  delete groups[gid]
+  for (const [cid, g] of Object.entries(groups)) {
+    if (g.parent !== gid) continue
+    groups[cid] = { ...g, parent: outer }
+    patcher.value.queueGroup(cid, { parent: outer })
+  }
+  const nodes = { ...layoutDoc.value.nodes }
+  let kept = 0
+  for (const [nid, n] of Object.entries(nodes)) {
+    if (n.group !== gid) continue
+    nodes[nid] = { ...n, group: outer }
+    patcher.value.queueNode(nid, { group: outer })
+    kept++
+  }
+  layoutDoc.value = { ...layoutDoc.value, groups, nodes }
+  for (const kind of Object.keys(LIST_KEY)) {
+    saveList(kind, (item) => (item.group === gid ? { ...item, group: outer } : item))
+  }
+  patcher.value.queueGroup(gid, null)
+  if (focusGroup.value === gid) exitGroup()
+  if (activeGroup.value === gid) { activeGroup.value = null; groupBarAt.value = null }
+  render()
+  const where = outer ? `，改归「${groups[outer]?.name}」` : ''
+  setBanner(`已解散「${box.name}」：${kept} 个知识点留在原位${where}`, 'success')
+}
+
+/**
  * 新建簇：落点就是左上角，给一个能装下两行卡片的初始大小，拖进去的节点自动归它。
  * 传 parent 就是在某个域里开子域——层次化的"看得见"那一半（另一半是结构族关系边）。
  */
@@ -1173,6 +1228,79 @@ function bindDoc(gid, nodeId) {
             'success')
 }
 
+// ---- 概括节点（第六步）：框里的点 / 框选的点 → 一个上位节点 + 「包含」边 ----
+
+/** 把一个框里的点概括成一个节点：模型起草，预填进新建对话框，建完绑成这个框的总览。 */
+async function summarizeGroup(gid, at) {
+  const g = layoutDoc.value?.groups?.[gid]
+  if (!g) return
+  const ids = Object.entries(layoutDoc.value.nodes).filter(([, n]) => n.group === gid).map(([id]) => id)
+  await openSummarizeDialog(ids, { name: g.name.replace(/（\d+）$/, ''), asDoc: gid, group: gid, groupName: g.name,
+                                   at: at || { x: g.x + 40, y: g.y + 60 } })
+}
+
+/** 框选的几个点概括成一个节点：不属于任何框时可勾「顺手建个框把它们圈起来」。 */
+async function summarizeSelected(ids, at) {
+  if (ids.length < 2) { setBanner('先按住 Shift 框选至少两个点', 'error'); return }
+  const groups = new Set(ids.map((id) => layoutDoc.value.nodes[id]?.group || null))
+  const common = groups.size === 1 ? [...groups][0] : null
+  await openSummarizeDialog(ids, { name: '', group: common, groupName: common ? layoutDoc.value.groups[common]?.name : '',
+                                   at, wrapOption: true, wrap: !common })
+}
+
+/**
+ * 让模型起草，再开新建对话框。起草失败（没配 LLM、超时）也照样开——只是正文留空自己写：
+ * 概括是人的判断，模型只是先垫一稿，垫不出来不该挡着人建节点。
+ */
+async function openSummarizeDialog(ids, extra) {
+  const base = { field: majority(extra.group, (n) => n?.field) || majority(null, (n) => n?.field) || '',
+                 dir: majority(extra.group, (n) => dirOf(n)) || nodeDirs.value[0] || 'nodes',
+                 contains: ids, ...extra }
+  setBanner(`正在让模型概括 ${ids.length} 个点…（一次模型调用，几秒到几十秒）`, 'info')
+  status.value = 'saving'
+  try {
+    const draft = await postSummarize({ node_ids: ids, name: extra.name || null })
+    creating.value = { ...base, name: draft.name || extra.name, desc: draft.desc, body: draft.body,
+                       layer: draft.layer || '', year: draft.year || null, contains: draft.children, aiDraft: true }
+    setBanner('草稿已预填，带「AI 建议」标记的都是模型写的，改成你自己的判断再创建', 'success')
+  } catch (err) {
+    creating.value = { ...base, aiDraft: false }
+    setBanner(`模型没起出草稿（${err.body?.detail?.message || err.body?.detail || err.message}），先自己写吧`, 'error')
+  } finally {
+    status.value = 'saved'
+  }
+}
+
+/** 按几个点的包围盒建一个框并把它们归进去；返回 gid。 */
+function wrapNodesInGroup(ids, name) {
+  const boxes = ids.map((id) => layoutDoc.value.nodes[id]).filter(Boolean)
+  if (!boxes.length) return null
+  const x0 = Math.min(...boxes.map((b) => b.x)) - 24
+  const y0 = Math.min(...boxes.map((b) => b.y)) - 44
+  const x1 = Math.max(...boxes.map((b) => b.x + (b.w || NODE_W))) + 24
+  const y1 = Math.max(...boxes.map((b) => b.y + (b.h || NODE_H))) + 24 + NODE_H + 36   // 给概括节点留一行
+  const parent = boxes[0].group || null
+  const gid = `g-${Date.now().toString(36)}`
+  const box = { name, x: Math.round(x0), y: Math.round(y0), w: Math.round(x1 - x0), h: Math.round(y1 - y0),
+                parent, collapsed: false, pinned: null, color: null }
+  if (!dirtyBefore) dirtyBefore = clone(layoutDoc.value)
+  const nodes = { ...layoutDoc.value.nodes }
+  for (const id of ids) {
+    if (!nodes[id]) continue
+    nodes[id] = { ...nodes[id], group: gid }
+    patcher.value.queueNode(id, { group: gid })
+  }
+  layoutDoc.value = { ...layoutDoc.value, groups: { ...layoutDoc.value.groups, [gid]: box }, nodes }
+  patcher.value.queueGroup(gid, box)
+  return gid
+}
+
+/** 框里给概括节点落脚的位置：框底部那一行的左边。 */
+function groupSpot(gid) {
+  const g = layoutDoc.value.groups[gid]
+  return { x: g.x + 24 + 80, y: g.y + g.h - NODE_H - 24 + 26 }
+}
+
 /** 新建总览文档：名字默认跟域同名，默认落在 fields/（规范 2：领域总览住这儿）。 */
 function openDocDialog(gid, at) {
   const g = layoutDoc.value?.groups?.[gid]
@@ -1234,22 +1362,24 @@ async function createNode(form) {
   creating.value = null
   status.value = 'saving'
   try {
+    const contains = form.contains || []
     const res = await writeChanges([{
       type: 'create_node', source: form.id, path: `${form.dir}/${form.id}.md`,
       fields: { name: form.name, field: form.field, desc: form.desc,
                 ...(form.year ? { year: form.year } : {}),
                 ...(form.layer ? { layer: form.layer } : {}),
                 learned: new Date().toISOString().slice(0, 10) },
-    }])
-    await placeNew([form.id], spot)
-    // 在项目画布 / 项目对话下新建的点，**自动归到这个项目的清单**——
-    // 不加的话节点建出来了、项目进度却不认它（清单只按 id 引用）。
-    // 比"建完再校验它属不属于本项目"直接：建的时候就归属。
-    if (currentProject.value && layoutName() === currentProject.value) {
-      await addToList({ project: currentProject.value, list: 0, points: [form.id] })
-    }
+      ...(form.body ? { body: form.body } : {}),
+    // 概括节点：同一批里给每个子节点连一条「包含」边——写回通道支持给刚建的节点挂边，
+    // 不用等索引刷新再发第二次请求（中间那一刻图上多一个孤岛）
+    }, ...contains.map((child) => ({ type: 'add_edge', source: form.id, relation: '包含', target: child }))])
+    // 勾了「顺手建个框」：先按子节点的包围盒建框、把它们归进去，再让新点落在框里
+    const wrapGid = form.wrap && contains.length ? wrapNodesInGroup(contains, form.name) : null
+    const spotForPlace = wrapGid ? { group: wrapGid, at: groupSpot(wrapGid) } : spot
+    await placeNew([form.id], spotForPlace)
     await reloadIndex()
     if (spot?.asDoc) bindDoc(spot.asDoc, form.id)
+    else if (wrapGid) bindDoc(wrapGid, form.id)
     status.value = 'saved'
     setBanner(`已新建 ${res.files[0]?.path || form.id}`, 'success')
     gotoNode(form.id)
@@ -1264,9 +1394,105 @@ async function createNode(form) {
 /** 新节点落到右键的那个点上；不在任何域里就交给服务端按领域找位置。
  *  **一律落 draft（金色虚线），不直接 final**：位置是机器按邻居投票猜的，得由人确认
  *  （设计文档 4.1「程序只写 draft、只在分组内、不动 final」）。 */
+/**
+ * 项目画布上的落位不走 `/api/place`：那个接口只写**全局图**、也只往分组框里塞，
+ * 而项目画布 2026-09-18 起没有框。以前项目模式下新建一个点会拿项目 revision 去打全局图
+ * （必 409、被吞掉），再把全局 layout 读回来顶掉项目画布——点建出来了，画布却换了一张。
+ *
+ * 这里直接把坐标写进项目 layout（和拖拽同一条补丁通道）：落在鼠标点，没有就落视口中央；
+ * 松手处在人自己建的框里就归那个框。原来是幽灵占位的，原地转成草稿，进正常的 draft → final 流程。
+ * 顺手把点归进项目清单——项目画布只画清单里的点，不归就看不见。
+ */
+/**
+ * 把清单里还没上画布的点停到右下角当"待学区"：没建的画幽灵、建了的落草稿。
+ * 初始布局本来就把幽灵铺在右下角（core.build_project_layout），这是它的增量版——
+ * 清单后来加的点不会自己长出幽灵，这一下补上。不自动补：「从画布上去掉」是人的决定，
+ * 每次刷新又长回来等于不让人去掉。
+ */
+function parkMissing() {
+  const ids = missingPoints.value
+  if (!ids.length) return
+  const built = new Set(indexDoc.value.nodes.filter((n) => !n.virtual).map((n) => n.id))
+  const n = parkNodes(ids, (id) => (built.has(id) ? 'draft' : 'ghost'))
+  if (n) setBanner(`已把 ${n} 个点停到右下角：没建的是幽灵，建了的是草稿`, 'success')
+}
+
+/**
+ * 把一批点停到画布右下角，状态由 `stateOf(id)` 决定（ghost / draft）。已经在画布上的跳过。
+ * 初始布局、「放到右下角」、导入落位三处共用：右下角就是这块画布的"待学 / 待归位"区。
+ */
+function parkNodes(ids, stateOf) {
+  const fresh = ids.filter((id) => !layoutDoc.value.nodes[id])
+  if (!fresh.length || !writable()) return 0
+  if (!dirtyBefore) dirtyBefore = clone(layoutDoc.value)
+  const box = contentBBox(layoutDoc.value)
+  const x0 = box ? Math.round(box.x + box.width) + 120 : 80
+  const y0 = box ? Math.round(box.y + box.height) - NODE_H : 80
+  const cols = Math.max(1, Math.min(4, Math.ceil(Math.sqrt(fresh.length))))
+  const today = new Date().toISOString().slice(0, 10)
+  const nodes = { ...layoutDoc.value.nodes }
+  fresh.forEach((id, i) => {
+    const state = stateOf(id)
+    const entry = { x: x0 + (i % cols) * (NODE_W + 44), y: y0 + Math.floor(i / cols) * (NODE_H + 36),
+                    w: NODE_W, h: NODE_H, group: null, state,
+                    placedAt: state === 'ghost' ? null : today, anchor: null }
+    nodes[id] = entry
+    patcher.value.queueNode(id, entry)
+  })
+  layoutDoc.value = { ...layoutDoc.value, nodes }
+  render()
+  return fresh.length
+}
+
+/**
+ * 导入写入之后的落位——项目下：认领的点原地从幽灵转草稿，其余新点停右下角，并全部补进清单；
+ * 全局：走放置接口按邻居投票找位置，放不下的进 Inbox。补充过的老节点只刷索引，位置不动。
+ */
+async function onImported({ result, born, claimed, enriched }) {
+  try {
+    await load()
+    if (layoutName()) {
+      const rest = born.filter((id) => !claimed.includes(id))
+      if (claimed.length) await placeLocal(claimed, null)
+      parkNodes(rest, () => 'draft')
+      if (currentProject.value && born.length) await addToList({ project: currentProject.value, list: 0, points: born })
+    } else if (born.length) {
+      await placeNew(born, null)
+    }
+    const where = layoutName() ? `${claimed.length} 个落在幽灵原位、${born.length - claimed.length} 个停到右下角`
+                               : '新点按建议放上全局图，放不下的在 Inbox'
+    setBanner(`导入完成：写入 ${result.files.length} 个文件，${where}`
+              + (enriched.length ? `，补充了 ${enriched.join('、')}` : '')
+              + (result.pending.length ? `，${result.pending.length} 条边待审` : ''), 'success')
+    if (born.length === 1) gotoNode(born[0])
+  } catch (err) {
+    setBanner(`导入已写入，但落位失败：${err.message}`, 'error')
+  }
+}
+
+async function placeLocal(ids, at) {
+  const spot = at ? { x: Math.round(at.x), y: Math.round(at.y) } : viewportCenter()
+  const gid = innermostGroupAt(spot.x, spot.y)
+  const today = new Date().toISOString().slice(0, 10)
+  const nodes = { ...layoutDoc.value.nodes }
+  ids.forEach((id, i) => {
+    const cur = nodes[id]
+    if (cur && cur.state !== 'ghost') return
+    const box = cur ? { ...cur, state: 'draft', placedAt: today }
+                    : { x: spot.x, y: spot.y + i * (NODE_H + 36), w: NODE_W, h: NODE_H,
+                        group: gid, state: 'draft', placedAt: today, anchor: null }
+    nodes[id] = box
+    patcher.value.queueNode(id, cur ? { state: 'draft', placedAt: today } : box)
+  })
+  layoutDoc.value = { ...layoutDoc.value, nodes }
+  if (currentProject.value) await addToList({ project: currentProject.value, list: 0, points: ids })
+  render()
+}
+
 async function placeNew(ids, spot) {
   const list = Array.isArray(ids) ? ids : [ids]
   if (!list.length) return
+  if (layoutName()) return placeLocal(list, spot?.at)
   await patcher.value.flush()
   const body = { base_revision: revision.value, ids: list, state: 'draft' }
   if (spot?.group) {
@@ -1455,6 +1681,7 @@ async function deleteEdge(edgeId) {
 /** 目标还在 Inbox 里就先放上画布，不然刚建的关系没有线可看。 */
 async function ensurePlaced(id) {
   if (layoutDoc.value.nodes[id]) return
+  if (layoutName()) return placeLocal([id], null)
   await patcher.value.flush()
   try {
     await postPlace({ base_revision: revision.value, ids: [id] })
@@ -1765,7 +1992,8 @@ async function place(body, label) {
     await load()
     const skipped = res.skipped.length ? `，${res.skipped.length} 个没放下（${res.skipped[0].reason}）` : ''
     const grown = res.grown_groups.length ? `，${res.grown_groups.length} 个分组框往下长了一行` : ''
-    setBanner(`${label}：放上 ${res.placed.length} 个草稿${grown}${skipped}`,
+    const made = res.created_groups?.length ? `，新开了「${res.created_groups.map((g) => layoutDoc.value.groups[g]?.name || g).join('、')}」域框` : ''
+    setBanner(`${label}：放上 ${res.placed.length} 个草稿${made}${grown}${skipped}`,
               res.placed.length ? 'success' : 'error')
     if (res.placed.length === 1) gotoNode(res.placed[0].id)
   } catch (err) {
@@ -1778,15 +2006,30 @@ async function place(body, label) {
 }
 
 const placeOne = (item) => place({ ids: [item.id] }, `放置「${item.name}」`)
+/** 画布上还没有这个领域的框：服务端在最下面开一个同名顶层框再放进去（加法，不动已有内容）。 */
+const placeWithNewGroup = (item) => place({ ids: [item.id], create_field_group: true },
+                                          `建「${item.field}」域框并放入「${item.name}」`)
+
+/** Inbox 里的零边节点：不在画布上，gotoNode 跳不过去；直接把它选中、开检查器、要一轮建议。 */
+function suggestForInbox(item) {
+  selected.value = describe(item.id)
+  inspectorHidden.value = false
+  fetchSuggestions(item.id)
+}
 const placeAll = () => place({ ids: inboxItems.value.map((i) => i.id) }, '全部按建议放置')
 
 /** 从 Inbox 拖到画布：落点由鼠标决定，落在哪个分组框里就归哪个组。 */
-function onCanvasDrop(ev) {
+async function onCanvasDrop(ev) {
   const id = ev.dataTransfer?.getData('text/knowrary-node')
   if (!id) return
   ev.preventDefault()
   const g = graph.value
   const p = g.clientToLocal(ev.clientX, ev.clientY)
+  if (layoutName()) {                          // 项目画布没有父框：松手在哪儿就落哪儿
+    await placeLocal([id], { x: p.x - 90, y: p.y - 30 })
+    setBanner(`已把「${id}」放到项目画布上，并归进这个项目的清单`, 'success')
+    return
+  }
   const gid = innermostGroupAt(p.x, p.y)
   if (!gid) {
     setBanner('松手的位置不在任何分组框里——拖到某个分组框内，或用条目上的按钮放置', 'error')
@@ -1980,12 +2223,28 @@ function briefStart(item) {
 }
 
 
+/** 卡上改过摘要 / 正文之后「重算 diff」：dry_run 一次，卡片上的 diff 换成改后的。
+ *  和真写入走同一个 preview，所以看到什么就落什么。 */
+async function previewChatCard({ card, i, j }) {
+  chatBusy.value = true
+  try {
+    const res = await writeChanges(card.changes, { dryRun: true })
+    Object.assign(chatLog.value[i].cards[j], { files: res.files, stale: false })
+    setBanner('')
+  } catch (err) {
+    setBanner(`改法过不了校验：${err.body?.detail?.message || err.body?.detail || err.message}`, 'error')
+  } finally {
+    chatBusy.value = false
+  }
+}
+
 /** 变更卡上的「写入」：走的仍然是 /api/changes 这唯一入口，和详情面板一模一样。 */
 async function applyChatCard({ card, i, j }) {
   chatBusy.value = true
   try {
     const res = await writeChanges(card.changes)
-    chatLog.value[i].cards[j].applied = true
+    // 卡上改过的话 diff 是旧的：换成真写下去的那份，留档里看到的就是落盘的样子
+    Object.assign(chatLog.value[i].cards[j], { applied: true, editing: false, stale: false, files: res.files })
     await load()
     // 学完之后图谱自动长出来（重构方案 §4）：新建的点自动上画布，落 draft 等人定稿。
     // 不这么做的话它只会掉进 Inbox，还得自己去点「放进去」。
@@ -2558,10 +2817,13 @@ onMounted(async () => {
     // 历史视图：布局是一次算定的，游标停在哪由 upto 决定——排查"点该亮没亮"只看这两个
     get histPlan() { return histPlan.value },
     get histActive() { return histActiveIds() },
-    // 往对话里塞一条假回复：图文渲染（Markdown / mermaid）不调模型也能验
-    fakeReply(text) {
+    // 往对话里塞一条假回复：图文渲染（Markdown / mermaid）不调模型也能验。
+    // 第二个参数塞变更卡（形状同 SSE 的 card 事件）：卡上改摘要 / 正文 → 重算 → 写入这条链路
+    // 除了模型那一步全是真的（/api/changes + 落盘），所以也能不调模型就验。
+    fakeReply(text, cards = []) {
       chatLog.value = [...chatLog.value,
-                       { role: 'assistant', content: text, trace: [], cards: [] }]
+                       { role: 'assistant', content: text, trace: [],
+                         cards: cards.map((c) => ({ ...c, applied: false })) }]
     },
     // 往最后那条回复上接一段，形状和流式增量一模一样。**「图不该被重画」只能这么验**：
     // 生产构建里 `__vueParentComponent` 是不挂的，从 DOM 摸不到这条消息。
@@ -2622,7 +2884,12 @@ onBeforeUnmount(() => {
                    @select="openPanel" @toggle-theme="toggleTheme" />
 
       <InboxTray v-if="panel === 'inbox'" class="inbox" :items="inboxItems" :busy="placing"
-                 @place="placeOne" @place-all="placeAll" @close="panel = ''" />
+                 @place="placeOne" @place-all="placeAll" @place-new-group="placeWithNewGroup"
+                 @suggest="suggestForInbox" @close="panel = ''" />
+      <ImportPanel v-else-if="panel === 'import'" class="study" :fields="fieldNames" :project="currentProject"
+                   :project-name="plansDoc?.projects?.[currentProject]?.name || ''" :project-field="projectField()"
+                   :revision="indexDoc?.revision || 0" :busy="status === 'saving'"
+                   @applied="onImported" @goto="gotoNode" @close="panel = ''" />
       <ProjectsPanel v-else-if="panel === 'plans'" class="study" :doc="plansDoc" :progress="plansProgress"
                      :schedules="plansSchedules" :fields="fieldNames" :project="currentProject"
                      :busy="plansBusy" :proposal="planProposal" :proposing="planProposing"
@@ -2660,7 +2927,7 @@ onBeforeUnmount(() => {
                   :sessions="chatSessions" :session="chatSession" :focus="chatFocus"
                   :stance="chatStance" @stance="setStance"
                   :graph-open="graphPane" :tidied="chatTidied" :fresh="chatFresh"
-                  @send="sendChat" @stop="stopChat" @apply="applyChatCard"
+                  @send="sendChat" @stop="stopChat" @apply="applyChatCard" @preview="previewChatCard"
                   @apply-project="applyProjectCard" @apply-points="applyPointsCard" @goto="gotoNode"
                   @new-session="newChatSession" @pick-session="pickChatSession" @rename-session="renameSession"
                   @drop-focus="chatFocus = null" @toggle-graph="toggleGraphPane"
@@ -2672,6 +2939,10 @@ onBeforeUnmount(() => {
         <!-- 项目画布是工作台，全局图才是成品图：成熟了再并进主图 -->
         <div v-if="mode === 'project' && currentProject" class="sync-bar">
           <span class="dim">项目画布 · 只有这个项目的点，还没建的画成幽灵（点一下就去建）</span>
+          <button v-if="missingPoints.length" class="btn tiny" title="清单里有、画布上没有的点，停到右下角当待学区"
+                  @click="parkMissing">
+            <Icon name="inbox" :size="13" />{{ missingPoints.length }} 个点还没上画布，放到右下角
+          </button>
           <button class="btn primary tiny" :disabled="syncing" title="把已建成、还没上全局图的点放过去（落草稿；坐标不搬）"
                   @click="syncToGlobal">
             <Icon name="arrowRight" :size="13" />{{ syncing ? '同步中…' : '同步到全局' }}

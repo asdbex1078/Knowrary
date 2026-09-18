@@ -35,8 +35,14 @@ export function nodeMenu(id, ctx) {
                      { id: 'drop-ghost', label: '从这块画布上去掉', icon: 'x',
                        hint: '不动清单' }] }
   }
+  const picked = ctx.selectedIds || []
   const items = [{ id: 'relate', label: '建立关系…', icon: 'link', hint: '⌘L' },
                  { id: 'ref', label: '放引用卡', icon: 'bookmark' }]
+  // 框选了好几个点（Shift 拖框 / Shift 点选）再右键其中一个：把它们概括成一个上位节点
+  if (picked.length >= 2 && picked.includes(id)) {
+    items.unshift({ id: 'summarize-selected', label: `把选中的 ${picked.length} 个点概括为一个节点…`,
+                    icon: 'layers', hint: '写 md' }, { sep: true })
+  }
   if (place?.state === 'draft') items.push({ id: 'finalize', label: '定稿', icon: 'check' })
   else if (place) items.push({ id: 'draft', label: '标记为草稿（待关联）', icon: 'pencil' })
   if (ctx.dueIds.has(id)) items.push({ id: 'review', label: '复习过了', icon: 'rotate' })
@@ -81,7 +87,10 @@ export function groupMenu(gid, folded, ctx) {
     { sep: true },
     { id: 'new-node', label: '在这里新建知识点…', icon: 'plus', hint: '写 md' },
     { id: 'new-subgroup', label: '在这里新建子簇', icon: 'grid' },
+    // 框是排版，概括节点是知识：把框里的点概括成一个上位节点（「包含」边），并绑成这个框的总览
+    ...(count >= 2 && !doc ? [{ id: 'summarize', label: `把框里的 ${count} 个点概括成一个节点…`, icon: 'layers', hint: '写 md' }] : []),
     { id: 'rename', label: '重命名这个域', icon: 'pencil' },
+    { id: 'dissolve', label: '解散这个框（里面的点留在原位）', icon: 'x', danger: true },
   )
   // 组内重排：每个域自己挑摆法。子域各摆各的，父域里只剩框，重排它没有意义。
   const inner = !folded && count >= 2 && !hasSubGroups(ctx.layout, gid)

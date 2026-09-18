@@ -12,13 +12,24 @@ import Icon from '../ui/Icon.vue'
 const props = defineProps({
   fields: { type: Array, default: () => [] },     // 现有领域名
   dirs: { type: Array, default: () => [] },       // nodes/ 下现有目录
-  defaults: { type: Object, default: () => ({}) },// { field, dir, groupName, name, asDoc }
+  defaults: { type: Object, default: () => ({}) },// { field, dir, groupName, name, asDoc, desc, body, contains, wrap }
   taken: { type: Set, default: () => new Set() }, // 已存在的 id
 })
 const emit = defineEmits(['create', 'close'])
 
 const name = ref(props.defaults.name || '')
-const desc = ref(props.defaults.planWhy || '')
+const desc = ref(props.defaults.desc || props.defaults.planWhy || '')
+// 概括节点（第六步）：正文由模型起草预填，和 layer / year 一样挂「AI 建议」标记，改过就消失。
+// `contains` 是要被概括的子节点：创建时每个连一条「包含」边。`wrap` = 顺手建一个框把它们圈起来。
+const advisedText = { name: props.defaults.aiDraft ? (props.defaults.name || '') : '',
+                      desc: props.defaults.aiDraft ? (props.defaults.desc || '') : '',
+                      body: props.defaults.aiDraft ? (props.defaults.body || '') : '' }
+const body = ref(props.defaults.body || '')
+const contains = props.defaults.contains || []
+const wrap = ref(!!props.defaults.wrap)
+const aiName = computed(() => !!advisedText.name && name.value === advisedText.name)
+const aiDesc = computed(() => !!advisedText.desc && desc.value === advisedText.desc)
+const aiBody = computed(() => !!advisedText.body && body.value === advisedText.body)
 const field = ref(props.defaults.field || props.fields[0] || '')
 // 抽象层：历史视图按它分泳道，新节点也按它落到对应的那条道里。
 // 不填的话，一个没有边的新点只能落在领域那个大框里——正好在所有泳道之外。
@@ -60,9 +71,10 @@ const ready = computed(() =>
 function submit() {
   if (!ready.value) return
   emit('create', { id: id.value, name: id.value, desc: desc.value.trim(),
-                   field: field.value.trim(), dir: dir.value, thenRelate: thenRelate.value,
+                   field: field.value.trim(), dir: dir.value, thenRelate: thenRelate.value && !contains.length,
                    layer: layer.value || null,
-                   year: /^\d{3,4}$/.test(year.value.trim()) ? Number(year.value.trim()) : null })
+                   year: /^\d{3,4}$/.test(year.value.trim()) ? Number(year.value.trim()) : null,
+                   body: body.value.trim() || null, contains, wrap: wrap.value })
 }
 
 function onKey(ev) {
@@ -81,7 +93,7 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onKey, true))
   <div class="rel-dialog node-dialog">
     <header>
       <Icon name="plus" :size="15" />
-      <span class="who">{{ defaults.asDoc ? '新建总览文档' : '新建知识点' }}</span>
+      <span class="who">{{ contains.length ? `概括 ${contains.length} 个点` : defaults.asDoc ? '新建总览文档' : '新建知识点' }}</span>
       <span v-if="defaults.groupName" class="dim">放进「{{ defaults.groupName }}」</span>
       <button class="icon-btn ghost tiny" title="关闭（Esc）" @click="emit('close')">
         <Icon name="x" :size="14" />
@@ -90,16 +102,31 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onKey, true))
 
     <div class="rel-body">
       <label class="fld">
-        <span class="lb">名称<i class="req">必填</i></span>
+        <span class="lb">名称<i v-if="aiName" class="hot">AI 建议</i><i v-else class="req">必填</i></span>
         <input ref="nameEl" v-model="name" placeholder="例如：控制器" @keydown.enter.prevent="desc || submit()" />
         <span class="hint">它同时是文件名和 id：<code>{{ dir }}/{{ id || '名称' }}.md</code></span>
       </label>
       <p v-if="bad" class="warn-text">{{ bad }}</p>
 
       <label class="fld">
-        <span class="lb">一句话摘要<i class="req">必填</i></span>
+        <span class="lb">一句话摘要<i v-if="aiDesc" class="hot">AI 建议</i><i v-else class="req">必填</i></span>
         <input v-model="desc" placeholder="它是什么、解决什么问题" />
       </label>
+
+      <template v-if="contains.length">
+        <label class="fld">
+          <span class="lb">正文<i v-if="aiBody" class="hot">AI 建议</i><i v-else>可选</i></span>
+          <textarea v-model="body" rows="9" class="scroll-thin"
+                    placeholder="从 ## 描述 开始；## 关系 由系统写，别写"></textarea>
+          <span class="hint">模型按子节点的摘要起的草稿，改成你自己的判断再存；创建时给下面每个点连一条「包含」边</span>
+        </label>
+        <div class="contains dim">包含：{{ contains.join('、') }}</div>
+        <label v-if="defaults.wrapOption" class="switch-row" style="margin: 2px -9px 0">
+          <input type="checkbox" v-model="wrap" />
+          <span class="check"><Icon name="check" :size="11" :width="2.6" /></span>
+          <span class="label">顺手建一个框把它们圈起来<span class="sub">框是排版，节点是知识；框会绑这个节点当总览</span></span>
+        </label>
+      </template>
 
       <div class="two">
         <label class="fld">
@@ -129,7 +156,7 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onKey, true))
       </label>
       <p v-if="badDir" class="warn-text">{{ badDir }}</p>
 
-      <label class="switch-row" style="margin: 2px -9px 0">
+      <label v-if="!contains.length" class="switch-row" style="margin: 2px -9px 0">
         <input type="checkbox" v-model="thenRelate" />
         <span class="check"><Icon name="check" :size="11" :width="2.6" /></span>
         <span class="label">创建后接着连关系<span class="sub">新节点最容易变成孤岛，趁热挂上去</span></span>

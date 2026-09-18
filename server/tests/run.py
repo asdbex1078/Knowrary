@@ -1507,6 +1507,22 @@ def create_node_能顺手建出新目录():
 
 
 @case
+def create_node_卡片上新文件给全文_正文不被截():
+    """新文件的 diff 每行都是 +，按片段截 60 行会把正文后半截藏掉；
+    正文现在按骨架写足，人要能在卡上整篇看完再点写入。"""
+    c, vault, _ = with_inbox_node()
+    body = "\n".join(f"第 {i} 行" for i in range(1, 91))
+    r = c.post("/api/changes", json={"base_revision": c.get("/api/index").json()["revision"],
+                                     "dry_run": True, "changes": [{
+        "type": "create_node", "source": "长文", "path": "nodes/组A/长文.md",
+        "fields": {"name": "长文", "field": "测试", "desc": "很长"}, "body": body}]})
+    assert r.status_code == 200, r.text
+    diff = r.json()["files"][0]["diff"]
+    assert "第 90 行" in diff and diff.lstrip().startswith("---"), diff[:200]
+    assert not (vault / "nodes/组A/长文.md").exists()
+
+
+@case
 def create_node_同一批里就能给新节点连边():
     """否则"建一个节点顺便连几条边"得拆成两次请求，中间那一刻图上多一个孤岛。"""
     c, vault, _ = with_inbox_node()
@@ -2071,6 +2087,243 @@ def coach_空图也排得出清单():
 
 
 @case
+def import_预览不落盘_落盘三种产物各归其位():
+    """/api/import：导入方案 → 新建节点 / 补充老节点 / 待审边。默认只给 diff，dry_run=false 才写。"""
+    c, vault = client()
+    rev = c.get("/api/index").json()["revision"]
+    plan = {"nodes": [{"id": "新点", "name": "新点", "desc": "d", "body": "## 描述\n正文",
+                       "relations": [{"type": "依赖", "target": "a", "confidence": 0.9},
+                                     {"type": "对比", "target": "b", "confidence": 0.3}]}],
+            "enrich": [{"existing": "a", "content": "补给 A 的一段。"}], "summary": "s"}
+    body = {"plan": plan, "field": "测试", "source": "某文章", "base_revision": rev}
+
+    r = c.post("/api/import", json=body)
+    assert r.status_code == 200, r.text
+    d = r.json()
+    assert d["applied"] is False and d["index_revision"] == rev
+    assert sorted(f["path"] for f in d["files"]) == ["nodes/测试/新点.md", "nodes/组A/a.md"], d["files"]
+    assert d["counts"] == {"nodes": 1, "stubs": 0, "enrich": 1, "edges": 1, "pending": 1}, d["counts"]
+    assert [(p["relation"], p["target"]) for p in d["pending"]] == [("对比", "b")], d["pending"]
+    a_diff = next(f["diff"] for f in d["files"] if f["path"].endswith("a.md"))
+    assert "+> 补充自《某文章》" in a_diff and "+补给 A 的一段。" in a_diff, a_diff
+    assert not (vault / "nodes/测试/新点.md").exists(), "预览不能落盘"
+    assert not (vault / ".knowrary/pending.json").exists(), "预览不能记待审"
+
+    r = c.post("/api/import", json={**body, "dry_run": False})
+    assert r.status_code == 200, r.text
+    d = r.json()
+    assert d["applied"] is True and d["backup"] and d["log"] and d["index_revision"] != rev, d
+    assert (vault / "nodes/测试/新点.md").exists() and (vault / d["log"]).exists()
+    a_text = (vault / "nodes/组A/a.md").read_text("utf-8")
+    assert "补给 A 的一段。" in a_text.split("## 关系")[0] and "- 部件:: [[b]]" in a_text, a_text
+    pend = json.loads((vault / ".knowrary/pending.json").read_text("utf-8"))
+    assert [e["id"] for e in pend["edges"]] == ["新点->b#对比"] and pend["edges"][0]["confidence"] == 0.3, pend
+    assert "新点" in {n["id"] for n in c.get("/api/index").json()["nodes"]}, "落盘后索引该看见新点"
+
+
+@case
+def import_propose_认领幽灵_近似撞名_孤立判定():
+    """/api/import/propose：一次 LLM 出方案，服务端算三级匹配——明确 claims 的换成清单 id，
+    名字很像但没认领的报近似撞名，一条边都没连到已有节点的标孤立。"""
+    from server import importing as imp_mod
+    c, vault = client()
+    c.put("/api/projects", json={"base_revision": 0, "projects": {"demo": {
+        "name": "演示", "field": "测试", "lists": [{"kind": "学习", "name": "主线", "stages": [
+            {"name": "一", "points": [{"id": "a"}, {"id": "RNN与长程依赖", "why": "痛点"},
+                                      {"id": "注意力机制", "name": "注意力机制", "why": "前身"}]}]}]}}})
+    payload = json.dumps({"nodes": [
+        {"id": "注意力", "claims": "注意力机制", "name": "注意力", "desc": "d", "body": "## 描述\n见 [[RNN]]",
+         "relations": [{"type": "依赖", "target": "a", "confidence": 0.9}, {"type": "部件", "target": "RNN"}]},
+        {"id": "RNN", "name": "RNN", "desc": "循环网络", "relations": []},
+        {"id": "孤零零", "name": "孤零零", "desc": "x", "relations": []},
+    ], "suggest_home": {"isolated": ["孤零零"], "kind": "field", "name": "AI", "why": "讲的是模型"},
+        "summary": "s"}, ensure_ascii=False)
+    seen = {}
+    original = imp_mod.ask
+    def spy(vault, role, prompt, op="?"):
+        seen.update(role=role, op=op, prompt=prompt)
+        return payload
+    imp_mod.ask = spy
+    try:
+        r = c.post("/api/import/propose", json={"text": "一篇讲注意力的文章", "source": "文章", "field": "测试",
+                                                "project": "demo"})
+    finally:
+        imp_mod.ask = original
+    assert r.status_code == 200, r.text
+    d = r.json()
+    assert seen["role"] == "learn" and seen["op"] == "import"
+    assert "RNN与长程依赖｜RNN与长程依赖｜痛点" in seen["prompt"] and "注意力机制｜注意力机制｜前身" in seen["prompt"], "待认领的点要进提示词"
+    assert "- a｜" not in seen["prompt"].split("## 当前项目里还没建的点")[1].split("## 文章")[0], "已建的点不是待认领"
+    ids = [n["id"] for n in d["plan"]["nodes"]]
+    assert ids == ["注意力机制", "RNN", "孤零零"], ids
+    assert [(x["node_id"], x["point_id"]) for x in d["claims"]] == [("注意力机制", "注意力机制")], d["claims"]
+    assert "claims" not in d["plan"]["nodes"][0]
+    # 认领改 id 要连带：另一个节点指向它的关系、正文链接
+    assert d["plan"]["nodes"][0]["relations"][1]["target"] == "RNN", "没指向它的关系不能被误改"
+    assert [(x["node_id"], x["point_id"]) for x in d["near_misses"]] == [("RNN", "RNN与长程依赖")], d["near_misses"]
+    # RNN 自己没连已有节点，但同篇的「注意力机制」连了 a 又认领了清单点，整块不算孤立；真孤立的只有孤零零
+    assert d["isolated"] == ["孤零零"], d["isolated"]
+    assert d["suggest_home"]["name"] == "AI" and d["project_points"] == 2
+    assert d["preview"]["applied"] is False and any(f["path"].endswith("注意力机制.md") for f in d["preview"]["files"])
+
+    # 卡上点「改用清单里的 id」+「这条待审直接写」：服务端改方案再翻译
+    plan = d["plan"]
+    plan["nodes"][1]["relations"] = [{"type": "对比", "target": "b", "confidence": 0.2}]
+    r = c.post("/api/import", json={"plan": plan, "field": "测试", "source": "文章",
+                                    "renames": {"RNN": "RNN与长程依赖"}, "promote": ["RNN->b#对比"]})
+    assert r.status_code == 200, r.text
+    d2 = r.json()
+    paths = sorted(f["path"] for f in d2["files"])
+    assert "nodes/测试/RNN与长程依赖.md" in paths and not any(p.endswith("/RNN.md") for p in paths), paths
+    zy = next(f for f in d2["files"] if f["path"].endswith("注意力机制.md"))
+    assert "[[RNN与长程依赖]]" in zy["diff"] and "- 部件:: [[RNN与长程依赖]]" in zy["diff"], zy["diff"]
+    assert d2["pending"] == [], "被提升的待审边该直接写"
+    rnn = next(f for f in d2["files"] if f["path"].endswith("RNN与长程依赖.md"))
+    assert "- 对比:: [[b]]" in rnn["diff"], rnn["diff"]
+
+
+@case
+def import_素材源列表与读取_挡住越界路径():
+    c, vault = client()
+    core.write(vault / "doc/笔记/一篇.md", "# 一篇\n正文")
+    core.write(vault / "day-info/摘要.txt", "摘要")
+    core.write(vault / "web/dist/x.md", "不该列")
+    files = c.get("/api/import/sources").json()["files"]
+    paths = {f["path"] for f in files}
+    assert {"doc/笔记/一篇.md", "day-info/摘要.txt"} <= paths, paths
+    assert not any(p.startswith(("nodes/", "web/", ".knowrary/")) for p in paths), paths
+    assert c.get("/api/import/source", params={"path": "doc/笔记/一篇.md"}).json()["text"].startswith("# 一篇")
+    for bad in ("../etc/passwd", "nodes/组A/a.md", "web/dist/x.md", "doc/没有.md"):
+        assert c.get("/api/import/source", params={"path": bad}).status_code == 422, bad
+    # propose 用 file 而不是 text
+    from server import importing as imp_mod
+    original = imp_mod.ask
+    imp_mod.ask = lambda *a, **k: json.dumps({"nodes": [{"id": "n", "name": "n", "desc": "d", "relations": []}]})
+    try:
+        r = c.post("/api/import/propose", json={"file": "doc/笔记/一篇.md", "source": "一篇", "field": "测试"})
+        assert r.status_code == 200 and r.json()["isolated"] == ["n"], r.text
+        r = c.post("/api/import/propose", json={"source": "x", "field": "测试"})
+        assert r.status_code == 422, "没文章该 422"
+    finally:
+        imp_mod.ask = original
+
+
+@case
+def inbox_零边与缺域框标记_一键建域框放进去():
+    """Inbox 条目带两个新标记：一条边都没有（degree 0）、有 field 但画布上没同名顶层框。
+    后者给 create_field_group：先在整张图最下面开一个同名框，再把节点放进去；同一批第二个同领域的复用那个框。"""
+    c, vault = client()
+    layout = get_layout(c)
+    core.write(vault / "nodes/新域/孤点.md", node_md("孤点", field="量子计算"))
+    core.write(vault / "nodes/新域/孤点二.md", node_md("孤点二", field="量子计算"))
+    core.write(vault / "nodes/组A/有边.md", node_md("有边", rels="- 依赖:: [[a]]"))
+    index_service.invalidate()
+    items = {i["id"]: i for i in c.get("/api/inbox").json()["items"]}
+    assert items["孤点"]["degree"] == 0 and items["孤点"]["field_group_missing"] is True, items["孤点"]
+    assert items["孤点"]["suggested_group"] is None
+    assert items["有边"]["field_group_missing"] is False and items["有边"]["suggested_group"], items["有边"]
+
+    bottom_before = max(g["y"] + g["h"] for g in layout["layout"]["groups"].values() if not g.get("parent"))
+    r = c.post("/api/place", json={"base_revision": layout["layout"]["revision"], "ids": ["孤点", "孤点二"],
+                                   "create_field_group": True})
+    assert r.status_code == 200, r.text
+    d = r.json()
+    assert len(d["placed"]) == 2 and d["created_groups"] == ["g-量子计算"], d
+    assert d["grown_groups"] == [], "新开的框不算「长了一行」"
+    lay = get_layout(c)["layout"]
+    box = lay["groups"]["g-量子计算"]
+    assert box["parent"] is None and box["name"] == "量子计算" and box["y"] >= bottom_before, box
+    assert all(lay["nodes"][i]["group"] == "g-量子计算" and lay["nodes"][i]["state"] == "draft" for i in ("孤点", "孤点二"))
+    for i in ("孤点", "孤点二"):
+        n = lay["nodes"][i]
+        assert box["x"] <= n["x"] and n["x"] + n["w"] <= box["x"] + box["w"], "节点要在框里"
+    # 不给 create_field_group：照旧留在 Inbox
+    core.write(vault / "nodes/新域/孤点三.md", node_md("孤点三", field="生物"))
+    index_service.invalidate()
+    r = c.post("/api/place", json={"base_revision": lay["revision"], "ids": ["孤点三"]}).json()
+    assert r["placed"] == [] and "判不出分组" in r["skipped"][0]["reason"], r
+
+
+@case
+def import_落盘记归属建议_Inbox显示_放上画布后不再显示():
+    c, vault = client()
+    get_layout(c)                       # 先让布局生成好，之后导进来的点才会落 Inbox
+    plan = {"nodes": [{"id": "孤零零", "name": "孤零零", "desc": "d", "relations": []}],
+            "suggest_home": {"isolated": ["孤零零", "没建的"], "kind": "field", "name": "AI", "why": "讲的是模型"}}
+    r = c.post("/api/import", json={"plan": plan, "field": "测试", "source": "文章", "dry_run": False})
+    assert r.status_code == 200, r.text
+    pend = json.loads((vault / ".knowrary/pending.json").read_text("utf-8"))
+    assert pend["homes"] == [{**pend["homes"][0], "node_ids": ["孤零零"], "kind": "field", "name": "AI"}], pend["homes"]
+    assert "没建的" not in pend["homes"][0]["node_ids"], "只记这次真建出来的"
+    item = next(i for i in c.get("/api/inbox").json()["items"] if i["id"] == "孤零零")
+    assert item["home"]["name"] == "AI" and item["home"]["why"] == "讲的是模型" and item["home"]["origin"]["source"] == "文章", item
+    # 放上画布后它不在 Inbox 里，建议自然不显示；再导一篇同一批节点的建议会覆盖旧的
+    rev = get_layout(c)["layout"]["revision"]
+    c.post("/api/place", json={"base_revision": rev, "ids": ["孤零零"], "create_field_group": True})
+    assert "孤零零" not in {i["id"] for i in c.get("/api/inbox").json()["items"]}
+
+
+@case
+def summarize_起草概括节点_子节点节选进提示词_关系段被截():
+    """/api/summarize：给几个点，模型起草上位节点；正文节选、已有关系进提示词；回答里混进 `## 关系` 被截掉。"""
+    from server import summarize as sm
+    c, _ = client()
+    seen = {}
+    original = sm.ask
+    sm.ask = lambda vault, role, prompt, op="?": (seen.update(role=role, op=op, prompt=prompt) or json.dumps({
+        "name": "A与B", "desc": "A 和 B 合起来讲", "layer": "硬件", "year": "1990",
+        "body": "## 描述\n整体\n\n## 核心内容\n[[a]] 是地基，[[b]] 是部件。\n\n## 关系\n- 包含:: [[a]]"}, ensure_ascii=False))
+    try:
+        r = c.post("/api/summarize", json={"node_ids": ["a", "b", "不存在"], "name": "组A"})
+    finally:
+        sm.ask = original
+    assert r.status_code == 200, r.text
+    d = r.json()
+    assert seen["role"] == "learn" and seen["op"] == "summarize"
+    assert "- a｜A 的摘要｜正文｜部件→b; 演化为→c" in seen["prompt"], seen["prompt"][-600:]
+    assert "组A" in seen["prompt"]
+    assert d["children"] == ["a", "b"], d["children"]
+    assert d["name"] == "A与B" and d["layer"] == "硬件" and d["year"] == 1990
+    assert "## 关系" not in d["body"] and d["body"].endswith("是部件。"), d["body"]
+    assert c.post("/api/summarize", json={"node_ids": ["a", "不存在"]}).status_code == 422, "只剩一个真节点不能概括"
+
+
+@case
+def import_旧revision拒绝_写不进去的方案422():
+    c, _ = client()
+    rev = c.get("/api/index").json()["revision"]
+    plan = {"nodes": [{"id": "x", "name": "x", "desc": "d"}]}
+    assert c.post("/api/import", json={"plan": plan, "field": "测试", "source": "s", "base_revision": rev + 99}).status_code == 409
+    # 已存在的节点不建、也不报错——它成了 warnings；正文里带 `## 关系` 也被截掉——都不该 422
+    r = c.post("/api/import", json={"plan": {"nodes": [{"id": "a", "name": "A", "desc": "d"}]}, "field": "测试", "source": "s"})
+    assert r.status_code == 200 and any("已存在" in w for w in r.json()["warnings"]), r.text
+    # 真写不进去的：layer 不在已知抽象层里
+    bad = {"nodes": [{"id": "y", "name": "y", "desc": "d", "layer": "不存在的层"}]}
+    assert c.post("/api/import", json={"plan": bad, "field": "测试", "source": "s"}).status_code == 422
+
+
+@case
+def layout_项目画布按阶段成列不画框():
+    """去掉父框后阶段信息只剩"列的先后"：已建的点先学的在左、后学的在右，同一阶段竖排；
+    还没建的幽灵不混进列里，集中停在右下角当待学区（2026-09-18 用户要求：一眼看清还差什么）。"""
+    c, _, _ = with_inbox_node()
+    ghosts = [{"id": f"p{i}"} for i in range(5)]
+    c.put("/api/projects", json={"base_revision": 0, "projects": {"demo": {
+        "name": "演示", "lists": [{"kind": "学习", "name": "主线", "stages": [
+            {"name": "一", "points": [{"id": "a"}, {"id": "b"}, {"id": "p9"}]},
+            {"name": "二", "points": [{"id": "c"}] + ghosts}]}]}}})
+    nodes = c.get("/api/layout?layout=demo").json()["layout"]["nodes"]
+    assert nodes["a"]["x"] == nodes["b"]["x"] and nodes["a"]["y"] < nodes["b"]["y"], "同一阶段该竖排"
+    assert nodes["c"]["x"] > nodes["a"]["x"] and nodes["c"]["y"] == nodes["a"]["y"], "后一阶段该在右边、顶上对齐"
+    ghost_ids = ["p9"] + [g["id"] for g in ghosts]
+    assert all(nodes[g]["state"] == "ghost" for g in ghost_ids)
+    assert min(nodes[g]["x"] for g in ghost_ids) > nodes["c"]["x"], "幽灵该在已建区右边"
+    assert min(nodes[g]["y"] for g in ghost_ids) == nodes["b"]["y"], "幽灵区顶边与已建区最后一行对齐（右下角）"
+    assert nodes["p9"]["x"] < nodes["p0"]["x"], "幽灵按清单里出现的先后排"
+    assert len({(n["x"], n["y"]) for n in nodes.values()}) == len(nodes), "没有两个点叠在一起"
+
+
+@case
 def layout_项目画布与全局图互不影响():
     """项目画布是工作台，全局图是成品图：**在项目画布上拖节点，全局 layout 的 revision 不变。**"""
     c, vault, _ = with_inbox_node()
@@ -2085,7 +2338,8 @@ def layout_项目画布与全局图互不影响():
     # 还没建的点是幽灵占位，**不算孤立记录**——那正是它的含义
     assert proj["layout"]["nodes"]["还没建的"]["state"] == "ghost"
     assert proj["orphans"] == [], proj["orphans"]
-    assert len(proj["layout"]["groups"]) == 1, "一份清单一个分组框"
+    assert proj["layout"]["groups"] == {}, "项目画布不该有父框（2026-09-18 去掉）"
+    assert all(n["group"] is None for n in proj["layout"]["nodes"].values()), proj["layout"]["nodes"]
 
     r = c.patch("/api/layout?layout=demo", json={"base_revision": proj["layout"]["revision"],
                                                  "nodes": {"a": {"x": 999, "y": 888}}})
@@ -3153,6 +3407,37 @@ def chat_搜索也能搜到计划里还没建的点():
 
 
 @case
+def chat_正文档位跟项目难度走_线头哪档都有():
+    """了解 = 精简、会用 = 标准、精通 = 详尽。三档都必须保留「线头」——
+    那是给以后连边留的钩子，精简掉的关键词（神经生理学家 + 数学家）就是这样丢的。"""
+    c, vault, _ = with_inbox_node()
+    from server import chat as chat_mod
+    for level, word in (("了解", "精简档"), ("会用", "标准档"), ("精通", "详尽档")):
+        rev = c.get("/api/projects").json()["doc"].get("revision", 0)
+        c.put("/api/projects", json={"base_revision": rev, "projects": {"p": {
+            "name": "P", "level": level, "lists": [{"kind": "学习", "name": "主线", "stages": []}]}}})
+        prompt = chat_mod._system_prompt(vault, "教练", "p")
+        assert word in prompt, (level, word)
+        assert "线头" in prompt and "不能省" in prompt, level
+    # 不绑项目走默认档
+    assert "标准档" in chat_mod._system_prompt(vault, "教练")
+
+
+@case
+def chat_搜索连tags和aliases一起搜():
+    """「线头」抄进 tags 就是为了以后建到「神经元」时能搜回「阈值逻辑单元」；
+    只搜 id/name/desc 的话，这个钩子挂了等于没挂。"""
+    c, vault, _ = with_inbox_node()
+    core.write(vault / "nodes/组A/tlu.md", node_md("TLU", extra="tags:\n  - 神经生理学\naliases:\n  - M-P 神经元\n"))
+    index_service.invalidate()
+    from server import chat as chat_mod
+    body, meta = chat_mod._tool_search(vault, {"q": "神经生理学"})
+    assert meta["hits"] == 1 and "tlu" in body, body
+    body, meta = chat_mod._tool_search(vault, {"q": "M-P"})
+    assert meta["hits"] == 1 and "tlu" in body, body
+
+
+@case
 def chat_这一轮炸了留档里也有记号():
     """只记提问不记结果的话，失败五次就攒出五条没人答的问题，下次全被读回去当上下文。"""
     c, vault, _ = with_inbox_node()
@@ -3204,6 +3489,10 @@ def chat_能往已有节点补正文而不是只会新建():
         assert kind in prompt, f"`{kind}` 没写进说明书，模型不会用"
     assert "整段替换" in prompt, "没告诉模型 update_body 会覆盖，它迟早把我的笔记抹掉"
     assert "正文要写成能过半年回看的笔记" in prompt, "没给正文骨架，它只会写两句话交差"
+    # 笔记层按档写足：讲多深（chat 栏）和记多满（note 栏）是两件事，缺后者模型会把
+    # 「一句话结论就停」套到正文上，建出来的点只剩 desc（阈值逻辑单元那次）
+    assert "## 线头" in prompt and "标准档" in prompt, "骨架没带线头 / 档位"
+    assert "{{" not in prompt, [l for l in prompt.splitlines() if "{{" in l]
     # frontmatter 白名单同理：少列一个字段，那个字段就永远改不成
     for f in core.EDITABLE_FIELDS:
         assert f in prompt, f"frontmatter 字段 `{f}` 没写进说明书"
@@ -3361,6 +3650,77 @@ def read_node_一次读多个且长正文不再被截断():
         chat_mod.READ_CHARS = saved
     assert meta["truncated"] == 1, meta
     assert "不许 update_body" in text and "截断" in text, text[-300:]
+
+
+@case
+def read_node_按标题读一节_截断时附目录():
+    """上万字的长笔记整篇读只能看到前半篇。现在截断时把目录附上，模型再带 `section` 只读要改的那一节；
+    只读了一节同样算「没看全」，结果里要明说只准 append_body。"""
+    from server import chat as chat_mod
+    c, vault, _ = with_inbox_node()
+    body = ("## 描述\n概述。\n\n## 一、分界\n分界正文\n\n```python\n# 代码里的井号不是标题\n```\n\n"
+            "### 案例 1\n案例正文\n\n## 二、粒度\n" + "粒度" * 400 + "\n\n## 三、验证\n验证正文")
+    core.write(vault / "nodes/组A/长文.md", node_md("长文", extra="", rels="").replace("正文", body, 1))
+    index_service.invalidate()
+
+    # 按节读：只有这一节和它的子节，其他节不在；明说不是全文、不许 update_body；附其余目录
+    text, meta = chat_mod._tool_read(vault, {"id": "长文", "section": "一、分界"})
+    assert "分界正文" in text and "案例正文" in text and "粒度粒度" not in text and "验证正文" not in text, text[:400]
+    assert "不许 update_body" in text and "不是全文" in text and "- 三、验证" in text, text[-400:]
+    assert meta["truncated"] == 1 and meta["section"] == "一、分界", meta
+    assert "代码里的井号" not in text.split("其余小节")[1]
+
+    # 标题写错：不报错，把目录给出来
+    text, _ = chat_mod._tool_read(vault, {"id": "长文", "section": "不存在"})
+    assert "没有叫「不存在」的小节" in text and "- 二、粒度" in text, text
+
+    # 整篇读被截断时：带目录和 section 的用法提示
+    saved = chat_mod.READ_CHARS
+    try:
+        chat_mod.READ_CHARS = 400
+        text, meta = chat_mod._tool_read(vault, {"id": "长文"})
+    finally:
+        chat_mod.READ_CHARS = saved
+    assert meta["truncated"] == 1 and "section" not in meta, meta
+    assert "截断" in text and "- 三、验证" in text and "`section:" in text, text[-500:]
+
+    # 一次读多个 + section：每个节点都按同一个标题取
+    text, meta = chat_mod._tool_read(vault, {"ids": ["长文", "a"], "section": "描述"})
+    assert "### 长文" in text and "### a" in text and "概述。" in text, text[:300]
+
+    # 工具说明书上要写着有这个参数，模型才知道能用
+    assert "`section`" in chat_mod.TOOL_DOC["read_node"]
+
+
+@case
+def read_node_outline只给目录_搜索结果标出长笔记():
+    """模型不该为了知道一篇长笔记长什么样先花 8000 字整篇读一遍：
+    `outline: true` 只给 desc + 字数 + 全部标题；搜索结果里超过 READ_CHARS 的节点标「长笔记」指向这条路。"""
+    from server import chat as chat_mod
+    c, vault, _ = with_inbox_node()
+    body = "## 一、开头\n开头正文\n\n## 二、中间\n" + "中间" * 5000 + "\n\n### 尾巴里的子节\n子节正文\n\n## 三、结尾\n结尾正文"
+    core.write(vault / "nodes/组A/长文.md", node_md("长文", extra="", rels="").replace("正文", body, 1))
+    index_service.invalidate()
+
+    text, meta = chat_mod._tool_read(vault, {"id": "长文", "outline": True})
+    # 三个标题都在（包括 8000 字之后的），正文一个字都不带
+    assert "- 一、开头" in text and "    - 尾巴里的子节" in text and "- 三、结尾" in text, text
+    assert "中间中间" not in text and "开头正文" not in text and "结尾正文" not in text, text
+    assert "超过一次能读的上限" in text and "不许 `update_body`" in text and "`section:" in text, text
+    assert meta["outline"] is True and meta["truncated"] == 0, meta
+    assert len(text) < 600, f"目录应该是几百字，不是 {len(text)}"
+
+    # 短笔记的目录不说「超过上限」
+    text, _ = chat_mod._tool_read(vault, {"id": "a", "outline": True})
+    assert "超过一次能读的上限" not in text and "这只是目录" in text, text
+
+    # 搜索结果：长的标出来，短的不标
+    body_s, _ = chat_mod._tool_search(vault, {"q": "长文"})
+    rows = json.loads(body_s)["已建的节点"]
+    assert rows[0]["id"] == "长文" and "outline: true" in rows[0]["长笔记"], rows
+    body_s, _ = chat_mod._tool_search(vault, {"q": "a"})
+    assert all("长笔记" not in r for r in json.loads(body_s)["已建的节点"]), body_s
+    assert "`outline: true`" in chat_mod.TOOL_DOC["read_node"]
 
 
 @case

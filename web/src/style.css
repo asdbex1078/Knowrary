@@ -1227,6 +1227,12 @@ kbd.key {
 }
 .cc-diff b { color: var(--text-1); }
 .cc-acts { display: flex; align-items: center; gap: 8px; }
+/* 变更卡上的编辑区：desc 一行、body 一块，写入前定稿 */
+.cc-edit { display: flex; flex-direction: column; gap: 8px; margin: 0 0 8px; }
+.cc-edit-one { display: flex; flex-direction: column; gap: 5px; }
+.cc-edit-head { display: flex; align-items: center; gap: 8px; font-size: 11.5px; }
+.cc-edit input, .cc-edit textarea { width: 100%; font-size: 12px; }
+.cc-edit textarea { line-height: 1.6; resize: vertical; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
 .starters { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0 4px; }
 .chat-input { display: flex; align-items: flex-end; gap: 6px; margin-top: 10px;
   padding-top: 10px; border-top: 1px solid var(--line); }
@@ -1393,3 +1399,65 @@ kbd.key {
   overflow: hidden; }
 .bar-row .track i { display: block; height: 100%; background: var(--accent); border-radius: 999px; }
 .bar-row .val { flex: none; width: 46px; text-align: right; color: var(--text-3); }
+
+
+/* ---- 导入面板：文章来源 + 审核卡（卡的骨架复用 .change-card / .cc-*） ---- */
+.imp-src { display: flex; flex-direction: column; gap: 8px; margin-bottom: 10px; }
+.seg.small button { padding: 3px 9px; font-size: 12px; }
+.imp-files { max-height: 180px; overflow: auto; border: 1px solid var(--line); border-radius: 8px; padding: 4px; }
+.imp-file { display: flex; align-items: center; gap: 6px; width: 100%; padding: 2px 4px; border-radius: 6px; font-size: 12.5px; }
+.imp-file:hover { background: var(--surface-2); }
+.imp-file.on { background: var(--accent-soft); color: var(--accent-text); }
+.imp-file input { flex: none; margin: 0; }
+.imp-file-pick { display: flex; align-items: center; gap: 6px; flex: 1; min-width: 0; text-align: left; padding: 3px 4px;
+  background: transparent; border: none; color: inherit; cursor: pointer; font: inherit; }
+.imp-file .nm { flex: none; }
+.imp-file .dim { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; }
+.imp-run { display: flex; gap: 6px; align-items: center; }
+.imp-queue { border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px; }
+.imp-queue .imp-block-head { display: flex; align-items: center; gap: 6px; margin-bottom: 4px; }
+.imp-queue-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 3px; }
+.imp-queue-item { display: flex; align-items: center; gap: 6px; font-size: 12px; padding: 2px 0; }
+.imp-queue-item .chip { flex: none; font-size: 10.5px; padding: 1px 6px; }
+.imp-queue-item .nm { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.imp-queue-item.skipped .nm, .imp-queue-item.done .nm { color: var(--text-3); text-decoration: line-through; }
+.imp-queue-item.failed .chip { background: var(--warn-soft, #fff7e0); }
+.imp-queue-err { max-width: 40%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; }
+.imp-drop { display: flex; align-items: center; gap: 6px; padding: 10px; border: 1px dashed var(--line);
+  border-radius: 8px; font-size: 12.5px; color: var(--text-2); cursor: pointer; }
+.imp-drop input { display: none; }
+.imp-text { width: 100%; font: inherit; font-size: 12.5px; line-height: 1.5; padding: 8px; border-radius: 8px;
+  border: 1px solid var(--line); background: var(--surface); color: var(--text); resize: vertical; }
+.imp-form { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 6px; }
+.imp-form label { display: flex; flex-direction: column; gap: 3px; font-size: 11px; color: var(--text-3); }
+.imp-form input { font-size: 12.5px; padding: 4px 6px; }
+.imp-error { color: var(--danger, #c0392b); font-size: 12.5px; margin: 4px 0; }
+.imp-card { margin-top: 6px; }
+.imp-summary { font-size: 12.5px; line-height: 1.6; margin: 4px 0 6px; }
+.imp-counts { font-size: 11.5px; margin-bottom: 8px; }
+.imp-note { display: flex; gap: 6px; align-items: flex-start; font-size: 12px; line-height: 1.5; padding: 6px 8px;
+  border-radius: 8px; background: var(--surface-2); margin: 4px 0 8px; }
+.imp-note.warn { background: var(--warn-soft, #fff7e0); }
+.imp-note .btn { margin-left: auto; flex: none; }
+.imp-nodes { list-style: none; padding: 0; margin: 0 0 8px; display: flex; flex-direction: column; gap: 6px; }
+.imp-node { border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px; }
+.imp-node-head { display: flex; align-items: center; gap: 8px; font-size: 12.5px; }
+.imp-node-head .dim { font-size: 11px; }
+.imp-node-head .icon-btn { margin-left: auto; }
+.imp-desc { width: 100%; margin-top: 4px; font-size: 12px; padding: 3px 6px; }
+.imp-node textarea { width: 100%; margin-top: 6px; font: inherit; font-size: 12px; line-height: 1.5; padding: 6px;
+  border-radius: 6px; border: 1px solid var(--line); background: var(--surface); color: var(--text); }
+.imp-block { margin: 6px 0 8px; }
+.imp-block-head { font-size: 11.5px; font-weight: 600; color: var(--text-2); margin-bottom: 3px; cursor: default; }
+.imp-pending { cursor: pointer; }
+.imp-pending i { color: var(--text-3); font-style: normal; margin: 0 4px; }
+
+/* Inbox 增强：归属建议行、零边警示 chip */
+.inbox-home { font-size: 11.5px; line-height: 1.5; margin: 2px 0 4px; }
+.warn-chip { background: var(--warn-soft, #fff7e0); color: var(--text-2); border: none; cursor: pointer; font: inherit; font-size: 11px; }
+.warn-chip:hover { background: var(--accent-soft); color: var(--accent-text); }
+
+/* 新建对话框：概括节点的正文与包含清单 */
+.node-dialog .fld > textarea { padding: 8px 10px; font: inherit; font-size: 12.5px; line-height: 1.5; border-radius: 8px;
+  border: 1px solid var(--line); background: var(--surface); color: var(--text); resize: vertical; }
+.node-dialog .contains { font-size: 11.5px; line-height: 1.5; margin: -4px 0 8px; }

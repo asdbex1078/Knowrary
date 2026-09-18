@@ -29,6 +29,8 @@ const ITEMS = [
   { id: 'study', icon: 'rotate', name: '今日', gold: true, badge: 'due', scopes: ['project', 'global'],
     tip: '今天该建什么、该复习什么（复习是全局的，建设按当前项目过滤）',
     modes: ['chat', 'project', 'structure', 'lineage'] },
+  { id: 'import', icon: 'file', name: '导入', scopes: ['project', 'global'],
+    tip: '把一篇笔记拆成知识点导进图谱（项目下先认领清单里没建的点）', modes: ['chat', 'project', 'structure', 'lineage'] },
   { id: 'assets', icon: 'image', name: '素材', scopes: ['project', 'global'],
     tip: '往当前这块画布上贴图、加便签', modes: ['project', 'structure'] },
 

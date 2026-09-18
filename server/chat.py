@@ -116,13 +116,21 @@ def _tool_search(vault: Path, args: dict) -> tuple[str, dict]:
     for n in index["nodes"]:
         if n.get("virtual"):
             continue
-        hay = f"{n['id']} {n.get('name') or ''} {n.get('desc') or ''}"
+        # tags / aliases 也在干草堆里：「线头」抄进 tags 就是为了以后建到那个点时能搜回来
+        hay = " ".join([n["id"], n.get("name") or "", n.get("desc") or "",
+                        *(n.get("tags") or []), *(n.get("aliases") or [])])
         if q.lower() in hay.lower():
             hits.append(n)
     hits.sort(key=lambda n: -(n.get("degree") or 0))
-    rows = [{"id": n["id"], "name": n.get("name"), "desc": n.get("desc"),
-             "field": n.get("field"), "状态": "只有壳" if n.get("stub") else "已建"}
-            for n in hits[:limit]]
+    rows = []
+    for n in hits[:limit]:
+        row = {"id": n["id"], "name": n.get("name"), "desc": n.get("desc"),
+               "field": n.get("field"), "状态": "只有壳" if n.get("stub") else "已建"}
+        chars = _body_chars(vault, n)
+        if chars > READ_CHARS:
+            # 模型看到这一行就知道别直接整篇读：先 outline 看目录，再按 section 读要的那一节
+            row["长笔记"] = f"约 {chars} 字，整篇读会被截断；先带 `outline: true` 看目录，再按 `section` 读"
+        rows.append(row)
 
     built = {n["id"] for n in index["nodes"] if not n.get("virtual")}
     planned = []
@@ -148,8 +156,24 @@ def _tool_search(vault: Path, args: dict) -> tuple[str, dict]:
     return json.dumps(out, ensure_ascii=False), {"hits": len(rows) + len(planned)}
 
 
-def _read_one(vault: Path, index: dict, nid: str, budget: int) -> tuple[str, bool]:
-    """读一个节点的原文 + 关系。返回 (给模型看的文本, 是否被截断)。"""
+def _body_chars(vault: Path, meta: dict) -> int:
+    """节点文件的字数；读不到就当 0（搜索结果里少个提示，不该让搜索本身失败）。"""
+    if not meta.get("path"):
+        return 0
+    try:
+        return len(core.read(vault / meta["path"]))
+    except OSError:
+        return 0
+
+
+def _read_one(vault: Path, index: dict, nid: str, budget: int,
+              section: str = "", outline: bool = False) -> tuple[str, bool]:
+    """读一个节点的原文 + 关系。返回 (给模型看的文本, 是否只看到了一部分)。
+
+    `outline=True` 只给目录不给正文；给了 `section` 就只读那一节（含它的子节）。
+    上万字的长笔记整篇读会被截断，模型先花几百字看目录、再按节读要改的那一节，
+    才不用为改一段话把整篇背进上下文。
+    """
     meta = next((n for n in index["nodes"] if n["id"] == nid), None)
     if meta is None:
         return f"图里没有 `{nid}` 这个节点。", False
@@ -160,14 +184,47 @@ def _read_one(vault: Path, index: dict, nid: str, budget: int) -> tuple[str, boo
     except OSError as exc:
         return f"读不到 `{nid}` 的文件：{exc}", False
     cap = max(400, min(READ_CHARS, budget))
-    cut = len(raw) > cap
     edges = {e["id"]: e for e in index["edges"]}
     rel = [f"{edges[i]['type']} → {edges[i]['target']}" for i in meta.get("out", []) if i in edges]
     rel += [f"{edges[i]['source']} → {edges[i]['type']} 本节点" for i in meta.get("in", []) if i in edges]
-    warn = ("\n\n**注意：这份原文被截断了，你看到的不是全文。**"
-            "所以这个节点只准用 `append_body` 追加，**绝对不许 update_body**——"
-            "整段替换会把你没看到的那部分永久删掉。" if cut else "")
-    return f"{raw[:cap]}{warn}\n\n（关系：{'；'.join(rel) or '还没有'}）", cut
+    rel_line = f"\n\n（关系：{'；'.join(rel) or '还没有'}）"
+    if outline:
+        return _read_outline(nid, meta, raw) + rel_line, False
+    if section:
+        return _read_section(nid, raw, section, cap) + rel_line, True
+    cut = len(raw) > cap
+    warn = ""
+    if cut:
+        toc = core.describe_outline(raw)
+        warn = ("\n\n**注意：这份原文被截断了，你看到的不是全文。**"
+                "所以这个节点只准用 `append_body` 追加，**绝对不许 update_body**——"
+                "整段替换会把你没看到的那部分永久删掉。"
+                + (f"\n它的目录如下，要看哪一节就带 `section: \"标题\"` 再读一次：\n{toc}" if toc else ""))
+    return f"{raw[:cap]}{warn}{rel_line}", cut
+
+
+def _read_outline(nid: str, meta: dict, raw: str) -> str:
+    """只给目录：desc、正文字数、全部小标题。不带正文，所以几百字就够。"""
+    toc = core.describe_outline(raw) or "（正文里没有小标题，只能整篇读）"
+    return (f"**{meta.get('name') or nid}**（`{nid}`）：{meta.get('desc') or '（没有 desc）'}\n"
+            f"正文约 {len(raw)} 字" + ("，超过一次能读的上限，整篇读会被截断" if len(raw) > READ_CHARS else "")
+            + f"。目录：\n{toc}\n\n（这只是目录，没有正文。要看哪一节就带 `section: \"标题\"` 再读；"
+            "没读到正文之前不许 `update_body`。）")
+
+
+def _read_section(nid: str, raw: str, section: str, cap: int) -> str:
+    """按标题读一节。找不到就把目录给模型，让它挑一个真有的。"""
+    hit = core.extract_section(raw, section)
+    toc = core.describe_outline(raw) or "（正文里没有小标题）"
+    if hit is None:
+        return f"`{nid}` 里没有叫「{section}」的小节。它的目录：\n{toc}"
+    head, text = hit
+    cut = len(text) > cap
+    return (f"{text[:cap]}"
+            + ("\n\n**注意：这一节太长，也被截断了。**" if cut else "")
+            + f"\n\n（以上只是 `{nid}` 的「{head.title}」这一节，不是全文，"
+            "所以这个节点只准用 `append_body` 追加，**不许 update_body**。"
+            f"其余小节：\n{toc}）")
 
 
 def _tool_read(vault: Path, args: dict) -> tuple[str, dict]:
@@ -179,9 +236,11 @@ def _tool_read(vault: Path, args: dict) -> tuple[str, dict]:
     if not ids:
         return "没给 id，不知道读哪个节点。", {}
     index = current_index(vault)
+    section = str(args.get("section") or "").strip()
+    outline = bool(args.get("outline"))
     budget, parts, cuts = READ_BUDGET, [], 0
     for nid in ids:
-        text, cut = _read_one(vault, index, nid, budget)
+        text, cut = _read_one(vault, index, nid, budget, section, outline)
         cuts += int(cut)
         budget -= len(text)
         parts.append(f"### {nid}\n{text}" if len(ids) > 1 else text)
@@ -189,7 +248,12 @@ def _tool_read(vault: Path, args: dict) -> tuple[str, dict]:
             parts.append(f"（余下的 {len(ids) - len(parts)} 个没读：这一次的字数预算用完了，"
                          f"要的话分开再读一次。）")
             break
-    return "\n\n".join(parts), {"id": ids[0], "ids": ids, "truncated": cuts}
+    meta = {"id": ids[0], "ids": ids, "truncated": cuts}
+    if section:
+        meta["section"] = section
+    if outline:
+        meta["outline"] = True
+    return "\n\n".join(parts), meta
 
 
 def _tool_overview(vault: Path, args: dict) -> tuple[str, dict]:
@@ -424,8 +488,10 @@ def _into_list(vault: Path, project: str | None, born: list[str]) -> dict | None
 # 表里没有的调了会被退回去（`run` 里那句"没有 xx 这个工具"）。
 TOOL_DOC = {
     "search_nodes": "`q`、`limit`（默认 8） | 按关键字找节点。**讲任何一个概念之前先搜一下**，看我图里有没有",
-    "read_node": ("`id` 或 `ids`（一次最多 5 个） | 读节点的正文和关系。要引用我已有的笔记就先读它，"
-                  "别凭印象说「你笔记里写过」。**要往好几个节点补内容时一次把它们全读进来**，别一个一个读"),
+    "read_node": ("`id` 或 `ids`（一次最多 5 个），可选 `outline: true`（只看目录）、`section`（只读某一节） | "
+                  "读节点的正文和关系。要引用我已有的笔记就先读它，别凭印象说「你笔记里写过」。"
+                  "**要往好几个节点补内容时一次把它们全读进来**，别一个一个读。"
+                  "搜索结果标了「长笔记」的，先 `outline` 看目录再按 `section` 读那一节，别整篇读了又被截断"),
     "overview": "无 | 图谱概况：节点数、领域、还有多少壳",
     "today": "无 | 今日清单：错题 / 到期复习 / 计划里还没建的点",
     "projects": "无 | 我的项目、清单、进度和时间账（还剩多少、来不来得及）",
@@ -464,8 +530,9 @@ FORMAT_DOC = {
 {"tool": "propose_changes", "args": {"changes": [
   {"type": "create_node", "source": "NPU", "path": "nodes/02-计算机硬件/NPU.md",
    "fields": {"name": "NPU", "field": "计算机系统", "layer": "硬件", "year": 2017,
-              "desc": "一句话摘要"},
-   "body": "（按下面的正文骨架写）"},
+              "desc": "一句话摘要（显示层：画布卡片上就这一句）",
+              "tags": ["神经生理学", "数学"]},
+   "body": "（笔记层：按下面的正文骨架写足，落盘时整篇保留）"},
   {"type": "append_body", "source": "GPU", "body": "## 和 NPU 的分工\\n（只写这次补的这一段）"},
   {"type": "update_body", "source": "GPU", "body": "（这个节点的**完整**新正文）"},
   {"type": "add_edge", "source": "NPU", "relation": "对比", "target": "GPU"},
@@ -480,7 +547,8 @@ FORMAT_DOC = {
 所以不要求你把全文背回来。补的那一段自己带个 `##` 小标题，让笔记看得出层次。
 
 `update_body` 是**整段替换**，只在真要重写/合并/删错字时才用，而且**必须先 `read_node` 读到全文**——
-`read_node` 说了原文被截断的，这个节点就只准 `append_body`，替换会把你没看见的那半篇永久删掉。
+`read_node` 说了原文被截断的、或者你只带 `outline` / `section` 看了目录或一节的，这个节点就只准 `append_body`，
+替换会把你没看见的那部分永久删掉。搜索结果标了「长笔记」的，先 `outline` 看目录再按 `section` 读，别整篇读。
 
 **图上错的东西你有权提议改掉，不是只能问我。** 后三种就是干这个的，和「补内容」完全对称：
 同样只出卡片、同样要我点，所以**看出问题就直接提，别把选择题丢回给我**。
@@ -507,8 +575,15 @@ FORMAT_DOC = {
 该是两张卡，不是一张——**一轮里连着提几张完全可以**，我一张一张点。
 只有同一个主题下的几处改动（补正文 + 跟着改 `desc` + 补一条边）才并进同一张卡。
 
-**正文要写成能过半年回看的笔记，不是一行标题。** 新建节点的 `body` 按这个骨架写，
-哪一节这次没聊到就整节不要，别写占位话：
+**正文要写成能过半年回看的笔记，不是一行标题。** 一个节点有两层：`desc` 是**显示层**，
+画布卡片上只有这一句，所以短；`body` 是**笔记层**，落盘时整篇保留，按下面的档位写足。
+「留白」只适用于「我的理解」那一节（没懂就写没懂）；**事实层不留白**——
+人物、学科、年份、出处这些我口述里说过的词，一个都不能在入库时被精简掉，
+少一个词以后就少一条能连的边（「神经生理学家 + 数学家」丢了，神经元和神经网络数学那两条线就接不上）。
+
+{{note_level}}
+
+新建节点的 `body` 按这个骨架写，哪一节这次没聊到就整节不要，别写占位话：
 
 ```
 （开头一两句：它是什么、解决什么问题）
@@ -524,7 +599,15 @@ FORMAT_DOC = {
 
 ## 我的理解
 我当时是怎么想通的；**还没懂的地方直接写「没懂：…」留在这儿**，别替我编圆。
+
+## 线头
+- 神经生理学：McCulloch 的出身，「神经元」那条线以后接这里
+- 数学 / 逻辑：Pitts 的出身，「神经网络的数学基础」接这里
 ```
+
+**「线头」是给以后连边留的钩子，哪档都不能省。** 一行一个：口述里出现、这次没建成节点的
+人物、学科、来源概念、相邻技术，后面写一句它为什么会跟这个点有关。同一批词再抄一份进
+`fields.tags`，`search_nodes` 搜得到 tags——以后建到「神经元」时一搜就知道该接回来。
 
 `create_node` 的 `fields` 里带上 `layer`（`理论 / 硬件 / 体系结构 / 汇编接口 / 系统软件 /
 高级语言 / AI应用`）和 `year`（有确切年份的技术才填），这两个字段决定它在历史视图里站哪儿。""",
@@ -864,6 +947,8 @@ def _system_prompt(vault: Path, stance: str | None, project: str | None = None) 
             .replace("{{level}}", level_fragment(_project_level(vault, project), "chat"))
             .replace("{{tools}}", table)
             .replace("{{formats}}", formats)
+            # 在 formats 之后替换：{{note_level}} 住在 FORMAT_DOC 里，先渲染进基底才替得到
+            .replace("{{note_level}}", level_fragment(_project_level(vault, project), "note"))
             .replace("{{relations}}", _relations_brief(vault))
             .replace("{{me}}", _me_brief(vault, project))
             .replace("{{stance_intro}}", intro.strip())

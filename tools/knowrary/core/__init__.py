@@ -17,7 +17,7 @@ from .mdio import (NODE_DIRS, RE_LINK, RE_REL_HEADER, dump_frontmatter, first_pa
 from .parser import (LAYERS, UNLAYERED, Node, digest_of, load_node, load_vault,
                      validate_frontmatter)
 from .placement import (by_field_and_layer, inbox_ids, is_lane_stack, place_node,
-                        place_or_grow, plan_growth, plan_lane_growth, plan_new_lane, target_group)
+                        place_or_grow, plan_field_group, plan_growth, plan_lane_growth, plan_new_lane, target_group)
 from .projects import (DEFAULT_LEVEL, DEFAULT_LOAD, ID_OK, KINDS, LEVELS, level_of, exam_state, states_of, study_state, LOAD_HOURS, LOADS, MASTERY_ORDER, all_progress,
                        all_schedules, as_date, ascii_id, done_ids, empty_projects, legacy_plans_path,
                        list_field, lists_of, load_projects, mastery_of, merge_progress, point_ids,
@@ -27,7 +27,13 @@ from .pool import (add as add_question, enrich as enrich_questions, for_nodes as
                    load_pool, mark as mark_questions, norm as pool_norm, pool_stats)
 from .quiz import append_answers, clear_open, load_open, load_quiz_log, save_open, wrong_nodes
 from .usage import load_usage, record as record_usage, summary as usage_summary
+from .article import (build_article_prompt, cards_from_index, cards_from_nodes, describe_points,
+                      describe_related, select_linkable, select_related)
+from .sections import Heading, describe_outline, extract_section, find_heading, outline
+from .importing import (CONFIDENCE_DIRECT, ENRICH_MARK, ImportTarget, Translation, promote_in_plan,
+                        rename_in_plan, translate)
 from .merge import MergeRejected, apply_merge, plan_merge
+from .pending import add_home, add_pending, load_homes, load_pending, pending_path, remove_pending
 from .rename import RenameRejected, apply_rename, backup_rename, plan_rename
 from .review import GRADES, due_nodes, load_log, next_due_for, record_review
 from .writer import (CHANGE_TYPES, EDITABLE_FIELDS, ChangeRejected, FileEdit, WriteConflict,
@@ -45,6 +51,12 @@ __all__ = [
     "plan_lane_growth", "plan_new_lane", "is_lane_stack",
     "projects_path", "point_ids", "by_field_and_layer", "add_question", "enrich_questions", "pool_norm", "pool_for_nodes", "load_pool", "mark_questions", "pool_stats", "save_open", "load_open", "clear_open", "LEVELS", "DEFAULT_LEVEL", "level_of", "progress_of", "progress_of_project", "stage_points",
     "schedule_of", "upgrade_v1", "record_review", "record_usage", "load_usage", "usage_summary",
+    "build_article_prompt", "cards_from_index", "cards_from_nodes", "describe_points", "describe_related",
+    "select_linkable", "select_related",
+    "Heading", "describe_outline", "extract_section", "find_heading", "outline",
+    "CONFIDENCE_DIRECT", "ENRICH_MARK", "ImportTarget", "Translation", "translate", "rename_in_plan",
+    "promote_in_plan",
+    "add_pending", "load_pending", "pending_path", "remove_pending", "add_home", "load_homes", "plan_field_group",
     "MergeRejected", "RenameRejected", "apply_merge", "apply_rename", "backup_rename",
     "plan_merge", "plan_rename",
     "save_projects", "target_group", "wrong_nodes",

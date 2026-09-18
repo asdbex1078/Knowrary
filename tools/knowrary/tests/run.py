@@ -639,6 +639,40 @@ def 演化边年份倒挂会被算出来():
 
 
 @case
+def 建节点时带的正文要整篇落盘_没给才落最小骨架():
+    """对话教练按骨架写足了 body，写盘却只认 desc、正文整篇丢掉——
+    节点建出来只剩一句话，笔记层等于没有（阈值逻辑单元那次就是这样）。"""
+    vault = make_vault({"nodes/a.md": node_md("A")})
+    r = core.build_index(vault, None)
+    body = ("1943 年由神经生理学家 McCulloch 和数学家 Pitts 提出。\n\n"
+            "## 怎么运作\n输入加权求和，过阈值输出 1。\n\n## 线头\n- 神经生理学\n- 数学")
+    fields = {"name": "TLU", "field": "AI", "desc": "最简人工神经元"}
+    edits = core.plan(vault, [{"type": "create_node", "source": "TLU", "path": "nodes/TLU.md",
+                               "fields": fields, "body": body}], r.data)
+    text = edits[0].after
+    assert "数学家 Pitts" in text and "## 线头" in text, text
+    assert text.count("# TLU") == 1 and "## 描述" not in text, text
+    assert text.rstrip().endswith("## 关系"), text
+    assert any("正文" in n for n in edits[0].notes), edits[0].notes
+    # 模型自带 H1 时不重复加标题
+    edits = core.plan(vault, [{"type": "create_node", "source": "T2", "path": "nodes/T2.md",
+                               "fields": {**fields, "name": "T2"}, "body": "# T2\n\n正文"}], r.data)
+    assert edits[0].after.count("# T2") == 1, edits[0].after
+    # 没给 body（画布右键建空节点）仍然落「## 描述 + desc」
+    edits = core.plan(vault, [{"type": "create_node", "source": "T3", "path": "nodes/T3.md",
+                               "fields": {**fields, "name": "T3"}}], r.data)
+    assert "## 描述\n最简人工神经元" in edits[0].after, edits[0].after
+    # 正文里自带 `## 关系` 要拒：关系段由解析器独占
+    try:
+        core.plan(vault, [{"type": "create_node", "source": "T4", "path": "nodes/T4.md",
+                           "fields": {**fields, "name": "T4"}, "body": "x\n\n## 关系\n- 对比:: [[a]]"}], r.data)
+    except core.ChangeRejected as exc:
+        assert "关系" in str(exc), exc
+    else:
+        raise AssertionError("正文里夹带 ## 关系 也放过去了")
+
+
+@case
 def 建节点时能写layer_写错则拒():
     """`layer` 加了字段、加了校验、加了泳道，却忘了开写回白名单——
     表现是对话里建出来的节点没有 layer，模型只能在正文里留一句"待补"。"""
@@ -1274,6 +1308,147 @@ def 真实_vault_无错误():
     # 边数不做下限断言：2026-09-14 清空了全部关系，由人重新连一遍，
     # 这期间真实 vault 的边数会从 0 慢慢长回去。这里只守"节点没丢、契约没破"。
     assert r.stats["nodes"] > 50, r.stats
+
+
+# ---------------------------------------------------------------- 导入：方案 → 变更集 + 待审边
+
+def _plan_fixture() -> dict:
+    return {
+        "nodes": [
+            {"id": "新甲", "name": "新甲", "desc": "新概念", "type": "概念",
+             "body": "## 描述\n新甲是什么，见 [[a]] 和 [[没有的概念]]。\n\n## 关系\n- 依赖:: [[a]]",
+             "relations": [
+                 {"type": "依赖", "target": "a", "confidence": 0.95},
+                 {"type": "对比", "target": "b", "confidence": 0.4, "note": "拿不准"},
+                 {"type": "部件", "target": "新乙", "confidence": 0.2},
+                 {"type": "依赖", "target": "不存在"},
+             ]},
+            {"id": "新乙", "name": "新乙", "desc": "另一个", "relations": []},
+            {"id": "a", "name": "A", "desc": "已存在的", "relations": []},
+        ],
+        "stubs": [{"id": "壳", "name": "壳", "desc": "空壳", "why": "关系要用"}],
+        "enrich": [{"existing": "b", "content": "补一段关于 B 的新理解。", "why": "文章讲到了"},
+                   {"existing": "没这个", "content": "x"}],
+        "summary": "测试方案",
+    }
+
+
+@case
+def 导入翻译_三种产物各归其位():
+    vault, r = build({"nodes/x/a.md": node_md("A"), "nodes/x/b.md": node_md("B")})
+    rt = core.load_relation_types(vault)
+    tr = core.translate(_plan_fixture(), r.data, rt, core.ImportTarget("测试", "某文章", today="2026-09-18"))
+    kinds = [(c["type"], c["source"]) for c in tr.changes]
+    assert ("create_node", "新甲") in kinds and ("create_node", "新乙") in kinds, kinds
+    assert ("create_node", "a") not in kinds, "已存在的节点不能被覆盖"
+    assert any("已存在" in w for w in tr.warnings), tr.warnings
+    # 边：高置信连老节点直接写；低置信连老节点进待审；新↔新不看置信度直接写；目标不存在丢弃
+    direct = {(c["relation"], c["target"]) for c in tr.changes if c["type"] == "add_edge" and c["source"] == "新甲"}
+    assert direct == {("依赖", "a"), ("部件", "新乙")}, direct
+    assert [(p["relation"], p["target"], p["confidence"]) for p in tr.pending] == [("对比", "b", 0.4)], tr.pending
+    assert any("不存在" in w and "丢弃" in w for w in tr.warnings), tr.warnings
+    # stub：方案给的 + 正文里链到的不存在 id 自动补壳；正文里的 [[a]] 已存在不补
+    stub_paths = {c["path"] for c in tr.changes if c["type"] == "create_node" and c["fields"].get("status") == "stub"}
+    assert stub_paths == {"nodes/_stubs/壳.md", "nodes/_stubs/没有的概念.md"}, stub_paths
+    # 正文里带的 `## 关系` 段被截掉，边只从 relations 来
+    body = next(c for c in tr.changes if c["source"] == "新甲")["body"]
+    assert "## 关系" not in body and "[[没有的概念]]" in body, body
+    # enrich：只追加、带来源引言；目标不存在的跳过
+    enrich = [c for c in tr.changes if c["type"] == "append_body"]
+    assert [c["source"] for c in enrich] == ["b"], enrich
+    assert enrich[0]["body"].startswith("> 补充自《某文章》（2026-09-18）：文章讲到了\n\n补一段"), enrich[0]["body"]
+    assert tr.counts() == {"nodes": 2, "stubs": 2, "enrich": 1, "edges": 2, "pending": 1}, tr.counts()
+
+
+@case
+def 导入翻译_旧字段merge_into仍认且没confidence当确定():
+    vault, r = build({"nodes/x/a.md": node_md("A")})
+    rt = core.load_relation_types(vault)
+    plan = {"nodes": [{"id": "n", "name": "N", "desc": "d", "relations": [{"type": "依赖", "target": "a"}]}],
+            "merge_into": [{"existing": "a", "content": "老写法"}]}
+    tr = core.translate(plan, r.data, rt, core.ImportTarget("测试", "旧方案"))
+    assert not tr.pending, "旧方案没有 confidence 字段，不能因此全进待审"
+    assert [c["type"] for c in tr.changes] == ["create_node", "add_edge", "append_body"], tr.changes
+
+
+@case
+def 导入翻译_落盘后老节点只追加不改写且待审边进pending():
+    vault, r = build({"nodes/x/a.md": node_md("A"), "nodes/x/b.md": node_md("B", rels="- 部件:: [[a]]")})
+    before_b = core.read(vault / "nodes/x/b.md")
+    rt = core.load_relation_types(vault)
+    target = core.ImportTarget("测试", "某文章", today="2026-09-18")
+    tr = core.translate(_plan_fixture(), r.data, rt, target)
+    edits = core.plan(vault, tr.changes, r.data)
+    core.commit(vault, edits)
+    after_b = core.read(vault / "nodes/x/b.md")
+    head, _, tail = after_b.partition("## 关系")
+    assert "> 补充自《某文章》（2026-09-18）" in head and "补一段关于 B 的新理解" in head, after_b
+    assert before_b.split("## 关系")[0].strip() in head, "老正文一个字都不能少"
+    assert "- 部件:: [[a]]" in tail, "老节点自己的关系段要原样保留"
+    new = core.read(vault / "nodes/测试/新甲.md")
+    assert "- 依赖:: [[a]]" in new and "- 部件:: [[新乙]]" in new and "对比" not in new, new
+    assert (vault / "nodes/_stubs/壳.md").exists() and (vault / "nodes/_stubs/没有的概念.md").exists()
+    added = core.add_pending(vault, tr.pending, {"source": "某文章", "imported_at": "2026-09-18"})
+    assert [a["id"] for a in added] == ["新甲->b#对比"], added
+    doc = core.load_pending(vault)
+    assert doc["edges"][0]["status"] == "pending" and doc["edges"][0]["origin"]["source"] == "某文章"
+    # 再导一次同一条：不重复
+    assert core.add_pending(vault, tr.pending, {"source": "又一篇"}) == []
+    assert core.remove_pending(vault, ["新甲->b#对比"]) == 1 and core.load_pending(vault)["edges"] == []
+    r2 = core.build_index(vault)
+    assert not r2.diags.errors, [d.message for d in r2.diags.errors]
+
+
+@case
+def test_article_prompt_only_lists_linkable_subset():
+    """提示词里的 id 不再是全量：相关节点 + 它们的一跳邻居 + 目标领域的节点，其余不列、封顶 limit。"""
+    from core import article as art
+    cards = [
+        {"id": "attention", "name": "注意力", "aliases": [], "tags": [], "desc": "", "field": "AI",
+         "edges": [("依赖", "softmax")]},
+        {"id": "softmax", "name": "softmax", "aliases": [], "tags": [], "desc": "", "field": "数学", "edges": []},
+        {"id": "gpu", "name": "GPU", "aliases": [], "tags": [], "desc": "", "field": "AI", "edges": []},
+        {"id": "raft", "name": "Raft", "aliases": [], "tags": [], "desc": "", "field": "分布式", "edges": []},
+        {"id": "ghost", "name": "幽灵", "aliases": [], "tags": [], "desc": "", "field": "AI",
+         "edges": [("对比", "不存在的点")]},
+    ]
+    related = art.select_related(cards, "attention 机制的原理")
+    assert [c["id"] for c in related] == ["attention"], related
+    ids = art.select_linkable(cards, related, "AI")
+    # 相关的 attention、它的邻居 softmax（跨领域也带上）、AI 领域的 gpu / ghost；raft 不在、悬空的邻居不在
+    assert ids == ["attention", "ghost", "gpu", "softmax"], ids
+    # 封顶时按优先级：相关 > 邻居 > 同领域
+    assert art.select_linkable(cards, related, "AI", limit=2) == ["attention", "softmax"]
+    # 领域为空时只剩相关 + 邻居
+    assert art.select_linkable(cards, related, "") == ["attention", "softmax"]
+    rt = core.load_relation_types(REPO)
+    prompt = art.build_article_prompt(cards, rt, "attention 机制的原理", "AI")
+    assert "图里共 5 个，这里只列 4 个" in prompt and "raft" not in prompt, prompt[:600]
+    assert "{{" not in prompt, "模板占位符没替换干净"
+
+
+@case
+def test_sections_outline_skips_code_fences_and_extracts_by_title():
+    """目录从 ## 标题现算，代码块里的 # 注释不算标题；按标题取一节要连子节一起带、到下一个同级为止。"""
+    text = (
+        "# 标题\n\n## 描述\n一句话。\n\n## 一、分界\n正文 A\n\n```python\n# 这不是标题\nx = 1\n```\n\n"
+        "### 案例 1【路 A】细节\n子节 1\n\n### 案例 2\n子节 2\n\n## 二、粒度\n正文 B\n\n## 关系\n- 依赖:: [[x]]\n"
+    )
+    titles = [h.title for h in core.outline(text)]
+    assert titles == ["标题", "描述", "一、分界", "案例 1【路 A】细节", "案例 2", "二、粒度", "关系"], titles
+    toc = core.describe_outline(text)
+    assert "这不是标题" not in toc and "- 一、分界" in toc and "    - 案例 2" in toc and "- 标题" not in toc, toc
+
+    head, sec = core.extract_section(text, "一、分界")
+    assert head.level == 2 and sec.startswith("## 一、分界") and "子节 2" in sec and "正文 B" not in sec, sec
+    # 去标点空白的模糊匹配：写「案例1」能对上「案例 1【路 A】细节」，只取到下一个同级（案例 2）之前
+    head, sec = core.extract_section(text, "案例1")
+    assert head.title.startswith("案例 1") and "子节 1" in sec and "子节 2" not in sec, sec
+    # 完全一致优先于包含：「案例 2」不该被「案例 1」抢走
+    assert core.extract_section(text, "案例 2")[0].title == "案例 2"
+    assert core.extract_section(text, "不存在的节") is None and core.find_heading(text, "") is None
+    # 最后一节取到文件尾
+    assert core.extract_section(text, "关系")[1].endswith("[[x]]")
 
 
 # ---------------------------------------------------------------- 执行

@@ -15,8 +15,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import assets, chat as chat_svc, curation, projects as projects_svc, years as years_svc
-from .contracts import (CalendarRead, ChangeResult, ChangeSet, ChatRequest, CoachToday, FileDiff,
+from . import (assets, chat as chat_svc, curation, importing, projects as projects_svc, summarize as summarize_svc,
+               years as years_svc)
+from .contracts import (CalendarRead, ChangeResult, ChangeSet, ChatRequest, CoachToday, FileDiff, ImportProposal,
+                        ImportProposeRequest, ImportRequest, ImportResult, SourceText, SourcesRead, SummarizeRequest, SummaryDraft,
                         InboxRead,
                         LayoutPatch, LayoutRead,
                         LayoutSaved, MergeImpact, MergeRequest, MergeResult, NodeDetail,
@@ -509,6 +511,56 @@ def post_changes(changeset: ChangeSet) -> ChangeResult:
     invalidate(vault)                      # md 变了，索引缓存作废
     return ChangeResult(applied=True, files=files, backup=snapshot or None,
                         index_revision=current_index(vault)["revision"])
+
+
+@app.post("/api/import", response_model=ImportResult)
+def post_import(req: ImportRequest) -> ImportResult:
+    """导入一篇笔记的方案：新建节点 / 补充老节点 / 待审边。默认只预览（每个文件的 diff），
+    dry_run=false 才落盘；低置信边只在落盘时记进 pending.json。"""
+    try:
+        return importing.run(vault_path(), req)
+    except importing.StaleIndex as exc:
+        raise HTTPException(status_code=409, detail={
+            "message": str(exc), "current_revision": exc.current,
+            "hint": "重新拉取 /api/index 后再提交"}) from exc
+    except importing.ImportRejected as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.post("/api/import/propose", response_model=ImportProposal)
+def post_import_propose(req: ImportProposeRequest) -> ImportProposal:
+    """文章 → 方案（调一次 learn 角色的 LLM）→ 顺手 dry-run。返回方案、diff、待审边、认领 / 撞名 / 孤立。"""
+    try:
+        return importing.propose(vault_path(), req)
+    except importing.ImportRejected as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except LLMFailed as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@app.get("/api/import/sources", response_model=SourcesRead)
+def get_import_sources() -> SourcesRead:
+    """vault 里可以当素材的 md / txt（节点目录之外）。"""
+    return importing.sources(vault_path())
+
+
+@app.get("/api/import/source", response_model=SourceText)
+def get_import_source(path: str) -> SourceText:
+    try:
+        return importing.read_source(vault_path(), path)
+    except importing.ImportRejected as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.post("/api/summarize", response_model=SummaryDraft)
+def post_summarize(req: SummarizeRequest) -> SummaryDraft:
+    """把几个点概括成一个上位节点的草稿（一次 learn 调用，不写盘）。写入走 /api/changes。"""
+    try:
+        return summarize_svc.propose(vault_path(), req)
+    except summarize_svc.SummarizeRejected as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except LLMFailed as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
 class FreshStatic(StaticFiles):
