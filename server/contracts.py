@@ -838,9 +838,11 @@ class CacheHealth(Strict):
     缓存失效不报错、答案也全对，测试够不着真实 API，所以只能靠账本上这个比值盯着。
     """
 
-    ratio: float | None = None         # 总账的读写比
-    worst: CacheWorst | None = None    # 多轮对话里最难看的那个 op
+    ratio: float | None = None         # **今天**多轮对话的读写比（不是总账：累计桶只加不减，红了就再也不会绿）
+    worst: CacheWorst | None = None    # 今天多轮对话里最难看的那个 op
     healthy: float = 3.0               # 低于它就该查了（健康的多轮循环在 5-10×）
+    window: str = ""                   # 这个比值算的是哪一天（本地日期）
+    calls: int = 0                     # 这一天有几次多轮调用；太少就别急着信这个数
     ok: bool = True
 
 
