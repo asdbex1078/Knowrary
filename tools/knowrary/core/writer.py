@@ -178,11 +178,22 @@ def apply_to_text(text: str, node_id: str, changes: list[dict]) -> tuple[str, li
     return rebuilt, notes
 
 
-def _render_new_node(fields: dict) -> str:
-    """新知识点的初始原文：规范 3 的必填 frontmatter + 规范 4 推荐的正文骨架。"""
+def _render_new_node(fields: dict, body: str | None = None) -> str:
+    """新知识点的初始原文：规范 3 的必填 frontmatter + 正文 + 空的 `## 关系` 段。
+
+    正文有两种来源：对话教练按骨架写好的 `body`（笔记层，可以很长），
+    或者画布右键建空节点时什么都没有——那就落回「## 描述 + desc」这个最小骨架。
+    **以前不管给没给 body 都走后者**，于是模型写足的正文在落盘那一步被整篇丢掉，
+    节点建出来只剩 desc 那一句（阈值逻辑单元那次就是这样）。
+    """
     fm = {k: v for k, v in fields.items() if v not in (None, "", [])}
-    body = f"# {fm['name']}\n\n## 描述\n{fm['desc']}\n\n## 关系\n"
-    return dump_frontmatter(fm) + body
+    text = (body or "").strip("\n")
+    if not text:
+        text = f"## 描述\n{fm['desc']}"
+    # 模型有时自带 `# 标题` 一行，有时不带；文件里只留一个 H1
+    if not text.startswith("# "):
+        text = f"# {fm['name']}\n\n" + text
+    return dump_frontmatter(fm) + text + "\n\n## 关系\n"
 
 
 def _create_node_edit(vault: Path, change: dict, taken: set[str]) -> FileEdit:
@@ -225,8 +236,10 @@ def _create_node_edit(vault: Path, change: dict, taken: set[str]) -> FileEdit:
     path.parent.mkdir(parents=True, exist_ok=True)
     if path.stem != node_id:
         raise ChangeRejected(f"文件名要和 id 一致（id 默认取文件名）：{path.name} ≠ {node_id}.md")
+    body = _checked_body(change) if str(change.get("body") or "").strip() else None
+    notes = [f"新建知识点 {node_id}"] + ([f"正文 {len(body)} 字"] if body else [])
     return FileEdit(path=path, rel=rel, before="",
-                    after=_render_new_node(fields), notes=[f"新建知识点 {node_id}"])
+                    after=_render_new_node(fields, body), notes=notes)
 
 
 def plan(vault: Path, changes: list[dict], index: dict) -> list[FileEdit]:

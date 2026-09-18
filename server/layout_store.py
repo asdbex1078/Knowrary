@@ -72,8 +72,8 @@ def load_or_init(vault: Path, index: dict, name: str = DEFAULT_LAYOUT,
                  project: dict | None = None) -> tuple[LayoutDoc, bool]:
     """没有这份 layout 时生成一份初始的并落盘。返回 (布局, 是否刚生成)。
 
-    全局图按 field / 子目录铺；**项目画布按清单铺**，一份清单一个分组框，
-    还没建出来的点画成幽灵占位——项目画布从第一天就该是完整的施工图，
+    全局图按 field / 子目录铺；**项目画布不画框**，已建的点按阶段成列、
+    还没建出来的点画成幽灵停在右下角——项目画布从第一天就该是完整的施工图，
     你能看见还没建的东西在哪，而不是一片空白（重构方案 §5A）。
     """
     with _LOCK:

@@ -8,7 +8,7 @@ defineProps({
   items: { type: Array, default: () => [] },
   busy: { type: Boolean, default: false },
 })
-const emit = defineEmits(['place', 'placeAll', 'close', 'dragStart'])
+const emit = defineEmits(['place', 'placeAll', 'placeNewGroup', 'suggest', 'close', 'dragStart'])
 
 function onDragStart(ev, item) {
   ev.dataTransfer.effectAllowed = 'copy'
@@ -41,11 +41,25 @@ function onDragStart(ev, item) {
               <span v-if="it.stub" class="chip" style="font-size: 11px; padding: 1px 7px">stub</span>
             </div>
             <div class="ds">{{ it.desc || '（无摘要）' }}</div>
+            <!-- 导入时模型给的归属建议：只显示，不自动建域 / 建项目 -->
+            <div v-if="it.home" class="inbox-home dim">
+              建议归到{{ it.home.kind === 'project' ? '项目' : it.home.kind === 'field' ? '领域' : '' }}「{{ it.home.name }}」{{ it.home.why ? `——${it.home.why}` : '' }}
+              <span v-if="it.home.origin?.source">（来自《{{ it.home.origin.source }}》）</span>
+            </div>
             <div class="ft">
               <span>{{ it.field || '未指定领域' }}</span>
               <span class="dim">·</span>
-              <span>{{ it.degree }} 关系</span>
-              <button class="btn tiny" data-act="place" :disabled="busy || !it.suggested_group"
+              <!-- 零边：放上去就是孤点，投票也算不出分组——先补边 -->
+              <button v-if="!it.degree" class="chip warn-chip" data-act="suggest" :disabled="busy"
+                      title="一条关系都没有：放上去就是孤点。让 AI 按摘要建议几条边，在检查器里逐条确认"
+                      @click="emit('suggest', it)">0 关系 · 让 AI 建议</button>
+              <span v-else>{{ it.degree }} 关系</span>
+              <button v-if="it.field_group_missing" class="btn tiny" data-act="place-new-group" :disabled="busy"
+                      :title="`画布上还没有「${it.field}」这个域：在最下面开一个框并放进去`"
+                      @click="emit('placeNewGroup', it)">
+                建「{{ it.field }}」域框并放入
+              </button>
+              <button v-else class="btn tiny" data-act="place" :disabled="busy || !it.suggested_group"
                       :title="it.suggested_group_name ? `放进「${it.suggested_group_name}」` : '判不出分组，需要手动拖'"
                       @click="emit('place', it)">
                 {{ it.suggested_group_name || '需手动拖' }}

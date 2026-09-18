@@ -227,7 +227,7 @@ class Change(Strict):
     year: int | None = None
     note: str | None = None
     fields: dict[str, Any] | None = None
-    body: str | None = None            # update_body：整段替换的新正文；append_body：往正文尾部补的那一段
+    body: str | None = None            # create_node：新节点正文（不给就落「## 描述」最小骨架）；update_body：整段替换；append_body：往尾部补一段
     evidence: list[str] = Field(default_factory=list)
     confidence: float = 1.0
 
@@ -242,6 +242,89 @@ class FileDiff(Strict):
     path: str
     notes: list[str] = Field(default_factory=list)
     diff: str = ""                     # 统一 diff 片段，给人看"改了哪几行"
+
+
+class ImportRequest(Strict):
+    """一篇笔记的导入方案（LLM 拆出来的 JSON）→ 三种产物。默认只预览，dry_run=false 才落盘。
+
+    `renames` / `promote` 是审核卡上的两个动作，服务端改方案再翻译：
+    改 id 要连带改所有指向它的关系和正文链接，这种改写不该让前端自己拼。
+    """
+
+    plan: dict[str, Any]
+    field: str                         # 新节点统一的领域
+    source: str                        # 来源标记（文章名），写进 frontmatter source 与补充段引言
+    folder: str | None = None          # nodes/ 下的子目录；不给就用 field
+    base_revision: int | None = None   # 基于哪个 index revision；给了就校验
+    dry_run: bool = True
+    renames: dict[str, str] = Field(default_factory=dict)   # {模型给的 id: 改成的 id}，认领幽灵用
+    promote: list[str] = Field(default_factory=list)        # 要直接写入的待审边 key（源->目标#类型）
+
+
+class ImportResult(Strict):
+    applied: bool
+    files: list[FileDiff] = Field(default_factory=list)
+    pending: list[PendingEdge] = Field(default_factory=list)   # 低置信边；applied 时已记进 pending.json
+    warnings: list[str] = Field(default_factory=list)
+    counts: dict[str, int] = Field(default_factory=dict)
+    summary: str = ""
+    backup: str | None = None
+    log: str | None = None             # 落盘后方案存档（vault 相对路径）
+    index_revision: int = 0
+
+
+class ImportProposeRequest(Strict):
+    """文章 → 方案：调一次 learn 角色的 LLM，顺手跑 dry-run 把 diff 一起带回来。"""
+
+    text: str | None = None            # 粘贴 / 本地文件读出来的正文
+    file: str | None = None            # 或者：vault 里的一个 md / txt（相对路径）
+    source: str                        # 文章名（写进 frontmatter source）
+    field: str
+    folder: str | None = None
+    project: str | None = None         # 在哪个项目下导入：它清单里没建的点作为"待认领"给模型看
+
+
+class ImportClaim(Strict):
+    node_id: str
+    point_id: str
+    point_name: str
+    ratio: float | None = None         # 近似撞名时的相似度；明确认领的没有
+
+
+class ImportProposal(Strict):
+    plan: dict[str, Any]               # 已做过认领归一（明确 claims 的 id 已换成清单 id）
+    preview: ImportResult
+    claims: list[ImportClaim] = Field(default_factory=list)        # 认领了哪些幽灵
+    near_misses: list[ImportClaim] = Field(default_factory=list)   # 和清单里的点很像、但没认领
+    isolated: list[str] = Field(default_factory=list)              # 一条边都没连到已有节点、也没认领
+    suggest_home: dict[str, Any] | None = None                     # 模型对孤立节点该归哪的建议
+    project_points: int = 0            # 给模型看了几个待认领的点
+    prompt_chars: int = 0
+
+
+class SourceFile(Strict):
+    path: str
+    name: str
+    size: int
+    modified: str
+
+
+class SourcesRead(Strict):
+    files: list[SourceFile] = Field(default_factory=list)
+
+
+class SourceText(Strict):
+    path: str
+    text: str
+
+
+class PendingEdge(Strict):
+    source: str
+    relation: str
+    target: str
+    year: int | None = None
+    note: str | None = None
+    confidence: float
 
 
 class ChangeResult(Strict):
@@ -264,6 +347,8 @@ class InboxItem(Strict):
     degree: int = 0
     suggested_group: str | None = None
     suggested_group_name: str | None = None
+    field_group_missing: bool = False   # 有 field、但画布上没有同名顶层框：判不出分组的根因，给一键建框
+    home: dict[str, Any] | None = None  # 导入时模型给的归属建议（pending.json 的 homes），只显示不自动建
 
 
 class InboxRead(Strict):
@@ -280,6 +365,7 @@ class PlaceRequest(Strict):
     group: str | None = None
     at: Point | None = None                          # 只在放单个节点时有效
     state: Literal["final", "draft"] = "draft"
+    create_field_group: bool = False                 # 判不出分组且节点有 field 时，先开一个同名顶层框再放进去
 
 
 class Placed(Strict):
@@ -296,6 +382,7 @@ class PlaceResult(Strict):
     placed: list[Placed] = Field(default_factory=list)
     skipped: list[dict[str, str]] = Field(default_factory=list)   # {id, reason}
     grown_groups: list[str] = Field(default_factory=list)         # 为放下新节点而加高的分组
+    created_groups: list[str] = Field(default_factory=list)       # 为放下新节点而新开的领域框
 
 
 class ReviewDone(Strict):
@@ -336,6 +423,22 @@ class SuggestDuplicate(Strict):
     existing_id: str
     reason: str = ""
     confidence: float = 0.8
+
+
+class SummarizeRequest(Strict):
+    """把画布上圈在一起的几个点概括成一个上位节点：让模型起草名字 / 摘要 / 正文（提议，不写盘）。"""
+
+    node_ids: list[str] = Field(min_length=2, max_length=60)
+    name: str | None = None            # 框的名字，给模型当起名的参考
+
+
+class SummaryDraft(Strict):
+    name: str
+    desc: str
+    body: str                          # 从 `## 描述` 开始的 Markdown，不含 `## 关系`
+    layer: str | None = None
+    year: int | None = None
+    children: list[str] = Field(default_factory=list)   # 真被概括进去的子节点（存在于索引里的）
 
 
 class SuggestResult(Strict):

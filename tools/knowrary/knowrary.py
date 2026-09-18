@@ -33,7 +33,10 @@ from core import (Diagnostics, Edge, Node, RelationTypes, build_digest, build_in
                   load_vault, read, record_review, stamp, validate_index, write, write_json_atomic)
 from core import (build_project_layout, legacy_plans_path, load_projects, projects_path,
                   save_projects, upgrade_v1)
-from core.mdio import RE_ID_OK, RE_LINK
+from core import (ChangeRejected, ImportTarget, Translation, WriteConflict, add_pending, commit, translate)
+from core import plan as plan_changes
+from core import build_article_prompt, cards_from_nodes, describe_related, select_linkable, select_related
+from core.mdio import RE_LINK
 
 HERE = Path(__file__).resolve().parent
 TODAY = dt.date.today().isoformat()
@@ -436,130 +439,58 @@ def extract_json(text: str) -> dict:
         return json.loads(text[start:end + 1])
 
 
-# ---------------------------------------------------------------- article
+# ---------------------------------------------------------------- article（提示词拼装在 core.article）
 
-def select_related(nodes: dict[str, Node], text: str, limit: int = 60) -> list[Node]:
-    toks = {t for t in re.findall(r"[a-z0-9_+#.-]+|[一-鿿]{2,4}", text.lower()) if len(t) >= 2}
-    scored = []
-    for n in nodes.values():
-        names = " ".join([n.id, str(n.fm.get("name", "")), *(n.fm.get("aliases") or []),
-                          *(n.fm.get("tags") or [])]).lower()
-        desc = str(n.fm.get("desc", "")).lower()
-        s = sum(3 * len(t) for t in toks if t in names) + sum(len(t) for t in toks if t in desc)
-        if s >= 6:  # 至少命中名字里的一个词，或 desc 里的多个词
-            scored.append((s, n))
-    scored.sort(key=lambda x: -x[0])
-    return [n for _, n in scored[:limit]]
+def apply_plan(plan: dict, vault: Path, target: ImportTarget, dry_run: bool) -> None:
+    """方案 JSON → 三种产物（新建 / 补充老节点 / 待审边），走和网页同一条写回通道。
 
-
-def build_article_prompt(nodes: dict[str, Node], rt: RelationTypes, article: str, field_name: str) -> str:
-    tpl = read(HERE / "prompts" / "article.md")
-    related = select_related(nodes, article)
-    rel_lines = [f"- {n.id}｜{n.fm.get('desc', '')}｜边: "
-                 + ("; ".join(f"{e.type}→{e.target}" for e in n.edges[:8]) or "(无)") for n in related]
-    return (tpl.replace("{{relation_types}}", rt.describe())
-            .replace("{{field}}", field_name)
-            .replace("{{all_ids}}", "、".join(sorted(nodes)) or "(空)")
-            .replace("{{related_nodes}}", "\n".join(rel_lines) or "(无)")
-            .replace("{{article}}", article))
-
-
-@dataclass
-class ImportTarget:
-    """一次导入的落点：写进哪个 vault、算哪个领域、放哪个子目录、来源标记。"""
-
-    vault: Path
-    field_name: str
-    folder: str | None
-    source: str
-
-    @property
-    def node_dir(self) -> Path:
-        return self.vault / "nodes" / (self.folder or self.field_name)
-
-
-@dataclass
-class ImportResult:
-    written: list[Path] = field(default_factory=list)
-    skipped: list[str] = field(default_factory=list)
-    dropped_edges: list[str] = field(default_factory=list)
-    unknown_types: list[str] = field(default_factory=list)
-    plan: dict = field(default_factory=dict)
-
-
-def validate_plan(plan: dict, nodes: dict[str, Node], rt: RelationTypes, res: ImportResult) -> None:
-    new_ids = {n["id"] for n in plan.get("nodes", [])}
-    stub_ids = {s["id"] for s in plan.get("stubs", [])}
-    legal = set(nodes) | new_ids | stub_ids
-    for n in plan.get("nodes", []):
-        if not RE_ID_OK.match(n["id"]):
-            raise SystemExit(f"非法 id：{n['id']}")
-        if n["id"] in nodes:
-            res.skipped.append(f"{n['id']}（已存在，未覆盖；建议改为 merge_into）")
-        kept = []
-        for r in n.get("relations", []):
-            if r["target"] not in legal or r["target"] == n["id"]:
-                res.dropped_edges.append(f"{n['id']} {r['type']} → {r['target']}（目标不存在）")
-                continue
-            if not rt.known(r["type"]):
-                res.unknown_types.append(f"{n['id']} {r['type']} → {r['target']}")
-            kept.append(r)
-        n["relations"] = kept
-        for link in set(RE_LINK.findall(n.get("body", ""))):
-            if link not in legal:
-                plan.setdefault("stubs", []).append({"id": link, "name": link, "desc": "待补充",
-                                                     "why": f"正文 [[{link}]] 引用但不存在"})
-                legal.add(link)
-
-
-def node_from_plan(n: dict, field_name: str, source: str) -> tuple[dict, str, list[Edge]]:
-    fm = {"name": n.get("name") or n["id"], "field": field_name, "desc": n.get("desc") or "待补充",
-          "learned": TODAY, "source": source}
-    for k in ("type", "year", "aliases", "tags"):
-        if n.get(k):
-            fm[k] = n[k]
-    body = f"# {fm['name']}\n\n" + (n.get("body") or "").strip() + "\n"
-    edges = [Edge(n["id"], r["type"], r["target"], r.get("year"), (r.get("note") or "").strip())
-             for r in n.get("relations", [])]
-    return fm, body, edges
-
-
-def plan_to_outputs(plan: dict, nodes: dict[str, Node], target: ImportTarget) -> list[tuple[Path, str]]:
-    """方案 JSON → [(路径, 文件内容)]。已存在的节点跳过。"""
-    outputs: list[tuple[Path, str]] = []
-    for n in plan.get("nodes", []):
-        if n["id"] in nodes:
-            continue
-        fm, body, edges = node_from_plan(n, target.field_name, target.source)
-        outputs.append((target.node_dir / f"{n['id']}.md", render_node(fm, body, edges)))
-    for s in plan.get("stubs", []):
-        if s["id"] in nodes or any(p.stem == s["id"] for p, _ in outputs):
-            continue
-        fm = {"name": s.get("name") or s["id"], "field": target.field_name, "status": "stub",
-              "desc": s.get("desc") or "待补充", "source": target.source}
-        body = f"# {fm['name']}\n\n> 空壳节点（stub）：{s.get('why', '')}\n"
-        outputs.append((target.vault / "nodes" / "_stubs" / f"{s['id']}.md", render_node(fm, body, [])))
-    return outputs
-
-
-def apply_plan(plan: dict, target: ImportTarget, dry_run: bool) -> None:
-    vault = target.vault
+    以前这里自己渲染文件、自己 write，和 `/api/changes` 是两套写法；现在翻译成 ChangeSet
+    交给 `core.plan` / `core.commit`：dry-run 能看到每个文件的 diff，落盘前自动备份，
+    补充老节点只追加不覆盖。待审边只在真正落盘时记进 pending.json。
+    """
     rt = load_relation_types(vault)
-    nodes, _ = load_vault(vault)
-    res = ImportResult(plan=plan)
-    validate_plan(plan, nodes, rt, res)
-    outputs = plan_to_outputs(plan, nodes, target)
-    print_import_report(res, outputs, vault, dry_run)
+    index = build_index(vault).data
+    tr = translate(plan, index, rt, target)
+    try:
+        edits = plan_changes(vault, tr.changes, index)
+    except (ChangeRejected, WriteConflict) as exc:
+        raise SystemExit(f"方案写不进去：{exc}")
+    print_import_report(tr, edits, dry_run)
     if dry_run:
-        for p, text in outputs:
-            print(f"\n{'=' * 70}\n{p.relative_to(vault)}\n{'=' * 70}\n{text}")
+        for e in edits:
+            print(f"\n{'=' * 70}\n{e.rel}\n{'=' * 70}\n{_diff_text(e)}")
         return
-    for p, text in outputs:
-        write(p, text)
+    snapshot = commit(vault, edits) if edits else ""
+    added = add_pending(vault, tr.pending, {"source": target.source, "imported_at": target.date}) if tr.pending else []
     stem = re.sub(r"[^\w一-鿿-]+", "-", target.source)[:60]
     log = vault / ".knowrary" / "imports" / f"{TODAY}-{stem}.json"
-    write(log, json.dumps(plan, ensure_ascii=False, indent=2))
-    print(f"\n已写入 {len(outputs)} 个文件；方案存于 {log.relative_to(vault)}")
+    write(log, json.dumps({"plan": plan, "changes": tr.changes, "pending": tr.pending,
+                           "warnings": tr.warnings}, ensure_ascii=False, indent=2))
+    print(f"\n已写入 {len(edits)} 个文件" + (f"（备份 {snapshot}）" if snapshot else "")
+          + f"，待审边 {len(added)} 条；方案存于 {log.relative_to(vault)}")
+
+
+def _diff_text(edit) -> str:
+    """新文件给全文，改老文件给统一 diff——和服务端 curation.diff_of 同一口径。"""
+    if not edit.before:
+        return edit.after
+    import difflib
+    return "\n".join(difflib.unified_diff(edit.before.splitlines(), edit.after.splitlines(),
+                                          fromfile=edit.rel, tofile=edit.rel, lineterm=""))
+
+
+def print_import_report(tr: Translation, edits: list, dry: bool) -> None:
+    c = tr.counts()
+    print(f"\n{'(dry-run) ' if dry else ''}新建节点 {c['nodes']} 个，stub {c['stubs']} 个，"
+          f"补充老节点 {c['enrich']} 处，直接写入的边 {c['edges']} 条，待审边 {c['pending']} 条")
+    if tr.summary:
+        print("摘要：", tr.summary)
+    for e in edits:
+        print("  +" if not e.before else "  ~", e.rel, "｜", "；".join(e.notes[:3]))
+    for pe in tr.pending:
+        print(f"  ? 待审 {pe['source']} {pe['relation']} → {pe['target']}（置信度 {pe['confidence']:.2f}）")
+    for w in tr.warnings:
+        print("  ⚠", w)
 
 
 def cmd_context(args: argparse.Namespace) -> None:
@@ -568,20 +499,22 @@ def cmd_context(args: argparse.Namespace) -> None:
     rt = load_relation_types(vault)
     nodes, _ = load_vault(vault)
     text = read(Path(args.article)) if args.article else ""
-    related = select_related(nodes, text) if text else []
+    cards = cards_from_nodes(nodes)
+    related = select_related(cards, text) if text else []
+    # 给了文章就只列可链的子集（和 article 提示词同一份口径）；没给文章时是人在翻全图，照旧全量
+    ids = select_linkable(cards, related, args.field or "") if text else sorted(nodes)
     print("## 可用关系类型\n" + rt.describe())
-    print(f"\n## 已有节点（{len(nodes)} 个，链接时必须精确使用）\n" + ("、".join(sorted(nodes)) or "(空)"))
+    print(f"\n## 已有节点（图里 {len(nodes)} 个，列出 {len(ids)} 个，链接时必须精确使用）\n"
+          + ("、".join(ids) or "(空)"))
     if related:
         print("\n## 与文章最相关的已有节点")
-        for n in related:
-            edges = "; ".join(f"{e.type}→{e.target}" for e in n.edges[:8]) or "(无)"
-            print(f"- {n.id}｜{n.fm.get('desc', '')}｜边: {edges}")
+        print("\n".join(describe_related(related)))
 
 
 def cmd_apply(args: argparse.Namespace) -> None:
     plan = extract_json(read(Path(args.plan)))
     source = args.source or f"plan {Path(args.plan).stem} {TODAY}"
-    apply_plan(plan, ImportTarget(Path(args.vault).resolve(), args.field, args.folder, source), args.dry_run)
+    apply_plan(plan, Path(args.vault).resolve(), ImportTarget(args.field, source, args.folder), args.dry_run)
 
 
 def cmd_article(args: argparse.Namespace) -> None:
@@ -590,7 +523,7 @@ def cmd_article(args: argparse.Namespace) -> None:
     rt = load_relation_types(vault)
     nodes, _ = load_vault(vault)
     article = read(art_path)
-    prompt = build_article_prompt(nodes, rt, article, args.field)
+    prompt = build_article_prompt(cards_from_nodes(nodes), rt, article, args.field)
     if args.show_prompt:
         print(prompt)
         return
@@ -600,27 +533,8 @@ def cmd_article(args: argparse.Namespace) -> None:
     print(f"图谱 {len(nodes)} 个节点，文章 {len(article)} 字，调用 LLM {name}（{provider['type']} / {model}）…",
           file=sys.stderr)
     plan = extract_json(llm_backend.ask(prompt, provider, args.model))
-    target = ImportTarget(vault, args.field, args.folder, f"article {art_path.name} {TODAY}")
-    apply_plan(plan, target, args.dry_run)
-
-
-def print_import_report(res: ImportResult, outputs: list, vault: Path, dry: bool) -> None:
-    plan = res.plan
-    print(f"\n{'(dry-run) ' if dry else ''}节点 {len(plan.get('nodes', []))} 个，stub {len(plan.get('stubs', []))} 个，"
-          f"建议并入 {len(plan.get('merge_into', []))} 条，提议新类型 {len(plan.get('proposed_types', []))} 个")
-    print("摘要：", plan.get("summary", ""))
-    for p, _ in outputs:
-        print("  +", p.relative_to(vault))
-    for m in plan.get("merge_into", []):
-        print(f"  ⇢ 并入 {m['existing']}：{m.get('why', '')}")
-    for t in plan.get("proposed_types", []):
-        print(f"  ？ 提议类型 `{t['type']}`（{t.get('family')}）：{t.get('why', '')}")
-    for s in res.skipped:
-        print("  - 跳过", s)
-    for d in res.dropped_edges:
-        print("  ✗ 丢弃边", d)
-    for u in res.unknown_types:
-        print("  ⚠ 未登记类型", u)
+    target = ImportTarget(args.field, f"article {art_path.name} {TODAY}", args.folder)
+    apply_plan(plan, vault, target, args.dry_run)
 
 
 # ---------------------------------------------------------------- llm
@@ -763,9 +677,10 @@ def add_llm_parsers(sub: argparse._SubParsersAction) -> None:
     a.add_argument("--show-prompt", action="store_true", help="只打印提示词，不调用 LLM")
     a.set_defaults(fn=cmd_article)
 
-    x = sub.add_parser("context", help="输出类型表 / 全部 id / 相关节点（供 skill 使用）")
+    x = sub.add_parser("context", help="输出类型表 / 可链 id / 相关节点（供 skill 使用）")
     x.add_argument("--vault", required=True)
     x.add_argument("--article", help="文章路径，用于筛选相关节点")
+    x.add_argument("--field", help="导入目标领域：给了文章时，该领域的节点 id 也会列进可链子集")
     x.set_defaults(fn=cmd_context)
 
     p = sub.add_parser("apply", help="把方案 JSON 校验后写入 vault（供 skill 使用）")

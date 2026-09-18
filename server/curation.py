@@ -32,14 +32,19 @@ def inbox(vault: Path) -> InboxRead:
     index, layout = load_pair(vault)
     plain = layout.model_dump()
     by_id = {n["id"]: n for n in index["nodes"]}
+    top_names = {g.get("name") for g in plain["groups"].values() if not g.get("parent")}
+    homes = core.load_homes(vault)
     items = []
     for nid in core.inbox_ids(index, plain):
         meta = by_id.get(nid, {})
         gid = core.target_group(nid, index, plain)
+        field = meta.get("field")
         items.append(InboxItem(
-            id=nid, name=meta.get("name") or nid, field=meta.get("field"), desc=meta.get("desc"),
+            id=nid, name=meta.get("name") or nid, field=field, desc=meta.get("desc"),
             stub=bool(meta.get("stub")), degree=int(meta.get("degree") or 0),
-            suggested_group=gid, suggested_group_name=plain["groups"].get(gid, {}).get("name") if gid else None))
+            suggested_group=gid, suggested_group_name=plain["groups"].get(gid, {}).get("name") if gid else None,
+            field_group_missing=bool(field) and gid is None and field not in top_names,
+            home=homes.get(nid)))
     return InboxRead(items=items, index_revision=index["revision"], layout_revision=layout.revision)
 
 
@@ -85,6 +90,8 @@ def place(vault: Path, req: PlaceRequest) -> PlaceResult:
     today = dt.date.today().isoformat()
 
     placed, skipped, patch_nodes, patch_groups = [], [], {}, {}
+    created: list[str] = []
+    by_id = {n["id"]: n for n in index["nodes"]}
     for nid in req.ids:
         if nid not in known:
             skipped.append({"id": nid, "reason": "不在索引里（可能是还没有 md 文件的占位 stub）"})
@@ -92,7 +99,12 @@ def place(vault: Path, req: PlaceRequest) -> PlaceResult:
         if nid in plain["nodes"]:
             skipped.append({"id": nid, "reason": "已经在画布上了"})
             continue
-        box, gpatch, npatch = _one_placement(nid, req, index, plain, today)
+        one = req
+        if req.create_field_group and not req.group and core.target_group(nid, index, plain) is None:
+            gid = _open_field_group(by_id.get(nid, {}).get("field"), plain, patch_groups, created)
+            if gid:
+                one = req.model_copy(update={"group": gid})
+        box, gpatch, npatch = _one_placement(nid, one, index, plain, today)
         if box is None:
             skipped.append({"id": nid, "reason": "目标分组放不下或判不出分组，留在 Inbox"})
             continue
@@ -108,7 +120,24 @@ def place(vault: Path, req: PlaceRequest) -> PlaceResult:
                         groups=patch_groups or None)
     doc, _, _ = apply_patch(vault, patch, index)
     return PlaceResult(revision=doc.revision, placed=placed, skipped=skipped,
-                       grown_groups=sorted(patch_groups))
+                       grown_groups=sorted(set(patch_groups) - set(created)), created_groups=created)
+
+
+def _open_field_group(field: str | None, plain: dict, patch_groups: dict, created: list[str]) -> str | None:
+    """判不出分组的节点：给它的领域开一个顶层框（接在整张图最下面），同一批里第二个同领域的直接复用。"""
+    if not field:
+        return None
+    hit = next((gid for gid, g in plain["groups"].items() if not g.get("parent") and g.get("name") == field), None)
+    if hit:
+        return hit
+    plan = core.plan_field_group(field, plain)
+    if plan is None:
+        return None
+    gid, box = plan
+    plain["groups"][gid] = box
+    patch_groups[gid] = GroupPatch(**box)
+    created.append(gid)
+    return gid
 
 
 def regroup(vault: Path, base_revision: int, only_draft: bool = True,
@@ -220,7 +249,13 @@ def mark_reviewed(vault: Path, node_id: str, grade: str = "记得") -> ReviewDon
 # ---------------------------------------------------------------- 变更预览（阶段 3 / 12 共用）
 
 def diff_of(edit) -> str:
-    """给人看的统一 diff（只保留有变化的片段）。"""
+    """给人看的差异：改已有文件给统一 diff 片段；**新建文件直接给全文**。
+
+    新文件的 diff 每一行都是 `+`，按片段截 60 行只会把正文后半截藏掉——
+    对话建点的正文现在按骨架写足，卡片上必须能整篇看完再点「写入」。
+    """
+    if not edit.before:
+        return edit.after
     lines = difflib.unified_diff(edit.before.splitlines(), edit.after.splitlines(),
                                  fromfile=f"a/{edit.rel}", tofile=f"b/{edit.rel}", lineterm="", n=2)
     return "\n".join(list(lines)[:60])

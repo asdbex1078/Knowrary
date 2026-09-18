@@ -744,6 +744,93 @@ async def case_inbox_place(page: Page, ck: Check, vault: Path) -> None:
     ck.add("草稿画在画布上", (shown or 0) > 0, f"{shown} 个 cell")
 
 
+async def case_inbox_new_field(page: Page, ck: Check, vault: Path) -> None:
+    """Inbox 增强（第五步）：零边节点显示警示 chip；新领域的节点给「建域框并放入」，点了在最下面开框、节点落进去。"""
+    (vault / "nodes/新域").mkdir(parents=True, exist_ok=True)
+    (vault / "nodes/新域/量子比特.md").write_text(
+        "---\nname: 量子比特\nfield: 量子计算\ndesc: 量子比特的摘要\n---\n# 量子比特\n\n正文\n", "utf-8")
+    await use_scope(page, "")
+    await switch_mode(page, "全局图")
+    await menu_click(page, "重新加载")
+    await asyncio.sleep(1.0)
+    if not await page.ev("!!document.querySelector('aside.inbox')"):
+        await open_rail(page, "Inbox")               # open_rail 是开关：已经开着就别再点一下关掉
+    row = await poll(page, """(() => {
+      const li = [...document.querySelectorAll('aside.inbox .inbox-item')].find((x) => x.textContent.includes('量子比特'));
+      return li ? li.textContent.replace(/\s+/g, ' ') : '';
+    })()""", lambda v: bool(v), timeout=8)
+    ck.add("零边节点的 Inbox 条目显示「0 关系 · 让 AI 建议」", "0 关系" in (row or "") and "让 AI 建议" in (row or ""), (row or "")[:80])
+    ck.add("新领域的条目给「建域框并放入」而不是「需手动拖」", "建「量子计算」域框并放入" in (row or "") and "需手动拖" not in (row or ""), (row or "")[:80])
+    before = await md_size(vault)
+    await page.ev("""(() => {
+      const li = [...document.querySelectorAll('aside.inbox .inbox-item')].find((x) => x.textContent.includes('量子比特'));
+      li?.querySelector('[data-act="place-new-group"]')?.click();
+    })()""")
+    await poll(page, "'x'", lambda _: "量子比特" in ck.layout()["nodes"], timeout=12)
+    lay = ck.layout()
+    node = lay["nodes"].get("量子比特")
+    box = lay["groups"].get(node["group"]) if node else None
+    others = [g for gid, g in lay["groups"].items() if not g.get("parent") and gid != (node or {}).get("group")]
+    ck.add("最下面开了「量子计算」顶层框，节点落进去成草稿",
+           bool(box) and box["name"] == "量子计算" and box.get("parent") is None and node["state"] == "draft"
+           and box["y"] >= max(g["y"] + g["h"] for g in others), f"node={node} box={box}")
+    ck.add("建框不碰 md", await md_size(vault) == before, "md 总长度未变")
+    shown = await poll(page, "document.querySelectorAll('[data-cell-id=\"量子比特\"]').length", lambda v: (v or 0) > 0)
+    ck.add("放进去的点画在画布上", (shown or 0) > 0, f"{shown} 个 cell")
+    await page.ev("""document.querySelector('aside .icon-btn[title*="收起"]')?.click()""")
+
+
+async def case_import_panel(page: Page, ck: Check, vault: Path) -> None:
+    """导入面板（第三步）：仓库里的文件能列出来、点一下正文进编辑框、来源名自动填。
+    不点「拆成知识点」——那是一次真模型调用，e2e 的临时 vault 没配 LLM。"""
+    (vault / "doc/读书笔记/一篇文章.md").parent.mkdir(parents=True, exist_ok=True)
+    (vault / "doc/读书笔记/一篇文章.md").write_text("# 一篇文章\n\n这篇讲甲和乙。", "utf-8")
+    await open_rail(page, "导入")
+    opened = await poll(page, """!!document.querySelector('aside .imp-src')""", lambda v: bool(v), timeout=6)
+    ck.add("活动栏有「导入」，点开是导入面板", bool(opened), "" if opened else "没打开")
+    if not opened:
+        return
+    tabs = await page.ev("""JSON.stringify([...document.querySelectorAll('aside .imp-src .seg button')].map((b) => b.textContent.trim()))""")
+    ck.add("三种来源：粘贴 / 仓库里的文件 / 本地文件", json.loads(tabs or "[]") == ["粘贴", "仓库里的文件", "本地文件"], str(tabs))
+    await click_text(page, "aside .imp-src .seg button", "仓库里的文件")
+    listed = await poll(page, """JSON.stringify([...document.querySelectorAll('aside .imp-file')].map((b) => b.title))""",
+                        lambda v: v and "一篇文章" in v, timeout=8)
+    ck.add("仓库文件列表里有 doc/ 下的那篇（节点目录不算素材）",
+           "doc/读书笔记/一篇文章.md" in json.loads(listed or "[]") and not any(x.startswith("nodes/") for x in json.loads(listed or "[]")),
+           str(listed))
+    await page.ev("""[...document.querySelectorAll('aside .imp-file')].find((b) => b.title.includes('一篇文章'))
+      ?.querySelector('.imp-file-pick')?.click()""")
+    filled = await poll(page, """(() => {
+      const t = document.querySelector('aside .imp-text'); const s = document.querySelector('aside .imp-form input');
+      return t && s ? JSON.stringify([t.value, s.value]) : '';
+    })()""", lambda v: v and "这篇讲甲和乙" in v, timeout=6)
+    got = json.loads(filled or '["",""]')
+    ck.add("点文件 → 正文进编辑框、来源名自动取文件名", "这篇讲甲和乙" in got[0] and got[1] == "一篇文章", str(got))
+
+    # 第四步：批量队列。勾两篇 → 加入队列 → 两条「等着」+「开始」按钮；移出一条剩一条。不点开始（那是模型调用）
+    (vault / "doc/读书笔记/第二篇.md").write_text("# 第二篇\n\n讲丙。", "utf-8")
+    await page.ev("""document.querySelector('aside .icon-btn[title*="收起"]')?.click()""")
+    await asyncio.sleep(0.3)
+    await open_rail(page, "导入")
+    await poll(page, """!!document.querySelector('aside .imp-src')""", lambda v: bool(v), timeout=6)
+    await click_text(page, "aside .imp-src .seg button", "仓库里的文件")
+    await poll(page, """document.querySelectorAll('aside .imp-file').length""", lambda v: (v or 0) >= 2, timeout=8)
+    await page.ev("""[...document.querySelectorAll('aside .imp-file')]
+      .filter((b) => b.title.includes('读书笔记')).forEach((b) => b.querySelector('input[type=checkbox]').click())""")
+    await asyncio.sleep(0.2)
+    await page.ev("""document.querySelector('aside [data-act="enqueue"]')?.click()""")
+    rows = await poll(page, """JSON.stringify([...document.querySelectorAll('aside .imp-queue-item')]
+      .map((li) => li.querySelector('.chip').textContent.trim() + ':' + li.querySelector('.nm').textContent.trim()))""",
+                      lambda v: v and v.count("等着") == 2, timeout=6)
+    ck.add("勾两篇加入队列 → 两条「等着」", sorted(json.loads(rows or "[]")) == ["等着:一篇文章", "等着:第二篇"], str(rows))
+    has_run = await page.ev("""!!document.querySelector('aside [data-act="run"]')""")
+    ck.add("队列有「开始（一篇一篇来）」而单篇按钮仍可用", bool(has_run), "" if has_run else "没有开始按钮")
+    await page.ev("""document.querySelector('aside .imp-queue-item .icon-btn')?.click()""")
+    left = await poll(page, """document.querySelectorAll('aside .imp-queue-item').length""", lambda v: v == 1, timeout=6)
+    ck.add("移出一条后剩一条", left == 1, f"{left} 条")
+    await page.ev("""document.querySelector('aside .icon-btn[title*="收起"]')?.click()""")
+
+
 async def case_due_badge(page: Page, ck: Check) -> None:
     """learned 是 2020 年 → 早该复习；节点右上角点亮金色圆点，面板上能记一次复习。"""
     fill = await poll(page, """document.querySelector('[data-cell-id="戊"] circle')?.getAttribute('fill') || ''""",
@@ -846,6 +933,16 @@ async def case_project_view(page: Page, ck: Check, api: str) -> None:
         "name": "演示项目", "lists": [{"kind": "学习", "name": "主线", "stages": [
             {"name": "一", "points": [{"id": "甲"}, {"id": "乙"}, {"id": "还没建的"}]}]}]}}},
          method="PUT")
+    # 2026-09-18 起项目画布**不画父框**：清单结构只决定初始位置，不该变成一个把所有点圈起来的框
+    fresh = get(f"{api}/api/layout?layout=demo")["layout"]
+    ck.add("项目画布初始没有任何分组框", fresh["groups"] == {}, str(fresh["groups"]))
+    ck.add("初始点都不归任何框", all(n["group"] is None for n in fresh["nodes"].values()), str(fresh["nodes"]))
+    # 给它手工套一个框，下面用右键菜单「解散」拆掉——老项目画布带着 g-list-0 的迁移就靠这一下
+    # 同时把幽灵从画布上拿掉：下面用「放到右下角」把它补回来（清单后来加的点就是这个形状）
+    send(f"{api}/api/layout?layout=demo", {"base_revision": fresh["revision"],
+         "groups": {"g-old": {"name": "旧父框", "x": 40, "y": 40, "w": 900, "h": 500}},
+         "nodes": {"甲": {"group": "g-old"}, "乙": {"group": "g-old"}, "还没建的": None}}, method="PATCH")
+    before_x = get(f"{api}/api/layout?layout=demo")["layout"]["nodes"]["甲"]["x"]
     await page.ev("location.reload()")
     await asyncio.sleep(2.2)
     await page.ev("""(() => { document.querySelector('.brief .icon-btn')?.click(); })()""")
@@ -873,13 +970,46 @@ async def case_project_view(page: Page, ck: Check, api: str) -> None:
     ids = await poll(page, """JSON.stringify([...document.querySelectorAll('[data-shape="kg-node"]')]
       .map((el) => el.getAttribute('data-cell-id')))""", lambda v: v and v != "[]", timeout=10)
     only = set(json.loads(ids or "[]"))
-    ck.add("项目画布只画这个项目里的点（含幽灵）", only == {"甲", "乙", "还没建的"}, f"{sorted(only)}")
+    ck.add("项目画布只画这个项目里的点", only == {"甲", "乙"}, f"{sorted(only)}")
 
-    ghost = await page.ev("""(() => {
+    # 清单里有、画布上没有的点：同步条上报数，一键停到右下角
+    park = await poll(page, """(() => {
+      const b = [...document.querySelectorAll('.sync-bar .btn')].find((x) => x.textContent.includes('右下角'));
+      return b ? b.textContent.trim() : '';
+    })()""", lambda v: bool(v), timeout=8)
+    ck.add("同步条提示有点还没上画布", "1 个点" in (park or ""), str(park))
+    await page.ev("""[...document.querySelectorAll('.sync-bar .btn')]
+      .find((x) => x.textContent.includes('右下角'))?.click()""")
+    parked = await poll_api(lambda: get(f"{api}/api/layout?layout=demo")["layout"]["nodes"],
+                            lambda n: "还没建的" in n, timeout=8)
+    g = (parked or {}).get("还没建的", {})
+    others = [n for k, n in (parked or {}).items() if k != "还没建的"]
+    ck.add("「放到右下角」把幽灵补回 layout 并停在已有内容的右下方",
+           g.get("state") == "ghost" and others and g.get("x", 0) > max(n["x"] + n["w"] for n in others)
+           and g.get("y", -1) >= max(n["y"] for n in others), f"幽灵 = {g}")
+
+    ghost = await poll(page, """(() => {
       const el = document.querySelector('[data-cell-id="还没建的"] rect');
       return el ? `${el.getAttribute('stroke-dasharray')}|${el.getAttribute('fill')}` : '';
-    })()""")
+    })()""", lambda v: bool(v), timeout=6)
     ck.add("还没建的点画成幽灵（更淡的虚线、透明底）", "2 5" in (ghost or ""), str(ghost))
+
+    # 右键框 → 解散：框没了，点一个不动
+    has_frame = await poll(page, """!!document.querySelector('[data-shape="kg-group"][data-cell-id="g-old"]')""",
+                           lambda v: bool(v), timeout=6)
+    ck.add("手工套的旧父框画出来了", bool(has_frame), "" if has_frame else "画布上没有 g-old")
+    if has_frame:
+        await right_click(page, "g-old", grab="title")
+        await menu_pick(page, "解散这个框")
+        gone = await poll_api(lambda: get(f"{api}/api/layout?layout=demo")["layout"],
+                              lambda l: "g-old" not in l["groups"], timeout=8)
+        ck.add("「解散这个框」把框从 layout 里删掉", bool(gone) and "g-old" not in gone["groups"],
+               str((gone or {}).get("groups")))
+        jia = (gone or {}).get("nodes", {}).get("甲", {})
+        ck.add("解散后点留在原位、不再归框", jia.get("x") == before_x and jia.get("group") is None,
+               f"甲 = {jia}")
+        still = await page.ev("""document.querySelectorAll('[data-shape="kg-node"]').length""")
+        ck.add("解散后画布上的点一个没少", still == 3, f"{still} 个")
 
     # 项目画布有自己的一份 layout：拖它不碰全局图
     proj = get(f"{api}/api/layout?layout=demo")["layout"]
@@ -1475,6 +1605,55 @@ graph LR
 
 # ---------------------------------------------------------------- 阶段 6：历史视图
 
+async def case_chat_card_edit(page: Page, ck: Check, vault: Path) -> None:
+    """变更卡写入前能改：desc 是显示层、body 是笔记层，模型给的只是初稿。
+    不调模型——用 __kg.fakeReply 塞一张卡，之后的重算（dry_run）和写入走的都是真接口。
+    守的是"阈值逻辑单元"那次的教训：正文被压成一句、卡上又改不了，只能写完再去详情面板补。"""
+    await switch_mode(page, "对话")
+    await asyncio.sleep(0.6)
+    target = vault / "nodes/组A/阈值逻辑单元.md"
+    await page.ev("""__kg.fakeReply('卡摆出来了，你点写入才落盘。', [{
+      changes: [{ type: 'create_node', source: '阈值逻辑单元', path: 'nodes/组A/阈值逻辑单元.md',
+                  fields: { name: '阈值逻辑单元', field: '测试', desc: '最简人工神经元' },
+                  body: '1943 年提出的最简人工神经元。\\n\\n## 线头\\n- 神经生理学：McCulloch 的出身' }],
+      files: [{ path: 'nodes/组A/阈值逻辑单元.md', diff: '（初稿）' }], into: null }])""")
+    card = "[...document.querySelectorAll('.change-card')].pop()"
+    opened = await poll(page, f"""(() => {{ const c = {card}; if (!c) return '';
+      const b = [...c.querySelectorAll('.cc-head .btn')].find((x) => x.textContent.includes('改一改'));
+      if (!b) return 'nobtn'; b.click(); return 'ok'; }})()""", lambda v: v in ("ok", "nobtn"), timeout=8)
+    ck.add("变更卡上有「改一改」", opened == "ok", str(opened))
+    shape = json.loads(await poll(page, f"""JSON.stringify((() => {{ const c = {card};
+      return {{ input: !!c?.querySelector('.cc-edit input'), ta: !!c?.querySelector('.cc-edit textarea'),
+               body: c?.querySelector('.cc-edit textarea')?.value || '' }}; }})())""",
+      lambda v: v and '"ta":true' in v, timeout=6) or "{}")
+    ck.add("展开后有摘要框和正文框，正文框里是模型的初稿",
+           shape.get("input") and shape.get("ta") and "McCulloch" in shape.get("body", ""), str(shape)[:120])
+
+    # 改 desc、往正文尾部补一行。用原生 setter + input 事件，v-model 才收得到
+    await page.ev(f"""(() => {{ const c = {card};
+      const set = (el, v) => {{ el.value = v; el.dispatchEvent(new Event('input', {{ bubbles: true }})); }};
+      set(c.querySelector('.cc-edit input'), '1943 年神经生理学家 McCulloch 与数学家 Pitts 提出的最简人工神经元');
+      const ta = c.querySelector('.cc-edit textarea'); set(ta, ta.value + '\\n- 数学：Pitts 的出身'); }})()""")
+    stale = await poll(page, f"""{card}?.querySelector('.cc-edit .cc-acts .dim')?.textContent || ''""",
+                       lambda v: "旧的" in v, timeout=4)
+    ck.add("改过之后提示卡上的 diff 还是旧的", "旧的" in (stale or ""), str(stale)[:60])
+
+    await page.ev(f"""[...{card}.querySelectorAll('.cc-edit .btn')].find((b) => b.textContent.includes('重算')).click()""")
+    diff = await poll(page, f"""{card}?.querySelector('.cc-diff')?.textContent || ''""",
+                      lambda v: "Pitts 的出身" in v, timeout=10)
+    ck.add("重算后卡上是整篇新文件，摘要和正文都是改过的",
+           "数学家 Pitts" in (diff or "") and "## 线头" in (diff or "") and "## 描述" not in (diff or ""), str(diff)[-160:])
+    ck.add("重算不落盘", not target.exists(), str(target))
+
+    await page.ev(f"""[...{card}.querySelectorAll('.cc-acts .btn')].find((b) => b.textContent.trim().endsWith('写入')).click()""")
+    written = await poll(page, f"""!!{card}?.querySelector('.chip')""", lambda v: v, timeout=15)
+    ck.add("写入后卡片标成「已写入」", bool(written), "chip 出现")
+    text = target.read_text("utf-8") if target.exists() else ""
+    ck.add("落盘的是改过的正文（笔记层整篇保留、desc 也换了）",
+           "数学家 Pitts" in text and "- 数学：Pitts 的出身" in text and "## 线头" in text
+           and "## 描述" not in text and text.rstrip().endswith("## 关系"), text[:200])
+
+
 async def case_history(page: Page, ck: Check, vault: Path) -> None:
     """历史视图：只有带 year 的节点进图、泳道与刻度、被激活金线、滑块回放、全程不写结构布局。"""
     # layer 故意跨主题：甲在「组A/测试」但属于硬件层，庚在「另一域」却是 AI应用层——
@@ -1893,6 +2072,25 @@ async def case_cluster_drag(page: Page, ck: Check) -> None:
 
 async def case_group_menu(page: Page, ck: Check) -> None:
     """右键分组：折叠 / 钉住展开 / 恢复自动——pinned 以前没有任何界面能改。"""
+    # 先在一个**里面有两个以上点**的框上看第六步那一项：概括只在这种框上出现，拿空框测等于没测。
+    # 看完 Esc 关掉，折叠 / 钉住那套仍用页面上第一个框（子框折叠后右键命中的是别的东西，老流程别动）
+    lay = ck.layout()
+    tally = {}
+    for n in lay["nodes"].values():
+        if n.get("group"):
+            tally[n["group"]] = tally.get(n["group"], 0) + 1
+    rich = next((g for g, c in sorted(tally.items(), key=lambda kv: -kv[1]) if c >= 2), None)
+    if rich and await page.ev(f"""!!document.querySelector('[data-shape="kg-group"][data-cell-id="{rich}"]')"""):
+        await right_click(page, rich, grab="title")
+        labels = json.loads(await page.ev("""JSON.stringify([...document.querySelectorAll('.ctx-menu .pop-item')].map((b) => b.textContent.trim()))""") or "[]")
+        ck.add("框里有两个以上的点时给「概括成一个节点」（第六步；不点，那是模型调用）",
+               any("概括成一个节点" in x for x in labels), f"{tally.get(rich)} 个点 · {labels}")
+        ck.add("分组菜单里有「解散这个框」", any("解散这个框" in x for x in labels), str(labels))
+        await page.ev("window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))")
+        await asyncio.sleep(0.3)
+    else:
+        ck.add("框里有两个以上的点时给「概括成一个节点」", False, f"没找到有两个以上点的框：{tally}")
+
     gid = await poll(page, """document.querySelector('[data-shape="kg-group"]')
       ?.getAttribute('data-cell-id') || ''""", lambda v: bool(v))
     await right_click(page, gid, grab="title")
@@ -1945,6 +2143,18 @@ async def case_relate_menu(page: Page, ck: Check, vault: Path) -> None:
     ck.add("新建的关系立刻画在画布上", (drawn or 0) > 0, f"{drawn} 条边")
     closed = await page.ev("!document.querySelector('.rel-dialog')")
     ck.add("写完自动关掉对话框", bool(closed))
+
+
+async def poll_api(fetch, ok, timeout: float = 8.0):
+    """轮询一个接口读取（补丁是延迟批量落盘的，右键之后要等它 flush）。"""
+    deadline = time.time() + timeout
+    last = None
+    while time.time() < deadline:
+        last = fetch()
+        if ok(last):
+            return last
+        await asyncio.sleep(0.3)
+    return last
 
 
 async def poll_glob(vault: Path, pattern: str, needle: str, timeout: float = 12.0) -> str:
@@ -2206,6 +2416,7 @@ async def scenarios(page: Page, api: str, results: list) -> None:
     await case_render_complete(page, ck)
     await case_rendered(page, ck)
     await case_inbox_place(page, ck, VAULT_HOLDER[0])
+    await case_import_panel(page, ck, VAULT_HOLDER[0])
     await case_due_badge(page, ck)
     await case_project_view(page, ck, api)
     await case_calendar(page, ck)
@@ -2227,10 +2438,12 @@ async def scenarios(page: Page, api: str, results: list) -> None:
     await case_stale_index(page, ck, VAULT_HOLDER[0], api)
     await case_form_look(page, ck)
     await case_chat_markdown(page, ck, VAULT_HOLDER[0])
+    await case_chat_card_edit(page, ck, VAULT_HOLDER[0])
     await case_history(page, ck, VAULT_HOLDER[0])
     await case_tour(page, ck)
     await case_lineage(page, ck)
     await case_stats(page, ck, VAULT_HOLDER[0])
+    await case_inbox_new_field(page, ck, VAULT_HOLDER[0])   # 放最后：它往 vault 里加了个零边新领域节点，会改「今日」面板的形状
     results.extend(ck.items)
 
 

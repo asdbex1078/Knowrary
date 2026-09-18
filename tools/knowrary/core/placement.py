@@ -8,7 +8,7 @@ from __future__ import annotations
 import datetime as dt
 import math
 
-from .layout import CELL_H, NODE_H, NODE_W, PAD_BOT, PAD_TOP, PAD_X
+from .layout import CELL_H, FIELD_GAP, NODE_H, NODE_W, PAD_BOT, PAD_TOP, PAD_X, group_size
 from .parser import UNLAYERED
 
 FAMILY_WEIGHT = {"演化": 3.0, "依赖": 2.0, "结构": 2.0, "对照": 1.0, "弱关联": 0.5}
@@ -343,3 +343,29 @@ def inbox_ids(index: dict, layout: dict) -> list[str]:
     """还没放到画布上的节点（虚拟 stub 不算，它们连文件都还没有）。"""
     placed = set(layout.get("nodes", {}))
     return sorted(n["id"] for n in index["nodes"] if not n.get("virtual") and n["id"] not in placed)
+
+
+def plan_field_group(field: str, layout: dict) -> tuple[str, dict] | None:
+    """给一个还没有域框的领域开一个顶层框，接在整张图最下面。返回 (gid, 框)；已经有同名顶层框就返回 None。
+
+    什么时候需要：导入了一个全新领域的笔记——`by_field_and_layer` 找不到同名顶层框，节点只能留在 Inbox
+    "需手动拖"，而画布上根本没有可拖的目标。开框是**加法**：接在所有内容下面、不动任何已有的东西。
+    框先按两行四列的量给，放满了 place_or_grow 会自己往下长；里面的泳道（按 layer）留给 regroup 的
+    create_lane，一个新领域头几个点还谈不上分层。
+    """
+    groups = layout.get("groups", {})
+    if not field or any(not g.get("parent") and g.get("name") == field for g in groups.values()):
+        return None
+    gid = f"g-{field}"
+    if gid in groups:
+        gid = f"g-{field}-{len(groups)}"
+    bottom = 0.0
+    for g in groups.values():
+        if not g.get("parent"):
+            bottom = max(bottom, g["y"] + g["h"])
+    for n in layout.get("nodes", {}).values():
+        if not n.get("group"):
+            bottom = max(bottom, n["y"] + (n.get("h") or NODE_H))
+    w, h = group_size(8)
+    return gid, {"name": field, "x": 0.0, "y": bottom + (FIELD_GAP if bottom else 0.0), "w": w, "h": h,
+                 "parent": None, "collapsed": False, "pinned": None, "color": "#eef2f8", "doc": None}

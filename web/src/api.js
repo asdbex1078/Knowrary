@@ -53,6 +53,17 @@ export const postPlace = (body) => request('/api/place', {
   body: JSON.stringify(body),
 })
 
+/** 导入：文章 → 方案（一次 LLM）；方案 → 预览 / 落盘；仓库里可当素材的文件。 */
+const postJSON = (url, body) => request(url, {
+  method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+})
+export const postImportPropose = (body) => postJSON('/api/import/propose', body)
+export const postImport = (body) => postJSON('/api/import', body)
+export const fetchImportSources = () => request('/api/import/sources')
+/** 把几个点概括成一个上位节点：让模型起草名字 / 摘要 / 正文（提议，不写盘）。 */
+export const postSummarize = (body) => postJSON('/api/summarize', body)
+export const fetchImportSource = (path) => request(`/api/import/source?path=${encodeURIComponent(path)}`)
+
 /** 记一次复习：只写 review-log.json，不碰 md，也不碰 layout。grade 三档：记得 / 模糊 / 忘了。 */
 export const postReview = (id, grade = '记得') => request(`/api/review/${encodeURIComponent(id)}`, {
   method: 'POST',
