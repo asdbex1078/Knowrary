@@ -1,11 +1,11 @@
 {
   "schema_version": 2,
-  "revision": 73,
-  "updated_at": "2026-09-17T15:59:09Z",
+  "revision": 95,
+  "updated_at": "2026-09-18T09:20:57Z",
   "viewport": {
-    "zoom": 0.6,
-    "cx": 201.0,
-    "cy": 2962.0
+    "zoom": 0.4,
+    "cx": 621.0,
+    "cy": 3108.0
   },
   "groups": {
     "g-Agent": {
@@ -120,8 +120,8 @@
       "name": "AI",
       "x": 0.0,
       "y": 2308.0,
-      "w": 2000.0,
-      "h": 1028.0,
+      "w": 1920.0,
+      "h": 1152.0,
       "parent": null,
       "collapsed": false,
       "pinned": null,
@@ -133,7 +133,7 @@
       "x": 24.0,
       "y": 2352.0,
       "w": 488.0,
-      "h": 128.0,
+      "h": 228.0,
       "parent": "g-AI",
       "collapsed": false,
       "pinned": null,
@@ -179,9 +179,9 @@
     "g-AI--理论": {
       "name": "理论",
       "x": 24.0,
-      "y": 2612.0,
-      "w": 248.0,
-      "h": 500.0,
+      "y": 2604.0,
+      "w": 1152.0,
+      "h": 768.0,
       "parent": "g-AI",
       "collapsed": false,
       "pinned": null,
@@ -1069,6 +1069,66 @@
       "state": "final",
       "placedAt": "2026-09-17",
       "anchor": null
+    },
+    "混合精度与量化": {
+      "x": 312.0,
+      "y": 2491.0,
+      "w": 196.0,
+      "h": 64.0,
+      "group": "g-AI--硬件",
+      "state": "draft",
+      "placedAt": "2026-09-18",
+      "anchor": "NPU"
+    },
+    "符号主义": {
+      "x": 648.0,
+      "y": 2760.0,
+      "w": 196.0,
+      "h": 64.0,
+      "group": "g-AI--理论",
+      "state": "draft",
+      "placedAt": "2026-09-18",
+      "anchor": null
+    },
+    "连接主义": {
+      "x": 920.0,
+      "y": 2848.0,
+      "w": 196.0,
+      "h": 64.0,
+      "group": "g-AI--理论",
+      "state": "draft",
+      "placedAt": "2026-09-18",
+      "anchor": null
+    },
+    "Hodgkin-Huxley模型": {
+      "x": 384.0,
+      "y": 3120.0,
+      "w": 196.0,
+      "h": 64.0,
+      "group": "g-AI--理论",
+      "state": "draft",
+      "placedAt": "2026-09-18",
+      "anchor": "阈值逻辑单元"
+    },
+    "Hebb学习规则": {
+      "x": 600.0,
+      "y": 2952.0,
+      "w": 196.0,
+      "h": 64.0,
+      "group": "g-AI--理论",
+      "state": "draft",
+      "placedAt": "2026-09-18",
+      "anchor": "阈值逻辑单元"
+    },
+    "Adaline": {
+      "x": 120.0,
+      "y": 3240.0,
+      "w": 196.0,
+      "h": 64.0,
+      "group": "g-AI--理论",
+      "state": "draft",
+      "placedAt": "2026-09-18",
+      "anchor": "感知器"
     }
   },
   "refs": [],
