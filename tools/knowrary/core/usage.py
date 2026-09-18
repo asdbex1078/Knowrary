@@ -100,21 +100,53 @@ def _ratio(bucket: dict) -> float | None:
     return round((bucket.get("cache_read_tokens") or 0) / write, 2) if write else None
 
 
-def cache_health(log: dict) -> dict:
-    """挑出**多轮对话里**比值最难看的那个 op。
+def _local_day(ts: str) -> str:
+    """账本里的 ts 是 UTC，账期按本地日期（同 `record`）。东八区 00:00～08:00
+    那几个小时 UTC 还停在昨天，直接截前 10 个字符会把它们算成前一天。"""
+    try:
+        return dt.datetime.fromisoformat(str(ts).replace("Z", "+00:00")).astimezone().date().isoformat()
+    except ValueError:
+        return ""
+
+
+def _today_by_op(log: dict, today: str) -> dict:
+    """今天的调用按 op 聚合。**取自 `recent`**（`by_day` 没有 op 维度），
+    所以窗口最多 RECENT_KEEP 条——一天打爆 200 次调用时只看得到最近这些，够用。"""
+    out: dict[str, dict] = {}
+    for row in log.get("recent") or []:
+        if _local_day(row.get("ts") or "") != today:
+            continue
+        out[row.get("op") or "?"] = _add(out.get(row.get("op") or "?", {}), {**row, "ok": row.get("ok", True)})
+    return out
+
+
+def cache_health(log: dict, today: str | None = None) -> dict:
+    """**今天**的多轮对话缓存命中得怎么样，以及最难看的是哪个 op。
 
     单轮调用（quiz / suggest / plan-*）每次都是新前缀，比值天然贴着 0，
     混在总账里算会把信号冲没——所以只看 `MULTI_TURN` 那几个，而且要够样本量。
+
+    **窗口必须是今天，不能用 `by_op` 那个累计桶。** 累计桶只加不减：
+    2026-09-16 烧掉 $8 的那天（1.28×）会永久压着分母，于是今天已经修好了
+    （3.00×）灯还是红的，将来真退化了这个数也几乎不动——一盏既不会转绿
+    也不会报警的灯，等于没有。
     """
-    worst = None
-    for op, b in (log.get("by_op") or {}).items():
-        if not op.startswith(MULTI_TURN) or (b.get("calls") or 0) < MIN_CALLS:
+    today = today or dt.date.today().isoformat()
+    buckets = _today_by_op(log, today)
+    worst, read, write, calls = None, 0, 0, 0
+    for op, b in buckets.items():
+        if not op.startswith(MULTI_TURN):
             continue
+        read += b.get("cache_read_tokens") or 0
+        write += b.get("cache_write_tokens") or 0
+        calls += b.get("calls") or 0
         r = _ratio(b)
-        if r is not None and (worst is None or r < worst["ratio"]):
+        if r is not None and (b.get("calls") or 0) >= MIN_CALLS and (worst is None or r < worst["ratio"]):
             worst = {"op": op, "ratio": r, "calls": b["calls"]}
-    return {"ratio": _ratio(log.get("totals") or {}), "worst": worst,
-            "healthy": HEALTHY_RATIO,
+    return {"ratio": _ratio({"cache_read_tokens": read, "cache_write_tokens": write}),
+            "worst": worst, "healthy": HEALTHY_RATIO,
+            "window": today, "calls": calls,
+            # 样本不够就不判——今天才聊两句就报红，跟累计桶一样没人会再看它
             "ok": worst is None or worst["ratio"] >= HEALTHY_RATIO}
 
 
@@ -122,9 +154,13 @@ def summary(log: dict, today: str | None = None) -> dict:
     """今天 + 累计 + 分功能 + 缓存健康度，给前端直接摆出来。"""
     today = today or dt.date.today().isoformat()
     by_op = {op: {**b, "cache_ratio": _ratio(b)} for op, b in (log.get("by_op") or {}).items()}
-    return {"today": {**_zero(), **(log.get("by_day", {}).get(today) or {})},
-            "totals": {**_zero(), **(log.get("totals") or {})},
+    # 今天和累计这两桶也要带上读写比：契约里这个字段默认 None，不填就是接口里永远是 null，
+    # 而"今天的读写比"恰恰是这套监控存在的理由
+    day_bucket = {**_zero(), **(log.get("by_day", {}).get(today) or {})}
+    all_bucket = {**_zero(), **(log.get("totals") or {})}
+    return {"today": {**day_bucket, "cache_ratio": _ratio(day_bucket)},
+            "totals": {**all_bucket, "cache_ratio": _ratio(all_bucket)},
             "by_op": by_op,
-            "cache": cache_health(log),
+            "cache": cache_health(log, today),
             "recent": (log.get("recent") or [])[:30],
             "date": today}

@@ -100,16 +100,38 @@ def _projects_brief(vault: Path) -> str:
     return "\n".join(rows) or "（一个项目都还没有）"
 
 
+# 多词查询的切分：空格、顿号、逗号、斜杠、加号都算词边界。
+# **不切词就等于只认字面全串**——问一句「符号主义 连接主义」，
+# 干草堆里得原样出现带那个空格的整串才算命中，于是必然零命中，
+# 模型拿着这个假阴性下"图里没有"的结论，再跑去翻全量项目和今日清单核对。
+SPLIT_Q = re.compile(r"[\s、,，/／+＋]+")
+
+
+def _terms(q: str) -> list[str]:
+    """查询拆成词；一个词也拆不出来时退回整串（单字/纯符号的 query 照旧）。"""
+    got = [t for t in SPLIT_Q.split(q.lower()) if t]
+    return got or [q.lower()]
+
+
+def _match(hay: str, terms: list[str]) -> int:
+    """命中几个词。0 = 不算命中；命中多的排前面（两个词都中的当然比只中一个的相关）。"""
+    low = hay.lower()
+    return sum(1 for t in terms if t in low)
+
+
 def _tool_search(vault: Path, args: dict) -> tuple[str, dict]:
     """搜节点，**也搜项目清单里还没建出来的点**。
 
     只搜索引是不够的：一个项目常常 40 个点里 39 个还没建（它们只活在 projects.json 里），
     这时问"图里有没有多头注意力"会得到零命中，而 Transformer 项目里明明就列着它——
     于是又建一个重复的。计划里的点和已建节点是同一件事的两个阶段，搜的时候不该只看后一半。
+
+    多词查询按词拆开、任一词命中即算（见 SPLIT_Q）。
     """
     q = str(args.get("q") or "").strip()
     if not q:
         return "没给关键字，搜不了。", {}
+    terms = _terms(q)
     limit = min(int(args.get("limit") or SEARCH_TOP), 20)
     index = current_index(vault)
     hits = []
@@ -119,9 +141,12 @@ def _tool_search(vault: Path, args: dict) -> tuple[str, dict]:
         # tags / aliases 也在干草堆里：「线头」抄进 tags 就是为了以后建到那个点时能搜回来
         hay = " ".join([n["id"], n.get("name") or "", n.get("desc") or "",
                         *(n.get("tags") or []), *(n.get("aliases") or [])])
-        if q.lower() in hay.lower():
-            hits.append(n)
-    hits.sort(key=lambda n: -(n.get("degree") or 0))
+        got = _match(hay, terms)
+        if got:
+            hits.append((got, n))
+    # 先按命中词数，再按度数：两个词都中的排在只中一个的前面，同分的看谁在图里更"中心"
+    hits.sort(key=lambda pair: (-pair[0], -(pair[1].get("degree") or 0)))
+    hits = [n for _, n in hits]
     rows = []
     for n in hits[:limit]:
         row = {"id": n["id"], "name": n.get("name"), "desc": n.get("desc"),
@@ -139,7 +164,7 @@ def _tool_search(vault: Path, args: dict) -> tuple[str, dict]:
             for stage in ls.get("stages") or []:
                 for pt in stage.get("points") or []:
                     nid = pt.get("id") or ""
-                    if nid in built or q.lower() not in f"{nid} {pt.get('name') or ''}".lower():
+                    if nid in built or not _match(f"{nid} {pt.get('name') or ''}", terms):
                         continue
                     planned.append({"id": nid, "name": pt.get("name"), "why": pt.get("why"),
                                     "状态": "计划里有、还没建",
@@ -147,7 +172,11 @@ def _tool_search(vault: Path, args: dict) -> tuple[str, dict]:
     planned = planned[:limit]
 
     if not rows and not planned:
-        return f"图里和计划里都没有和「{q}」匹配的东西。", {"hits": 0}
+        # **只比了标题 / 描述 / 别名 / 标签，没比正文**。说清楚这一点，
+        # 否则模型会把"没搜到"直接讲成"你图里没有"——而那个词很可能就写在某篇笔记的正文里。
+        return (f"按 {'、'.join(terms)} 这几个词，标题 / 描述 / 别名 / 标签里都没有匹配的"
+                f"（**正文没进检索**，所以这不等于图里没写过）。"
+                f"换个更短的词再搜一次，或者直接问我。", {"hits": 0})
     out = {}
     if rows:
         out["已建的节点"] = rows
@@ -276,10 +305,18 @@ def _tool_today(vault: Path, args: dict) -> tuple[str, dict]:
 
 def _tool_projects(vault: Path, args: dict) -> tuple[str, dict]:
     """项目、清单、进度与时间账。一个项目可能有好几份清单，逐份摊开——
-    并成一条会把"主线学到哪了"和"面试准备到哪了"混成一个数字。"""
+    并成一条会把"主线学到哪了"和"面试准备到哪了"混成一个数字。
+
+    可选 `project`：只看这一个。**不传就还是全量**（向后兼容，也是冷启动时该看的）。
+    以前只有全量这一种：模型想核对某个项目的一行清单，也得把所有项目连时间账一起拉进上下文，
+    轨迹上看起来就像它跑去翻了个不相干的项目。
+    """
     data = read_projects(vault)
+    want = str(args.get("project") or "").strip().lower()
     out = {}
     for pid, project in data.doc.projects.items():
+        if want and want not in (pid.lower(), (project.name or "").lower()):
+            continue
         prog = data.progress.get(pid) or {}
         scheds = (data.schedules.get(pid) or {}).get("lists") or []
         rows = []
@@ -295,6 +332,9 @@ def _tool_projects(vault: Path, args: dict) -> tuple[str, dict]:
                                     "落后": sched.get("behind")},
                          "各档": part.get("counts")})
         out[project.name or pid] = {"id": pid, "每周投入": project.weekly_hours, "清单": rows}
+    if want and not out:
+        known = "、".join(f"`{pid}`" for pid in data.doc.projects) or "（一个都没有）"
+        return f"没有叫 `{want}` 的项目。现有的是：{known}", {"projects": 0}
     return json.dumps(out, ensure_ascii=False) or "还没有项目。", {"projects": len(out)}
 
 
@@ -494,7 +534,8 @@ TOOL_DOC = {
                   "搜索结果标了「长笔记」的，先 `outline` 看目录再按 `section` 读那一节，别整篇读了又被截断"),
     "overview": "无 | 图谱概况：节点数、领域、还有多少壳",
     "today": "无 | 今日清单：错题 / 到期复习 / 计划里还没建的点",
-    "projects": "无 | 我的项目、清单、进度和时间账（还剩多少、来不来得及）",
+    "projects": ("可选 `project`（项目 id 或名字） | 我的项目、清单、进度和时间账（还剩多少、来不来得及）。"
+                 "**要核对某一个项目就带上 `project`**，别把所有项目全拉进来；不传是全量"),
     "quiz": "`node_ids`、`count`（默认 3） | 按这些节点出题考我",
     "record_review": "`id`、`grade` | 记一次复习。**只能记「忘了」**，见下面的纪律",
     "propose_changes": "`changes` | 提议把学到的东西写进图谱。**只是提议**，会变成一张卡片等我点「写入」",

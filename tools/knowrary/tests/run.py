@@ -911,6 +911,55 @@ def 用量按本地日期分桶():
 
 
 @case
+def 缓存监控只看今天不看累计():
+    """累计桶只加不减：糟过一天，这盏灯就再也不会转绿——那它既不报警也不解除，等于没有。
+
+    所以 `cache_health` 的窗口必须是今天。这条用例钉的正是"今天已经健康、
+    累计仍然难看"这个组合：2026-09-16 烧掉 $8 的那天永远躺在 by_op 里。
+    """
+    now = _dt.datetime.now(_dt.timezone.utc)
+    today = _dt.date.today().isoformat()
+
+    def row(ts, read, write):
+        return {"ts": ts.isoformat().replace("+00:00", "Z"), "op": "chat-教练", "ok": True,
+                "ms": 1000, "input_tokens": 2, "output_tokens": 100,
+                "cache_read_tokens": read, "cache_write_tokens": write}
+
+    # 今天 5 次，每次读 30k / 写 3k = 10×（健康）；累计桶里压着一整天 1.2× 的烂账
+    recent = [row(now - _dt.timedelta(minutes=i), 30000, 3000) for i in range(5)]
+    log = {"totals": {"cache_read_tokens": 1_200_000, "cache_write_tokens": 1_000_000},
+           "by_day": {}, "recent": recent,
+           "by_op": {"chat-教练": {"calls": 60, "cache_read_tokens": 1_200_000,
+                                   "cache_write_tokens": 1_000_000}}}
+    health = core.usage.cache_health(log, today)
+    assert health["ok"] and health["ratio"] == 10.0, health
+    assert health["window"] == today and health["calls"] == 5, health
+    assert health["worst"]["op"] == "chat-教练", health          # 今天的数，不是累计的 1.2×
+
+    # 反过来：今天真的退化了就得报，而且不受累计好看的掩护
+    bad = [row(now - _dt.timedelta(minutes=i), 13000, 20000) for i in range(5)]
+    log_bad = {**log, "recent": bad,
+               "by_op": {"chat-教练": {"calls": 60, "cache_read_tokens": 9_000_000,
+                                       "cache_write_tokens": 1_000_000}}}
+    assert not core.usage.cache_health(log_bad, today)["ok"], core.usage.cache_health(log_bad, today)
+
+    # 样本不够不判：今天才两次调用，别急着报红
+    few = {**log, "recent": [row(now, 1000, 9000), row(now, 1000, 9000)]}
+    assert core.usage.cache_health(few, today)["ok"], core.usage.cache_health(few, today)
+
+    # 单轮的 op 不进这个判据（quiz / suggest 每次都是新前缀，天然贴着 0）
+    single = {**log, "recent": [{**row(now, 100, 9000), "op": "suggest"} for _ in range(5)]}
+    got = core.usage.cache_health(single, today)
+    assert got["ok"] and got["worst"] is None and got["calls"] == 0, got
+
+    # summary 里今天 / 累计两桶都要带上读写比（契约默认 None，不填就永远是 null）
+    got = core.usage_summary({**log, "by_day": {today: {"cache_read_tokens": 150_000,
+                                                        "cache_write_tokens": 15_000}}}, today)
+    assert got["today"]["cache_ratio"] == 10.0, got["today"]
+    assert got["totals"]["cache_ratio"] == 1.2, got["totals"]
+
+
+@case
 def 时间账按负荷排阶段并判可行性():
     ls = {"target_date": "2026-10-01",                          # 16 天 × 1h/天 = 16 小时
           "stages": [{"name": "一", "points": [{"id": "a", "load": "重"}, {"id": "b", "load": "轻"}]},
