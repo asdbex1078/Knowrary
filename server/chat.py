@@ -957,8 +957,26 @@ def _prompt_file(name: str) -> str:
     return _PROMPTS[name]
 
 
+REVIEW_TOOLS = ("quiz", "record_review")   # 复习关掉时**真的收走**的工具
+
+
 def stance_of(name: str | None) -> dict:
     return STANCES.get(name or DEFAULT_STANCE, STANCES[DEFAULT_STANCE])
+
+
+def tools_of(stance: str | None, vault: Path) -> tuple[str, ...]:
+    """这一轮到底给哪些工具。
+
+    **复习关掉就把出题 / 记复习收走，而不是留着工具再叮嘱一句"别用"。**
+    手段还在手里、只靠一句话拦着，那是压制不是关闭：模型照样在说明书上看见
+    `quiz | 按这些节点出题考我`，随时可能自己去调；而"不要做 X"这种反向指令
+    本身还在提醒它有 X 这件事。工具表是从白名单渲染的（说明书 = 实际权限，
+    见 `_system_prompt`），白名单里没有，说明书上就不会出现。
+    """
+    tools = stance_of(stance)["tools"]
+    if core.review_on(vault):
+        return tools
+    return tuple(t for t in tools if t not in REVIEW_TOOLS)
 
 
 def _project_level(vault: Path, project: str | None) -> str:
@@ -973,18 +991,52 @@ def _project_level(vault: Path, project: str | None) -> str:
     return core.level_of((doc.get("projects") or {}).get(project))
 
 
+# 提示词里"跟复习有关、可以整段关掉"的段落用这对标记包起来。
+# 为什么做成标记块而不是另写一份提示词：复习的规矩散在基底和教练两份文件的不同位置
+# （开场看 today、结尾出 check 题、只许降级……），拆成两份文件维护的话，
+# 改一条规矩要记得改两处，迟早分叉。
+REVIEW_OPEN, REVIEW_CLOSE = "<!--review-->", "<!--/review-->"
+# 关掉时只补**一句事实**，不补"不要做 X"。规矩已经整段不渲染、工具已经收走，
+# 再写一串禁令就是在提醒它有这回事；留这一句是为了他真开口问"考我一下"时，
+# 模型知道该答"你在设置里关了复习"，而不是干巴巴甩一句"没有这个工具"。
+REVIEW_OFF_NOTE = ("\n（复习与出题在设置里关着：今日清单不含到期与错题，出题和记复习的工具"
+                   "这一轮也没给。他要考试就请他去设置里打开。）")
+
+
+def _apply_review_switch(text: str, on: bool) -> str:
+    """复习关着时，把标记块整段剔掉，并在末尾补一句明确指令。
+
+    **只剔块、不改别处**：留着块里的字再叮嘱一句"别提复习"，等于同时给了正反两套指令，
+    模型照着哪一套都说得通。
+    """
+    if on:
+        return text.replace(REVIEW_OPEN, "").replace(REVIEW_CLOSE, "")
+    out = []
+    rest = text
+    while REVIEW_OPEN in rest:
+        head, _, tail = rest.partition(REVIEW_OPEN)
+        out.append(head)
+        _, _, rest = tail.partition(REVIEW_CLOSE)
+    out.append(rest)
+    return "".join(out).rstrip() + "\n" + REVIEW_OFF_NOTE
+
+
 def _system_prompt(vault: Path, stance: str | None, project: str | None = None) -> str:
     """基底一份 + 口径一份。工具表从白名单渲染——**说明书和实际权限是同一份数据**，
     两边各写一遍迟早对不上（"表里写着能用、调了却说没有"是最让人发火的那种 bug）。
 
     **图谱现状不在这里**，它单独走 `_graph_snapshot`（见那个函数的注释）。
+
+    复习关着时，标记块里那几条规矩整段不渲染（见 `_apply_review_switch`）——
+    开关只存浏览器的话界面安静了、教练照样每轮催，这就是它要放进 vault 的原因。
     """
     conf = stance_of(stance)
     body = _prompt_file(conf["file"])
     intro, _, rules = body.partition("## 规矩")
-    table = "\n".join(f"| `{t}` | {TOOL_DOC[t]} |" for t in conf["tools"] if t in TOOL_DOC)
-    formats = "\n\n".join(FORMAT_DOC[t] for t in conf["tools"] if t in FORMAT_DOC)
-    return (_prompt_file("chat")
+    tools = tools_of(stance, vault)          # 复习关掉时这里已经少了 quiz / record_review
+    table = "\n".join(f"| `{t}` | {TOOL_DOC[t]} |" for t in tools if t in TOOL_DOC)
+    formats = "\n\n".join(FORMAT_DOC[t] for t in tools if t in FORMAT_DOC)
+    text = (_prompt_file("chat")
             .replace("{{level}}", level_fragment(_project_level(vault, project), "chat"))
             .replace("{{tools}}", table)
             .replace("{{formats}}", formats)
@@ -994,6 +1046,7 @@ def _system_prompt(vault: Path, stance: str | None, project: str | None = None) 
             .replace("{{me}}", _me_brief(vault, project))
             .replace("{{stance_intro}}", intro.strip())
             .replace("{{stance_rules}}", rules.strip() or "（没有额外规矩）"))
+    return _apply_review_switch(text, core.review_on(vault))
 
 
 def _graph_snapshot(vault: Path) -> str:
@@ -1145,7 +1198,7 @@ def _run(vault: Path, req: ChatRequest):
                          session=req.session, stance=req.stance or DEFAULT_STANCE)
 
     conf = stance_of(req.stance)
-    allowed = set(conf["tools"])
+    allowed = set(tools_of(req.stance, vault))   # 和说明书同一份数据，复习关掉就真的调不动
     messages = [{"role": "system", "content": _system_prompt(vault, req.stance, req.project)}] + history
     if dropped:
         # **截断要说出来**，不能让它默默失忆：模型不知道自己少了上下文时，

@@ -911,6 +911,60 @@ def 用量按本地日期分桶():
 
 
 @case
+def 关掉复习是收走工具而不是嘱咐一句():
+    """关掉复习必须是**结构性**的：规矩整段不拼、工具真收走、今日清单里没有复习项。
+
+    只在提示词里加一句"不要出题"是压制不是关闭——手段还在模型手里（说明书上照样写着
+    `quiz | 按这些节点出题考我`），而"不要做 X"这种反向指令本身还在提醒它有 X 这回事。
+    """
+    import sys as _sys
+    _sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
+    from server import chat                                   # noqa: E402
+
+    vault = make_vault({"nodes/a.md": node_md("A")})
+    (vault / "relation-types.json").write_text(
+        (Path(__file__).resolve().parents[3] / "relation-types.json").read_text("utf-8"), "utf-8")
+
+    on = chat._system_prompt(vault, "教练", None)
+    assert "quiz" in chat.tools_of("教练", vault), chat.tools_of("教练", vault)
+    assert "每次开场先看一眼" in on and "按这些节点出题考我" in on, "默认该是全开的"
+
+    core.save_settings(vault, {"review_enabled": False})
+    off = chat._system_prompt(vault, "教练", None)
+    tools = chat.tools_of("教练", vault)
+    # 能力层：工具真的没了（说明书从白名单渲染，所以说明书上也不会有）
+    assert "quiz" not in tools and "record_review" not in tools, tools
+    assert "按这些节点出题考我" not in off and "record_review" not in off, "说明书还留着出题工具"
+    # 规矩层：三段整段不拼接
+    for gone in ("每次开场先看一眼", "复习判定只许降级", "考点:"):
+        assert gone not in off, f"`{gone}` 那段没被剔掉"
+    # 建设那半边不能误伤
+    assert "propose_changes" in tools and "线头" in off, "关掉复习不该动到建设那半边"
+    # 只剩一句陈述状态的话，没有"不要做 X"的禁令
+    assert "复习与出题在设置里关着" in off, "该留一句状态说明"
+    assert "不要出" not in off and "不要主动" not in off, "又写回禁令了"
+
+    # 设置本身：默认全开、坏文件回落默认、只认登记过的键
+    assert core.load_settings(vault)["review_enabled"] is False
+    core.settings.settings_path(vault).write_text("{ 这不是 json", encoding="utf-8")
+    assert core.load_settings(vault) == core.settings.empty_settings(), "坏掉的设置文件该回落默认"
+    core.save_settings(vault, {"乱写的键": True, "review_brief": False})
+    got = core.load_settings(vault)
+    assert "乱写的键" not in got and got["review_brief"] is False, got
+
+
+@case
+def 今日清单按开关摘掉复习项():
+    """今日清单同时是教练 `today` 工具的数据源。只在前端过滤的话，界面安静了、
+    教练一调工具照样看见一串欠账，然后开口催——所以要在这一层就摘掉。"""
+    import sys as _sys
+    _sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
+    from server import curation                               # noqa: E402
+
+    assert curation.REVIEW_KINDS == ("wrong", "due"), curation.REVIEW_KINDS
+
+
+@case
 def 缓存监控只看今天不看累计():
     """累计桶只加不减：糟过一天，这盏灯就再也不会转绿——那它既不报警也不解除，等于没有。
 

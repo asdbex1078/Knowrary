@@ -25,13 +25,14 @@ from .contracts import (CalendarRead, ChangeResult, ChangeSet, ChatRequest, Coac
                         PlanProposal, PlanProposeRequest, PlaceRequest,
                         PlaceResult, ProjectsRead, ProjectsSaved, ProjectsWrite, QuizDiagnoseRequest,
                         QuizDiagnosis, QuizGradeRequest, QuizGraded, QuizRequest, QuizSet, RenameImpact,
-                        RenameRequest, RenameResult, ReviewDone, ReviewRequest, SuggestRequest,
+                        RenameRequest, RenameResult, ReviewDone, ReviewRequest, SettingsPatch,
+                        SettingsRead, SuggestRequest,
                         SuggestResult, UsageRead, YearProposal, YearProposeRequest)
 from .index_service import current_index, invalidate
 from .llm_call import LLMFailed
 from .layout_store import (LayoutBroken, PatchRejected, RevisionConflict, apply_patch, find_orphans,
                            load_or_init)
-from .paths import DEFAULT_LAYOUT, WEB3D_DIST, WEB_DIST, core, vault_path
+from .paths import DEFAULT_LAYOUT, WEB_DIST, core, vault_path
 
 log = logging.getLogger(__name__)
 
@@ -67,7 +68,7 @@ def health() -> dict:
     layout, generated = load_or_init(vault, index)
     return {"vault": str(vault), "index_revision": index["revision"], "stats": index["stats"],
             "layout_revision": layout.revision, "layout_generated": generated,
-            "web_dist": WEB_DIST.exists(), "web3d": WEB3D_DIST.exists()}
+            "web_dist": WEB_DIST.exists()}
 
 
 @app.get("/api/index")
@@ -302,6 +303,19 @@ def post_chat_tidied(body: dict) -> dict:
     except chat_svc.ChatRejected as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"session": body.get("session"), "tidied": mark or None}
+
+
+@app.get("/api/settings", response_model=SettingsRead)
+def get_settings() -> SettingsRead:
+    """偏好设置。文件不在就返回默认（全开）——新 vault 该有完整体验。"""
+    return SettingsRead(**core.load_settings(vault_path()))
+
+
+@app.put("/api/settings", response_model=SettingsRead)
+def put_settings(req: SettingsPatch) -> SettingsRead:
+    """改设置。合并写回，只认契约里登记过的开关。"""
+    patch = {k: v for k, v in req.model_dump().items() if v is not None}
+    return SettingsRead(**core.save_settings(vault_path(), patch))
 
 
 @app.get("/api/llm/usage", response_model=UsageRead)
@@ -578,9 +592,7 @@ class FreshStatic(StaticFiles):
 
 
 def _mount_web() -> None:
-    """有构建产物时同源托管前端（运行期零 Node）。/3d 是只读的 3D 总览原型，可随时删。"""
-    if WEB3D_DIST.exists():
-        app.mount("/3d", FreshStatic(directory=str(WEB3D_DIST), html=True), name="web3d")
+    """有构建产物时同源托管前端（运行期零 Node）。"""
     if not WEB_DIST.exists():
         return
     assets = WEB_DIST / "assets"

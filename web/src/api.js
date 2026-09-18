@@ -145,6 +145,13 @@ export const postMerge = (body) => request('/api/merge', {
 
 /** 模型调用账本：今天 / 累计 / 分功能 + 最近明细。只读。 */
 export const fetchUsage = () => request('/api/llm/usage')
+// 设置：只放"后端也要读"的开关（复习要不要出现）。看图偏好仍在 localStorage。
+export const fetchSettings = () => request('/api/settings')
+export const putSettings = (patch) => request('/api/settings', {
+  method: 'PUT',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify(patch),
+})
 
 // —— 阶段 10 / 一期：今日清单 + 项目 ——
 /** 今天可以动手的事，按固定优先级排。纯排序，不调 LLM。 */

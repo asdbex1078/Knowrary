@@ -26,7 +26,7 @@ MAX_SOURCE_BYTES = 1_000_000
 SOURCE_SUFFIXES = (".md", ".markdown", ".txt")
 # 素材只可能在这些目录之外：节点与领域总览本身就是图谱，机器目录和代码目录里没有笔记
 SKIP_DIRS = {"nodes", "fields", ".knowrary", ".git", ".claude", ".obsidian", ".venv", "node_modules",
-             "web", "web3d", "server", "tools", "harness", "assets", "__pycache__"}
+             "web", "server", "tools", "harness", "assets", "__pycache__"}
 NEAR_MISS_RATIO = 0.6
 
 

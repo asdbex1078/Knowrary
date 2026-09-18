@@ -1654,13 +1654,56 @@ async def case_chat_card_edit(page: Page, ck: Check, vault: Path) -> None:
            "数学家 Pitts" in (diff or "") and "## 线头" in (diff or "") and "## 描述" not in (diff or ""), str(diff)[-160:])
     ck.add("重算不落盘", not target.exists(), str(target))
 
+    # diff 上色：新文件是整篇初稿，不该刷成一片绿，只在头上打「新文件」标记
+    tint = json.loads(await page.ev(f"""JSON.stringify((() => {{ const c = {card};
+      const head = c?.querySelector('.cc-file-head');
+      const rows = [...(c?.querySelectorAll('.cc-diff span') || [])];
+      return {{ badge: head?.querySelector('.cc-new')?.textContent?.trim() || '',
+               path: head?.querySelector('b')?.textContent || '',
+               tinted: rows.filter((r) => r.className).length, rows: rows.length }}; }})())"""))
+    ck.add("新文件卡片打「新文件」标记、路径挪到 diff 外面",
+           "新文件" in tint.get("badge", "") and tint.get("path", "").endswith(".md"), str(tint))
+    ck.add("新文件正文一行都不上色（整篇初稿不是改动）",
+           tint.get("rows", 0) > 3 and tint.get("tinted") == 0, str(tint))
+
     await page.ev(f"""[...{card}.querySelectorAll('.cc-acts .btn')].find((b) => b.textContent.trim().endsWith('写入')).click()""")
-    written = await poll(page, f"""!!{card}?.querySelector('.chip')""", lambda v: v, timeout=15)
-    ck.add("写入后卡片标成「已写入」", bool(written), "chip 出现")
+    # 认「已写入」那枚 chip，别认任意 chip——新文件的卡片头上还有一枚「新文件」标记，
+    # 用 querySelector('.chip') 会一开始就命中，这条断言就废了
+    written = await poll(page, f"""{card}?.querySelector('.cc-head .chip')?.textContent?.trim() || ''""",
+                         lambda v: v == "已写入", timeout=15)
+    ck.add("写入后卡片标成「已写入」", written == "已写入", str(written))
     text = target.read_text("utf-8") if target.exists() else ""
     ck.add("落盘的是改过的正文（笔记层整篇保留、desc 也换了）",
            "数学家 Pitts" in text and "- 数学：Pitts 的出身" in text and "## 线头" in text
            and "## 描述" not in text and text.rstrip().endswith("## 关系"), text[:200])
+
+    # 改已有文件：统一 diff 要红绿分明。直接塞一段真 diff——渲染这条链路和后端怎么算的无关。
+    # `--- a/…` / `+++ b/…` 也以 -/+ 开头，光看首字符会把文件名染成红绿一整行（旧的 diffLines 就这毛病）
+    await page.ev("""__kg.fakeReply('改一处线头。', [{ changes: [], into: null, files: [{
+      path: 'nodes/组A/乙.md',
+      diff: '--- a/nodes/组A/乙.md\\n+++ b/nodes/组A/乙.md\\n@@ -1,3 +1,3 @@\\n ## 线头\\n-和 RNN 的关系还没写\\n+和 RNN 的关系：见 [[RNN]]' }] }])""")
+    tint2 = json.loads(await poll(page, """JSON.stringify((() => {
+      const c = [...document.querySelectorAll('.change-card')].pop();
+      const rows = [...(c?.querySelectorAll('.cc-diff span') || [])].map((r) => ({
+        cls: r.className, t: r.textContent.trim(),
+        bg: getComputedStyle(r).backgroundColor, fg: getComputedStyle(r).color }));
+      return { rows, badge: !!c?.querySelector('.cc-new'),
+               head: c?.querySelector('.cc-file-head b')?.textContent || '' }; })())""",
+      lambda v: v and '"rows"' in v and v.count('"cls"') >= 4, timeout=8) or "{}")
+    rows = tint2.get("rows", [])
+    by = {r["cls"]: r for r in rows}
+    ck.add("删除行标红、新增行标绿",
+           by.get("del", {}).get("t", "").startswith("-") and by.get("add", {}).get("t", "").startswith("+"),
+           str([(r["cls"], r["t"][:14]) for r in rows]))
+    ck.add("红绿是两种颜色，且各自有整行底色",
+           by.get("del", {}).get("fg") != by.get("add", {}).get("fg")
+           and "rgba(0, 0, 0, 0)" not in (by.get("del", {}).get("bg", ""), by.get("add", {}).get("bg", "")),
+           str([(r["cls"], r["fg"], r["bg"]) for r in rows if r["cls"] in ("add", "del")]))
+    ck.add("文件头 --- / +++ 不进 diff，也就不会被染色",
+           not any(r["t"].startswith(("--- ", "+++ ")) for r in rows), str([r["t"][:18] for r in rows]))
+    ck.add("上下文行不上色、@@ 是灰的，改已有文件不打「新文件」标记",
+           any(r["cls"] == "" for r in rows) and any(r["cls"] == "hunk" for r in rows)
+           and not tint2.get("badge") and tint2.get("head", "").endswith("乙.md"), str(tint2)[:140])
 
 
 async def case_history(page: Page, ck: Check, vault: Path) -> None:
