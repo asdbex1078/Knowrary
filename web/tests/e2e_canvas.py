@@ -967,10 +967,18 @@ async def case_project_view(page: Page, ck: Check, api: str) -> None:
 
     glob_rev = get(f"{api}/api/layout")["layout"]["revision"]
     await switch_mode(page, "项目图")
-    ids = await poll(page, """JSON.stringify([...document.querySelectorAll('[data-shape="kg-node"]')]
-      .map((el) => el.getAttribute('data-cell-id')))""", lambda v: v and v != "[]", timeout=10)
-    only = set(json.loads(ids or "[]"))
-    ck.add("项目画布只画这个项目里的点", only == {"甲", "乙"}, f"{sorted(only)}")
+    # 画布上分两拨：项目自己的点，和「周边一跳」借来的外部邻居（靛蓝虚线 ↗，默认开）。
+    # 断言要分开写——只数总数的话，借来的点一进来这条就失守，而它恰恰是要盯住的那条线：
+    # **项目自己的点必须一个不多**，多出来的每一个都得带着 borrowed 标记。
+    got = await poll(page, """JSON.stringify((() => {
+      const ns = __kg.graph.getNodes().filter((n) => n.shape === 'kg-node')
+      return { own: ns.filter((n) => !(n.getData() || {}).borrowed).map((n) => n.id),
+               borrowed: ns.filter((n) => (n.getData() || {}).borrowed).map((n) => n.id) }
+    })())""", lambda v: v and '"own":[]' not in v, timeout=10)
+    seen = json.loads(got or "{}")
+    ck.add("项目画布只画这个项目里的点", set(seen.get("own") or []) == {"甲", "乙"}, str(seen))
+    ck.add("多出来的点全是标记过的「借来的」，且都不在这个项目的清单里",
+           all(i not in {"甲", "乙"} for i in seen.get("borrowed") or []), str(seen.get("borrowed")))
 
     # 清单里有、画布上没有的点：同步条上报数，一键停到右下角
     park = await poll(page, """(() => {
@@ -1008,8 +1016,9 @@ async def case_project_view(page: Page, ck: Check, api: str) -> None:
         jia = (gone or {}).get("nodes", {}).get("甲", {})
         ck.add("解散后点留在原位、不再归框", jia.get("x") == before_x and jia.get("group") is None,
                f"甲 = {jia}")
-        still = await page.ev("""document.querySelectorAll('[data-shape="kg-node"]').length""")
-        ck.add("解散后画布上的点一个没少", still == 3, f"{still} 个")
+        still = await page.ev("""__kg.graph.getNodes()
+          .filter((n) => n.shape === 'kg-node' && !(n.getData() || {}).borrowed).length""")
+        ck.add("解散后画布上的点一个没少", still == 3, f"{still} 个（不含借来的外部邻居）")
 
     # 项目画布有自己的一份 layout：拖它不碰全局图
     proj = get(f"{api}/api/layout?layout=demo")["layout"]

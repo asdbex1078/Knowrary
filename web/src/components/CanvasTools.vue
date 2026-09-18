@@ -14,13 +14,16 @@ defineProps({
   autoLod: { type: Boolean, default: true },
   snap: { type: Boolean, default: true },
   avoidNodes: { type: Boolean, default: false },
+  borrow: { type: Boolean, default: false },
+  project: { type: Boolean, default: false },   // 只有项目画布才有"借来的点"这回事
   layouts: { type: Object, default: () => ({}) },
   canUndo: { type: Boolean, default: false },
   canRedo: { type: Boolean, default: false },
   locked: { type: Boolean, default: false },
 })
 const emit = defineEmits([
-  'toggle-family', 'toggle-aggregate', 'toggle-lod', 'toggle-snap', 'toggle-avoid', 'pick-layout',
+  'toggle-family', 'toggle-aggregate', 'toggle-lod', 'toggle-snap', 'toggle-avoid', 'toggle-borrow',
+  'pick-layout',
   'add-note', 'add-image', 'undo', 'redo',
 ])
 </script>
@@ -66,6 +69,11 @@ const emit = defineEmits([
           <input type="checkbox" :checked="avoidNodes" @change="emit('toggle-avoid')" />
           <span class="check"><Icon name="check" :size="11" :width="2.6" /></span>
           <span class="label">连线绕开卡片<span class="sub">直角走线，从卡片之间穿；手工拐过的边不受影响</span></span>
+        </label>
+        <label v-if="project" class="switch-row">
+          <input type="checkbox" :checked="borrow" @change="emit('toggle-borrow')" />
+          <span class="check"><Icon name="check" :size="11" :width="2.6" /></span>
+          <span class="label">周边一跳<span class="sub">把 GPU 前面的 CPU 这类外部邻居借过来画（↗ 靛蓝虚线，不可拖、不落盘；刷新后回到关）</span></span>
         </label>
       </template>
     </Popover>

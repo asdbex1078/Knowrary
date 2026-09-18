@@ -6,6 +6,7 @@ import {
 } from './api.js'
 import AppHeader from './components/AppHeader.vue'
 import ActivityBar from './components/ActivityBar.vue'
+import { panelOk } from './components/activity-items.js'
 import CanvasTools from './components/CanvasTools.vue'
 import ZoomBar from './components/ZoomBar.vue'
 import HistoryPlayer from './components/HistoryPlayer.vue'
@@ -110,6 +111,12 @@ const snap = ref(localStorage.getItem('knowrary-snap') !== '0')
 // 连线绕开卡片：默认不开，它会把线掰成直角，是另一种观感
 // 默认**开**：线被卡片盖住是实打实看不见信息，直角走线只是观感问题
 const avoidNodes = ref(localStorage.getItem('knowrary-avoid') !== '0')
+// 项目画布上把「一跳外部邻居」也借过来画（GPU 前面的 CPU）。
+// **默认关，而且不记在本机**：项目图的本分是专心，周边是"想看一眼"时才要的东西。
+// 不持久化还顺手绕开一个已知问题——首屏 render() 跑在 refreshPlans() 回来之前，
+// 那时 projectIds 还是空的，借不出任何点，之后也没有东西触发重画；
+// 开关状态要是留在"开"，刷新回来就是一片空白，反倒像坏了。每次点一下，行为永远一致。
+const borrowOn = ref(false)
 const focusGroup = ref(null)             // 聚焦的域：点簇卡片进入，只展开它
 const search = ref('')                   // 顶栏搜索词
 let panorama = null                      // 进入聚焦前的视口，退出时还原
@@ -504,11 +511,20 @@ function render({ view = 'keep' } = {}) {
   const g = graph.value
   collapsedIds.value = computeCollapsed(layoutDoc.value, g.zoom(),
     { auto: autoLod.value, focus: focusGroup.value })
-  const cells = buildCells(indexDoc.value, layoutDoc.value, {
+  // 借来的外部邻居只叠在**这一次渲染**用的 layout 上，layoutDoc 本身一个字都不改——
+  // 它是要落盘的那份，混进不属于这个项目的点就再也分不干净了
+  const borrowed = borrowedIds.value
+  const forRender = borrowed.size
+    ? { ...layoutDoc.value, nodes: { ...layoutDoc.value.nodes, ...borrowedNodes.value } }
+    : layoutDoc.value
+  const cells = buildCells(indexDoc.value, forRender, {
     families: visibleFamilies(), showLabels: labelsOn.value,
     aggregate: aggregate.value, expanded: expanded.value, collapsed: collapsedIds.value, zoom: g.zoom(),
-    due: dueIds.value, states: nodeStates.value, avoidNodes: avoidNodes.value,
-    only: neighborSet.value || (mode.value === 'project' && projectIds.value.size ? projectIds.value : null),
+    due: dueIds.value, states: nodeStates.value, avoidNodes: avoidNodes.value, borrowed,
+    only: neighborSet.value
+      || (mode.value === 'project' && projectIds.value.size
+        ? new Set([...projectIds.value, ...borrowed])
+        : null),
   })
   edgesShown.value = cells.edges.filter((e) => e.data.kind === 'edge').length
   aggShown.value = cells.edges.length - edgesShown.value
@@ -528,6 +544,80 @@ function render({ view = 'keep' } = {}) {
   if (pathHit.value) applyPath()   // 重绘会重建 cell，高亮得重新贴一遍
   syncView()
 }
+
+/**
+ * 项目画布上「借来的」外部邻居：图里真有边连着、却不属于这个项目的点。
+ *
+ * 为什么要有：项目图只画项目内的点，于是 GPU 前面的 CPU 根本不出现——关系明明存在，
+ * 一眼望过去却断在项目边界上；想看前后文只能退回全局图，那又把"专心"丢了。
+ *
+ * **坐标是算出来的，不落盘**：项目 layout 是你自己摆的版式，外部点写进去就污染了它
+ * （而且项目一改清单，这些点还得跟着清理）。所以它们只活在这一次渲染里，也不许拖。
+ */
+const BORROW_GAP = 300           // 借来的点离锚点多远
+const BORROW_MIN = 170           // 两个借来的点之间至少留这么多，免得叠在一起
+
+const borrowedNodes = computed(() => {
+  if (!borrowOn.value || mode.value !== 'project' || !currentProject.value) return {}
+  const index = indexDoc.value
+  const placed = layoutDoc.value?.nodes || {}
+  if (!index?.edges?.length) return {}
+  // **"项目内"以清单为准，不是以 layout 的键为准**：项目 layout 里会残留清单外的点
+  // （从清单里删掉的、早年迁移留下的），它们被 `only` 过滤掉根本不画。
+  // 拿 layout 的键当自己人的话，这些看不见的残留会把真正该借的邻居判成"已经在了"，
+  // 于是一个都借不出来——第一版就栽在这里。
+  const inside = new Set(projectIds.value)
+  // 谁连着项目内的点、自己却不在这块画布上
+  const anchors = new Map()
+  for (const e of index.edges) {
+    for (const [a, b] of [[e.source, e.target], [e.target, e.source]]) {
+      if (!inside.has(a) || inside.has(b) || !placed[a]) continue   // 锚点得先有坐标
+      if (!index.nodes.some((n) => n.id === b && !n.virtual)) continue   // 只借真存在的节点
+      if (!anchors.has(b)) anchors.set(b, [])
+      anchors.get(b).push(a)
+    }
+  }
+  if (!anchors.size) return {}
+  // 画布重心：借来的点一律从重心往外推，才不会插进你摆好的版式中间
+  const pts = [...inside].map((id) => placed[id]).filter(Boolean)
+  const cx = pts.reduce((a, n) => a + (n.x || 0), 0) / (pts.length || 1)
+  const cy = pts.reduce((a, n) => a + (n.y || 0), 0) / (pts.length || 1)
+  const out = {}
+  const taken = []
+  // 连得越多的先摆：它更该待在"正确"的方位上，零散的那些让位
+  for (const [id, list] of [...anchors].sort((a, b) => b[1].length - a[1].length)) {
+    const ax = list.reduce((a, n) => a + (placed[n]?.x || 0), 0) / list.length
+    const ay = list.reduce((a, n) => a + (placed[n]?.y || 0), 0) / list.length
+    let vx = ax - cx
+    let vy = ay - cy
+    const len = Math.hypot(vx, vy) || 1
+    vx /= len
+    vy /= len
+    // 沿着"重心 → 锚点"的方向往外推；位置被占了就转个角度再试，转一圈还不行就推远一点
+    let spot = null
+    for (let ring = 0; ring < 3 && !spot; ring += 1) {
+      for (let step = 0; step < 12; step += 1) {
+        const a = (step % 2 ? -1 : 1) * Math.ceil(step / 2) * (Math.PI / 9)
+        const dx = vx * Math.cos(a) - vy * Math.sin(a)
+        const dy = vx * Math.sin(a) + vy * Math.cos(a)
+        const r = BORROW_GAP + ring * BORROW_MIN
+        const x = Math.round(ax + dx * r)
+        const y = Math.round(ay + dy * r)
+        if (taken.every((t) => Math.hypot(t.x - x, t.y - y) >= BORROW_MIN)
+            && pts.every((n) => Math.hypot((n.x || 0) - x, (n.y || 0) - y) >= BORROW_MIN)) {
+          spot = { x, y }
+          break
+        }
+      }
+    }
+    const at = spot || { x: Math.round(ax + vx * BORROW_GAP), y: Math.round(ay + vy * BORROW_GAP) }
+    taken.push(at)
+    out[id] = { ...at, group: null, state: 'borrowed' }
+  }
+  return out
+})
+
+const borrowedIds = computed(() => new Set(Object.keys(borrowedNodes.value)))
 
 /** 只看某个节点的邻居时，画布上留哪些节点（它自己 + 一跳邻居）。 */
 const neighborSet = computed(() => {
@@ -597,10 +687,10 @@ async function switchMode(next) {
   mode.value = next
   try { localStorage.setItem('knowrary-mode', next) } catch { /* 无痕模式 */ }
   markHistoryContainer(next)
-  // 左侧工具窗口是分模式的：切过去之后原来开着的那个可能不适用了
-  if ((next === 'history' && panel.value !== 'digest') || (next !== 'history' && panel.value === 'timeline')) {
-    panel.value = ''
-  }
+  // 左侧工具窗口是分模式的：切过去之后原来开着的那个可能不适用了。
+  // 判据直接问活动栏那张表，别在这儿另写一套——谱系视图整条栏都收起来了，
+  // 面板要是还挂着，关它的按钮已经不存在。
+  if (!panelOk(panel.value, next, currentProject.value)) panel.value = ''
   // **换了一份 layout 就得重新拉，并且把撤销栈清掉。**
   // 撤销栈里存的是"某一份 layout 的前后两个快照"，跨画布撤销会把补丁打到错的文件上——
   // 这是多份 layout 带来的真风险，不是体验问题。
@@ -658,7 +748,11 @@ function showProblems() {
 // 写盘总闸：预览布局时画布是"草稿"；历史视图是浏览视图，坐标本来就不持久化。
 // **项目画布同样可写**（四期之后它是一份真 layout）——只认 structure 的话，
 // 在项目画布上拖节点、右键、连边全部静默失效，看着像"这块画布是只读的"。
-const writable = () => !preview.value && (mode.value === 'structure' || mode.value === 'project')
+// **对话模式右边那块图也可写**：它用的就是项目那份 layout（见 layoutName()），
+// 漏掉 chat 的话，在对话里点节点「定稿」会静默丢补丁——提示还照弹"已定稿"，
+// 盘上却没变。同一个坑踩第二次了，判据跟着 layoutName() 走，别再各写一份。
+const writable = () => !preview.value
+  && (mode.value === 'structure' || mode.value === 'project' || mode.value === 'chat')
 
 function queueIfChanged(kind, id, patch) {
   if (!writable()) return
@@ -867,6 +961,12 @@ function bindEvents(g) {
   // 右键菜单：浏览器自带的菜单让位，画布自己弹
   g.container.addEventListener('contextmenu', (ev) => ev.preventDefault())
   g.on('node:contextmenu', safe(({ node, e }) => {
+    // 借来的点不归这块画布管：右键菜单里全是写操作（移入分组 / 从画布去掉 / 定稿），
+    // 对一个"只是路过"的点执行它们，改的是别处的账。要动它就去全局图。
+    if (node.getData()?.borrowed) {
+      setBanner(`「${node.id}」是借来的外部邻居，不属于这个项目——要改它请去全局图`)
+      return
+    }
     const kind = { 'kg-node': 'node', 'kg-group': 'group', 'kg-cluster': 'cluster' }[node.shape]
       || (['kg-note', 'kg-image', 'kg-ref'].includes(node.shape) ? 'deco' : null)
     if (kind) openMenu(kind, node.id, e)
@@ -1729,6 +1829,12 @@ function toggleAvoid() {
     : '连线恢复直连', 'success')
 }
 
+/** 借不借外部邻居。**只活在这一次会话里**，刷新就回到关——理由见 borrowOn 的注释。 */
+function toggleBorrow() {
+  borrowOn.value = !borrowOn.value
+  render()
+}
+
 function toggleMap() {
   showMap.value = !showMap.value
   localStorage.setItem('knowrary-map', showMap.value ? '1' : '0')
@@ -2180,6 +2286,9 @@ async function switchProject(id) {
   try { localStorage.setItem('knowrary-project', id) } catch { /* 无痕模式 */ }
   if (panel.value === 'study') refreshToday()
   if (panel.value === 'calendar') refreshCalendar()
+  // 换项目也可能换作用域（对话模式下「全局」那套和项目那套不是一批工具），
+  // 开着的面板要是在新作用域里没有入口，跟切视图一样关掉
+  if (!panelOk(panel.value, mode.value, id)) panel.value = ''
   // **画布跟着换。** 判据是"这一屏该画哪份 layout"，不是"现在是不是项目图模式"——
   // 对话模式右边那块图用的也是项目画布，只按模式判会漏掉它：
   // 在 A 项目下聊天、切到 B，背后还摆着 A 的图。
@@ -2305,7 +2414,18 @@ async function refreshPlans() {
     } else if (!projectPicked && !currentProject.value) {
       let saved = null
       try { saved = localStorage.getItem('knowrary-project') } catch { /* 无痕模式 */ }
-      if (saved === null) currentProject.value = Object.keys(known)[0] || ''
+      if (saved === null) {
+        currentProject.value = Object.keys(known)[0] || ''
+        // **选完项目必须把画布也换过去。** 走到这一支说明本机没存过项目（首次用 / 无痕 /
+        // 换了台机器），`load()` 早就按"没有项目"拉了全局图；这里刚把项目选上，
+        // layoutName() 跟着变成项目图，内存里那份却还是全局的。
+        // 不补这一下，后面 switchMode 的 `layoutName() !== wasLayout` 判据永远相等，
+        // 再也纠正不回来——表现是对话 / 项目图上摆着全局图，在上面定稿写不进去。
+        if (currentProject.value) {
+          await reloadLayout()
+          render({ view: 'stored' })
+        }
+      }
     }
     projectPicked = true
     plansProgress.value = data.progress
@@ -2481,9 +2601,17 @@ async function submitQuiz(answers) {
   }
 }
 
-/** 定稿：草稿位置确认下来，金色虚线框变成正常卡片。只改 layout，不碰 md。 */
+/** 定稿：草稿位置确认下来，金色虚线框变成正常卡片。只改 layout，不碰 md。
+ *
+ * **不可写时要说出来。** queueIfChanged 在总闸关着时是静默 return 的，
+ * 底下照样弹「已定稿」的话，人看到的是成功、盘上却没动——这个假成功比不生效更难查。
+ */
 function finalize(id) {
   if (layoutDoc.value.nodes[id]?.state !== 'draft') return
+  if (!writable()) {
+    setBanner(preview.value ? '正在预览布局，先落盘或取消预览再定稿' : '当前视图不写盘，定稿没生效', 'error')
+    return
+  }
   queueIfChanged('node', id, { state: 'final' })
   selected.value = describe(id)
   render()
@@ -2951,11 +3079,12 @@ onBeforeUnmount(() => {
 
         <CanvasTools v-if="mode === 'structure' || mode === 'project'" :visible="visible" :shown-families="shownFamilies"
                      :collapsed="collapsedIds.size" :aggregate="aggregate" :auto-lod="autoLod" :snap="snap" :avoid-nodes="avoidNodes"
+                     :borrow="borrowOn" :project="mode === 'project' && !!currentProject"
                      :layouts="mode === 'project' ? {} : LAYOUTS" :can-undo="canUndo" :can-redo="canRedo" :locked="!!preview"
                      @toggle-family="visible[$event] = !visible[$event]; render()"
                      @toggle-aggregate="aggregate = !aggregate; expanded = new Set(); render()"
                      @toggle-lod="autoLod = !autoLod; render()"
-                     @toggle-snap="toggleSnap" @toggle-avoid="toggleAvoid"
+                     @toggle-snap="toggleSnap" @toggle-avoid="toggleAvoid" @toggle-borrow="toggleBorrow"
                      @pick-layout="runLayout" @add-note="addNote" @add-image="panel = 'assets'"
                      @undo="undo" @redo="redo" />
 

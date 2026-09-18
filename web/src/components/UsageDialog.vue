@@ -63,21 +63,26 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onKey, true))
         <dd>{{ kilo(cached) }}
           <span class="dim">（读 {{ kilo(usage.totals.cache_read_tokens) }} / 写
             {{ kilo(usage.totals.cache_write_tokens) }}）</span></dd>
-        <dt>读写比</dt>
+        <!-- 这一格看的是**今天**的多轮对话，不是总账：累计只加不减，糟过一天就再也绿不回来 -->
+        <dt>读写比<span class="dim">（今天）</span></dt>
         <dd :class="{ 'warn-text': usage.cache && !usage.cache.ok }">
           {{ usage.cache?.ratio ?? '—' }}<span class="dim">×</span>
           <span v-if="usage.cache?.worst" class="dim">
             · 最低 {{ OP_NAME[usage.cache.worst.op] || usage.cache.worst.op }}
-            {{ usage.cache.worst.ratio }}×</span></dd>
+            {{ usage.cache.worst.ratio }}×</span>
+          <span v-else-if="usage.cache" class="dim">
+            · 今天 {{ usage.cache.calls }} 次多轮调用，还不够判</span>
+          <span v-if="usage.totals.cache_ratio" class="dim">　累计 {{ usage.totals.cache_ratio }}×</span></dd>
         <dt>角色 → provider</dt>
         <dd>{{ Object.entries(usage.roles).map(([r, p]) => `${r} → ${p}`).join('，') || '默认 claude-cli' }}</dd>
       </dl>
 
       <p v-if="usage.cache && !usage.cache.ok" class="warn-text"
          style="font-size: 11.5px; line-height: 1.6">
-        多轮对话的读写比低于 {{ usage.cache.healthy }}×，说明**每一轮都在重写缓存而不是读它**。
+        今天多轮对话的读写比低于 {{ usage.cache.healthy }}×，说明**每一轮都在重写缓存而不是读它**。
         缓存失效不报错、答案也全对，只有账单在涨——健康的多轮循环应该在 5-10×。
-        先查前缀里是不是混进了会变的东西（时间、节点数、未排序的 JSON）。
+        先查前缀里是不是混进了会变的东西（时间、节点数、未排序的 JSON）；
+        要是聊天本来就隔了十几分钟一句，那只是 5 分钟缓存到期，不是前缀出了问题。
       </p>
       <p v-if="!usage.cost_known" class="dim" style="font-size: 11.5px; line-height: 1.6">
         当前 provider 不返回花销，所以这里只有 token 数。**不按型号估价**——价目表会过期，

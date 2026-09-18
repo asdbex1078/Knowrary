@@ -176,7 +176,7 @@ export function createGraph(container) {
     connecting: { router: 'normal', connector: 'normal', allowBlank: false },
     // 只有"内容"能拖。泳道、年份刻度、时间游标是图的骨架不是图的内容——
     // 它们的坐标是算出来的，拖走既没意义，还会被 node:moved 当成真节点写进 layout。
-    interacting: { nodeMovable: (view) => DRAGGABLE.has(view.cell.shape),
+    interacting: { nodeMovable: (view) => DRAGGABLE.has(view.cell.shape) && !view.cell.getData()?.borrowed,
                    edgeMovable: false, edgeLabelMovable: false },
   })
   // 拖空白 = 平移；shift + 拖空白 = 框选
@@ -297,7 +297,10 @@ export function buildLineageCells(index, layout, options = {}) {
 
 export function buildCells(index, layout, options = {}) {
   const { families = null, showLabels = false, collapsed = new Set(), zoom = 1, due = new Set(),
-          states = {}, only = null, avoidNodes = false } = options
+          states = {}, only = null, avoidNodes = false, borrowed = new Set() } = options
+  // borrowed：画在项目画布上、但不属于这个项目的一跳邻居（GPU 前面的 CPU）。
+  // 它们的坐标是**算出来的**（调用方按相连的项目内点摆位），没有也不该有 layout 记录——
+  // 所以既不能拖（见 nodeMovable），拖了也不会落盘。
   // only：「只看某个节点的邻居」模式，画布上只留这一小撮节点与它们之间的边。
   // 做成投影层的过滤而不是把别的元素调暗——网状图里"调暗"照样挡视线。
   const keepGroup = only
@@ -360,12 +363,14 @@ export function buildCells(index, layout, options = {}) {
       width: meta ? size.w : (n.w || NODE_W), height: meta ? size.h : (n.h || NODE_H),
       zIndex: 10,
       attrs: meta
-        ? nodeAttrs(meta, n, colorOf(n.group, meta.field), due.has(nid), states[nid] || null)
+        ? nodeAttrs(meta, n, colorOf(n.group, meta.field),
+                    { due: due.has(nid), state: states[nid] || null, borrowed: borrowed.has(nid) })
         : n.state === 'ghost'
-          ? nodeAttrs({ id: nid, name: nid }, n, NEUTRAL, false, null, true)   // 幽灵占位，不是孤立记录
+          ? nodeAttrs({ id: nid, name: nid }, n, NEUTRAL, { ghost: true })   // 幽灵占位，不是孤立记录
           : orphanAttrs(nid),
       data: { kind: 'node', group: n.group || null, orphan: !meta && n.state !== 'ghost',
-              ghost: !meta && n.state === 'ghost', field: meta?.field || null },
+              ghost: !meta && n.state === 'ghost', borrowed: borrowed.has(nid),
+              field: meta?.field || null },
     })
   }
   // 便签与引用卡：只存在 layout.json 里，不参与关系与索引

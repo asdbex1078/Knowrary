@@ -101,11 +101,21 @@ const box = ref(null)
 
 const empty = computed(() => !props.messages.length)
 
-/** 新内容进来就贴着底部。人正往回翻时不要抢滚动。 */
+/** 新内容进来就贴着底部。人正往回翻时不要抢滚动。
+ *
+ * **但载入一段旧会话必须直接落到最底。** 那个"离底部 260px 以内才滚"的守卫是给流式输出用的
+ * （人正往回翻时别抢滚动），首屏却正好卡在它上面：scrollTop 还是 0、整段历史很高，
+ * 距离远超 260，于是一次都不滚，进来就停在我说的第一句话上。
+ * 所以"从没有内容到有内容"这一跳单独放行，不看距离。
+ */
+let hadMessages = false
 watch(() => props.messages.map((m) => m.content).join('|'), async () => {
   await nextTick()
   const el = box.value
-  if (el && el.scrollHeight - el.scrollTop - el.clientHeight < 260) el.scrollTop = el.scrollHeight
+  const fresh = !hadMessages && props.messages.length > 0    // 首屏载入、或换会话后第一次有内容
+  hadMessages = props.messages.length > 0
+  if (!el) return
+  if (fresh || el.scrollHeight - el.scrollTop - el.clientHeight < 260) el.scrollTop = el.scrollHeight
 })
 
 function send(q, opts = {}) {
