@@ -112,6 +112,9 @@ export const FAMILIES = Object.keys(FAMILY_STYLE)
 export const CURSOR_ID = '__time-cursor__'   // 时间游标那个 cell 的固定 id
 export const CURSOR_W = 2.5
 export const CURSOR_COLOR = '#e0891f'        // 和「演化」同一支橙：两者说的都是"时间往前走"
+// 借来的外部邻居专用色。**不能用金色**：金色（#d9a53b）是草稿，而项目画布上草稿最多，
+// 两种金虚线并排等于没标记。橙给了演化与到期，灰给了幽灵与弱关联——靛蓝是这张画布上唯一还空着的语义位。
+export const BORROWED_COLOR = '#5a7fd6'
 
 export function registerShapes() {
   Graph.registerNode('kg-node', {
@@ -394,12 +397,22 @@ export function dotAttrs(meta, color = NEUTRAL, { showName = true, year = null }
   }
 }
 
-export function nodeAttrs(indexNode, layoutNode, color = NEUTRAL, due = false, state = null,
-                          ghost = false) {
+/**
+ * 知识点卡片的样式。
+ *
+ * `opts`：`due` 到期、`state` 掌握度、`ghost` 幽灵占位、`borrowed` 借来的外部邻居。
+ * 摊成位置参数的话这里就是六七个 flag，调用处全是一串 `false, null, true`。
+ */
+export function nodeAttrs(indexNode, layoutNode, color = NEUTRAL, opts = {}) {
+  const { due = false, state = null, ghost = false, borrowed = false } = opts
   const draft = layoutNode?.state === 'draft'
   // 幽灵：计划里有、图里还没建。比 stub 更淡——stub 是"建了个壳"，幽灵是"压根还没有"。
   // 只活在项目画布上，不进全局 layout、不进 vault。
   // **由调用方判定**：这里为了显示标题会收到一个合成的 indexNode，光看它有没有是判不出来的。
+  //
+  // 借来的：图里真有、只是不属于这个项目（GPU 前面的 CPU）。它跟幽灵**反过来**——
+  // 幽灵是"还没有的东西"，借来的是"已经有、但不归你管"，所以照常上色、只是整张卡调淡并画虚线框，
+  // 一眼能认出"这个不是我项目里的点"，又不至于淡到读不出它是什么。
   const stub = !!indexNode?.stub
   const size = sizeFor(indexNode)
   const tone = stub ? NEUTRAL : color
@@ -409,16 +422,18 @@ export function nodeAttrs(indexNode, layoutNode, color = NEUTRAL, due = false, s
       rx: size.rx, ry: size.rx,
       class: size.shape === 'pill' ? 'kg-pill' : 'kg-card',
       fill: ghost ? 'transparent' : draft ? '#fffdf4' : size.shape === 'pill' ? tokens().pill : tone.fill,
-      stroke: ghost ? '#c3cbd4' : draft ? '#d9a53b' : tone.line,
+      stroke: ghost ? '#c3cbd4' : borrowed ? BORROWED_COLOR : draft ? '#d9a53b' : tone.line,
       strokeWidth: ghost || stub ? 1 : size.shape === 'pill' ? 1.1 : 1.3,
-      strokeDasharray: ghost ? '2 5' : draft ? '5 3' : stub ? '3 3' : null,
-      strokeOpacity: ghost ? 0.7 : 1,
+      strokeDasharray: ghost ? '2 5' : borrowed ? '4 3' : draft ? '5 3' : stub ? '3 3' : null,
+      strokeOpacity: ghost ? 0.7 : borrowed ? 0.55 : 1,
+      fillOpacity: borrowed ? 0.4 : 1,
     },
     title: {
-      opacity: ghost ? 0.55 : 1,
-      text: (size.shape === 'pill' ? '' : `${iconFor(indexNode)} `).trimStart()
-        ? `${iconFor(indexNode)} ${indexNode?.name || indexNode?.id || ''}`.trim()
-        : indexNode?.name || indexNode?.id || '',
+      opacity: ghost ? 0.55 : borrowed ? 0.7 : 1,
+      text: ((borrowed ? '↗ ' : '')
+        + ((size.shape === 'pill' ? '' : `${iconFor(indexNode)} `).trimStart()
+          ? `${iconFor(indexNode)} ${indexNode?.name || indexNode?.id || ''}`.trim()
+          : indexNode?.name || indexNode?.id || '')),
       fontSize: size.title,
       fill: stub ? tone.text : tokens().title,
       refX: size.accent ? 13 + size.accent : 13,
@@ -431,7 +446,7 @@ export function nodeAttrs(indexNode, layoutNode, color = NEUTRAL, due = false, s
       text: size.chars ? (indexNode?.desc || '').slice(0, size.chars) : '',
       fontSize: size.desc || 1,
       fill: tone.text,
-      opacity: size.desc ? 0.75 : 0,
+      opacity: size.desc ? (borrowed ? 0.5 : 0.75) : 0,
       refX: size.accent ? 13 + size.accent : 13,
       refY: size.h - 16,
       textVerticalAnchor: 'middle',

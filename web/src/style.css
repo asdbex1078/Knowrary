@@ -371,30 +371,39 @@ select:disabled { cursor: not-allowed; opacity: .5; }
 
 /* ---------- 9. 左侧活动栏 ---------- */
 .rail {
-  width: 52px; flex: none;
-  display: flex; flex-direction: column; align-items: center; gap: 4px;
+  width: 72px; flex: none;
+  display: flex; flex-direction: column; align-items: center; gap: 2px;
   padding: 8px 0;
   background: var(--surface); border-right: 1px solid var(--line);
   z-index: 30;
 }
+/* 图标下面常驻一行名字：这一条有 8 个工具窗口，纯图标只能靠 hover 认，
+   而 hover 一次只能认一个——名字摆出来才能一眼扫完。 */
 .rail .rail-btn {
   position: relative;
-  width: 38px; height: 38px;
-  display: grid; place-items: center;
+  width: 60px; min-height: 46px;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px;
+  padding: 6px 2px 5px;
   border: none; background: transparent; color: var(--text-2);
   border-radius: var(--r); cursor: pointer;
   transition: background .13s var(--ease), color .13s var(--ease);
+}
+/* 角标贴着图标，不贴按钮——按钮现在比图标高一截，贴按钮会飘到名字那边去 */
+.rail .rail-btn .rail-ico { position: relative; display: grid; place-items: center; }
+.rail .rail-btn .rail-name {
+  font-size: 10px; line-height: 1.1; letter-spacing: .02em;
+  max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .rail .rail-btn:hover { background: var(--surface-2); color: var(--text); }
 .rail .rail-btn.on { background: var(--accent-soft); color: var(--accent-text); }
 /* 选中态左侧那道竖条：IDE 里的工具窗口指示 */
 .rail .rail-btn.on::before {
-  content: ''; position: absolute; left: -8px; top: 9px;
-  width: 3px; height: 20px; border-radius: 0 3px 3px 0; background: var(--accent);
+  content: ''; position: absolute; left: -6px; top: 50%; translate: 0 -50%;
+  width: 3px; height: 24px; border-radius: 0 3px 3px 0; background: var(--accent);
 }
 .rail .rail-btn .badge {
-  position: absolute; top: 3px; right: 2px;
-  transform: scale(.86); transform-origin: top right;
+  position: absolute; top: -5px; left: 10px;
+  transform: scale(.86); transform-origin: top left;
   box-shadow: 0 0 0 2px var(--surface);
 }
 .rail .spacer { flex: 1; }
@@ -1334,7 +1343,7 @@ kbd.key {
 .cal-day { margin-top: 14px; border-top: 1px solid var(--line); padding-top: 10px; }
 
 /* 左侧栏按作用域分段：项目级的在上，全局级的在下 */
-.rail-split { width: 22px; height: 1px; background: var(--line); margin: 6px 0; flex: none; }
+.rail-split { width: 34px; height: 1px; background: var(--line); margin: 7px 0; flex: none; }
 
 /* 顶栏：项目级的两个视图和全局级的两个分开摆，中间留一道缝 */
 .seg.global { margin-left: 10px; position: relative; }
