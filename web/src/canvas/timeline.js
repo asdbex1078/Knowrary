@@ -19,6 +19,10 @@ export const LANE_TITLE_H = 26     // 泳道标题占的高度，节点从它下
 export const LANE_GAP = 24
 export const BLOCK_GAP = 60        // 多条时间线叠加时，块与块之间的空行
 export const AXIS_H = 40
+export const BAND_H = 30           // 一条流派时间带的高度（要塞得下背后那条累计曲线）
+export const BAND_ROW_GAP = 5      // 两行带子之间
+export const BAND_GAP = 10         // 同一行里两条带子之间至少留这么多（像素，不是年）
+export const BAND_MIN_W = 24       // 只活了一两年的流派也得看得见
 export const TRUNK_GAP = 74        // 主干与第一排旁支之间的距离
 
 /** 分组的所有后代（含自己）。 */
@@ -202,6 +206,72 @@ function packLane(items) {
 }
 
 /**
+ * 流派时间带的行分配：**能放同一行的就放同一行，撞上了才换行。**
+ *
+ * 和 `packLane` 是同一套 first-fit 扫描线，区别只在这里排的是"一段区间"而不是一个点。
+ * 这么排出来的行数是**最少**的，而最少行数恰好等于最大并存深度——
+ * **于是行数本身成了信息**：看几行就知道那个年代有几派在同时竞争。
+ *
+ * 反例是"一条带子各占一行"：1–3 / 5–9 / 2–6 会排成三行，而它们实际上只有两层重叠，
+ * 三行读不出这件事，只能一条条对着年份数。first-fit 会把 5–9 放回第一行（3 < 5），
+ * 剩 2–6 单独一行，一眼就看出"中间那段有两派并存"。
+ *
+ * **在像素空间算，不在年份空间算**：紧凑模式会压缩空白年份（COMPACT_GAP），
+ * 按年份判"隔开了没有"会把压缩后挨在一起的两条判成不重叠。
+ *
+ * `open`（end 留空 = 还在延续）的带子一直画到轴的右端，所以它之后那一行就占死了。
+ */
+export function packBands(schools, scale, right) {
+  const sorted = schools
+    .filter((s) => typeof s.start === 'number')
+    .sort((a, b) => a.start - b.start || String(a.name).localeCompare(String(b.name), 'zh'))
+  const rows = []
+  const bands = []
+  for (const s of sorted) {
+    const x = scale.at(s.start) + TICK_OFFSET
+    const x2 = s.open || typeof s.end !== 'number' ? right : scale.at(s.end) + TICK_OFFSET
+    const w = Math.max(x2 - x, BAND_MIN_W)
+    let row = rows.findIndex((end) => end <= x)
+    if (row < 0) {
+      row = rows.length
+      rows.push(0)
+    }
+    rows[row] = x + w + BAND_GAP
+    bands.push({ ...s, x, w, row, y: row * (BAND_H + BAND_ROW_GAP) })
+  }
+  return { bands, rows: rows.length, height: rows.length ? rows.length * (BAND_H + BAND_ROW_GAP) : 0 }
+}
+
+
+/**
+ * 一条流派的累计曲线 → 画在带子里的阶梯折线。
+ *
+ * **所有流派共用一个 y 刻度**（`peak` 传全局最大值），不各自归一化——
+ * "哪派积累得多"本身是信息，各自满格会把 4 个成员和 40 个成员画成一样高。
+ *
+ * 阶梯不是折线：累计值在成员出现的那一年才跳，中间是平的。画成斜线会让人以为
+ * 那几年在稳步增长，而事实是**那几年什么都没发生**——这条曲线存在的全部意义
+ * 就是让那段"什么都没发生"看得见。
+ *
+ * 曲线一直画到带子右端（`open` 的画到轴尾）：最后那一级之后的平段同样是停摆。
+ */
+export function bandCurve(school, scale, peak, right) {
+  const pts = school.curve || []
+  if (!pts.length || peak <= 0) return []
+  const x = (year) => scale.at(year) + TICK_OFFSET
+  const y = (n) => BAND_H - 3 - (n / peak) * (BAND_H - 6)
+  const endX = school.open || typeof school.end !== 'number' ? right : x(school.end)
+  const out = []
+  for (const p of pts) {
+    if (out.length) out.push([x(p.year), out[out.length - 1][1]])   // 先平推到这一年
+    out.push([x(p.year), y(p.n)])                                    // 再跳一级
+  }
+  out.push([Math.max(endX, out[out.length - 1][0]), out[out.length - 1][1]])
+  return out
+}
+
+
+/**
  * 找出最长的一条演化链，当主干用。
  *
  * 只沿时间正向走（source.year ≤ target.year）：一来演化本来就该是这个方向，
@@ -300,11 +370,15 @@ export function activeAt(plan, upto, validity) {
  * opts: { timelines, families, compact, upto, validity }
  */
 export function buildTimeline(index, layout, opts = {}) {
-  const { timelines = [], families = new Set(['演化']), compact = false, trunk = false } = opts
+  const { timelines = [], families = new Set(['演化']), compact = false, trunk = false,
+          schools = [] } = opts
   // upto / validity **不参与布局**：它们只决定哪些点画成"已发生"（见 activeAt）。
   // 以前这两个值会把节点整个滤掉，于是 yearScale 只拿可见年份算，
   // 滑块一动整条 X 轴就重新拉伸、泳道行数也跟着变——回放时全图一直在滑在跳。
-  const withYear = index.nodes.filter((n) => !n.virtual && typeof n.year === 'number')
+  // **聚合文档不画成圆点**：流派已经是一条带子了，再出一个点就是同一个东西画两遍；
+  // 对比组和领域总览同理——它们是「一批知识点的容器」，不是时间轴上的一个事件。
+  const withYear = index.nodes.filter(
+    (n) => !n.virtual && !n.aggregate && typeof n.year === 'number')
   const laneNames = new Map()
   const kept = []
   for (const node of withYear) {
@@ -321,13 +395,25 @@ export function buildTimeline(index, layout, opts = {}) {
     const inGraph = new Set(kept.map((k) => k.node.id))
     const ev = index.edges.filter((e) => inGraph.has(e.source) && inGraph.has(e.target))
     const laid = trunkLayout(kept, scale, ev)
+    // 主干道不画流派带：泳道布局回答"谁和谁是一类"，聚焦一条线时问的是"谁接谁"
     if (laid) return finish(laid.placed, laid.lanes, laid.height, scale, index, kept, withYear,
-                            families, { trunk: laid.chain })
+                            families, { trunk: laid.chain, bands: [] })
   }
+
+  // 流派时间带：**只显示至少有一个成员在当前图里的**。这样看 AI 时 CISC 那条
+  // 自动不出现，不用额外配一份"这个视图显示哪些流派"——少一份会和现实漂移的配置。
+  const onStage = new Set(kept.map((k) => k.node.id))
+  const right = scale.width + TICK_OFFSET
+  const shown = schools.filter((s) => (s.members || []).some((m) => onStage.has(m)))
+  const packed = packBands(shown, scale, right)
+  const peak = Math.max(0, ...packed.bands.map((b) => b.peak || 0))
+  for (const b of packed.bands) b.points = bandCurve(b, scale, peak, right)
 
   const placed = new Map()
   const lanes = []
-  let y = AXIS_H + LANE_GAP
+  // 带子占在轴和第一条泳道之间；没有流派时这一段高度为 0，布局和以前一模一样
+  let y = AXIS_H + (packed.height ? packed.height + LANE_GAP : 0) + LANE_GAP
+  const bandTop = AXIS_H + LANE_GAP
   let lastBlock = null
   const byLayer = timelines.includes(BY_LAYER)
   // 按层时用固定次序（底层在下 → 数组倒过来铺），别用字典序——
@@ -348,19 +434,26 @@ export function buildTimeline(index, layout, opts = {}) {
     y += h + LANE_GAP
   }
 
-  return finish(placed, lanes, y, scale, index, kept, withYear, families, {})
+  return finish(placed, lanes, y, scale, index, kept, withYear, families,
+                { bands: packed.bands.map((b) => ({ ...b, y: bandTop + b.y })), peak })
 }
 
 /** 两种布局共用的收尾：挑边、算诊断、拼出 plan。 */
 function finish(placed, lanes, height, scale, index, kept, withYear, families, extra) {
-  const inGraph = index.edges.filter((e) => placed.has(e.source) && placed.has(e.target))
+  // **带子也算"在图上"**：流派是 X6 节点（id 就是流派的 node id），所以
+  // `CISC --演化为--> RISC`（带↔带）和 `RISC --演化为--> 现代Intel微架构`（带↔点）
+  // 都能照常画出来。不把它们算进来的话，一个概念从圆点变成带子就会**悄悄断链**——
+  // 而那正是"融合"要靠的那根线（RNN 融进 Transformer、Loop Transformer 又把它接回来）。
+  const onCanvas = new Set([...placed.keys(), ...(extra.bands || []).map((b) => b.id)])
+  const inGraph = index.edges.filter((e) => onCanvas.has(e.source) && onCanvas.has(e.target))
   const edges = inGraph.filter((e) => families.has(e.family))
   // 两端都有 year 才画，所以缺年份的演化边是"数据欠账"，单独报出来而不是悄悄丢掉
   const missingYear = inGraph.filter((e) => e.family === '演化' && e.year == null).map((e) => e.id)
   // 最长演化链：主干道布局本来就要算，泳道布局这里补算一次给「沿演化链导览」用。
   // **不受关系族开关影响**——导览走的是"谁接谁"，不该因为用户把演化边关了就没路可走。
   const chain = extra.trunk
-    || longestChain([...placed].map(([id, box]) => ({ id, year: box.year })), inGraph)
+    || longestChain([...[...placed].map(([id, box]) => ({ id, year: box.year })),
+                     ...(extra.bands || []).map((b) => ({ id: b.id, year: b.start }))], inGraph)
   return {
     placed, lanes, ticks: scale.ticks, width: scale.width + NODE_W + 80,
     height, edges, ...extra, chain,

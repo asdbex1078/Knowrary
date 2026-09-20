@@ -831,10 +831,14 @@ FORMAT_DOC = {
 - `update_edge`：边的类型 / 年份 / 注写错了。`from_relation` 定位原来那条，`relation` 给新类型
   （不改类型就填一样的）；`year` 和 `note` **给了才动，没给就保持原样**。
 - `update_frontmatter`：`fields` 里逐个字段给新值。能改的只有 `name / field / layer / params /
-  type / status / year / start_year / end_year / aliases / tags / desc / learned / source`；
+  type / status / year / start_year / end_year / aliases / tags / desc / learned / source / color`；
   `id` 和画布坐标（`x / y / w / h / group / collapsed / pinned`）永远改不了，提了整批退回。
   给空串等于删掉这一行。`status` 只能填 `active / deprecated / disputed / stub`；
   `params` 是参数量、按 `175B` / `340M` / `1.3万亿` 这样写（拿来在图上比大小，不是规格表）。
+  `color` 只对 `type: 流派` 有用（历史视图里那条时间带的颜色，`#rrggbb`）——
+  **别主动改它**：颜色是人用来认人的，今天蓝的明天绿的比没有颜色更糟。
+  `start_year / end_year` 同理只对流派有意义：`end_year` 留空表示还在延续，
+  **不要为了"看起来完整"去猜一个结束年**——停摆由那条累计走势的平台期自己显示。
 
 `set_fact` 改的是正文 `## 速查` 里的**一行**（横向对比表的一格）：`key` 是维度名、
 `value` 是一句话结论（30 字上下，长解释写进正文别处），`value` 给空就是删掉这一行。

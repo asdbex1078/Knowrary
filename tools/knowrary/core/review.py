@@ -13,6 +13,7 @@ import datetime as dt
 from pathlib import Path
 
 from .mdio import load_json, write_json_atomic
+from .parser import is_reviewable
 
 SCHEMA_VERSION = 2
 INTERVALS = (1, 2, 4, 7, 15, 30)     # 间隔序号 step 对应的天数
@@ -120,8 +121,9 @@ def due_nodes(index: dict, log: dict, today: dt.date | None = None) -> list[dict
     today = today or dt.date.today()
     out = []
     for node in index["nodes"]:
-        # 聚合文档不进复习队列：要背的是成员，不是那张目录/表
-        if node.get("virtual") or node.get("stub") or node.get("aggregate"):
+        # 目录 / 对比表不进复习队列：要背的是成员，不是那张表。
+        # **流派例外**：它是聚合文档，但有正文有「我的理解」，照常要背（见 parser.is_reviewable）。
+        if node.get("virtual") or node.get("stub") or not is_reviewable(node):
             continue
         entry = log["nodes"].get(node["id"])
         due = next_due_for(entry, node.get("learned"))

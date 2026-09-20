@@ -47,6 +47,7 @@ from .merge import MergeRejected, apply_merge, plan_merge
 from .pending import add_home, add_pending, load_homes, load_pending, pending_path, remove_pending
 from .rename import RenameRejected, apply_rename, backup_rename, plan_rename
 from .review import GRADES, due_nodes, load_log, next_due_for, record_review
+from .schools import SCHOOL_TYPE, school_of, schools
 from .writer import (CHANGE_TYPES, EDITABLE_FIELDS, ChangeRejected, FileEdit, WriteConflict,
                      apply_to_text, backup, commit, plan, split_sections)
 from .relations import Edge, NormalizedEdge, RelationTypes, load_relation_types, normalize_direction, parse_relations
@@ -55,7 +56,7 @@ from .schema import validate_index
 __all__ = [
     "ChangeRejected", "Diagnostic", "Diagnostics", "Edge", "FileEdit", "INDEX_SCHEMA_VERSION",
     "DEFAULT_LOAD", "GRADES", "ID_OK", "KINDS", "LAYERS", "UNLAYERED", "exam_state", "states_of", "study_state", "LOADS", "LOAD_HOURS", "MASTERY_ORDER", "all_progress",
-    "all_schedules", "as_date", "ascii_id", "CALENDAR_MAX_DAYS", "append_answers", "build_calendar", "issues_path", "load_issues", "record_issue", "issues_summary", "build_digest", "duplicates", "group_labels", "kinship", "link_hints", "lonely", "lonely_batches", "misplaced", "no_year", "streak", "build_today",
+    "all_schedules", "as_date", "ascii_id", "CALENDAR_MAX_DAYS", "append_answers", "build_calendar", "issues_path", "load_issues", "record_issue", "issues_summary", "build_digest", "duplicates", "group_labels", "kinship", "link_hints", "lonely", "lonely_batches", "SCHOOL_TYPE", "schools", "school_of", "misplaced", "no_year", "streak", "build_today",
     "current_stage", "done_ids", "project_lines", "due_nodes", "legacy_plans_path", "list_field", "lists_of",
     "empty_projects", "inbox_ids", "load_log", "load_projects", "load_quiz_log", "mastery_of",
     "merge_progress", "next_due_for", "place_node", "place_or_grow", "plan_growth",

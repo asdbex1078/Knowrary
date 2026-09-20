@@ -17,6 +17,7 @@ import datetime as dt
 from pathlib import Path
 
 from .digest import link_hints
+from .parser import is_reviewable
 from .placement import inbox_ids, target_group
 from .projects import (SHELL, UNBUILT, done_ids, load_hours, lists_of, point_ids,
                        progress_of_project, schedule_of, states_of)
@@ -170,10 +171,11 @@ def quiz_pools(index: dict, log: dict, items: list[dict], doc: dict,
     - 本项目：当前项目里已经建出来的点（项目是视角，这一档就是那个视角的考试范围）
     - 已建全部：想通考一遍时用
     """
-    # 聚合文档也不收：考的是知识点，不是那张目录/对比表
+    # 目录 / 对比表不收：考的是知识点，不是那张表。
+    # **流派例外**：它是聚合文档但有正文，照常可考（见 parser.is_reviewable）。
     built = [n["id"] for n in index["nodes"]
              if not n.get("virtual") and not n.get("stub") and n.get("path")
-             and not n.get("aggregate")]
+             and is_reviewable(n)]
     built_set = set(built)
     reviewed = {nid for nid, e in (log.get("nodes") or {}).items() if (e or {}).get("reviews")}
     pools = {"今日": [it["id"] for it in items if it["kind"] in ("wrong", "due")],

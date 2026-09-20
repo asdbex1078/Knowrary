@@ -1,12 +1,15 @@
 ---
 name: CISC
 field: 计算机系统
+type: 流派
 year: 1964
-layer: 体系结构
+start_year: 1964
 tags:
   - ISA
 desc: 复杂指令集。一条指令在 cpu 内部完成很多的操作，减轻了汇编的压力，但 cpu 的执行压力变大。还有一个问题：不同的 CISC 指令集内部可能包含相同的操作…
 source: 知识图谱zhis.jpg
+layer: 体系结构
+color: "#c2603f"
 ---
 # CISC
 

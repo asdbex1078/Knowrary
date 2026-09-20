@@ -6,9 +6,9 @@ import { Snapline } from '@antv/x6-plugin-snapline'
 import { Transform } from '@antv/x6-plugin-transform'
 import { clusterSummary, containerOf } from './lod.js'
 import { CLUSTER_H, CLUSTER_W, CURSOR_ID, CURSOR_W, FAMILY_STYLE, clusterBox, NODE_H, NODE_W, aggregateAttrs,
-         aggregateLabel, clusterAttrs, activationAttrs, dotAttrs, edgeAttrs, groupAttrs, imageAttrs, laneAttrs, nodeAttrs,
+         aggregateLabel, bandAttrs, clusterAttrs, activationAttrs, dotAttrs, edgeAttrs, groupAttrs, imageAttrs, laneAttrs, nodeAttrs,
          noteAttrs, paletteFor, NEUTRAL, refAttrs, registerShapes, sizeFor, tickAttrs, tokens } from './shapes.js'
-import { AXIS_H, TICK_OFFSET, activeAt, buildTimeline } from './timeline.js'
+import { AXIS_H, BAND_H, TICK_OFFSET, activeAt, buildTimeline } from './timeline.js'
 import { buildLineage } from './lineage.js'
 
 /**
@@ -25,6 +25,17 @@ export function buildHistoryCells(index, layout, options = {}) {
     nodes.push({ id: `lane:${lane.name}`, shape: 'kg-lane', x: -40, y: lane.y,
                  width: lane.width + 80, height: lane.h, zIndex: 1, attrs: laneAttrs(lane.name),
                  data: { kind: 'lane' } })
+  }
+  // 流派时间带：排在刻度之前建，zIndex 比泳道高、比圆点低——它是背景，不抢主角
+  for (const band of plan.bands || []) {
+    nodes.push({
+      id: band.id, shape: 'kg-band', x: band.x, y: band.y,
+      width: band.w, height: BAND_H, zIndex: 3,
+      // 曲线取点算的是绝对坐标，这里要换成相对带子左上角的
+      attrs: bandAttrs(band, (band.points || []).map(([x, y]) => [x - band.x, y])),
+      data: { kind: 'band', name: band.name, field: band.field || null,
+              members: band.members || [], start: band.start, end: band.end ?? null },
+    })
   }
   for (const tick of plan.ticks) {
     nodes.push({ id: `tick:${tick.year}`, shape: 'kg-tick', x: tick.x + TICK_OFFSET, y: AXIS_H,

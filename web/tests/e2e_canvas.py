@@ -2121,6 +2121,56 @@ async def case_stats(page: Page, ck: Check, vault: Path) -> None:
     await open_rail(page, "参数量")
 
 
+async def case_schools(page: Page, ck: Check, vault: Path) -> None:
+    """流派时间带：带子画出来、按起始年装箱、**带↔点的演化边不能断**。
+
+    最后一条是这个功能最容易悄悄坏掉的地方：一个概念从圆点变成带子之后，
+    如果边的过滤只认圆点，`流派 --演化为--> 某个技术` 就会**无声消失**——
+    没有报错、图照常画，只是那条线不见了。而那根线正是"融合"的全部表达。
+    """
+    (vault / "fields").mkdir(exist_ok=True)
+    (vault / "fields/流派").mkdir(parents=True, exist_ok=True)
+    (vault / "fields/流派/老派.md").write_text(
+        "---\nname: 老派\nfield: 测试\ntype: 流派\nstart_year: 1985\nend_year: 2000\n"
+        "color: \"#5b8def\"\ndesc: 老派\n---\n# 老派\n\n## 关系\n"
+        "- 包含:: [[甲]]\n- 演化为:: [[丙]] (2005)\n", "utf-8")
+    (vault / "fields/流派/新派.md").write_text(
+        "---\nname: 新派\nfield: 测试\ntype: 流派\nstart_year: 2005\n"
+        "color: \"#d08a3e\"\ndesc: 新派\n---\n# 新派\n\n## 关系\n"
+        "- 包含:: [[丙]]\n- 包含:: [[庚]]\n", "utf-8")
+    await menu_click(page, "重新加载")
+    await switch_mode(page, "历史")
+    bands = await poll(page, "document.querySelectorAll('[data-shape=\"kg-band\"]').length",
+                       lambda v: (v or 0) >= 2, timeout=15)
+    ck.add("流派画成时间带", (bands or 0) == 2, f"{bands} 条带子（老派 / 新派）")
+
+    ids = await page.ev("""JSON.stringify([...document.querySelectorAll('[data-shape="kg-band"]')]
+      .map((e) => e.getAttribute('data-cell-id')).sort())""")
+    ck.add("带子的 id 就是流派节点 id", json.loads(ids) == ["新派", "老派"], ids)
+
+    # 老派 1985–2000、新派 2005– 不重叠 → 同一行；重叠才换行
+    same = await page.ev("""(() => {
+      const y = [...document.querySelectorAll('[data-shape="kg-band"]')]
+        .map((e) => e.getBoundingClientRect().top)
+      return Math.abs(y[0] - y[1]) < 4
+    })()""")
+    ck.add("不重叠的两条带子排同一行", bool(same), "能同行就同行，撞上才换行")
+
+    dots = await page.ev("""JSON.stringify([...document.querySelectorAll('[data-shape="kg-dot"]')]
+      .map((e) => e.getAttribute('data-cell-id')).sort())""")
+    ck.add("流派不再画成圆点", "老派" not in json.loads(dots) and "新派" not in json.loads(dots),
+           f"圆点：{dots}")
+
+    # **带 → 点的演化边**：老派 --演化为--> 丙
+    linked = await page.ev("""[...document.querySelectorAll('.x6-edge')]
+      .some((e) => (e.getAttribute('data-cell-id') || '').includes('老派'))""")
+    ck.add("带↔点的演化边没断", bool(linked), "老派 演化为→ 丙 这条线要画出来")
+
+    curve = await page.ev("""document.querySelector('[data-shape="kg-band"] polyline')
+      ?.getAttribute('points')?.length > 0""")
+    ck.add("带子背后有累计走势", bool(curve), "polyline 有点")
+
+
 async def case_tour(page: Page, ck: Check) -> None:
     """沿演化链导览：跟着最长的那条「谁接谁」一站站走，镜头推过去、游标跟着走。
 
@@ -2640,6 +2690,8 @@ async def scenarios(page: Page, api: str, results: list) -> None:
     await case_stats(page, ck, VAULT_HOLDER[0])
     await case_compare(page, ck, VAULT_HOLDER[0])
     await case_inbox_new_field(page, ck, VAULT_HOLDER[0])   # 放最后：它往 vault 里加了个零边新领域节点，会改「今日」面板的形状
+    # 和上面一条同理，甚至更重：它往 vault 里加两个流派文档，会把两个圆点变成带子、改掉最长演化链 —— 导览和谱系那几条用例全靠那条链
+    await case_schools(page, ck, VAULT_HOLDER[0])
     results.extend(ck.items)
 
 

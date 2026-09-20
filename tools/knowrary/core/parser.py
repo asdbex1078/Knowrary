@@ -41,17 +41,34 @@ UNLAYERED = "未分层"
 # 的那些地方都必须跳过它们，否则每建一个对比组，Inbox 多一条、孤点多一条、缺 year 多一条，
 # 而这三条对它们都没有意义。实盘上 `fields/计算机系统.md`（领域总览、degree 0）
 # 今天就挂在孤点列表里——那正是这个标记要修掉的噪音。
-AGGREGATE_TYPES = ("对比组", "领域总览")
+AGGREGATE_TYPES = ("对比组", "领域总览", "流派")
 
 # 不上全局画布的那一类。**比 AGGREGATE_TYPES 窄**：领域总览是一个领域的入口，
 # 摆在它自己那个域框里是有用的（实盘上就摆着）；对比组有自己的一张画布
 # （`.knowrary/layouts/<id>.json`），再往主图上塞一份只会让主图更难读。
-OFF_CANVAS_TYPES = ("对比组",)
+# 流派下画布的理由不同：它是**历史视图**里的一条时间带（横跨 start_year～end_year），
+# 在全局图上它就是一个度数很高又说不出位置的大点，只会把主图搅浑。
+OFF_CANVAS_TYPES = ("对比组", "流派")
+
+# **不该被考、也不该进复习队列的那一类。比 AGGREGATE_TYPES 窄。**
+#
+# 这两件事原来共用 `aggregate` 一个标记，而它其实管着两件不同的事：
+# 「不催你把它补完整」（Inbox / 孤点 / 缺 year / 重复候选）和「不考它」。
+# 对比组和领域总览两条都该跳过——考一张目录或一张对比表没有意义。
+# 但**流派有正文**（实盘上「符号主义」2228 字、「连接主义」1584 字，都带「我的理解」），
+# 它只是不该当知识点摆在画布上，不是不该背。塞进同一个标记就等于把这几千字
+# 从复习闭环里悄悄摘掉——而"悄悄"正是最糟的那部分：没有任何地方会告诉你。
+NOT_REVIEWABLE_TYPES = ("对比组", "领域总览")
 
 
 def is_aggregate(fm: dict) -> bool:
-    """这份 frontmatter 描述的是聚合文档（对比组 / 领域总览）而不是知识点。"""
+    """这份 frontmatter 描述的是聚合文档（对比组 / 领域总览 / 流派）而不是知识点。"""
     return (fm or {}).get("type") in AGGREGATE_TYPES
+
+
+def is_reviewable(node: dict) -> bool:
+    """这个节点该不该进复习队列 / 出题范围。看的是 type，不是 `aggregate`（见上）。"""
+    return (node or {}).get("type") not in NOT_REVIEWABLE_TYPES
 
 
 # 参数量：`params: 175B` 这样写。**只认一个数量级后缀**，不做单位大全——

@@ -48,6 +48,8 @@ export const fetchDue = () => request('/api/review/due')
 
 // —— 横向对比：两个只读接口，表是现算的，没有第二份数据 ——
 export const fetchCompareGroups = () => request('/api/compare')
+// 流派没有独立入口：它只在历史视图里出现，所以这个只有时间线那条路会调
+export const fetchSchools = () => request('/api/schools')
 export const fetchCompareTable = (id) => request(`/api/compare/${encodeURIComponent(id)}`)
 /** 补空格子：一次调用问完整张表。只提议，写回仍走 /api/changes 的 set_fact。 */
 export const postCompareFill = (id, body) =>

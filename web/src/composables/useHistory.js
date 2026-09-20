@@ -13,6 +13,7 @@ import {
   buildHistoryCells, buildLineageCells, highlightEdges, markStop, mount, paintHistoryTime,
 } from '../canvas/render.js'
 import { timelineOptions } from '../canvas/timeline.js'
+import { fetchSchools } from '../api.js'
 
 export const STEP_MS = 760   // 回放每站停多久。跳的是"有事发生的年份"，不是日历年，所以可以停久一点
 export const TOUR_MS = 3200  // 导览每站停多久：够读完一句 desc
@@ -90,16 +91,34 @@ export function useHistory(deps) {
     return out.sort((a, b) => b.ids.length - a.ids.length)
   })
 
+  // 流派时间带的数据。**只在历史视图这一条路上取**——流派没有独立入口，
+  // 别的视图不需要知道它存在，所以这份取数也不该爬到 App.vue 去。
+  // 按 index revision 缓存：图没变就不重复问服务端（换时间线 / 切紧凑都会重渲染）。
+  const schools = ref([])
+  let schoolsRev = Symbol('未取过')
+  async function ensureSchools() {
+    const rev = indexDoc.value?.revision ?? null
+    if (schoolsRev === rev) return
+    try {
+      schools.value = (await fetchSchools()).schools || []
+    } catch {
+      schools.value = []      // 取不到就不画带子，历史图照常能看——别为一层背景把整张图拖垮
+    }
+    schoolsRev = rev
+  }
+
   /**
    * 重建整张历史图。
    *
    * **只在"图本身变了"时调用**：换时间线 / 切主干道 / 改紧凑 / 改关系族。
    * 拖滑块和回放不走这里——那两件事只挪游标（paintTime），一个 cell 都不重建。
    */
-  function renderHistory({ view = 'fit' } = {}) {
+  async function renderHistory({ view = 'fit' } = {}) {
+    await ensureSchools()
     const g = graph.value
     const cells = buildHistoryCells(indexDoc.value, layoutDoc.value, {
       timelines: timelines.value, families: histFamilies(), compact: hist.compact, trunk: hist.trunk,
+      schools: schools.value,
     })
     histPlan.value = cells.plan
     applyingViewport.value = true

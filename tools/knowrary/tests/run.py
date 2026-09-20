@@ -1343,6 +1343,149 @@ def digest_孤点只算已经建出来的():
 
 
 @case
+def 流派是聚合文档但照常要背():
+    """**`aggregate` 原来管了两件事：不催你补完整、不考它。流派只该跳过前一件。**
+
+    对比组和领域总览两条都跳过——考一张目录或对比表没有意义。但流派有正文
+    （实盘上「符号主义」2228 字、「连接主义」1584 字，都带「我的理解」），
+    它只是不该当知识点摆在画布上，不是不该背。混用一个标记就是把这几千字
+    从复习闭环里**悄悄**摘掉，而没有任何地方会告诉你。
+    """
+    import datetime as dt
+    vault = make_vault({
+        "fields/流派/连接主义.md": (
+            "---\nname: 连接主义\nfield: AI\ntype: 流派\nstart_year: 1943\n"
+            "desc: 智能=大量简单单元连接后涌现\nlearned: 2000-01-01\n---\n# 连接主义\n\n"
+            "## 我的理解\n正文\n\n## 关系\n- 包含:: [[感知器]]\n- 包含:: [[Adaline]]\n"),
+        "nodes/AI/感知器.md": node_md("感知器", field="AI"),
+        "nodes/AI/Adaline.md": node_md("Adaline", field="AI"),
+        "fields/对比组/c-x.md": (
+            "---\nname: X对比\nfield: AI\ntype: 对比组\ndimensions: [年份]\n"
+            "desc: 一张表\nlearned: 2000-01-01\n---\n# X对比\n\n## 关系\n"
+            "- 包含:: [[感知器]]\n- 包含:: [[Adaline]]\n"),
+    })
+    index = core.build_index(vault).data
+    by = {n["id"]: n for n in index["nodes"]}
+
+    # 视图口径：两个都是聚合文档，都不催、都不上全局画布
+    assert by["连接主义"]["aggregate"] and by["c-x"]["aggregate"], by["连接主义"]
+
+    # 学习口径：流派要背，对比表不背
+    due = [d["id"] for d in core.due_nodes(index, core.load_log(vault), dt.date(2030, 1, 1))]
+    assert "连接主义" in due, due
+    assert "c-x" not in due, due
+
+    assert core.build_index(vault).data  # 校验没报错：start_year 填了、成员两个
+
+    # start_year 不填 = 历史视图里静默消失，所以必须报错
+    core.write(vault / "fields/流派/无年份.md",
+               "---\nname: 无年份\nfield: AI\ntype: 流派\ndesc: x\n---\n# 无年份\n\n"
+               "## 关系\n- 包含:: [[感知器]]\n- 包含:: [[Adaline]]\n")
+    codes = [e["code"] for e in core.build_index(vault).data["errors"]]
+    assert "school_no_start_year" in codes, codes
+
+
+def _school_md(name, start, end=None, members=()):
+    span = f"start_year: {start}\n" + (f"end_year: {end}\n" if end else "")
+    rels = "".join(f"- 包含:: [[{m}]]\n" for m in members)
+    return (f"---\nname: {name}\nfield: 计算机系统\ntype: 流派\n{span}"
+            f"desc: {name} 这一派\n---\n# {name}\n\n## 我的理解\n正文\n\n## 关系\n{rels}")
+
+
+@case
+def 流派按起始年排序而且允许重叠():
+    """**重叠是这套东西本来就要表达的事，不是要处理的例外。**
+
+    实盘上的范例就是 `现代Intel微架构`：前端 CISC 指令集、后端拆成类似 RISC 的 μops，
+    它**同时属于两派**。layout 的分组框是一棵树，一个节点只能有一个家，表达不了这件事；
+    `包含` 是结构族的边，没有唯一性约束，所以天然成立。
+    """
+    vault = make_vault({
+        "fields/流派/CISC派.md": _school_md("CISC派", 1964, members=["复杂指令", "现代Intel微架构"]),
+        "fields/流派/RISC派.md": _school_md("RISC派", 1980, members=["精简指令", "现代Intel微架构"]),
+        "nodes/x/复杂指令.md": node_md("复杂指令", field="计算机系统", extra="year: 1964\n"),
+        "nodes/x/精简指令.md": node_md("精简指令", field="计算机系统", extra="year: 1980\n"),
+        "nodes/x/现代Intel微架构.md": node_md("现代Intel微架构", field="计算机系统",
+                                              extra="year: 1995\n"),
+    })
+    index = core.build_index(vault).data
+    got = core.schools(index)
+
+    # 出现早的排前面 —— "放前面"就是这一条
+    assert [s["id"] for s in got] == ["CISC派", "RISC派"], got
+
+    cisc = got[0]
+    assert cisc["start"] == 1964 and cisc["end"] is None and cisc["open"] is True, cisc
+    # 成员按年份排，不是字典序
+    assert cisc["members"] == ["复杂指令", "现代Intel微架构"], cisc["members"]
+
+    # **同一个节点同时属于两派**
+    assert core.school_of(index, "现代Intel微架构") == ["CISC派", "RISC派"], \
+        core.school_of(index, "现代Intel微架构")
+
+
+@case
+def 流派的end留空是还在延续_不是数据缺失():
+    """前端要能分清"画到时间轴右端"和"数据缺了"——看起来一样，意思相反。
+
+    顺带验 outliers：成员年份落在区间外**不报错**（追溯到更早的前身是合理的），
+    但它是 `start_year` 填错时唯一看得见的症状，所以要列出来。
+    """
+    vault = make_vault({
+        "fields/流派/短命派.md": _school_md("短命派", 1970, end=1980, members=["中间的", "太早的"]),
+        "nodes/x/中间的.md": node_md("中间的", field="计算机系统", extra="year: 1975\n"),
+        "nodes/x/太早的.md": node_md("太早的", field="计算机系统", extra="year: 1950\n"),
+    })
+    s = core.schools(core.build_index(vault).data)[0]
+    assert (s["start"], s["end"], s["open"]) == (1970, 1980, False), s
+    assert [o["id"] for o in s["outliers"]] == ["太早的"], s["outliers"]
+    assert core.build_index(vault).data["errors"] == [], "落在区间外不该报错"
+
+
+@case
+def 流派走势是累计阶梯_停摆表现为平台():
+    """**平台期就是停摆，不用另外声明一个 `periods` 字段。**
+
+    连接主义是标准案例：1943 起步，1969 Perceptrons 之后停摆 17 年，1986 才复兴。
+    累计曲线在那 17 年里是一条平线——而这条平线是**从成员年份算出来的余数**，
+    不是一句"1969–1986 停摆"的断言。断言记错了没人能发现，余数不会撒谎。
+
+    起点画在 `start_year` 且值为 0：流派先有名字、技术后来才出，那段从 0 起步的
+    平段也是信息。
+    """
+    vault = make_vault({
+        "fields/流派/连接派.md": _school_md("连接派", 1940,
+                                            members=["甲1943", "乙1949", "丙1986", "丁1986"]),
+        "nodes/x/甲1943.md": node_md("甲1943", field="计算机系统", extra="year: 1943\n"),
+        "nodes/x/乙1949.md": node_md("乙1949", field="计算机系统", extra="year: 1949\n"),
+        "nodes/x/丙1986.md": node_md("丙1986", field="计算机系统", extra="year: 1986\n"),
+        "nodes/x/丁1986.md": node_md("丁1986", field="计算机系统", extra="year: 1986\n"),
+    })
+    s = core.schools(core.build_index(vault).data)[0]
+    # 起点在 start_year 且为 0；同一年的两个成员合成一级台阶（1986 直接跳到 4）
+    assert [(p["year"], p["n"]) for p in s["curve"]] == [
+        (1940, 0), (1943, 1), (1949, 2), (1986, 4)], s["curve"]
+    assert s["peak"] == 4, s
+    # 1949 → 1986 之间没有点 = 那 37 年一级没涨 = 停摆
+    assert s["undated"] == [], s
+
+
+@case
+def 流派曲线平和年份没填要能分开():
+    """**曲线很平也可能只是 year 没填。** 混为一谈的话，"这一派没出新东西"和
+    "这一派我没记年份"看起来一模一样，而它们该导向完全不同的动作。"""
+    vault = make_vault({
+        "fields/流派/糊涂派.md": _school_md("糊涂派", 1960, members=["有年份", "没年份"]),
+        "nodes/x/有年份.md": node_md("有年份", field="计算机系统", extra="year: 1965\n"),
+        "nodes/x/没年份.md": node_md("没年份", field="计算机系统"),
+    })
+    s = core.schools(core.build_index(vault).data)[0]
+    assert [(p["year"], p["n"]) for p in s["curve"]] == [(1960, 0), (1965, 1)], s["curve"]
+    assert s["undated"] == ["没年份"], s          # 它没进曲线，但没被吞掉
+    assert s["peak"] == 1 and len(s["members"]) == 2, s
+
+
+@case
 def digest_整批孤点要和散点分开报():
     """**同一篇文章拆出来的节点全是孤点，那不是「还没连」，是「边没写进去」。**
 

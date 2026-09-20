@@ -1,12 +1,15 @@
 ---
 name: RISC
 field: 计算机系统
+type: 流派
 year: 1980
-layer: 体系结构
+start_year: 1980
 tags:
   - ISA
 desc: 精简指令集。一条指令完成一个操作，cpu 的压力变小，编译器的压力增大，可以提高 cpu 的主频
 source: 知识图谱zhis.jpg
+layer: 体系结构
+color: "#3f8f6e"
 ---
 # RISC
 

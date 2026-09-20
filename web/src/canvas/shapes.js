@@ -224,6 +224,27 @@ export function registerShapes() {
   }, true)
 
   // 历史视图的年份刻度：一根竖线加年份标签
+  // 流派时间带：一条横跨 start_year～end_year 的浅色条，**背后压着一条累计走势**。
+  //
+  // 为什么带子和曲线画在同一个形状里：它们讲的是同一个流派的两件事——
+  // 带子是"声明的跨度"，曲线是"实际积累到哪一步"。**两者不一致的地方就是欠账**
+  // （带子很长而曲线一直平 = 这段时期一个点都没记），拆成两个 cell 就对不齐了。
+  //
+  // 曲线是 polyline 不是 path：累计值只在成员出现那一年跳，中间必须是水平的。
+  // 画成平滑曲线会让人以为那几年在稳步增长，而事实是那几年什么都没发生——
+  // 这条线存在的全部意义就是让"什么都没发生"看得见。
+  Graph.registerNode('kg-band', {
+    inherit: 'rect',
+    markup: [{ tagName: 'rect', selector: 'body' },
+             { tagName: 'polyline', selector: 'curve' },
+             { tagName: 'text', selector: 'label' }],
+    attrs: {
+      body: { rx: 4, ry: 4, strokeWidth: 1 },
+      curve: { fill: 'none', strokeWidth: 1.5, strokeLinejoin: 'miter', pointerEvents: 'none' },
+      label: { refX: 8, refY: 11, fontSize: 11.5, fontWeight: 600, textAnchor: 'start' },
+    },
+  }, true)
+
   Graph.registerNode('kg-tick', {
     inherit: 'rect',
     width: 1, height: 40,
@@ -357,6 +378,33 @@ export function imageAttrs(image) {
 export function laneAttrs(name) {
   const t = tokens()
   return { body: { fill: t.groupFill, stroke: t.groupStroke }, label: { text: name, fill: t.edgeLabel } }
+}
+
+/** 一条流派带的样式。`points` 是已经算好的阶梯折线（相对带子左上角）。 */
+export function bandAttrs(band, points) {
+  const base = band.color || (theme === 'dark' ? NEUTRAL_DARK.line : NEUTRAL.line)
+  return {
+    // 带子本身压得很淡：它是背景，圆点和连线才是主角
+    body: { fill: withAlpha(base, 0.13), stroke: withAlpha(base, 0.45) },
+    // 曲线用同一个色但不透明——**重叠时两条带子叠在一起，只有曲线还分得出谁是谁**
+    curve: { stroke: base, points: points.map(([x, y]) => `${x},${y}`).join(' ') },
+    label: { text: bandLabel(band), fill: base },
+  }
+}
+
+/** 带子上的标签：名字 + 年份区间。`open` 用「–」收尾，表示还在延续而不是数据缺了。 */
+export function bandLabel(band) {
+  const span = band.open || typeof band.end !== 'number'
+    ? `${band.start}–` : `${band.start}–${band.end}`
+  return `${band.name}  ${span}`
+}
+
+/** #rrggbb → rgba()。带子要半透明，而 X6 的 fill 不吃独立的 opacity。 */
+function withAlpha(hex, alpha) {
+  const m = /^#?([0-9a-f]{6})$/i.exec(String(hex).trim())
+  if (!m) return hex
+  const n = parseInt(m[1], 16)
+  return `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, ${alpha})`
 }
 
 export function tickAttrs(year) {

@@ -221,6 +221,20 @@ def get_compare_groups() -> dict:
     return compare_svc.directory(vault_path())
 
 
+@app.get("/api/schools")
+def get_schools() -> dict:
+    """流派：历史视图要画的时间带 + 累计走势。现算，不存第二份。
+
+    **没有独立入口是故意的**：流派只在历史视图里有形态（一条横跨年份区间的带子），
+    带子本身就是目录。对比组要全局入口是因为它的产物（表 + 自己的画布）没别处可去。
+
+    算在服务端而不是前端从 index 里推：成员筛选、按年排序、累计曲线这几条要是两边
+    各写一遍，迟早对不上——和工具表/白名单必须同一份数据是同一个道理。
+    """
+    vault = vault_path()
+    return {"schools": core.schools(current_index(vault))}
+
+
 @app.get("/api/compare/{group_id}")
 def get_compare_table(group_id: str) -> dict:
     """一个对比组的表：列 = dimensions，行 = 成员（按 md 里的书写顺序），外加残差列。"""

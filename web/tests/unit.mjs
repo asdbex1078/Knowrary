@@ -13,7 +13,7 @@
 import assert from 'node:assert/strict'
 import { blankMenu, buildMenu, edgeMenu, groupMenu, nodeMenu } from '../src/canvas/menus.js'
 import { ancestors, computeCollapsed } from '../src/canvas/lod.js'
-import { timelineOptions } from '../src/canvas/timeline.js'
+import { timelineOptions, packBands, bandCurve, BAND_H } from '../src/canvas/timeline.js'
 import { level, weekColumns } from '../src/panels/heat.js'
 import { localISO, todayISO } from '../src/today.js'
 
@@ -240,6 +240,51 @@ test('热力等级：复习一次也要点亮，模型调用不算学习量', ()
   assert.equal(level({ built: 0, reviews: 1, answers: 0 }), 1, '只复习了一次就该亮')
   assert.equal(level({ built: 1, reviews: 0, answers: 0 }), 2)
   assert.equal(level({ built: 4, reviews: 0, answers: 0 }), 4)
+})
+
+// ---------------------------------------------------------------- 流派时间带
+
+test('流派带子：能同一行就同一行，撞上才换行', () => {
+  // 1-3 / 5-9 / 2-6 —— first-fit 会把 5-9 放回第一行，剩 2-6 单独一行。
+  // "一条一行"会排成三行，而它们实际只有两层重叠，三行读不出这件事。
+  const scale = { at: (y) => y * 10, width: 200 }
+  const { bands, rows } = packBands([
+    { id: 'A', name: 'A', start: 1, end: 3 },
+    { id: 'B', name: 'B', start: 5, end: 9 },
+    { id: 'C', name: 'C', start: 2, end: 6 },
+  ], scale, 200)
+  assert.equal(rows, 2, '最少行数 = 最大并存深度')
+  const row = Object.fromEntries(bands.map((b) => [b.id, b.row]))
+  assert.deepEqual(row, { A: 0, C: 1, B: 0 })
+})
+
+test('流派带子：end 留空一直画到轴尾', () => {
+  const scale = { at: (y) => y * 10, width: 200 }
+  const { bands } = packBands([{ id: 'X', name: 'X', start: 5, end: null, open: true }], scale, 999)
+  assert.equal(bands[0].x, 50 + 40, 'x 从 start 起（带 TICK_OFFSET）')
+  assert.ok(bands[0].w > 900, '一直延伸到右端，不是缺数据')
+})
+
+test('流派走势：阶梯不是折线，平台就是停摆', () => {
+  const scale = { at: (y) => y, width: 100 }
+  const school = { start: 1940, end: null, open: true, peak: 2,
+                   curve: [{ year: 1940, n: 0 }, { year: 1943, n: 1 }, { year: 1986, n: 2 }] }
+  const pts = bandCurve(school, scale, 2, 2500)   // 轴尾要在最后一年之后
+  const ys = pts.map((p) => p[1])
+  // 1943→1986 那一段必须是**水平**的：中间两点 y 相同，说明那 43 年一级没涨
+  const flat = pts.filter((p, i) => i > 0 && p[1] === pts[i - 1][1])
+  assert.ok(flat.length >= 2, '阶梯要有平段，画成斜线会让人以为在稳步增长')
+  assert.ok(Math.min(...ys) < Math.max(...ys), '有涨有平')
+  assert.equal(pts[pts.length - 1][0], 2500, '最后一级之后一直平推到轴尾')
+})
+
+test('流派走势：共用 y 刻度，成员少的就该画得矮', () => {
+  const scale = { at: (y) => y, width: 100 }
+  const few = { start: 1900, end: 2000, peak: 1, curve: [{ year: 1900, n: 0 }, { year: 1950, n: 1 }] }
+  const many = { start: 1900, end: 2000, peak: 10, curve: [{ year: 1900, n: 0 }, { year: 1950, n: 10 }] }
+  const top = (s) => Math.min(...bandCurve(s, scale, 10, 2000).map((p) => p[1]))
+  assert.ok(top(few) > top(many), '各自归一化会把 1 个和 10 个画成一样高')
+  assert.ok(top(many) < BAND_H / 2, '满格的那条要真的顶到上面')
 })
 
 // ---------------------------------------------------------------- 跑

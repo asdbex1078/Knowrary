@@ -19,6 +19,7 @@ from .analysis import find_cycles, pagerank
 from .diagnostics import Diagnostics
 from .mdio import RE_LINK, json_safe, load_json
 from .compare import COMPARE_TYPE, MEMBER_RELATION
+from .schools import SCHOOL_TYPE
 from .facts import (COMPARE_HEADING, FACTS_HEADING, FM_DIMENSIONS, bare_compare_headings,
                     compare_targets, facts_of, section_bounds, stray_facts)
 from .parser import Node, is_aggregate, load_vault, validate_frontmatter, parse_params
@@ -26,7 +27,7 @@ from .relations import NormalizedEdge, RelationTypes, load_relation_types, norma
 
 INDEX_SCHEMA_VERSION = 1
 NODE_FM_FIELDS = ("name", "field", "type", "status", "desc", "year", "start_year", "end_year",
-                  "aliases", "tags", "learned", "source", "layer", "params", "dimensions")
+                  "aliases", "tags", "learned", "source", "layer", "params", "dimensions", "color")
 
 
 @dataclass
@@ -197,6 +198,8 @@ def _check_compare(ctx: BuildContext) -> None:
         if node.fm.get("type") == COMPARE_TYPE:
             _check_compare_group(node, out_by_type[node.id].get(MEMBER_RELATION, set()),
                                  ctx.diags, loc)
+        if node.fm.get("type") == SCHOOL_TYPE:
+            _check_school(node, out_by_type[node.id].get(MEMBER_RELATION, set()), ctx.diags, loc)
         _check_node_facts(node, out_by_type[node.id].get("对比", set()), ctx.diags, loc)
 
 
@@ -212,6 +215,25 @@ def _check_compare_group(node: Node, members: set[str], diags: Diagnostics, loc:
         diags.error("compare_no_dimensions", "对比组缺 `dimensions`，表格没有列", **loc)
     elif len(set(map(str, dims))) != len(dims):
         diags.warn("compare_dup_dimension", f"`dimensions` 里有重复的维度：{dims}", **loc)
+
+
+def _check_school(node: Node, members: set[str], diags: Diagnostics, loc: dict) -> None:
+    """流派文档自己：有没有时间范围、成员够不够。
+
+    **`start_year` 是必填的，因为整个流派功能就靠它排序。** 历史视图里流派是一条
+    横跨 start_year～end_year 的时间带，没有起点它既排不了序也画不出带子——
+    而这个失败是静默的：文档照常解析、照常入索引，只是**在历史视图里根本不出现**。
+    `end_year` 可以不填，那表示"到现在还没结束"（连接主义就是）。
+    """
+    if not isinstance(node.fm.get("start_year"), int):
+        diags.error("school_no_start_year",
+                    "流派缺 `start_year`，历史视图里排不了序也画不出时间带（不填会静默消失）。"
+                    "还在延续的流派 `end_year` 留空即可", **loc)
+    if len(members) < MIN_MEMBERS:
+        diags.warn("school_too_few_members",
+                   f"流派只有 {len(members)} 个成员（建议 ≥{MIN_MEMBERS}）。"
+                   f"成员写成 `- 包含:: [[节点]]`——**一个技术可以同时属于两个流派**，"
+                   f"结构族不限制这个，重叠是这套东西本来就要表达的事", **loc)
 
 
 def _check_node_facts(node: Node, compared: set[str], diags: Diagnostics, loc: dict) -> None:
