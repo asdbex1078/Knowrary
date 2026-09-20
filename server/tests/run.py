@@ -3532,6 +3532,76 @@ def _vault_with_list(c) -> None:
                        {"id": "MLA", "name": "MLA", "load": "轻", "why": ""}]}]}]}}})
 
 
+def _long_note(chars: int = 400) -> str:
+    """一篇有小标题的长笔记：三节正文 + 两节不该考的（线头 / 参考资料）。"""
+    body = "\n\n".join([
+        "# 长笔记\n\n开头这段说它是什么。",
+        "## 甲节 讲机制\n" + "甲" * chars,
+        "## 乙节 讲取舍\n" + "乙" * chars,
+        "## 丙节 讲边界\n" + "丙" * chars,
+        "## 线头\n" + "钩" * chars,
+        "## 参考资料\n" + "链" * chars,
+    ])
+    return f"---\nname: 长笔记\nfield: 测试\ndesc: 一句话\n---\n{body}\n\n## 关系\n"
+
+
+@case
+def quiz_长笔记按复习轮换考不同的节():
+    """**抽查本来就是采样。** 原来取前 1200 字，17k 那篇永远只考得到前 7%；
+    而"每节均分"更糟——分完每节只剩几十字，问不出实质还让模型以为看全了，题会变水。
+    所以挑一节给足，下次到期抽另一节，跨几轮覆盖全篇。
+
+    轮换指针用的是 review-log 已有的 `step`（每复习一次 +1）：**不新记任何状态**。
+    """
+    from server import quiz as quiz_mod
+    c, vault, _ = with_inbox_node()
+    core.write(vault / "nodes/组A/long.md", _long_note())
+    index_service.invalidate()
+    meta = next(n for n in c.get("/api/index").json()["nodes"] if n["id"] == "long")
+
+    picks = quiz_mod._quizable_sections(quiz_mod._read_body(vault, meta))
+    titles = [h.title for h in picks]
+    assert not any("线头" in t or "参考资料" in t for t in titles), titles   # 这两节不该拿来出题
+    assert len(titles) == 3, titles
+
+    seen = [quiz_mod._body_excerpt(vault, meta, quiz_mod.MAX_BODY, k).splitlines()[0] for k in range(3)]
+    assert len({*seen}) == 3, seen                       # 三次复习拿到三节，不重样
+    assert "只考这一节" in seen[0], seen[0]               # 告诉模型它没看全
+    body0 = quiz_mod._body_excerpt(vault, meta, quiz_mod.MAX_BODY, 0)
+    assert "甲" * 50 in body0 and "乙" not in body0, "给的不是完整一节"
+    # 转一圈回到原处：指针是 step % 节数
+    assert seen[0] == quiz_mod._body_excerpt(vault, meta, quiz_mod.MAX_BODY, 3).splitlines()[0]
+
+
+@case
+def quiz_短笔记整篇给行为不变():
+    """94 篇里 88 篇在上限之内。**这条路一个字都不该动**——改摘录是为了救长笔记，
+    不是为了给所有笔记换一套口径。"""
+    from server import quiz as quiz_mod
+    c, vault, _ = with_inbox_node()
+    meta = next(n for n in c.get("/api/index").json()["nodes"] if n["id"] == "a")
+    full = quiz_mod._read_body(vault, meta)
+    assert len(full) < quiz_mod.MAX_BODY
+    for step in (0, 1, 7):
+        assert quiz_mod._body_excerpt(vault, meta, quiz_mod.MAX_BODY, step) == full, step
+
+
+@case
+def quiz_批改按题干挑那一节():
+    """批改不能轮换 —— 它要给的是**这道题**的判分依据，挑错节等于没给。
+    题干里通常直接带着那一节的词，算一次词重合就够，不用再问一次模型。"""
+    from server import quiz as quiz_mod
+    c, vault, _ = with_inbox_node()
+    core.write(vault / "nodes/组A/long.md", _long_note())
+    index_service.invalidate()
+    meta = next(n for n in c.get("/api/index").json()["nodes"] if n["id"] == "long")
+
+    got = quiz_mod._section_for(vault, meta, "乙节讲的那个取舍是什么？", quiz_mod.MAX_SOURCE)
+    assert "乙节 讲取舍" in got.splitlines()[0], got.splitlines()[0]
+    got = quiz_mod._section_for(vault, meta, "丙节的边界条件有哪些？", quiz_mod.MAX_SOURCE)
+    assert "丙节 讲边界" in got.splitlines()[0], got.splitlines()[0]
+
+
 @case
 def cards_摆了几张点了几张算得出来():
     """账本知道花了多少，md 知道最后写进去什么，**中间那一段原来没人记**——

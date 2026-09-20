@@ -47,17 +47,92 @@ def _load_prompt_template(name: str = "quiz") -> str:
     return _PROMPTS[name]
 
 
-def _body_excerpt(vault: Path, meta: dict) -> str:
-    """节点正文（`## 关系` 之前那段）的摘录。读不到就退回 desc。"""
+# 不该拿来出题的小标题。「线头」是给以后连边留的钩子、「待办」是还没写完的，
+# 考它们等于考我自己留的便条；「参考资料」是外部链接，考了就成了考常识。
+SKIP_SECTIONS = ("线头", "待办", "参考资料", "参考", "关系")
+
+
+def _quizable_sections(body: str) -> list:
+    """能拿来出题的小标题。一篇通篇没有 `##` 的笔记返回空，调用方退回取开头。"""
+    out = []
+    for h in core.sections.outline(body):
+        if h.level < 2:                         # `# 标题` 那一行不是节
+            continue
+        if any(h.title.strip().startswith(skip) for skip in SKIP_SECTIONS):
+            continue
+        out.append(h)
+    return out
+
+
+def _read_body(vault: Path, meta: dict) -> str:
     path = meta.get("path")
     if not path:
-        return meta.get("desc") or ""
+        return ""
     try:
         _, body, _, _ = core.split_sections(core.read(vault / path))
     except OSError:
+        return ""
+    return body.strip()
+
+
+def _body_excerpt(vault: Path, meta: dict, cap: int = MAX_BODY, pick: int = 0) -> str:
+    """节点正文的摘录。读不到就退回 desc。
+
+    **短笔记整篇给**（94 篇里 88 篇如此），行为和以前一样。超出上限的那几篇才走下面这条：
+
+    **不均分，挑一节给足。** 原来取的是前 `cap` 字，于是 17k 那篇永远只考得到前 7%——
+    最值钱的五个案例一个都看不见。但"均分给每一节"是更糟的解：24 节分完每节只剩几十字，
+    既问不出任何一节的实质，又让模型以为自己看全了，**题会变水**（这正是 MAX_NODES 那条
+    注释早就警告过的）。
+
+    正确的形状是**抽查本来就是采样**：一道题本来只考一个点，所以每次挑一节、给足，
+    下次到期抽另一节——跨几轮复习自然覆盖全篇，这就是间隔重复本来的样子。
+
+    `pick` 是轮换指针。出题那一路传节点的复习 `step`（每复习一次 +1，见 core/review.py）：
+    **零新状态、确定、可复现**。批改那一路不轮换，按题干挑（见 `_section_for`）。
+    """
+    text = _read_body(vault, meta)
+    if not text:
         return meta.get("desc") or ""
-    text = body.strip()
-    return text[:MAX_BODY] + ("…" if len(text) > MAX_BODY else "")
+    if len(text) <= cap:
+        return text                              # 短笔记：整篇，什么都不动
+    picks = _quizable_sections(text)
+    if not picks:
+        return text[:cap] + "…"                  # 没有小标题，只能取开头
+    h = picks[pick % len(picks)]
+    got = core.sections.extract_section(text, h.title)
+    body = (got[1] if got else "").strip() or text[:cap]
+    head = (f"（这是第 {picks.index(h) + 1}/{len(picks)} 节「{h.title}」，"
+            f"全文 {len(text)} 字；**这一轮只考这一节**）")
+    return head + "\n" + (body[:cap] + "…" if len(body) > cap else body)
+
+
+def _section_for(vault: Path, meta: dict, stem: str, cap: int) -> str:
+    """批改用：按**题干**挑那一节。
+
+    批改和出题不一样，它不能轮换——要给的是**这道题**的判分依据，挑错节等于没给。
+    而题干里通常带着那一节的词（"案例 3 里那条边为什么…"），拿它和小标题 + 节内容
+    算一次词重合就够了，**不用再问一次模型**（判分本来就是单次调用，见 §1 C）。
+    """
+    text = _read_body(vault, meta)
+    if not text or len(text) <= cap:
+        return text or (meta.get("desc") or "")
+    picks = _quizable_sections(text)
+    if not picks:
+        return text[:cap] + "…"
+    # 中文没有空格分词，按**二元组**算重合：粗，但零成本、确定，而且题干里通常
+    # 直接带着那一节的词（"案例 3 里那条边为什么…"），够把节挑对。
+    # 小标题的权重给高一点——它比正文更能代表这一节讲什么。
+    key = core_norm(stem)
+    grams = {key[i:i + 2] for i in range(len(key) - 1)} or {key}
+
+    def score(h) -> int:
+        got = core.sections.extract_section(text, h.title)
+        title, body = core_norm(h.title), core_norm(got[1] if got else "")
+        return 3 * sum(1 for g in grams if g in title) + sum(1 for g in grams if g in body)
+
+    best = max(picks, key=score)
+    return _body_excerpt(vault, meta, cap, pick=picks.index(best))
 
 
 def _edge_lines(index: dict, node_id: str, names: dict[str, str]) -> list[str]:
@@ -70,7 +145,7 @@ def _edge_lines(index: dict, node_id: str, names: dict[str, str]) -> list[str]:
     return out
 
 
-def _node_block(vault: Path, index: dict, meta: dict, names: dict[str, str]) -> str:
+def _node_block(vault: Path, index: dict, meta: dict, names: dict[str, str], step: int = 0) -> str:
     edges = _edge_lines(index, meta["id"], names)
     return "\n".join([
         f"### {meta['id']}",
@@ -78,7 +153,7 @@ def _node_block(vault: Path, index: dict, meta: dict, names: dict[str, str]) -> 
         f"- field: {meta.get('field') or '（未设置）'}",
         f"- desc: {meta.get('desc') or '（未设置）'}",
         "- 正文：",
-        _body_excerpt(vault, meta) or "（无正文）",
+        _body_excerpt(vault, meta, MAX_BODY, step) or "（无正文）",
         "- 已有关系：",
         *(edges or ["  （这个节点还没有任何边，不要为它出关系题）"]),
     ])
@@ -122,7 +197,10 @@ def generate(vault: Path, req: QuizRequest) -> QuizSet:
         _keep_open(vault, out, index, req)
         return out
 
-    blocks = "\n\n".join(_node_block(vault, index, m, names) for m in metas)
+    # 长笔记按复习 step 轮换考哪一节：每次到期抽不同的一节，几轮下来覆盖全篇。
+    # 拿的是**已有**状态（review-log 的 step），不新记任何东西。
+    steps = {nid: (e.get("step") or 0) for nid, e in (core.load_log(vault).get("nodes") or {}).items()}
+    blocks = "\n\n".join(_node_block(vault, index, m, names, steps.get(m["id"], 0)) for m in metas)
     role, style = STYLES.get(req.style, STYLES["复习"])
     coach = f"，方向是{req.coach.strip()}" if req.coach.strip() else ""
     prompt = (_load_prompt_template()
@@ -301,7 +379,9 @@ def _sources_block(vault: Path, answers: list[QuizAnswer]) -> str:
         meta = by_id.get(nid)
         if not meta or meta.get("stub") or meta.get("virtual"):
             continue            # 没有 md 的占位节点没有正文可抄
-        body = _body_excerpt(vault, meta)[:MAX_SOURCE].strip()
+        stem = next((a.question.stem for a in answers
+                     if nid in a.question.points and not (a.question.ref_answer or "").strip()), "")
+        body = _section_for(vault, meta, stem, MAX_SOURCE).strip()
         if body:
             blocks.append(f"### {meta.get('name') or nid}（{nid}）\n{body}")
     if not blocks:

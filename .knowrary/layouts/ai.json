@@ -1,11 +1,11 @@
 {
   "schema_version": 2,
-  "revision": 194,
-  "updated_at": "2026-09-19T14:34:25Z",
+  "revision": 195,
+  "updated_at": "2026-09-20T06:35:35Z",
   "viewport": {
-    "zoom": 0.86,
-    "cx": 144.0,
-    "cy": 318.0
+    "zoom": 0.25,
+    "cx": 663.0,
+    "cy": 312.0
   },
   "groups": {},
   "nodes": {
