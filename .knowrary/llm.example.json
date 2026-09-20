@@ -4,7 +4,7 @@
     "claude-cli": {
       "type": "claude-cli",
       "model": "opus",
-      "_说明": "复用本机 Claude Code 登录，不需要密钥；model 可省略"
+      "_说明": "复用本机 Claude Code 登录，不需要密钥；model 可省略。对话也能用——它没有结构化工具接口，所以工具协议自动退回文本围栏（见 llm_backend 的 supports_tools）"
     },
     "anthropic": {
       "type": "anthropic",
@@ -33,6 +33,6 @@
   "roles": {
     "learn": "claude-cli",
     "review": "deepseek",
-    "_说明": "learn = 文章拆节点 / 关系抽取；review = 校验、分组判断、去重。故意允许两个角色用不同模型，用第二个模型审第一个的产出。"
+    "_说明": "learn = 对话式教练 / 文章拆节点 / 关系抽取；review = 校验、分组判断、去重。故意允许两个角色用不同模型，用第二个模型审第一个的产出。三种 provider 都能对话：anthropic / openai 走原生工具调用，claude-cli 自动退回文本围栏。"
   }
 }

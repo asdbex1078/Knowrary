@@ -8,6 +8,8 @@ import datetime as dt
 import json
 import logging
 
+from pathlib import Path
+
 from urllib.parse import quote
 
 from fastapi import FastAPI, HTTPException, Request
@@ -15,8 +17,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import (assets, chat as chat_svc, curation, importing, projects as projects_svc, summarize as summarize_svc,
-               years as years_svc)
+from . import (assets, chat as chat_svc, compare as compare_svc, curation, importing,
+               projects as projects_svc, summarize as summarize_svc, years as years_svc)
 from .contracts import (CalendarRead, ChangeResult, ChangeSet, ChatRequest, CoachToday, FileDiff, ImportProposal,
                         ImportProposeRequest, ImportRequest, ImportResult, SourceText, SourcesRead, SummarizeRequest, SummaryDraft,
                         InboxRead,
@@ -27,7 +29,8 @@ from .contracts import (CalendarRead, ChangeResult, ChangeSet, ChatRequest, Coac
                         QuizDiagnosis, QuizGradeRequest, QuizGraded, QuizRequest, QuizSet, RenameImpact,
                         RenameRequest, RenameResult, ReviewDone, ReviewRequest, SettingsPatch,
                         SettingsRead, SuggestRequest,
-                        SuggestResult, UsageRead, YearProposal, YearProposeRequest)
+                        SuggestResult, UsageRead, YearProposal, YearProposeRequest,
+                        CompareProposal, CompareProposeRequest)
 from .index_service import current_index, invalidate
 from .llm_call import LLMFailed
 from .layout_store import (LayoutBroken, PatchRejected, RevisionConflict, apply_patch, find_orphans,
@@ -77,28 +80,38 @@ def get_index() -> dict:
     return current_index(vault_path())
 
 
-def _layout_target(vault, layout: str | None) -> tuple[str, dict | None]:
-    """`?layout=<项目 id>` 指到项目画布；不给就是全局图。
+def _layout_target(vault, layout: str | None):
+    """`?layout=<id>` 指到项目画布或对比画布；不给就是全局图。
 
-    项目 id 走 `core.ID_OK`（只允许 ASCII）——它直接当文件名用，认不出的一律拒，
-    绝不让它拼出路径。
+    返回 (文件名, builder)：builder 是"这份 layout 还不存在时拿什么填"，
+    存储层不需要认识项目和对比组这两个概念。
+
+    id 直接当文件名用，所以先过一道形状校验再确认它**真的是**一个项目 / 对比组——
+    后面这一步才是真闸：查无此 id 的名字根本进不来，也就拼不出路径。
+    项目 id 是生成的，只允许 ASCII（`core.ID_OK`）；对比组 id 是你自己起的名字，
+    可以带中文，按节点 id 那条规则来（`core.RE_ID_OK`：不许空白和路径分隔符）。
     """
     if not layout or layout == DEFAULT_LAYOUT:
         return DEFAULT_LAYOUT, None
-    if not core.ID_OK.match(layout):
+    if not core.RE_ID_OK.match(layout) or layout.startswith("."):
         raise HTTPException(status_code=422, detail=f"非法的 layout 名 `{layout}`")
-    project = (core.load_projects(vault).get("projects") or {}).get(layout)
-    if project is None:
-        raise HTTPException(status_code=404, detail=f"没有 `{layout}` 这个项目")
-    return layout, project
+    if core.ID_OK.match(layout):
+        project = (core.load_projects(vault).get("projects") or {}).get(layout)
+        if project is not None:
+            return layout, lambda index: core.build_project_layout(project, index)
+    index = current_index(vault)
+    if any(n["id"] == layout and n.get("type") == core.COMPARE_TYPE for n in index["nodes"]):
+        members = [r["id"] for r in core.compare_table(vault, index, layout)["rows"]]
+        return layout, lambda idx: core.build_compare_layout(members, idx)
+    raise HTTPException(status_code=404, detail=f"没有 `{layout}` 这个项目或对比组")
 
 
 @app.get("/api/layout", response_model=LayoutRead)
 def get_layout(layout: str | None = None) -> LayoutRead:
     vault = vault_path()
     index = current_index(vault)
-    name, project = _layout_target(vault, layout)
-    doc, generated = load_or_init(vault, index, name, project)
+    name, build = _layout_target(vault, layout)
+    doc, generated = load_or_init(vault, index, name, build)
     return LayoutRead(layout=doc, orphans=find_orphans(doc, index, vault),
                       index_revision=index["revision"], generated=generated)
 
@@ -108,9 +121,9 @@ def patch_layout(patch: LayoutPatch, layout: str | None = None) -> LayoutSaved:
     """高频写入口：拖拽、折叠、便签。只改 layout 文件，不进确认流程。"""
     vault = vault_path()
     index = current_index(vault)
-    name, project = _layout_target(vault, layout)
+    name, build = _layout_target(vault, layout)
     try:
-        doc, orphans, backup = apply_patch(vault, patch, index, name, project)
+        doc, orphans, backup = apply_patch(vault, patch, index, name, build)
     except RevisionConflict as exc:
         raise HTTPException(status_code=409, detail={
             "message": str(exc), "current_revision": exc.current.revision,
@@ -119,6 +132,29 @@ def patch_layout(patch: LayoutPatch, layout: str | None = None) -> LayoutSaved:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     return LayoutSaved(revision=doc.revision, updated_at=doc.updated_at or "", orphans=orphans,
                        backup=backup)
+
+
+# 原文可能落在这几棵树下（学习笔记、设计与技术文档）。不扫全仓库：
+# nodes/ fields/ 是节点自己，.git/ tools/ web/ 里不会有来源原文，扫了纯属白费。
+SOURCE_DIRS = ("harness", "llm", "doc")
+
+
+def _source_uri(vault: Path, source: str) -> str:
+    """frontmatter 的 `source` 存的是**文件名不是路径**，所以要找一次才知道能不能打开。
+
+    只有 `.md` 才去找：来源常常根本不是仓库里的文件（一张图、一篇论文），
+    那种每次都遍历一遍是白费。重名不做消歧，找到第一个就用它。
+    """
+    if not source.endswith(".md"):
+        return ""
+    for name in SOURCE_DIRS:
+        root = vault / name
+        if not root.is_dir():
+            continue
+        hit = next(root.rglob(source), None)
+        if hit is not None:
+            return f"obsidian://open?vault={quote(vault.name)}&file={quote(str(hit.relative_to(vault)))}"
+    return ""
 
 
 @app.get("/api/node/{node_id}", response_model=NodeDetail)
@@ -139,6 +175,7 @@ def get_node(node_id: str) -> NodeDetail:
         out=[edges[i] for i in meta.get("out", []) if i in edges],
         in_edges=[edges[i] for i in meta.get("in", []) if i in edges],
         obsidian_uri=f"obsidian://open?vault={quote(vault.name)}&file={quote(meta['path'])}",
+        source_uri=_source_uri(vault, str(meta.get("source") or "")),
     )
 
 
@@ -176,6 +213,33 @@ def post_regroup(body: dict) -> PlaceResult:
         raise HTTPException(status_code=409, detail={
             "message": str(exc), "current_revision": exc.current.revision,
             "hint": "重新 GET /api/layout 后基于新 revision 重试"}) from exc
+
+
+@app.get("/api/compare")
+def get_compare_groups() -> dict:
+    """对比组目录。现算，不存第二份——改名删除自动跟着走。"""
+    return compare_svc.directory(vault_path())
+
+
+@app.get("/api/compare/{group_id}")
+def get_compare_table(group_id: str) -> dict:
+    """一个对比组的表：列 = dimensions，行 = 成员（按 md 里的书写顺序），外加残差列。"""
+    data = compare_svc.table(vault_path(), group_id)
+    if data is None:
+        raise HTTPException(status_code=404, detail=f"没有 `{group_id}` 这个对比组")
+    return data
+
+
+@app.post("/api/compare/{group_id}/propose", response_model=CompareProposal)
+def post_compare_propose(group_id: str, req: CompareProposeRequest) -> CompareProposal:
+    """把这张表的空格子补一轮。调 LLM（review 角色）**一次**，只读不写。
+
+    写回走 /api/changes 的 `set_fact`，那条路才有 diff 预览、备份和写前指纹校验。
+    """
+    data = compare_svc.propose(vault_path(), group_id, req.cells)
+    if data is None:
+        raise HTTPException(status_code=404, detail=f"没有 `{group_id}` 这个对比组")
+    return data
 
 
 @app.get("/api/digest")

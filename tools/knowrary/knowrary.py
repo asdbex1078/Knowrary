@@ -33,9 +33,12 @@ from core import (Diagnostics, Edge, Node, RelationTypes, build_digest, build_in
                   load_vault, read, record_review, stamp, validate_index, write, write_json_atomic)
 from core import (build_project_layout, legacy_plans_path, load_projects, projects_path,
                   save_projects, upgrade_v1)
-from core import (ChangeRejected, ImportTarget, Translation, WriteConflict, add_pending, commit, translate)
+from core import (ChangeRejected, ImportTarget, Translation, WriteConflict, add_home, add_pending, commit,
+                  rename_in_plan, translate)
 from core import plan as plan_changes
-from core import build_article_prompt, cards_from_nodes, describe_related, select_linkable, select_related
+from core import build_article_prompt, cards_from_index, cards_from_nodes, describe_related, select_linkable, select_related
+from core import check_length, isolated as isolated_blocks, near_misses, normalize_claims, project_points
+from core import parse_json
 from core.mdio import RE_LINK
 
 HERE = Path(__file__).resolve().parent
@@ -427,29 +430,34 @@ def cmd_check(args: argparse.Namespace) -> None:
 
 # ---------------------------------------------------------------- LLM 输出解析
 
-def extract_json(text: str) -> dict:
-    text = text.strip()
-    text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text)
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError:
-        start, end = text.find("{"), text.rfind("}")
-        if start < 0 or end < 0:
-            raise SystemExit("LLM 输出中找不到 JSON：\n" + text[:800])
-        return json.loads(text[start:end + 1])
+def extract_json(text: str, vault: Path | None = None, context: str = "") -> dict:
+    """模型那段话 → dict。容错与留痕在 `core.llmjson`，和服务端同一份。
+
+    **命令行以前是另一套**（只剥首尾围栏、失败直接退出、不进问题流），
+    于是同一次模型抽风，网页上查得到、命令行查不到。
+    """
+    plan = parse_json(text, context, vault=vault)
+    if not plan:
+        raise SystemExit("LLM 输出中找不到可用的 JSON"
+                         + ("（原文已记进 .knowrary/issues.jsonl）" if vault else "：\n" + (text or "")[:800]))
+    return plan
 
 
 # ---------------------------------------------------------------- article（提示词拼装在 core.article）
 
-def apply_plan(plan: dict, vault: Path, target: ImportTarget, dry_run: bool) -> None:
+def apply_plan(plan: dict, vault: Path, target: ImportTarget, dry_run: bool,
+               index: dict | None = None) -> Translation:
     """方案 JSON → 三种产物（新建 / 补充老节点 / 待审边），走和网页同一条写回通道。
 
     以前这里自己渲染文件、自己 write，和 `/api/changes` 是两套写法；现在翻译成 ChangeSet
     交给 `core.plan` / `core.commit`：dry-run 能看到每个文件的 diff，落盘前自动备份，
     补充老节点只追加不覆盖。待审边只在真正落盘时记进 pending.json。
+
+    返回 `Translation`：调用方要拿它算三级匹配（`tr.pending` 是"够到体系"的证据之一）。
+    `index` 传进来是为了别重建第二遍——`cmd_article` 早就为了拼提示词建过一次了。
     """
     rt = load_relation_types(vault)
-    index = build_index(vault).data
+    index = index if index is not None else build_index(vault).data
     tr = translate(plan, index, rt, target)
     try:
         edits = plan_changes(vault, tr.changes, index)
@@ -459,15 +467,22 @@ def apply_plan(plan: dict, vault: Path, target: ImportTarget, dry_run: bool) -> 
     if dry_run:
         for e in edits:
             print(f"\n{'=' * 70}\n{e.rel}\n{'=' * 70}\n{_diff_text(e)}")
-        return
+        return tr
     snapshot = commit(vault, edits) if edits else ""
-    added = add_pending(vault, tr.pending, {"source": target.source, "imported_at": target.date}) if tr.pending else []
+    origin = {"source": target.source, "imported_at": target.date}
+    added = add_pending(vault, tr.pending, origin) if tr.pending else []
+    home = plan.get("suggest_home")
+    if isinstance(home, dict):
+        # 只记这次真建出来、又被模型点名孤立的那几个：Inbox 上显示，不自动建域 / 建项目。
+        # 和 /api/import 同一条口径——命令行导进来的点不该在 Inbox 上少一半。
+        add_home(vault, [i for i in (home.get("isolated") or []) if i in tr.new_ids], home, origin)
     stem = re.sub(r"[^\w一-鿿-]+", "-", target.source)[:60]
     log = vault / ".knowrary" / "imports" / f"{TODAY}-{stem}.json"
     write(log, json.dumps({"plan": plan, "changes": tr.changes, "pending": tr.pending,
                            "warnings": tr.warnings}, ensure_ascii=False, indent=2))
     print(f"\n已写入 {len(edits)} 个文件" + (f"（备份 {snapshot}）" if snapshot else "")
           + f"，待审边 {len(added)} 条；方案存于 {log.relative_to(vault)}")
+    return tr
 
 
 def _diff_text(edit) -> str:
@@ -518,23 +533,54 @@ def cmd_apply(args: argparse.Namespace) -> None:
 
 
 def cmd_article(args: argparse.Namespace) -> None:
+    """无人值守导入：拼提示词 → 一次 LLM 调用 → 三级匹配 → 翻译写回。
+
+    **和网页那条 `/api/import/propose` 是同一套**：同一份提示词、同一个长度闸、
+    同一套认领 / 撞脸 / 孤立判定、同一份 JSON 容错。差别只有出口——
+    这边打在终端上，那边进审核卡。
+    """
     vault = Path(args.vault).resolve()
     art_path = Path(args.article).resolve()
     rt = load_relation_types(vault)
-    nodes, _ = load_vault(vault)
-    article = read(art_path)
-    prompt = build_article_prompt(cards_from_nodes(nodes), rt, article, args.field)
+    index = build_index(vault).data
+    try:
+        article = check_length(read(art_path))
+    except ValueError as exc:
+        raise SystemExit(str(exc))
+    points = project_points(vault, index, args.project)
+    prompt = build_article_prompt(cards_from_index(index), rt, article, args.field, points)
     if args.show_prompt:
         print(prompt)
         return
     cfg, _ = llm_backend.load_config(vault)
     name, provider = llm_backend.resolve_provider(cfg, "learn", args.llm)
     model = args.model or provider.get("model") or "默认模型"
-    print(f"图谱 {len(nodes)} 个节点，文章 {len(article)} 字，调用 LLM {name}（{provider['type']} / {model}）…",
-          file=sys.stderr)
-    plan = extract_json(llm_backend.ask(prompt, provider, args.model))
+    print(f"图谱 {len(index['nodes'])} 个节点，文章 {len(article)} 字，待认领的清单点 {len(points)} 个，"
+          f"调用 LLM {name}（{provider['type']} / {model}）…", file=sys.stderr)
+    plan = extract_json(llm_backend.ask(prompt, provider, args.model), vault,
+                        f"article {art_path.name}")
+    plan, claims = normalize_claims(plan, points, rename_in_plan)
     target = ImportTarget(args.field, f"article {art_path.name} {TODAY}", args.folder)
-    apply_plan(plan, vault, target, args.dry_run)
+    tr = apply_plan(plan, vault, target, args.dry_run, index)
+    print_match_report(plan, points, claims, tr, index)
+
+
+def print_match_report(plan: dict, points: list[dict], claims: list[dict], tr: Translation,
+                       index: dict) -> None:
+    """三级匹配的终端版：认领了谁、哪些名字撞脸、哪几块和体系断开。
+
+    **撞脸和孤立都不替人拍板**，只列出来——认领要改 id、孤立要么补边要么就让它进 Inbox，
+    两件事都得人看过才算数。
+    """
+    claimed = {c["node_id"] for c in claims}
+    for c in claims:
+        print(f"  ✓ 认领清单点 {c['point_name']}（{c['point_id']}）")
+    for n in near_misses(plan, points, claimed):
+        print(f"  ≈ {n['node_id']} 和清单点 {n['point_name']}（{n['point_id']}）像 {n['ratio']}，"
+              f"是同一个东西的话改成同一个 id")
+    lonely = isolated_blocks(plan, tr.pending, index, claimed)
+    if lonely:
+        print(f"  ○ 和体系断开（会掉进 Inbox）：{'、'.join(lonely)}")
 
 
 # ---------------------------------------------------------------- llm
@@ -671,6 +717,7 @@ def add_llm_parsers(sub: argparse._SubParsersAction) -> None:
     a.add_argument("--vault", required=True)
     a.add_argument("--field", required=True, help="这批节点的顶层领域")
     a.add_argument("--folder", help="写入 nodes/ 下的子目录，默认同 field")
+    a.add_argument("--project", help="项目 id：把该项目清单里还没建的点给模型认领")
     a.add_argument("--llm", help="临时指定 provider 名（默认用配置里 roles.learn）")
     a.add_argument("--model", help="临时覆盖模型名")
     a.add_argument("--dry-run", action="store_true")

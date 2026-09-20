@@ -13,7 +13,8 @@ python3 tools/knowrary/knowrary.py llm test --vault .      # 连通性测试（�
 ```
 
 - **provider 三种类型**：`claude-cli`（复用本机 Claude Code 登录，零配置）、`anthropic`（官方 API）、`openai`（OpenAI 兼容协议：OpenAI / DeepSeek / 通义 / Ollama / vLLM 都是它）。
-- **两个角色**：`learn`（文章拆节点、关系抽取）和 `review`（校验、分组判断、去重）。可以指向不同模型，用第二个模型审第一个的产出，减少单一模型的偏差。
+- **两个角色**：`learn`（对话式教练、文章拆节点、关系抽取）和 `review`（校验、分组判断、去重）。可以指向不同模型，用第二个模型审第一个的产出，减少单一模型的偏差。
+- **工具协议按 provider 能力自动挑，不用你管**：`anthropic` / `openai` 走原生 function calling（schema 约束、可并行）；`claude-cli` 是子进程、没有结构化工具接口，自动退回文本围栏。三种都能对话，**零配置那条路（`claude -p`，不填任何密钥）没断**。判据在 `llm_backend.supports_tools()`。
 - 不建配置文件也能用：默认全部走 `claude -p`。
 - `knowrary check` 会在任何 `*.local.json` 被 git 跟踪时报错，防止密钥被提交。
 - 前端设置页（页面上配置多个 LLM、指派角色）在计划中，见 `doc/设计文档/第二版设计文档.md` 3.11。
@@ -31,8 +32,8 @@ python3 tools/knowrary/knowrary.py llm test --vault .      # 连通性测试（�
 | `tools/knowrary/` | CLI 与核心库（解析、索引、布局生成），见其 README |
 | `server/` | 本地服务（FastAPI）：只读 index、读写 layout、托管前端产物，见其 README |
 | `web/` | 结构视图前端（Vue 3 + Vite + X6）；`web/dist/` 是入库的构建产物，运行期零 Node（**文件名不带 content hash**：Rollup 的 hash 是传递的，改一行就级联换掉几十个文件名，一次小改往 .git 里塞 6MB；缓存失效改由服务端发 `Cache-Control: no-cache` 负责，浏览器照旧缓存、每次拿 ETag 问一句，没变就 304）。`src/canvas/` 是不碰 DOM 的算法（布局、LOD、时间线、菜单内容），`src/composables/` 是按功能抽出来的成块状态（历史/回放/导览、对话），`App.vue` 只做编排 |
-| `.claude/skills/knowrary-import/` | Claude Code skill：把文章拆成节点存进 Knowrary |
-| `doc/` | 规范文档、设计文档、开发实施计划 |
+| `.claude/skills/knowrary-import/` | Claude Code skill：把文章拆成节点存进 Knowrary。**可选的第三个入口**——导入的完整能力在 `knowrary article` 和网页「导入」面板里，没有 Claude Code 一样全功能 |
+| `doc/` | 规范文档、设计文档、开发实施计划。`doc/设计文档/选型对照/` 是「要不要上 X」的逐条判断（agent 框架 / 向量库 / 数据库 / 测试框架 / LLM SDK / 画布渲染），判据与总表在 `选型判据.md` |
 | `harness/`、`llm/` | 学习笔记原文（不是图谱节点，导入图谱靠 knowrary-import） |
 
 ## 节点约定（摘要，全文见 `doc/规范文档/Markdown文档规范.md`）
@@ -137,6 +138,7 @@ node web/tests/unit.mjs                                        # 前端纯函数
 .venv/bin/python server/tests/run.py                           # 服务层自测（164 个用例）
 .venv/bin/python web/tests/e2e_canvas.py                       # 画布端到端自测（真无头 Chrome 拖拽 → 落盘，临时 vault，不碰你的布局，196 个用例）
 cd web && npm run dev                                          # 改前端（5173，/api 代理到 8765）；改完 npm run build 提交 dist
-python3 tools/knowrary/knowrary.py article <文章.md> --vault . --field <领域> [--dry-run] [--llm <provider>]   # 无人值守：文章 → 节点
-# 在 Claude Code 里：/knowrary-import <文章路径>  或  "把这篇文章融入我的图谱"
+python3 tools/knowrary/knowrary.py article <文章.md> --vault . --field <领域> [--project <项目 id>] [--dry-run] [--llm <provider>]   # 无人值守：文章 → 节点
+#   和网页「导入」面板同一套：同一份提示词、同一个长度闸、同一套认领 / 撞脸 / 孤立判定、同一份 JSON 容错
+# 在 Claude Code 里（可选，装了才有）：/knowrary-import <文章路径>  或  "把这篇文章融入我的图谱"
 ```

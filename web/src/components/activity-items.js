@@ -31,6 +31,11 @@ export const ITEMS = [
   { id: 'digest', icon: 'layers', name: '欠账', group: 'org', scopes: ['global'],
     tip: '草稿 / 桥 / 连边建议 / 重复 / stub（整张图的）', modes: ['chat', 'project', 'structure'] },
 
+  // 对比在 compare 模式下也留着：进了某个组还能直接跳去另一个组，
+  // 不用先退回全局图再进来一次
+  { id: 'compare', icon: 'table', name: '对比', group: 'see', scopes: ['global'],
+    tip: '横向对比组：一组技术按同几个维度摆成一张表',
+    modes: ['chat', 'project', 'structure', 'compare'] },
   { id: 'stats', icon: 'chart', name: '参数量', group: 'see', scopes: ['global'],
     tip: '填了 params 的知识点：怎么涨上来的、谁更大', modes: ['structure', 'history'] },
   { id: 'calendar', icon: 'clock', name: '日历', group: 'see', scopes: ['global'],

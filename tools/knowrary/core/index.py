@@ -18,12 +18,15 @@ from pathlib import Path
 from .analysis import find_cycles, pagerank
 from .diagnostics import Diagnostics
 from .mdio import RE_LINK, json_safe, load_json
-from .parser import Node, load_vault, validate_frontmatter, parse_params
+from .compare import COMPARE_TYPE, MEMBER_RELATION
+from .facts import (COMPARE_HEADING, FACTS_HEADING, FM_DIMENSIONS, bare_compare_headings,
+                    compare_targets, facts_of, section_bounds, stray_facts)
+from .parser import Node, is_aggregate, load_vault, validate_frontmatter, parse_params
 from .relations import NormalizedEdge, RelationTypes, load_relation_types, normalize_direction
 
 INDEX_SCHEMA_VERSION = 1
 NODE_FM_FIELDS = ("name", "field", "type", "status", "desc", "year", "start_year", "end_year",
-                  "aliases", "tags", "learned", "source", "layer", "params")
+                  "aliases", "tags", "learned", "source", "layer", "params", "dimensions")
 
 
 @dataclass
@@ -60,6 +63,7 @@ def build_index(vault: Path, previous: dict | None = None) -> IndexResult:
     _warn_history_gaps(ctx)
     _warn_year_conflicts(ctx)
     _warn_dead_body_links(ctx)
+    _check_compare(ctx)
     payload = _assemble(ctx)
     _warn_cycles(payload, ctx)
     return _finalize(payload, diags, previous)
@@ -172,6 +176,77 @@ def _warn_dead_body_links(ctx: BuildContext) -> None:
                 ctx.diags.warn("dead_body_link", f"正文链接 [[{link}]] 不存在", file=rel, node=node.id)
 
 
+MIN_MEMBERS = 2
+
+
+def _check_compare(ctx: BuildContext) -> None:
+    """《横向对比规范》6 的校验：对比组本身、以及任意节点里的 `## 速查` / `## 对比项`。
+
+    放在索引构建里而不是 `validate_frontmatter` 里，是因为前四条都要看**边**
+    （成员是 `包含` 边、对比项要对上 `对比` 边），而那个函数只拿得到 frontmatter。
+    """
+    out_by_type: dict[str, dict[str, set[str]]] = defaultdict(lambda: defaultdict(set))
+    for edge in ctx.edges.values():
+        out_by_type[edge.source][edge.type].add(edge.target)
+        if edge.symmetric:                       # 对比是对称边，索引按 id 排序定向，两头都算
+            out_by_type[edge.target][edge.type].add(edge.source)
+
+    for node in ctx.nodes.values():
+        rel = node.path.relative_to(ctx.vault).as_posix()
+        loc = {"file": rel, "node": node.id}
+        if node.fm.get("type") == COMPARE_TYPE:
+            _check_compare_group(node, out_by_type[node.id].get(MEMBER_RELATION, set()),
+                                 ctx.diags, loc)
+        _check_node_facts(node, out_by_type[node.id].get("对比", set()), ctx.diags, loc)
+
+
+def _check_compare_group(node: Node, members: set[str], diags: Diagnostics, loc: dict) -> None:
+    """对比组文档自己：成员够不够、维度有没有。"""
+    if len(members) < MIN_MEMBERS:
+        diags.error("compare_too_few_members",
+                    f"对比组只有 {len(members)} 个成员（要 ≥{MIN_MEMBERS}）。"
+                    f"成员写成 `- 包含:: [[节点]]`，不要写进 frontmatter 数组——"
+                    f"数组在改名时会悄悄悬空", **loc)
+    dims = node.fm.get("dimensions")
+    if not isinstance(dims, list) or not [d for d in dims if str(d).strip()]:
+        diags.error("compare_no_dimensions", "对比组缺 `dimensions`，表格没有列", **loc)
+    elif len(set(map(str, dims))) != len(dims):
+        diags.warn("compare_dup_dimension", f"`dimensions` 里有重复的维度：{dims}", **loc)
+
+
+def _check_node_facts(node: Node, compared: set[str], diags: Diagnostics, loc: dict) -> None:
+    """任意节点里的两节：位置、速查写法、和 frontmatter 撞车、对比项有没有对应的边。"""
+    # **位置写错是静默失效**：`## 关系` 之后的正文被切成 rel_tail，取数、出题、摘要
+    # 读的都是关系段之前那一段（`parser.py` 的 body / `server/quiz.py` 的 `_read_body`）。
+    # 追加到文件末尾是最顺手的写法，也正是会掉进这个坑的写法——所以必须有人喊一声。
+    for heading in (FACTS_HEADING, COMPARE_HEADING):
+        if section_bounds(node.rel_tail, heading) is not None:
+            diags.warn("facts_after_relations",
+                       f"`## {heading}` 写在了 `## 关系` 后面，取数和出题都读不到它——"
+                       f"挪到 `## 关系` 之前", **loc)
+    body = node.body
+    for key in facts_of(body):
+        if key in FM_DIMENSIONS:
+            diags.warn("facts_shadows_frontmatter",
+                       f"`## 速查` 里写了 `{key}`，它的真相在 frontmatter 的 "
+                       f"`{FM_DIMENSIONS[key]}`——两份一定会漂，删掉正文这行", **loc)
+    bad_lines, dup_keys = stray_facts(body)
+    for ln in bad_lines:
+        diags.warn("facts_bad_syntax",
+                   f"`## 速查` 里这行取不到值：`{ln}`。要用 `::`（Dataview 内联字段），"
+                   f"单冒号会被整行忽略", **loc)
+    for key in dup_keys:
+        diags.warn("facts_duplicate_key", f"`## 速查` 里 `{key}` 写了不止一次，只会用第一条", **loc)
+    for target in compare_targets(body):
+        if target not in compared:
+            diags.warn("compare_section_without_edge",
+                       f"`## 对比项` 里写了「与 [[{target}]]」，却没有一条 `对比:: [[{target}]]` 边——"
+                       f"图上看不见这条对比", **loc)
+    for title in bare_compare_headings(body):
+        diags.warn("compare_section_no_link",
+                   f"`## 对比项` 的小节「{title}」没写 `[[目标]]`，对不上任何节点", **loc)
+
+
 def _node_payload(vault: Path, node: Node) -> dict:
     d = {"id": node.id, "path": node.path.relative_to(vault).as_posix(), "digest": node.digest}
     for k in NODE_FM_FIELDS:
@@ -184,6 +259,10 @@ def _node_payload(vault: Path, node: Node) -> dict:
     if n is not None:
         d["params_n"] = n
     d.setdefault("status", "active")
+    # 聚合文档（对比组 / 领域总览）：算一遍存进来，下游只看这个布尔值，
+    # 不用每处都去认那几个 type 字符串
+    if is_aggregate(node.fm):
+        d["aggregate"] = True
     if node.is_stub:
         d["stub"] = True
     return d

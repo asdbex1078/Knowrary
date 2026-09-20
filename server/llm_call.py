@@ -1,12 +1,11 @@
 """按角色取 provider、发起一次 LLM 调用，并把回答解析成 JSON。
 
-suggest 与 quiz 共用：角色名（learn / review）和"剥围栏再 json.loads"的容错
-只写一份，省得两边各写死一次、改配置时漏掉一处。
+suggest 与 quiz 共用：角色名（learn / review）只写一份，省得两边各写死一次、改配置时漏掉一处。
+"剥围栏再 json.loads"那套容错在 `core.llmjson`（CLI 也要用同一份），这里只转发。
 """
 from __future__ import annotations
 
 import datetime as dt
-import json
 import logging
 import time
 from pathlib import Path
@@ -51,12 +50,16 @@ def ask(vault: Path, role: str, prompt: str, op: str = "?") -> str:
     return text
 
 
-def chat(vault: Path, role: str, messages: list[dict], op: str = "chat", on_delta=None,
-         session: str | None = None) -> tuple[str, dict]:
+def chat(vault: Path, role: str, messages: list[dict], tools: list[dict] | None = None,
+         op: str = "chat", on_delta=None, session: str | None = None) -> tuple[str, list[dict], dict]:
     """多轮对话版的 `ask`。同一套 provider 配置、同一本用量账。
 
+    返回 `(正文, 工具调用, 用量)`——**三种 provider 同一个契约**，工具协议是原生还是文本围栏
+    由 `llm_backend` 按 provider 能力自己挑（`supports_tools`），这一层和上面都看不见区别。
+
     `on_delta(text)` 逐段回调，用来把增量推给 SSE；不传就整段返回。
-    `session` 给 claude-cli 用来续上同一段会话，只发新增的几条（省的是缓存写）；
+    `tools` 是这一档口径的工具 schema（`chat.tool_schemas` 渲染）。
+    `session` 给 claude-cli 续上同一段会话，只发新增的几条（省的是缓存写）；
     别的 provider 收到它也无妨——它们本来就每次发全量 messages 数组。
     """
     # 会话表跟着 vault 落盘：`uvicorn --reload` 一天几十次，只放内存等于每次重启全额重付（复盘 §11.2）。
@@ -68,13 +71,14 @@ def chat(vault: Path, role: str, messages: list[dict], op: str = "chat", on_delt
     started = time.monotonic()
     row = {"op": op, "role": role, "provider": name, "model": provider.get("model")}
     try:
-        text, used = llm_backend.chat(messages, provider, on_delta=on_delta, session=session)
+        text, calls, used = llm_backend.chat(messages, provider, on_delta=on_delta, tools=tools,
+                                             session=session)
     except BaseException as exc:
         _record(vault, {**row, "ok": False, "ms": _ms(started), "error": str(exc)[:200]})
         raise _with_context(exc, role, name, provider) from None
     _record(vault, {**row, **used, "model": used.get("model") or provider.get("model"),
-                    "ok": True, "ms": _ms(started), "chars": len(text or "")})
-    return text, used
+                    "ok": True, "ms": _ms(started), "chars": len(text or ""), "calls": len(calls)})
+    return text, calls, used
 
 
 def _with_context(exc: BaseException, role: str, name: str, provider: dict) -> BaseException:
@@ -101,60 +105,13 @@ def _record(vault: Path, row: dict) -> None:
         log.warning("用量没记上：%s", exc)
 
 
-def _carve(text: str) -> str:
-    """从一段话里抠出第一个完整的 JSON 对象。
-
-    模型经常在 JSON 前后加一句「好的，这是题目：」或者半个围栏，只剥首尾围栏不够用。
-    按花括号配对扫一遍（跳过字符串里的括号和转义），比正则可靠。
-    """
-    start = text.find("{")
-    if start < 0:
-        return text
-    depth, in_str, esc = 0, False, False
-    for i in range(start, len(text)):
-        ch = text[i]
-        if in_str:
-            if esc: esc = False
-            elif ch == "\\": esc = True
-            elif ch == '"': in_str = False
-            continue
-        if ch == '"': in_str = True
-        elif ch == "{": depth += 1
-        elif ch == "}":
-            depth -= 1
-            if depth == 0:
-                return text[start:i + 1]
-    return text[start:]
-
-
 def parse_json(raw: str, context: str = "", vault: Path | None = None) -> dict:
-    """把回答解析成 dict。模型偶尔会套 ``` 围栏或直接答非所问，解析失败只警告不抛。
+    """把回答解析成 dict。实现在 `core.llmjson`——CLI 也要用同一份容错和留痕。
 
-    解析不出来时**必须留痕**：调用已经花了钱和时间，界面上只剩一句「没出出题来」的话，
-    下次遇到照样两眼一抹黑。原文前 600 字进问题流（`.knowrary/issues.jsonl`）。
+    留这个转发是因为 suggest / quiz / projects 等一票模块已经从这里 import 了，
+    而"所有 LLM 调用都从 llm_call 过"这条纪律也该覆盖解析那一步。
     """
-    text = raw.strip()
-    if text.startswith("```"):
-        first_nl = text.find("\n")
-        text = text[first_nl + 1:] if first_nl != -1 else text[3:]
-    if text.endswith("```"):
-        text = text[:-3]
-    text = text.strip()
-    for candidate in (text, _carve(text)):
-        try:
-            data = json.loads(candidate)
-        except json.JSONDecodeError:
-            continue
-        if isinstance(data, dict):
-            return data
-    log.warning("LLM 返回的不是合法 JSON%s，raw=%s", f"（{context}）" if context else "", raw[:200])
-    if vault is not None:
-        try:
-            core.record_issue(vault, "llm", f"模型没给出合法 JSON（{context}）", where="parse_json",
-                              detail=raw[:600])
-        except OSError as exc:
-            log.warning("问题流没记上：%s", exc)
-    return {}
+    return core.parse_json(raw, context, vault)
 
 
 def clean_layer(raw) -> str:

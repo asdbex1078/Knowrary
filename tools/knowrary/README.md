@@ -43,7 +43,8 @@ python3 $KG article <文章> --vault <vault> --field <领域> [--dry-run] [--llm
 python3 $KG llm list --vault <vault>            # 看 provider / 角色
 python3 $KG llm test --vault <vault> [--llm x]  # 连通性测试；退出码非 0 表示有 provider 不通
 #    provider 类型：claude-cli（复用 Claude Code 登录）/ anthropic / openai（OpenAI 兼容：DeepSeek、通义、Ollama…）
-#    角色：learn（拆节点）/ review（审核）；api_key 可写 env:VAR 引用环境变量；环境变量 KNOWRARY_LLM_CONFIG 可改配置路径
+#    角色：learn（对话 + 拆节点）/ review（审核）；api_key 可写 env:VAR 引用环境变量；环境变量 KNOWRARY_LLM_CONFIG 可改配置路径
+#    工具协议自动挑：anthropic / openai 走原生 function calling，claude-cli 退回文本围栏（它没有结构化工具接口）
 #    没有配置文件时默认全部走 claude -p
 ```
 
@@ -54,7 +55,9 @@ python3 $KG llm test --vault <vault> [--llm x]  # 连通性测试；退出码非
 | `knowrary.py` | 全部命令（CLI 薄壳，解析与校验都调 `core/`） |
 | `core/` | 核心库：`mdio.py`（IO / frontmatter / 目录扫描）、`relations.py`（类型表、关系解析、方向归一）、`parser.py`（节点与 frontmatter 校验）、`index.py`（index.json 生成、内容哈希与 revision）、`layout.py`（初始布局生成、孤立引用判定）、`schema.py`（index 契约校验）、`diagnostics.py`（结构化诊断）。`server/` 直接 import，避免两套实现漂移 |
 | `tests/run.py` | 零依赖自测（24 个用例）|
-| `llm_backend.py` | LLM 后端：读配置、按角色选 provider、claude-cli / anthropic / openai 三种调用（零依赖，urllib） |
+| `llm_backend.py` | LLM 后端：读配置、按角色选 provider、claude-cli / anthropic / openai 三种调用；多轮对话 + 两套工具协议的适配（原生 tool use / 文本围栏，按 `supports_tools` 自动挑）。零依赖，urllib |
+| `core/proposal.py` | 导入方案的三级匹配：认领清单点 / 名字撞脸 / 和体系断开。命令行与网页共用这一份 |
+| `core/llmjson.py` | 模型输出 → JSON 的容错与留痕，同上共用 |
 | `relation-types.v2.json` | 第二版类型表（5 族），迁移时复制到 `<vault>/relation-types.json` |
 | `legacy-types.json` | 旧类型 → 新类型映射（`flip` 表示方向反转） |
 | `prompts/article.md` | 文章拆节点的提示词模板，与 skill `.claude/skills/knowrary-import/SKILL.md` 保持一致 |

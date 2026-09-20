@@ -37,18 +37,57 @@ export function descendants(groups, gid) {
   return out
 }
 
-/** 时间线选择器的选项：layout 分组树的任意层级，按层级缩进。 */
+/**
+ * 时间线选择器的选项：layout 分组树的任意层级，按层级缩进。
+ *
+ * 两条规矩，都是为了"看一眼就知道点的是谁"：
+ *
+ * **重名的带上父级。** 布局按「顶层主题 × 二级抽象层」铺开，于是「理论」「硬件」
+ * 「体系结构」「系统软件」「AI应用」各有两份（计算机系统下一份、AI 下一份）。只显示
+ * `name` 的话，选择器里并排站着两个一模一样的「理论」，点哪个全靠试。同一套消歧规则
+ * 在 `tools/knowrary/core/digest.py` 的 `group_labels()`（跨分组桥那边早就这么干了）。
+ *
+ * **按树序铺，不按 depth 排。** 以前排序是 (depth, name)，二级分组被跨父级打散重排，
+ * 缩进成了唯一线索——而同名同缩进的那两条恰好被 name 排到一起，等于线索也没了。
+ */
 export function timelineOptions(layout) {
   const groups = layout?.groups || {}
-  const depth = (id, seen = new Set()) => {
-    const g = groups[id]
-    if (!g?.parent || seen.has(id)) return 0
-    seen.add(id)
-    return 1 + depth(g.parent, seen)
+  // parent 指向一个不存在的分组、或指向自己，都按根处理：宁可摆在第一层，不能整条不见
+  const parentOf = (id) => {
+    const p = groups[id]?.parent
+    return p && p !== id && groups[p] ? p : null
   }
-  return Object.entries(groups)
-    .map(([id, g]) => ({ id, name: g.name, depth: depth(id) }))
-    .sort((a, b) => (a.depth - b.depth) || a.name.localeCompare(b.name, 'zh'))
+  const dup = new Map()
+  for (const g of Object.values(groups)) dup.set(g?.name, (dup.get(g?.name) || 0) + 1)
+  const label = (id) => {
+    const name = groups[id]?.name || id
+    const parent = groups[parentOf(id)]?.name
+    return dup.get(name) > 1 && parent ? `${parent}／${name}` : name
+  }
+
+  const kids = new Map()
+  for (const id of Object.keys(groups)) {
+    const p = parentOf(id)
+    kids.set(p, [...(kids.get(p) || []), id])
+  }
+  const byName = (a, b) => (groups[a]?.name || a).localeCompare(groups[b]?.name || b, 'zh')
+  const out = []
+  const emitted = new Set()
+  const walk = (parent, depth) => {
+    for (const id of [...(kids.get(parent) || [])].sort(byName)) {
+      if (emitted.has(id)) continue
+      emitted.add(id)
+      out.push({ id, name: label(id), depth })
+      walk(id, depth + 1)
+    }
+  }
+  walk(null, 0)
+  // 分组树成环时（a 的父是 b、b 的父是 a）这一圈谁都不在根下面，上面那趟走不到它们。
+  // 摆到最后一层总比整个消失强——消失了你只会以为这个分组没了
+  for (const id of Object.keys(groups).sort(byName)) {
+    if (!emitted.has(id)) out.push({ id, name: label(id), depth: 0 })
+  }
+  return out
 }
 
 /**

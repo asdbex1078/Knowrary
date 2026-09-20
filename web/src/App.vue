@@ -1,7 +1,7 @@
 <script setup>
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, shallowRef, watch } from 'vue'
 import {
-  fetchSettings, putSettings, fetchCalendar, fetchDigest, postSyncToGlobal, fetchDue, fetchProjects, putProjects, postPlanPropose, fetchToday, fetchUsage, postMerge, postRename, postQuiz, postQuizDiagnose, postQuizGrade, fetchOpenQuiz, dropOpenQuiz, postRegroup, fetchIndex, fetchInbox, fetchLayout, fetchNode,
+  fetchSettings, putSettings, fetchCalendar, fetchCompareGroups, fetchCompareTable, postCompareFill, fetchDigest, postSyncToGlobal, fetchDue, fetchProjects, putProjects, postPlanPropose, fetchToday, fetchUsage, postMerge, postRename, postQuiz, postQuizDiagnose, postQuizGrade, fetchOpenQuiz, dropOpenQuiz, postRegroup, fetchIndex, fetchInbox, fetchLayout, fetchNode,
   patchLayout, postChanges, postPlace, postReview, postSuggest, postSummarize, postYearsPropose,
 } from './api.js'
 import AppHeader from './components/AppHeader.vue'
@@ -37,6 +37,9 @@ import SettingsDialog from './components/SettingsDialog.vue'
 import ProjectsPanel from './panels/ProjectsPanel.vue'
 import ImagePicker from './panels/ImagePicker.vue'
 import TimelinePanel from './panels/TimelinePanel.vue'
+import ComparePanel from './panels/ComparePanel.vue'
+import CompareTable from './components/CompareTable.vue'
+import CompareFillDialog from './components/CompareFillDialog.vue'
 import TourPanel from './components/TourPanel.vue'
 import { clone, createHistory, diffPatch, isEmptyPatch } from './canvas/history.js'
 import { createPatcher } from './canvas/patcher.js'
@@ -54,6 +57,7 @@ import { mindmapLayout, toPatch } from './canvas/layouts.js'
 import { GROUP_LAYOUTS, layoutGroup, membersOf } from './canvas/groupLayout.js'
 import { buildMenu } from './canvas/menus.js'
 import { FAMILIES, HEAD_MAX as GROUP_HEAD, NODE_H, NODE_W, setTheme } from './canvas/shapes.js'
+import { todayISO } from './today.js'
 
 const canvasEl = ref(null)
 const headerEl = ref(null)
@@ -105,6 +109,15 @@ const placing = ref(false)
 // 四个模式（三期）：对话 / 项目图 / 全局图 / 历史。
 // **默认落在「对话」**——启动成本最低的入口应该是默认入口。
 const mode = ref(localStorage.getItem('knowrary-mode') || 'chat')
+// 横向对比：`compareId` 决定 compare 模式下画哪一块画布、下面摆哪张表。
+// **它同时是 layout 的文件名**（`.knowrary/layouts/<对比组 id>.json`），所以进来时必须
+// 记住：换组 = 换一份 layout，撤销栈要清（和切项目画布同一条规矩）。
+const compareId = ref(localStorage.getItem('knowrary-compare') || '')
+const compareGroups = ref([])
+const compareData = ref(null)
+const compareBusy = ref(false)
+const compareFill = ref(null)      // 补一轮的提议（CompareProposal），null = 没开
+const compareFilling = ref(false)
 const autoLod = ref(true)                // 缩小自动折叠成簇卡片（设计文档 3.7）
 // 对齐线 + 落点吸附：和主题、小地图一样是"这台机器上怎么摆图"的偏好，不进 layout.json
 const snap = ref(localStorage.getItem('knowrary-snap') !== '0')
@@ -253,7 +266,7 @@ async function applyProjectCard({ card, i, j }) {
       ? { ...old, lists: [...(old.lists || []), ...card.lists] }      // 已有项目：加清单，不覆盖
       : { name: card.name, field: card.field, level: card.level || '会用',
           weekly_hours: card.weekly_hours,
-          daily_quota: card.daily_quota, created: new Date().toISOString().slice(0, 10),
+          daily_quota: card.daily_quota, created: todayISO(),
           lists: card.lists }
     await putProjects({ base_revision: doc.doc.revision, projects: next, card: card.card_id })
     chatLog.value[i].projects[j].applied = true
@@ -410,6 +423,9 @@ function layoutName() {
   // **对话模式右边那块图也用项目画布**：在某个项目下聊天，背后却摆着整张全局图，
   // "聊到哪、图上亮哪"就完全失灵了——你聊的点多半还没建，只在项目画布上有幽灵占位。
   // 选了「🌐 全局」就回到全局图（那条线本来就不绑项目）。
+  // 对比画布是第三种 layout：一个对比组一份，`.knowrary/layouts/<对比组 id>.json`。
+  // 它不写全局图——那正是"对比组不上主图"这条规矩在写入侧的落点。
+  if (mode.value === 'compare') return compareId.value || null
   const scoped = mode.value === 'project' || mode.value === 'chat'
   return scoped && currentProject.value ? currentProject.value : null
 }
@@ -472,6 +488,7 @@ function openPanel(id, { force = false } = {}) {
   if (panel.value === 'study') { refreshToday(); refreshDue() }
   if (panel.value === 'plans') refreshPlans()
   if (panel.value === 'calendar') refreshCalendar()
+  if (panel.value === 'compare') refreshCompareGroups()
 }
 
 const statusText = computed(() => ({
@@ -748,6 +765,10 @@ async function switchMode(next) {
     renderHistory({ view: 'fit' })
   } else if (next === 'lineage') {
     renderLineage({ view: 'fit' })
+  } else if (next === 'compare') {
+    expanded.value = new Set()
+    render({ view: 'fit' })
+    refreshCompareTable()
   } else {
     expanded.value = new Set()
     render({ view: next === 'project' ? 'fit' : 'stored' })
@@ -794,7 +815,8 @@ function showProblems() {
 // 漏掉 chat 的话，在对话里点节点「定稿」会静默丢补丁——提示还照弹"已定稿"，
 // 盘上却没变。同一个坑踩第二次了，判据跟着 layoutName() 走，别再各写一份。
 const writable = () => !preview.value
-  && (mode.value === 'structure' || mode.value === 'project' || mode.value === 'chat')
+  && (mode.value === 'structure' || mode.value === 'project' || mode.value === 'chat'
+      || mode.value === 'compare')
 
 function queueIfChanged(kind, id, patch) {
   if (!writable()) return
@@ -1510,7 +1532,7 @@ async function createNode(form) {
       fields: { name: form.name, field: form.field, desc: form.desc,
                 ...(form.year ? { year: form.year } : {}),
                 ...(form.layer ? { layer: form.layer } : {}),
-                learned: new Date().toISOString().slice(0, 10) },
+                learned: todayISO() },
       ...(form.body ? { body: form.body } : {}),
     // 概括节点：同一批里给每个子节点连一条「包含」边——写回通道支持给刚建的节点挂边，
     // 不用等索引刷新再发第二次请求（中间那一刻图上多一个孤岛）
@@ -1571,7 +1593,7 @@ function parkNodes(ids, stateOf) {
   const x0 = box ? Math.round(box.x + box.width) + 120 : 80
   const y0 = box ? Math.round(box.y + box.height) - NODE_H : 80
   const cols = Math.max(1, Math.min(4, Math.ceil(Math.sqrt(fresh.length))))
-  const today = new Date().toISOString().slice(0, 10)
+  const today = todayISO()
   const nodes = { ...layoutDoc.value.nodes }
   fresh.forEach((id, i) => {
     const state = stateOf(id)
@@ -1615,7 +1637,7 @@ async function onImported({ result, born, claimed, enriched }) {
 async function placeLocal(ids, at) {
   const spot = at ? { x: Math.round(at.x), y: Math.round(at.y) } : viewportCenter()
   const gid = innermostGroupAt(spot.x, spot.y)
-  const today = new Date().toISOString().slice(0, 10)
+  const today = todayISO()
   const nodes = { ...layoutDoc.value.nodes }
   ids.forEach((id, i) => {
     const cur = nodes[id]
@@ -2052,7 +2074,12 @@ function dropChange(i) {
 function gotoNode(id) {
   const place = layoutDoc.value?.nodes?.[id]
   if (!place) {
-    setBanner(`「${id}」还没放到画布上（在 Inbox 里）`, 'error')
+    // 聚合文档（对比组）搜得到但不在主图上——它有自己的一张画布，也**不在 Inbox 里**
+    // （服务端专门把它排掉了）。照旧说"在 Inbox 里"就是给一条查无此处的指路
+    const meta = indexDoc.value?.nodes?.find((n) => n.id === id)
+    setBanner(meta?.aggregate
+      ? `「${id}」是${meta.type || '聚合文档'}，不摆在全局图上`
+      : `「${id}」还没放到画布上（在 Inbox 里）`, 'error')
     return
   }
   const g = graph.value
@@ -2133,6 +2160,106 @@ async function refreshDigest() {
     digest.value = await fetchDigest()
   } catch (err) {
     setBanner(`欠账清单加载失败：${err.message}`, 'error')
+  }
+}
+
+/** 对比组目录。现算的，所以每次开面板都重拉一遍，不缓存。 */
+async function refreshCompareGroups() {
+  compareBusy.value = true
+  try {
+    compareGroups.value = (await fetchCompareGroups()).items
+  } catch (err) {
+    setBanner(`对比组目录加载失败：${err.message}`, 'error')
+  } finally {
+    compareBusy.value = false
+  }
+}
+
+/** 当前这个对比组的表。成员 md 改过之后重算，所以不缓存。 */
+async function refreshCompareTable() {
+  if (!compareId.value) { compareData.value = null; return }
+  compareBusy.value = true
+  try {
+    compareData.value = await fetchCompareTable(compareId.value)
+  } catch (err) {
+    // 组被删了 / 改名了：退回全局图，别让整屏挂在一张空表上
+    compareData.value = null
+    compareId.value = ''
+    setBanner(err.status === 404 ? '那个对比组已经不在了，已退回全局图' : `对比表加载失败：${err.message}`,
+              'error')
+    if (mode.value === 'compare') await switchMode('structure')
+  } finally {
+    compareBusy.value = false
+  }
+}
+
+/** 从目录进某个对比组：换 layout、清撤销栈（跨画布撤销会把补丁打到错的文件上）。 */
+async function openCompare(id) {
+  if (mode.value === 'compare' && compareId.value === id) return
+  await patcher.value.flush()
+  compareId.value = id
+  try { localStorage.setItem('knowrary-compare', id) } catch { /* 无痕模式 */ }
+  if (mode.value === 'compare') {
+    history.reset()
+    histVer.value++
+    await reloadLayout()
+    render({ view: 'fit' })
+    await refreshCompareTable()
+  } else {
+    await switchMode('compare')
+  }
+}
+
+/** 改一格：走 `/api/changes` 的 `set_fact`，只重写 `## 速查` 里那一行。
+
+ *  **不用 update_body**：整段替换要求先把全文读回来，改一格表就把没看见的那半篇删掉。 */
+async function saveFact({ id, key, value }) {
+  compareBusy.value = true
+  try {
+    const res = await writeChanges([{ type: 'set_fact', source: id, key, value }])
+    await refreshCompareTable()
+    setBanner(value ? `已写回 ${id} 的「${key}」，原文备份在 ${res.backup}`
+                    : `已删掉 ${id} 的「${key}」，原文备份在 ${res.backup}`, 'success')
+  } catch (err) {
+    // 写失败时把表拉回来，别让界面停在一个盘上没有的值上
+    await refreshCompareTable()
+    setBanner(`写回失败：${err.body?.detail?.message || err.body?.detail || err.message}`, 'error')
+  } finally {
+    compareBusy.value = false
+  }
+}
+
+/** 「补这 N 格」：一次调用问完整张表。只拿提议，写回还要人逐格点。 */
+async function openCompareFill() {
+  compareFill.value = null
+  compareFilling.value = true
+  try {
+    compareFill.value = await postCompareFill(compareId.value, {})
+  } catch (err) {
+    compareFilling.value = false
+    setBanner(`补表失败：${err.body?.detail || err.message}`, 'error')
+    return
+  } finally {
+    refreshUsage()
+  }
+  compareFilling.value = false
+}
+
+/** 勾好的那些逐格写回。一次 ChangeSet，所以备份也只有一份。 */
+async function applyCompareFill(rows) {
+  compareBusy.value = true
+  try {
+    const res = await writeChanges(rows.map((r) => ({ type: 'set_fact', source: r.id,
+                                                      key: r.key, value: r.value })))
+    compareFill.value = null
+    compareFilling.value = false
+    await refreshCompareTable()
+    refreshCompareGroups()
+    setBanner(`已补上 ${rows.length} 格（${res.files.length} 个文件），原文备份在 ${res.backup}`, 'success')
+  } catch (err) {
+    setBanner(`写回失败：${err.body?.detail?.message || err.body?.detail || err.message}`, 'error')
+  } finally {
+    compareBusy.value = false
   }
 }
 
@@ -3134,6 +3261,9 @@ onBeforeUnmount(() => {
                    @close="panel = ''" />
       <ImagePicker v-else-if="panel === 'assets'" class="picker" @pick="addImage" @add-note="addNote"
                    @error="setBanner($event, 'error')" @close="panel = ''" />
+      <ComparePanel v-else-if="panel === 'compare'" class="study" :items="compareGroups"
+                    :current="mode === 'compare' ? compareId : ''" :busy="compareBusy"
+                    @open="openCompare" @refresh="refreshCompareGroups" @close="panel = ''" />
       <TimelinePanel v-else-if="panel === 'timeline'" class="timeline" :options="timelineChoices"
                      :selected="timelines" :layered="layeredHint"
                      :families="hist" :trunk="hist.trunk" :chain="histChain"
@@ -3141,7 +3271,8 @@ onBeforeUnmount(() => {
                      @toggle-trunk="hist.trunk = !hist.trunk; renderHistory({ view: 'fit' })"
                      @select-all="timelines = []; renderHistory({ view: 'fit' })" @close="panel = ''" />
 
-      <div class="stage stage-split" :class="{ solo: mode === 'chat' && !graphPane }">
+      <div class="stage stage-split"
+           :class="{ solo: mode === 'chat' && !graphPane, 'stage-compare': mode === 'compare' }">
         <!-- 对话模式：左边全屏对话，右边留给画布（可收起）。
              画布**不用 v-if 销毁**——重建 X6 既慢又会丢掉视口和选中态，只是让出宽度。 -->
         <ChatView v-if="mode === 'chat'" :messages="chatLog" :busy="chatBusy"
@@ -3170,6 +3301,23 @@ onBeforeUnmount(() => {
             <Icon name="arrowRight" :size="13" />{{ syncing ? '同步中…' : '同步到全局' }}
           </button>
         </div>
+
+        <div v-if="mode === 'compare'" class="sync-bar">
+          <span class="dim">对比画布 · 只有这个组的成员，<b>不进全局图</b>（那张图已经够挤了）</span>
+          <button class="btn tiny" title="回全局图" @click="switchMode('structure')">
+            <Icon name="arrowLeft" :size="13" />回全局图
+          </button>
+          <button class="btn tiny" title="换一个对比组" @click="openPanel('compare', { force: true })">
+            <Icon name="table" :size="13" />换一组
+          </button>
+        </div>
+
+        <!-- 表在图下面，是同一块 stage 的第二行（`.stage-compare` 把它改成纵向排）：
+             行序和图上成员的摆放顺序是同一个，点表格某行就能高亮图上那个点 -->
+        <CompareTable v-if="mode === 'compare'" class="cmp-dock" :table="compareData"
+                      :busy="compareBusy || compareFilling"
+                      @goto="gotoNode" @refresh="refreshCompareTable"
+                      @fill="openCompareFill" @save="saveFact" />
 
         <CanvasTools v-if="mode === 'structure' || mode === 'project'" :visible="visible" :shown-families="shownFamilies"
                      :collapsed="collapsedIds.size" :aggregate="aggregate" :auto-lod="autoLod" :snap="snap" :avoid-nodes="avoidNodes"
@@ -3276,6 +3424,9 @@ onBeforeUnmount(() => {
                 :busy="quizBusy" @diagnose="diagnoseQuiz" @submit="submitQuiz"
                 @goto="gotoNode($event); quiz = null" @close="quiz = null; quizDiag = null" />
 
+    <CompareFillDialog v-if="compareFill || compareFilling" :proposal="compareFill" :busy="compareBusy"
+                       @apply="applyCompareFill" @goto="gotoNode"
+                       @close="compareFill = null; compareFilling = false" />
     <YearDialog v-if="yearsOpen" :proposal="yearProposal" :busy="yearsBusy"
                 @apply="applyYears" @goto="gotoNode" @close="yearsOpen = false" />
 

@@ -286,6 +286,29 @@ def 节点详情返回原文与出入边():
 
 
 @case
+def 节点详情的来源只有找得到原文时才给链接():
+    """`source` 存的是文件名不是路径，所以能不能打开要找过一次才知道。
+
+    两条都要有：找得到（给 obsidian 链接）、找不到（给空串，前端渲染成灰字而不是死链）。
+    """
+    make_vault({
+        "nodes/组A/有原文.md": node_md("有原文", extra="source: 某篇笔记.md\n"),
+        "nodes/组A/图来的.md": node_md("图来的", extra="source: 一张图.jpg\n"),
+        "nodes/组A/扔了的.md": node_md("扔了的", extra="source: 早就删了.md\n"),
+        "doc/技术文档/某篇笔记.md": "# 某篇笔记\n\n正文\n",
+    })
+    c = TestClient(app)
+    got = c.get("/api/node/有原文").json()["source_uri"]
+    assert got.startswith("obsidian://open?vault="), got
+    assert "doc/%E6%8A%80%E6%9C%AF%E6%96%87%E6%A1%A3" in got or "技术文档" in got, got
+
+    # 不是 md：根本不去找（那 61 个来自一张 jpg 的节点，每次遍历纯属白费）
+    assert c.get("/api/node/图来的").json()["source_uri"] == ""
+    # 是 md 但仓库里没有：给空串，不能拼一个点不开的链接出来
+    assert c.get("/api/node/扔了的").json()["source_uri"] == ""
+
+
+@case
 def 变更预览不写盘():
     c, vault = client()
     digest = md_digest(vault)
@@ -2041,7 +2064,7 @@ def llm_报错里带着是哪个角色哪个provider():
     import llm_backend
     real = llm_backend.chat
 
-    def boom(messages, provider, model_override=None, on_delta=None, session=None):
+    def boom(messages, provider, model_override=None, on_delta=None, tools=None, session=None):
         raise SystemExit("LLM 请求失败 HTTP 503（https://api.example.com/v1/chat/completions）："
                          "{\"error\":{\"code\":\"model_not_found\"}}")
 
@@ -2619,29 +2642,40 @@ def health_汇总可用():
 
 # ---------------------------------------------------------------- 阶段 12：对话式教练
 
-def stub_chat(replies: list[str]):
+def stub_chat(replies: list):
     """按顺序吐回复的假模型。返回 (原函数, 收到的 messages 列表)。
 
-    `seen` 上挂一份 `sessions`：每次调用带的会话钥匙。claude-cli 靠它续同一段
-    会话、只发新增的几条，钥匙没传下去就悄悄退回"每轮重发全文"。
+    一条回复要么是一段话（纯文本回合），要么是 `tool_block(...)` 给的
+    `{"text", "calls"}`——工具调用是**结构化字段**，不再藏在正文的围栏里。
+
+    `seen` 上挂两份旁证：`tools`（每次调用拿到的工具 schema——白名单收走一个工具时
+    schema 里也必须真的少一个，留着再叮嘱一句"别用"那是压制不是关闭）、
+    `sessions`（每次调用带的会话钥匙，claude-cli 靠它 `--resume` 只发新增的几条）。
     """
     from server import chat as chat_mod
     original = chat_mod.llm_chat
 
     class Seen(list):
+        tools: list = []
         sessions: list = []
 
     seen = Seen()
+    seen.tools = []
     seen.sessions = []
     box = list(replies)
 
-    def fake(vault, role, messages, op="chat", on_delta=None, session=None):
+    def fake(vault, role, messages, tools=None, op="chat", on_delta=None, session=None):
         seen.append([dict(m) for m in messages])
+        seen.tools.append(tools)
         seen.sessions.append(session)
-        text = box.pop(0) if box else "没话说了"
-        if on_delta:
+        reply = box.pop(0) if box else "没话说了"
+        if isinstance(reply, dict):
+            text, calls = reply.get("text") or "", reply.get("calls") or []
+        else:
+            text, calls = reply, []
+        if on_delta and text:
             on_delta(text)
-        return text, {"input_tokens": 1, "output_tokens": 1}
+        return text, calls, {"input_tokens": 1, "output_tokens": 1}
 
     chat_mod.llm_chat = fake
     return original, seen
@@ -2652,8 +2686,22 @@ def restore_chat(original) -> None:
     chat_mod.llm_chat = original
 
 
-def tool_block(name: str, args: dict) -> str:
-    return "我查一下。\n```knowrary\n" + json.dumps({"tool": name, "args": args}, ensure_ascii=False) + "\n```"
+_CALL_N = [0]
+
+
+def tool_block(name: str, args: dict, *, text: str = "我查一下。") -> dict:
+    """一步：说一句话 + 调一个工具。id 每次都不一样，和真实协议一致。"""
+    _CALL_N[0] += 1
+    return {"text": text, "calls": [{"id": f"call_{_CALL_N[0]}", "name": name, "args": args}]}
+
+
+def tool_blocks(*pairs, text: str = "我一起查。") -> dict:
+    """一步里并行调好几个工具——原生协议允许，文本围栏时代做不到。"""
+    out = []
+    for name, args in pairs:
+        _CALL_N[0] += 1
+        out.append({"id": f"call_{_CALL_N[0]}", "name": name, "args": args})
+    return {"text": text, "calls": out}
 
 
 def sse_events(resp) -> list[dict]:
@@ -2740,6 +2788,178 @@ def years_已经填了year的不再问():
     assert missing["count"] == 1, missing
 
 
+COMPARE_FILES = {
+    "fields/对比组/compare-fenci.md": node_md(
+        "分词技术对比", field="AI",
+        extra="type: 对比组\ndimensions: [年份, 核心方法]\n",
+        rels="- 包含:: [[tok]]\n- 包含:: [[jieba]]"),
+    "nodes/组A/jieba.md": node_md("jieba", field="AI", extra="year: 2012\n")
+    + "\n## 速查\n- 核心方法:: 词典 + HMM\n- 实现方式:: 双数组 Trie\n",
+    "nodes/组A/tok.md": node_md("tok", field="AI", extra="year: 2016\n")
+    + "\n## 速查\n- 核心方法:: 子词切分\n- 实现方式:: BPE\n",
+}
+
+
+@case
+def 对比_目录和表两个只读接口():
+    c, _ = client(COMPARE_FILES)
+    d = c.get("/api/compare").json()
+    assert d["count"] == 1 and d["items"][0]["id"] == "compare-fenci", d
+    assert d["items"][0]["members"] == 2 and d["items"][0]["gaps"] == 0, d["items"][0]
+
+    t = c.get("/api/compare/compare-fenci").json()
+    assert t["columns"] == ["年份", "核心方法"], t["columns"]
+    # 行序跟着 md 里 `- 包含::` 的书写顺序，不是 id 字典序
+    assert [r["id"] for r in t["rows"]] == ["tok", "jieba"], [r["id"] for r in t["rows"]]
+    assert t["rows"][0]["cells"]["年份"]["source"] == "frontmatter", t["rows"][0]
+    assert t["promote"] == [{"key": "实现方式", "count": 2, "members": ["tok", "jieba"]}], t["promote"]
+    assert c.get("/api/compare/jieba").status_code == 404, "普通节点不是对比组"
+
+
+@case
+def 对比_有自己的一张画布而且不碰全局图():
+    """`?layout=<对比组>` 第一次打开时现生成一份，成员顺序和表的行序一致。"""
+    c, vault = client(COMPARE_FILES)
+    r = c.get("/api/layout?layout=compare-fenci")
+    assert r.status_code == 200, r.text
+    doc = r.json()["layout"]
+    assert r.json()["generated"] is True, "第一次打开该生成一份"
+    assert set(doc["nodes"]) == {"tok", "jieba"} and not doc["groups"], doc
+    assert doc["nodes"]["tok"]["x"] < doc["nodes"]["jieba"]["x"], "顺序该和表的行序一致"
+    assert (vault / ".knowrary" / "layouts" / "compare-fenci.json").exists()
+    # 全局图一点没变：对比组既不在上面，也没被塞进 Inbox
+    g = c.get("/api/layout").json()["layout"]
+    assert "compare-fenci" not in g["nodes"], g["nodes"].keys()
+    assert "compare-fenci" not in c.get("/api/inbox").json()["items"], "对比组不该催你放上画布"
+
+
+@case
+def 对比_画布可写且拒绝拿id拼路径():
+    c, _ = client(COMPARE_FILES)
+    doc = c.get("/api/layout?layout=compare-fenci").json()["layout"]
+    saved = c.patch("/api/layout?layout=compare-fenci",
+                    json={"base_revision": doc["revision"], "nodes": {"tok": {"x": 999, "y": 5}}})
+    assert saved.status_code == 200, saved.text
+    again = c.get("/api/layout?layout=compare-fenci").json()["layout"]
+    assert again["nodes"]["tok"]["x"] == 999, again["nodes"]["tok"]
+
+    # id 直接当文件名用：形状不对的一律拒，查无此 id 的 404——两道闸都要在
+    assert c.get("/api/layout?layout=../../etc/passwd").status_code == 422
+    assert c.get("/api/layout?layout=.hidden").status_code == 422
+    assert c.get("/api/layout?layout=jieba").status_code == 404, "普通节点没有自己的画布"
+
+
+def stub_compare_llm(payload: str):
+    from server import compare as compare_mod
+    original = compare_mod.ask
+    compare_mod.ask = lambda vault, role, prompt, op="?": payload
+    return original
+
+
+@case
+def 对比_补一轮只认问过的格子():
+    """一次调用补整张表。模型顺手填一个没问的格、或自造一个维度名，都不许放过去——
+    放过去就等于凭一句话往 md 里写字段，而自造的维度名根本进不了这张表。"""
+    from server import compare as compare_mod
+    files = dict(COMPARE_FILES)
+    files["nodes/组A/jieba.md"] = node_md("jieba", field="AI", extra="year: 2012\n")
+    c, vault = client(files)
+    original = stub_compare_llm(json.dumps({"cells": [
+        {"id": "jieba", "key": "核心方法", "value": "词典 + HMM", "confidence": 0.9, "why": "笔记里写了"},
+        {"id": "jieba", "key": "实现方式", "value": "自造的维度", "confidence": 0.9},   # 不在 dimensions 里
+        {"id": "不存在", "key": "核心方法", "value": "编的", "confidence": 0.9},          # 没问过的节点
+        {"id": "tok", "key": "核心方法", "value": "已经填过了", "confidence": 0.9},        # 这格不空，没问
+    ]}, ensure_ascii=False))
+    try:
+        data = c.post("/api/compare/compare-fenci/propose", json={}).json()
+    finally:
+        compare_mod.ask = original
+    assert [(s["id"], s["key"]) for s in data["suggestions"]] == [("jieba", "核心方法")], data["suggestions"]
+    assert data["asked"] == 1 and data["skipped"] == [], data
+    # 只是提议：md 一个字没动
+    assert "核心方法" not in (vault / "nodes/组A/jieba.md").read_text("utf-8")
+
+
+@case
+def 对比_把握低的列出来但默认不勾():
+    from server import compare as compare_mod
+    files = dict(COMPARE_FILES)
+    files["nodes/组A/jieba.md"] = node_md("jieba", field="AI", extra="year: 2012\n")
+    c, _ = client(files)
+    original = stub_compare_llm(json.dumps({"cells": [
+        {"id": "jieba", "key": "核心方法", "value": "拿不太准", "confidence": 0.3}]}, ensure_ascii=False))
+    try:
+        data = c.post("/api/compare/compare-fenci/propose", json={}).json()
+    finally:
+        compare_mod.ask = original
+    assert len(data["suggestions"]) == 1 and data["suggestions"][0]["picked"] is False, data
+
+
+@case
+def 对比_模型跳过的格子要如实报出来():
+    """模型说"拿不准"不是失败——提示词就这么要求的。但不能让人以为补齐了。"""
+    from server import compare as compare_mod
+    files = dict(COMPARE_FILES)
+    files["nodes/组A/jieba.md"] = node_md("jieba", field="AI", extra="year: 2012\n")
+    c, _ = client(files)
+    original = stub_compare_llm(json.dumps({"cells": []}))
+    try:
+        data = c.post("/api/compare/compare-fenci/propose", json={}).json()
+    finally:
+        compare_mod.ask = original
+    assert data["skipped"] == ["jieba·核心方法"], data
+    assert c.post("/api/compare/不存在/propose", json={}).status_code == 404
+
+
+@case
+def 对比_写回走changes改一行不碰正文():
+    """采纳一格 = 一条 `set_fact`，走 /api/changes 那唯一入口（diff 预览 + 备份 + 指纹校验）。"""
+    files = dict(COMPARE_FILES)
+    files["nodes/组A/jieba.md"] = (node_md("jieba", field="AI", extra="year: 2012\n")
+                                   + "\n很长的一段正文，写了半年。\n\n## 速查\n- 核心方法:: 老做法\n")
+    c, vault = client(files)
+    rev = c.get("/api/index").json()["revision"]
+    body = {"base_revision": rev, "dry_run": True,
+            "changes": [{"type": "set_fact", "source": "jieba", "key": "核心方法", "value": "词典 + HMM"}]}
+    preview = c.post("/api/changes", json=body).json()
+    assert preview["applied"] is False and "词典 + HMM" in preview["files"][0]["diff"], preview
+    assert "很长的一段正文" not in (vault / "nodes/组A/jieba.md").read_text("utf-8").split("## 速查")[1]
+
+    saved = c.post("/api/changes", json={**body, "dry_run": False}).json()
+    assert saved["applied"] is True and saved["backup"], saved
+    text = (vault / "nodes/组A/jieba.md").read_text("utf-8")
+    assert "- 核心方法:: 词典 + HMM" in text and "很长的一段正文，写了半年。" in text, text
+    # 表格里立刻就能看到，而且这一格标着来自速查
+    cell = c.get("/api/compare/compare-fenci").json()["rows"][1]["cells"]["核心方法"]
+    assert cell == {"value": "词典 + HMM", "source": "速查"}, cell
+
+
+@case
+def 对比_空得过头的组进欠账():
+    files = dict(COMPARE_FILES)
+    files["nodes/组A/jieba.md"] = node_md("jieba", field="AI")
+    files["nodes/组A/tok.md"] = node_md("tok", field="AI")
+    c, _ = client(files)
+    digest = c.get("/api/digest").json()
+    assert digest["counts"]["compare_gaps"] == 1, digest["counts"]
+    assert digest["compare_gaps"][0]["id"] == "compare-fenci", digest["compare_gaps"]
+
+
+@case
+def years_聚合文档不进补year的队列():
+    """一张对比表没有"诞生年份"，让模型去猜只会猜出一个假的，而错的 year 比空的更难发现。
+
+    这条和 `core.no_year` 是两份独立的过滤（面板走服务端这一份），漏一处就等于没改。
+    """
+    c, _ = client({"nodes/组A/a.md": node_md("A"),
+                   "fields/对比组/compare-x.md": node_md(
+                       "X 对比", extra="type: 对比组\ndimensions: [核心方法]\n",
+                       rels="- 包含:: [[a]]\n- 包含:: [[b]]"),
+                   "nodes/组A/b.md": node_md("B")})
+    missing = c.get("/api/years/missing").json()
+    assert [x["id"] for x in missing["items"]] == ["a", "b"], missing
+
+
 @case
 def years_提议不碰md():
     """propose 只读。真写回走 /api/changes 的 update_frontmatter，那条路才有备份和 diff。"""
@@ -2762,7 +2982,7 @@ def years_提议不碰md():
     assert r.json()["backup"], "写回没留备份"
 
 
-def _fake_anthropic(messages, model="claude-haiku-4-5-20251001", fail_first=None):
+def _fake_anthropic(messages, model="claude-haiku-4-5-20251001", fail_first=None, tools=None):
     """替掉 _post_json 跑一次 _chat_anthropic，返回每次实际发出去的 payload。"""
     import llm_backend as backend
     sent: list = []
@@ -2776,7 +2996,7 @@ def _fake_anthropic(messages, model="claude-haiku-4-5-20251001", fail_first=None
     original = backend._post_json
     backend._post_json = fake_post
     try:
-        backend._chat_anthropic(messages, {"api_key": "k"}, model, None)
+        backend._chat_anthropic(messages, {"api_key": "k"}, model, None, tools)
     finally:
         backend._post_json = original
     return sent
@@ -2957,7 +3177,7 @@ def chat_第二轮接着上一轮的完整上下文往下发():
         restore_chat(original)
 
     sent = seen[0]
-    assert any("[工具 overview 的结果]" in (m.get("content") or "") for m in sent), \
+    assert any(m.get("role") == "tool" and m.get("name") == "overview" for m in sent), \
         "上一轮的工具往返没带过来——那就是又整段重建了一次，--resume 必然续不上"
     assert sent[-1]["content"] == "再说说", [m["role"] for m in sent]
     # 只增不改：新的一句必须接在后面，前面那截一个字都不许动
@@ -3059,57 +3279,6 @@ def llm_单轮功能的低比值不该报警():
 
 
 @case
-def llm_会话只在前缀逐字节没动时才续():
-    """`--resume` 的全部前提：**这一段只增不改**。
-
-    原来的做法是把会变的那块（图谱快照）挪回开头，指望它别动。但快照本身会变，
-    位置也会随历史长度漂，于是"调过工具就续不上"（复盘 §11.2：67 段会话 54 段只有一次往返）。
-    现在只增不改由 `chat._assemble` 保证，这里钉的是 llm_backend 这一侧的判定：
-    **前缀一字不差才续，差一个字就重开一段。**
-    """
-    import llm_backend as backend
-    静态 = {"role": "system", "content": "静态指令"}
-    快照 = {"role": "system", "content": "85 个节点"}
-    第一轮 = [静态, {"role": "user", "content": "u1"}, 快照]
-
-    key = "回归用例"
-    backend.drop_cli_session(key)
-    assert backend._cli_session(key, 第一轮, "m")[0][0] == "--session-id"
-    backend._remember_cli_session(key, 第一轮, "a1")
-
-    # 只往后追加：续上，而且只发新增的那两条
-    第二轮 = [*第一轮, {"role": "assistant", "content": "a1"}, {"role": "user", "content": "u2"}]
-    extra, start = backend._cli_session(key, 第二轮, "m")
-    assert extra[0] == "--resume", (extra, "只追加也没续上 = 又在重发全文")
-    assert start == 4, (start, "续上了却还在重发前面几条")
-
-    # 前面那截动一个字就必须重开：续错一段比多花钱糟得多
-    改过 = [静态, {"role": "user", "content": "u1 改过了"}, 快照,
-           {"role": "assistant", "content": "a1"}, {"role": "user", "content": "u2"}]
-    assert backend._cli_session(key, 改过, "m")[0][0] == "--session-id", "前缀变了还在续"
-
-
-@case
-def chat_一轮里的几次工具往返共用同一段会话():
-    """一个用户回合常常夹着三四次工具往返，**那几次才是账单的大头**。
-
-    它们之间只差末尾几百个字，所以必须是同一个会话钥匙——claude-cli 才能 `--resume`
-    只发新增的那几条。钥匙要是每次都变，就悄悄退回了"每轮重发全文"。
-    """
-    c, _, _ = with_inbox_node()
-    original, seen = stub_chat([tool_block("search_nodes", {"q": "A"}),
-                                tool_block("overview", {}), "讲完了"])
-    try:
-        c.post("/api/chat", json={"messages": [{"role": "user", "content": "我图里有什么"}],
-                                  "session": "s1", "project": "llm", "stance": "教练"})
-    finally:
-        restore_chat(original)
-    assert len(seen.sessions) == 3, seen.sessions
-    assert len(set(seen.sessions)) == 1, seen.sessions
-    assert seen.sessions[0] == "llm|s1|教练", seen.sessions[0]
-
-
-@case
 def chat_换了口径或项目就不是同一段会话():
     """口径换了系统提示词就换了，项目换了图的范围也变了——续同一段会让模型看着别人的上下文答题。"""
     from server import chat as chat_mod
@@ -3120,40 +3289,6 @@ def chat_换了口径或项目就不是同一段会话():
     assert len(keys) == 3, keys
     solo = chat_mod.llm_session_key(ChatRequest(messages=msg))
     assert solo == "_scratch|_|教练", solo
-
-
-@case
-def llm_会话前缀对不上就重开一段():
-    """续会话唯一的风险是**续错**：模型会拿着别人的上下文答题，比多花那点钱糟得多。
-
-    所以只在能证明"CLI 那一侧已知的消息和我手上的前缀逐字相同"时才 --resume。
-    """
-    import llm_backend as backend
-    key = "t|t|教练"
-    backend.drop_cli_session(key)
-    msgs = [{"role": "system", "content": "S"}, {"role": "user", "content": "A"}]
-
-    extra, start = backend._cli_session(key, msgs, "haiku")
-    assert extra[0] == "--session-id" and start == 0, (extra, start)
-    backend._remember_cli_session(key, msgs, "答A")
-
-    # 接着往下聊：前缀（含模型自己那条回复）没变，续上，只发新增的
-    grown = msgs + [{"role": "assistant", "content": "答A"}, {"role": "user", "content": "B"}]
-    extra, start = backend._cli_session(key, grown, "haiku")
-    assert extra == ["--resume", extra[1]] and start == 3, (extra, start)
-
-    # 前缀被改过（换了系统提示词 / 裁掉了几轮）→ 重开
-    tampered = [{"role": "system", "content": "换了"}] + grown[1:]
-    extra, start = backend._cli_session(key, tampered, "haiku")
-    assert extra[0] == "--session-id" and start == 0, (extra, start)
-
-    # 换了模型也不能续：会话是绑在模型上的
-    backend.drop_cli_session(key)
-    backend._cli_session(key, msgs, "haiku")
-    backend._remember_cli_session(key, msgs, "答A")
-    extra, start = backend._cli_session(key, msgs + [{"role": "assistant", "content": "答A"}], "opus")
-    assert extra[0] == "--session-id" and start == 0, (extra, start)
-    backend.drop_cli_session(key)
 
 
 @case
@@ -3177,7 +3312,7 @@ def llm_anthropic给系统提示和对话末尾打缓存断点():
                                  {"role": "user", "content": "A"},
                                  {"role": "assistant", "content": "B"},
                                  {"role": "user", "content": "C"}],
-                                {"api_key": "k"}, "claude-haiku-4-5-20251001", None)
+                                {"api_key": "k"}, "claude-haiku-4-5-20251001", None, None)
     finally:
         backend._post_json = original
 
@@ -3201,7 +3336,11 @@ def chat_工具结果回灌给模型且工具块不进人看的文本():
     assert kinds.count("tool") == 1 and kinds[-1] == "done", kinds
     assert [e for e in evs if e["type"] == "tool"][0]["name"] == "search_nodes"
     # 第二次调用时，工具结果已经作为一条 user 消息回灌进去了
-    assert "[工具 search_nodes 的结果]" in seen[1][-1]["content"], seen[1][-1]
+    last = seen[1][-1]
+    assert last["role"] == "tool" and last["name"] == "search_nodes", last
+    assert "a" in last["content"], last
+    # 调用那一条也要在：tool_result 得能找回它的 tool_use，否则整段上下文是坏的
+    assert seen[1][-2]["tool_calls"][0]["id"] == last["tool_call_id"], seen[1][-2:]
     done = evs[-1]
     assert "knowrary" not in done["text"] and "图里有 a" in done["text"], done["text"]
 
@@ -3354,11 +3493,12 @@ def chat_口径决定提示词与工具白名单():
     from server import chat as chat_mod
     original = chat_mod.llm_chat
 
-    def spy(vault, role, messages, op="chat", on_delta=None, session=None):
+    def spy(vault, role, messages, tools=None, op="chat", on_delta=None, session=None):
         seen[op] = messages[0]["content"]
+        seen[op + "#tools"] = [t["name"] for t in tools or []]
         if on_delta:
             on_delta("知道了")
-        return "知道了", {}
+        return "知道了", [], {}
 
     chat_mod.llm_chat = spy
     try:
@@ -3369,13 +3509,17 @@ def chat_口径决定提示词与工具白名单():
         chat_mod.llm_chat = original
 
     # 用量按口径分开记，否则算不清面试烧了多少
-    assert set(seen) == {"chat-教练", "chat-面试", "chat-聊天"}, list(seen)
+    assert {k for k in seen if not k.endswith("#tools")} == {"chat-教练", "chat-面试", "chat-聊天"}, list(seen)
     assert "学习教练" in seen["chat-教练"] and "面试官" in seen["chat-面试"], "提示词没换"
     # 工具表是从白名单渲染的：说明书和实际权限是同一份数据
     assert "propose_changes" in seen["chat-教练"]
     assert "propose_changes" not in seen["chat-面试"], "面试口径把入库工具写进说明书了"
     assert "today" not in seen["chat-聊天"], "聊天口径不该有调度类工具"
     assert "quiz" in seen["chat-面试"] and "quiz" not in seen["chat-聊天"]
+    # **schema 和说明书是同一份数据**：白名单收走的工具，模型那边也必须真的看不到定义
+    assert "propose_changes" not in seen["chat-面试#tools"], seen["chat-面试#tools"]
+    assert "today" not in seen["chat-聊天#tools"], seen["chat-聊天#tools"]
+    assert set(seen["chat-教练#tools"]) == set(chat_mod.TOOLS_SPEC), seen["chat-教练#tools"]
 
 
 @case
@@ -3450,12 +3594,12 @@ def chat_建项目时会看见已有的项目():
     from server import chat as chat_mod
     original = chat_mod.llm_chat
 
-    def spy(vault, role, messages, op="chat", on_delta=None, session=None):
+    def spy(vault, role, messages, tools=None, op="chat", on_delta=None, session=None):
         # 两条 system：静态指令 + 图谱现状（会变的那块单独排后面，见 _graph_snapshot）
         seen[op] = "\n\n".join(m["content"] for m in messages if m["role"] == "system")
         if on_delta:
             on_delta("好")
-        return "好", {}
+        return "好", [], {}
 
     chat_mod.llm_chat = spy
     try:
@@ -3884,7 +4028,7 @@ def chat_这一轮炸了留档里也有记号():
     import llm_backend
     real = llm_backend.chat
 
-    def boom(messages, provider, model_override=None, on_delta=None, session=None):
+    def boom(messages, provider, model_override=None, on_delta=None, tools=None, session=None):
         raise SystemExit("HTTP 503")
 
     llm_backend.chat = boom
@@ -4160,7 +4304,8 @@ def read_node_outline只给目录_搜索结果标出长笔记():
     assert rows[0]["id"] == "长文" and "outline: true" in rows[0]["长笔记"], rows
     body_s, _ = chat_mod._tool_search(vault, {"q": "a"})
     assert all("长笔记" not in r for r in json.loads(body_s)["已建的节点"]), body_s
-    assert "`outline: true`" in chat_mod.TOOL_DOC["read_node"]
+    assert "`outline`" in chat_mod.TOOL_DOC["read_node"]
+    assert "outline" in chat_mod.TOOLS_SPEC["read_node"]["params"]
 
 
 @case
@@ -4437,7 +4582,7 @@ def chat_同参工具不重复跑():
 def chat_过程和答案分开留档():
     """「我先查一下」「工具挂了」是过程，不该和最后那段有营养的话拌在一起读。"""
     c, vault, _ = with_inbox_node()
-    original, _ = stub_chat([f"我先去图里找找。\n{tool_block('search_nodes', {'q': 'A'})}",
+    original, _ = stub_chat([tool_block("search_nodes", {"q": "A"}, text="我先去图里找找。"),
                              "找到了。核心差别是通用 vs 专用。"])
     try:
         r = c.post("/api/chat", json={"messages": [{"role": "user", "content": "A 是什么"}]})
@@ -4506,6 +4651,346 @@ def chat_最后一条必须是我说的话():
     c, _, _ = with_inbox_node()
     r = c.post("/api/chat", json={"messages": [{"role": "assistant", "content": "在"}]})
     assert [e for e in sse_events(r) if e["type"] == "error"], r.text
+
+
+@case
+def chat_一轮里的几次工具往返只往尾巴上追加():
+    """一个用户回合常常夹着三四次工具往返，**那几次才是账单的大头**。
+
+    它们之间只差末尾几百个字，所以前面那一截**一个字都不能动**——anthropic 的缓存断点、
+    openai 的自动前缀缓存，要的都是逐字节相同的前缀。这条用例钉的就是"只增不改"：
+    第 n+1 步发出去的消息，前 len(第 n 步) 条必须和第 n 步一模一样。
+
+    顺带钉住工具 schema：每一步都得带上，而且是同一份。
+    """
+    c, _, _ = with_inbox_node()
+    original, seen = stub_chat([tool_block("search_nodes", {"q": "A"}),
+                                tool_block("overview", {}), "讲完了"])
+    try:
+        c.post("/api/chat", json={"messages": [{"role": "user", "content": "我图里有什么"}],
+                                  "session": "s1", "project": "llm", "stance": "教练"})
+    finally:
+        restore_chat(original)
+
+    assert len(seen) == 3, len(seen)
+    for step in range(1, len(seen)):
+        prev, now = seen[step - 1], seen[step]
+        assert len(now) > len(prev), f"第 {step} 步没变长，工具往返丢了"
+        for i, (a, b) in enumerate(zip(prev, now)):
+            assert a == b, f"第 {step} 步动了第 {i} 条（{a.get('role')}）——前缀断在这里\n{a}\n{b}"
+
+    names = [[t["name"] for t in ts] for ts in seen.tools]
+    assert all(n == names[0] and n for n in names), names
+
+
+@case
+def llm_工具协议按provider能力自动挑_上层看不见区别():
+    """**对上只有一个契约**：给 `tools`、拿回结构化的 `calls`。底下两套实现自动选。
+
+    `claude -p` 是子进程，没有结构化工具接口，所以它那条路是文本围栏适配；
+    另外两条走原生。**围栏只活在 `_chat_claude_cli` 一个函数里**——
+    agent 循环那边一行 if 都没有，它不知道底下用的是哪套协议。
+
+    砍掉 claude-cli 的对话能力是最省事的做法，但它是零配置的默认 provider
+    （复用本机 Claude Code 登录、不用填任何密钥），砍了等于"想聊天先去开个 API key"。
+    """
+    import llm_backend as backend
+    assert backend.supports_tools({"type": "anthropic"}) is True
+    assert backend.supports_tools({"type": "openai"}) is True
+    assert backend.supports_tools({"type": "claude-cli"}) is False, "claude -p 哪来的结构化工具通道"
+    # 零配置那条路照样能聊：模板和内置默认都指着 claude-cli
+    assert backend.resolve_provider(backend.DEFAULT_CONFIG, "learn")[1]["type"] == "claude-cli"
+
+    tools = [{"name": "search_nodes", "description": "搜", "input_schema": {"type": "object"}},
+             {"name": "overview", "description": "概况", "input_schema": {"type": "object"}}]
+    seen: dict = {}
+
+    def fake_cli(messages, model, on_delta, session):
+        seen["prompt"] = backend._render_transcript(messages)
+        return '我查一下。\n```knowrary\n{"tool": "search_nodes", "args": {"q": "注意力"}}\n```', backend.empty_usage()
+
+    original = backend._run_claude_cli
+    backend._run_claude_cli = fake_cli
+    try:
+        text, calls, _ = backend.chat([{"role": "user", "content": "我图里有什么"}],
+                                      {"type": "claude-cli"}, tools=tools)
+    finally:
+        backend._run_claude_cli = original
+
+    # 回来的形状和原生那条**一模一样**
+    assert [(c["name"], c["args"]) for c in calls] == [("search_nodes", {"q": "注意力"})], calls
+    assert calls[0]["id"], "没有 id 的话 tool_result 对不回 tool_use"
+    assert text == "我查一下。", ("围栏没剥干净，屏幕上会闪过一段 JSON", text)
+    # 协议机制进了提示词，但**不重复抄一遍工具表**（那份已经在 chat.md 里渲染过）
+    assert "```knowrary" in seen["prompt"] and "不要一次调两个" in seen["prompt"]
+    assert "`search_nodes`、`overview`" in seen["prompt"], seen["prompt"][:300]
+
+
+@case
+def llm_围栏那条路的转录要能原样喂回去():
+    """`claude -p` 收的是一段纯文本：没有 messages 数组、没有 tool_result 通道，
+    工具往返只能写成对话里的话。**渲染必须是确定性的**——`--resume` 的前缀指纹按它算。
+    """
+    import llm_backend as backend
+    msgs = [{"role": "system", "content": "你是教练"},
+            {"role": "user", "content": "我图里有啥"},
+            {"role": "assistant", "content": "我查一下", "tool_calls": [
+                {"id": "t1", "name": "overview", "args": {}}]},
+            {"role": "tool", "tool_call_id": "t1", "name": "overview", "content": "95 个节点"}]
+    text = backend._render_transcript(msgs)
+    assert '{"tool": "overview", "args": {}}' in text, text
+    assert "[工具 overview 的结果]" in text and "95 个节点" in text, text
+    assert backend._render_transcript(msgs) == text, "渲染不确定 = 指纹每次都变 = 永远续不上"
+
+    # 正文一样但调的工具不一样：指纹必须分得开，否则会续上一段其实不同的上下文
+    other = [*msgs[:2], {"role": "assistant", "content": "我查一下", "tool_calls": [
+        {"id": "t1", "name": "search_nodes", "args": {"q": "a"}}]}]
+    assert backend._fingerprint(msgs[:3]) != backend._fingerprint(other), "指纹撞了"
+
+
+@case
+def llm_围栏捞不到就只能当没调_这是它的先天缺陷():
+    """原生协议里参数写坏了仍然算"调过这个工具"（带空参数交上去让工具报错）；
+    围栏这边连"他是不是想调工具"都判不出来，只能当他没调——**那段话会直接成为答案**。
+
+    钉住这条不是为了接受它，是为了记住**能走原生的一律走原生**的理由。
+    """
+    import llm_backend as backend
+    assert backend._parse_fence("这就是我的回答，没调工具") == []
+    assert backend._parse_fence('```knowrary\n{"tool": "read_node", "args": {"id": \n```') == [], "半截 JSON 不该蒙混过去"
+    assert backend._parse_fence('```knowrary\n{"args": {"q": "x"}}\n```') == [], "没有 tool 名"
+    # args 缺了 / 不是对象都当空参数，工具那边会把话说回给模型
+    assert backend._parse_fence('```knowrary\n{"tool": "overview"}\n```')[0]["args"] == {}
+
+
+@case
+def llm_原生工具往返翻译成两家各自的形状():
+    """内部消息形状是中立的，provider 差异只在 `_to_anthropic` / `_to_openai` 这一层。
+
+    最容易错的是 anthropic：`tool_result` 必须和它的 `tool_use` 在相邻的两条消息里，
+    而且**同一个 assistant 回合的几个结果要并进同一条 user**，拆开会被 API 拒。
+    """
+    import llm_backend as backend
+    calls = [{"id": "t1", "name": "search_nodes", "args": {"q": "A"}},
+             {"id": "t2", "name": "overview", "args": {}}]
+    msgs = [{"role": "user", "content": "问"},
+            {"role": "assistant", "content": "我查一下", "tool_calls": calls},
+            {"role": "tool", "tool_call_id": "t1", "name": "search_nodes", "content": "结果1"},
+            {"role": "tool", "tool_call_id": "t2", "name": "overview", "content": "结果2"}]
+
+    a = backend._to_anthropic(msgs)
+    assert [m["role"] for m in a] == ["user", "assistant", "user"], [m["role"] for m in a]
+    assert [b["type"] for b in a[1]["content"]] == ["text", "tool_use", "tool_use"], a[1]
+    assert a[1]["content"][1]["input"] == {"q": "A"}, a[1]["content"][1]
+    assert [b["tool_use_id"] for b in a[2]["content"]] == ["t1", "t2"], a[2]
+
+    o = backend._to_openai(msgs)
+    assert [m["role"] for m in o] == ["user", "assistant", "tool", "tool"], [m["role"] for m in o]
+    assert json.loads(o[1]["tool_calls"][0]["function"]["arguments"]) == {"q": "A"}, o[1]
+    assert o[2]["tool_call_id"] == "t1" and o[3]["tool_call_id"] == "t2", o[2:]
+
+    # 只调工具、一个字没说的那种回合：assistant 正文是空的，但这条**不能被丢掉**，
+    # 丢了 tool_result 就找不到它的 tool_use，整段上下文是坏的
+    silent = [{"role": "assistant", "content": "", "tool_calls": calls[:1]},
+              {"role": "tool", "tool_call_id": "t1", "name": "search_nodes", "content": "r"}]
+    _, rest = backend._split_system([{"role": "system", "content": "S"}, *silent])
+    assert len(rest) == 2, rest
+    assert [b["type"] for b in backend._to_anthropic(rest)[0]["content"]] == ["tool_use"], rest
+
+
+@case
+def llm_流式的工具参数是碎片_要攒齐再解析():
+    """两家的流式都把 `arguments` 拆成一片一片发，中途每一片都不是合法 JSON。
+
+    攒不齐就解析，结果是"模型明明调了工具，服务端当它没调"——正是原生协议要根治的那种静默失败。
+    """
+    import llm_backend as backend
+    pending = {0: {"id": "t1", "name": "search_nodes", "json": '{"q": "注'},
+               1: {"id": "t2", "name": "overview", "json": ""}}
+    pending[0]["json"] += '意力"}'
+    calls = backend._finish_calls(pending)
+    assert calls == [{"id": "t1", "name": "search_nodes", "args": {"q": "注意力"}},
+                     {"id": "t2", "name": "overview", "args": {}}], calls
+
+    # 参数真的写坏了：**仍然算调过这个工具**，带空参数交上去，让工具自己报错把话说回给模型
+    broken = backend._finish_calls({0: {"id": "t", "name": "read_node", "json": '{"id": '}})
+    assert broken == [{"id": "t", "name": "read_node", "args": {}}], broken
+
+
+@case
+def chat_一步里可以并行调几个工具():
+    """文本围栏时代只能一次一个（一个块、然后停下），"搜一下再读三个节点"要烧掉四个来回。
+
+    原生协议本来就允许并行，放开之后这些活儿一步就干完了。
+    """
+    c, _, _ = with_inbox_node()
+    original, seen = stub_chat([tool_blocks(("search_nodes", {"q": "A"}), ("overview", {})),
+                                "两样都查完了"])
+    try:
+        r = c.post("/api/chat", json={"messages": [{"role": "user", "content": "看看"}]})
+    finally:
+        restore_chat(original)
+    assert len(seen) == 2, "并行调用被拆成了两步"
+    tools = [e for e in sse_events(r) if e["type"] == "tool"]
+    assert [t["name"] for t in tools] == ["search_nodes", "overview"], tools
+    # 两条结果都得回灌，而且各自对上自己的 tool_call_id
+    fed = [m for m in seen[1] if m.get("role") == "tool"]
+    assert [m["name"] for m in fed] == ["search_nodes", "overview"], fed
+    ids = {c["id"] for c in seen[1][-3]["tool_calls"]}
+    assert {m["tool_call_id"] for m in fed} == ids, (fed, ids)
+
+
+@case
+def llm_两家的流式工具调用都能跑通一整趟():
+    """端到端替掉 `_sse`：payload 里真带了 tools，流里的 tool_use / tool_calls 真被解析出来。
+
+    前面那几条钉的是翻译和拼接两个零件，这条钉的是**整条路**——零件都对、
+    payload 里忘了塞 tools 的话，表现是模型一个工具都不调，而且不报错。
+    """
+    import llm_backend as backend
+    tools = [{"name": "search_nodes", "description": "搜", "input_schema": {"type": "object"}}]
+    msgs = [{"role": "system", "content": "S" * 50}, {"role": "user", "content": "我图里有什么"}]
+    sent: list = []
+    original = backend._sse
+
+    def anthropic_stream(url, headers, payload):
+        sent.append(payload)
+        yield "message_start", {"message": {"usage": {"input_tokens": 9}}}
+        yield "content_block_delta", {"index": 0, "delta": {"text": "我查一下"}}
+        yield "content_block_start", {"index": 1, "content_block": {
+            "type": "tool_use", "id": "toolu_1", "name": "search_nodes"}}
+        yield "content_block_delta", {"index": 1, "delta": {"partial_json": '{"q": "注'}}
+        yield "content_block_delta", {"index": 1, "delta": {"partial_json": '意力"}'}}
+
+    backend._sse = anthropic_stream
+    try:
+        text, calls, usage = backend._chat_anthropic(msgs, {"api_key": "k"}, "claude-opus-5",
+                                                     lambda t: None, tools)
+    finally:
+        backend._sse = original
+    assert text == "我查一下", text
+    assert calls == [{"id": "toolu_1", "name": "search_nodes", "args": {"q": "注意力"}}], calls
+    assert usage["input_tokens"] == 9, usage
+    assert [t["name"] for t in sent[0]["tools"]] == ["search_nodes"], sent[0].get("tools")
+    # 工具表和顶层 system 一样是逐字不变的一大块，而且排在 system 之前：不标它就永远不进缓存
+    assert sent[0]["tools"][-1]["cache_control"] == {"type": "ephemeral"}, sent[0]["tools"][-1]
+
+    sent.clear()
+
+    def openai_stream(url, headers, payload):
+        sent.append(payload)
+        yield "", {"choices": [{"delta": {"content": "我查一下"}}]}
+        yield "", {"choices": [{"delta": {"tool_calls": [
+            {"index": 0, "id": "call_1", "function": {"name": "search_nodes", "arguments": '{"q": "注'}}]}}]}
+        yield "", {"choices": [{"delta": {"tool_calls": [
+            {"index": 0, "function": {"arguments": '意力"}'}}]}}]}
+        yield "", {"choices": [], "usage": {"prompt_tokens": 9, "completion_tokens": 2}}
+
+    backend._sse = openai_stream
+    try:
+        text, calls, usage = backend._chat_openai(msgs, {"base_url": "http://x/v1"}, "qwen-max",
+                                                  lambda t: None, tools)
+    finally:
+        backend._sse = original
+    assert text == "我查一下", text
+    assert calls == [{"id": "call_1", "name": "search_nodes", "args": {"q": "注意力"}}], calls
+    assert usage["input_tokens"] == 9 and usage["output_tokens"] == 2, usage
+    fn = sent[0]["tools"][0]
+    assert fn["type"] == "function" and fn["function"]["name"] == "search_nodes", fn
+
+
+@case
+def chat_claude_cli那条路也能走完整一轮工具往返():
+    """**端到端**：provider 配成 claude-cli，整条 agent 循环照跑，SSE 事件一个不少。
+
+    只测适配器不够——要证明的是"上层看不见区别"，那就得从 `/api/chat` 打进去，
+    看工具真的被执行、结果真的回灌、答案真的出来。这条路上：
+    - 工具协议是文本围栏（`claude -p` 没有结构化通道）；
+    - `_run` 那边一行 if 都没有，它拿到的还是结构化的 calls。
+    """
+    import llm_backend as backend
+    c, vault, _ = with_inbox_node()
+    core.write(vault / ".knowrary" / "llm.local.json", json.dumps({
+        "providers": {"cli": {"type": "claude-cli"}},
+        "roles": {"learn": "cli", "review": "cli"}}, ensure_ascii=False))
+
+    turns_seen: list = []
+    replies = ['我先查一下。\n```knowrary\n{"tool": "search_nodes", "args": {"q": "A"}}\n```',
+               "图里有 a 这个节点。"]
+
+    def fake_cli(messages, model, on_delta, session):
+        turns_seen.append(backend._render_transcript(messages))
+        text = replies[len(turns_seen) - 1] if len(turns_seen) <= len(replies) else "没话说了"
+        if on_delta:
+            on_delta(text)
+        return text, backend.empty_usage()
+
+    original = backend._run_claude_cli
+    backend._run_claude_cli = fake_cli
+    try:
+        r = c.post("/api/chat", json={"messages": [{"role": "user", "content": "我图里有什么"}],
+                                      "session": "s1"})
+    finally:
+        backend._run_claude_cli = original
+
+    evs = sse_events(r)
+    tools = [e for e in evs if e["type"] == "tool"]
+    assert [t["name"] for t in tools] == ["search_nodes"], tools
+    done = [e for e in evs if e["type"] == "done"][-1]
+    assert done["text"] == "图里有 a 这个节点。", done["text"]
+    assert "```knowrary" not in done["text"], "围栏漏进了给人看的正文"
+    assert done["trace"] == ["我先查一下。"], done["trace"]
+
+    # 第二次调用的转录里：协议说明、上一步的围栏、工具结果，三样都在
+    assert len(turns_seen) == 2, turns_seen
+    assert "```knowrary" in turns_seen[0], "协议说明没进提示词，模型根本不知道怎么调"
+    assert "[工具 search_nodes 的结果]" in turns_seen[1], turns_seen[1][-400:]
+
+
+@case
+def llm_围栏那条路的会话在工具往返之间要续得上():
+    """`--resume` 的全部前提：**这一段只增不改**。围栏这侧有两个额外的坑：
+
+    1. 适配层会在最前面插一条协议说明——它必须每步都一模一样，否则前缀天天变；
+    2. 记指纹时要记**调用方随后会追加的那条 assistant**（正文 + 这一步调的工具），
+       不是 CLI 吐出来的原文。两边形状对不上就等于每轮都在重开会话，
+       **而且不报错，只是账单悄悄变贵**——正是复盘 §11.2 那个 67 段里 54 段的老毛病。
+    """
+    import llm_backend as backend
+    tools = [{"name": "overview", "description": "概况", "input_schema": {"type": "object"}}]
+    key = "围栏续接回归"
+    backend.drop_cli_session(key)
+
+    seen: list = []
+    original = backend._run_claude_cli
+
+    def fake(messages, model, on_delta, session):
+        extra, start = backend._cli_session(session, messages, model)
+        seen.append({"extra": extra[0], "start": start, "sent": len(messages)})
+        text = ('我查一下。\n```knowrary\n{"tool": "overview", "args": {}}\n```'
+                if len(seen) == 1 else "图里有 95 个节点。")
+        return text, backend.empty_usage()
+
+    backend._run_claude_cli = fake
+    try:
+        msgs = [{"role": "system", "content": "静态指令"}, {"role": "user", "content": "我图里有啥"}]
+        text, calls, _ = backend.chat(msgs, {"type": "claude-cli"}, tools=tools, session=key)
+        assert [c["name"] for c in calls] == ["overview"], calls
+
+        # 调用方（server/chat.py 的 _run）随后会这样往尾巴上追加
+        msgs = [*msgs, {"role": "assistant", "content": text, "tool_calls": calls},
+                {"role": "tool", "tool_call_id": calls[0]["id"], "name": "overview",
+                 "content": "95 个节点"}]
+        backend.chat(msgs, {"type": "claude-cli"}, tools=tools, session=key)
+    finally:
+        backend._run_claude_cli = original
+        backend.drop_cli_session(key)
+
+    assert seen[0]["extra"] == "--session-id" and seen[0]["start"] == 0, seen[0]
+    assert seen[1]["extra"] == "--resume", (seen[1], "第二步没续上 = 又在重发全文")
+    # 只发新增的那一条（工具结果）：协议说明 + 原来两条 + 上一步的 assistant 都在 CLI 那侧了
+    assert seen[1]["start"] == seen[0]["sent"] + 1, seen
+    assert seen[1]["sent"] - seen[1]["start"] == 1, (seen, "续上了却还在重发前面几条")
 
 
 def main() -> None:

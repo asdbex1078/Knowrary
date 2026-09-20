@@ -1380,6 +1380,12 @@ kbd.key {
 .stage-split .chat-view { flex: none; width: min(62%, 900px); }
 .stage-split.solo .chat-view { width: 100%; }
 
+/* 对比视图：图在上、表在下，同一块 stage 纵向排成两行。
+   **不用绝对定位盖在画布上**——盖上去的话 `zoomToFit` 仍按整块高度算，
+   成员会被摆到表底下看不见，而"图表联动"正要求两边同时在场。 */
+.stage-compare { flex-direction: column; }
+.cmp-dock { flex: none; height: 46%; min-height: 150px; }
+
 /* 四期：项目画布的同步条 */
 .sync-bar {
   position: absolute; top: 12px; left: 50%; transform: translateX(-50%); z-index: 12;

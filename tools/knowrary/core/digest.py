@@ -9,6 +9,7 @@ import datetime as dt
 from collections import Counter, defaultdict
 from difflib import SequenceMatcher
 
+from .compare import gaps as compare_gaps
 from .placement import by_field_and_layer, inbox_ids
 from .issues import summary as issues_summary
 from .review import due_nodes, load_log
@@ -131,7 +132,9 @@ def _pairs(index: dict) -> tuple[list[dict], list[dict]]:
 
     先排掉已经连过边的对：关系已经在图上表达过了，再提醒一次纯属噪音。
     """
-    nodes = [n for n in index["nodes"] if not n.get("virtual")]
+    # 聚合文档排掉：`分词技术对比` 和 `分词` 字面重合度很高，但它俩既不是重复、
+    # 也不该连边——那是"表和它的表头"，提一次就是一次纯噪音
+    nodes = [n for n in index["nodes"] if not n.get("virtual") and not n.get("aggregate")]
     neighbours: dict[str, set[str]] = defaultdict(set)
     linked: set[frozenset] = set()
     for e in index["edges"]:
@@ -190,9 +193,13 @@ def lonely(index: dict) -> list[dict]:
     都建在边上，实盘上却有六成节点度为 0。连边建议只认得出名字有线索的那些
     （`内存` / `堆内存`），`eBPF`、`乐观锁`、`存储器层次结构` 这种名字上看不出亲戚的
     一条都提不出来——那正是要问 AI 的部分，所以这里把孤点原样列全。
+
+    聚合文档不算孤点：领域总览和对比组本来就可能一条边都没有。在这条口径之前，
+    `fields/计算机系统.md`（领域总览、degree 0）一直挂在这张表的第一屏。
     """
     rows = [n for n in index["nodes"]
-            if not n.get("virtual") and not n.get("stub") and n.get("path") and not n.get("degree")]
+            if not n.get("virtual") and not n.get("stub") and n.get("path")
+            and not n.get("degree") and not n.get("aggregate")]
     rows.sort(key=lambda n: (-(n.get("rank") or 0), n["id"]))
     return [{"id": n["id"], "name": n.get("name") or n["id"], "field": n.get("field") or "",
              "desc": n.get("desc") or ""} for n in rows]
@@ -204,10 +211,12 @@ def no_year(index: dict) -> list[str]:
     和 `bad_years` 分开：那个是**算得出来的矛盾**（演化边两端倒挂、年份在未来），
     这个只是**没填**。没填不是错，但它是历史视图的开关——一个节点没有 year
     就根本不出现在时间轴上，而"时间轴上少了谁"是这张图里最不容易看出来的一种缺失。
+
+    聚合文档除外：一张对比表没有"诞生年份"，催也补不出来。
     """
     return sorted(n["id"] for n in index["nodes"]
                   if not n.get("virtual") and not n.get("stub") and n.get("path")
-                  and not n.get("year"))
+                  and not n.get("year") and not n.get("aggregate"))
 
 
 def _top_group(gid: str | None, groups: dict) -> str | None:
@@ -279,6 +288,8 @@ def build_digest(vault, index: dict, layout: dict, today: dt.date | None = None)
     # 不依赖任何外部知识——口述一句"year 填 2017"没人能核，但"它比它的前身还早"能算。
     bad_years = [w["message"] for w in index.get("warnings", [])
                  if w.get("code") in ("year_inverted", "year_in_future")][:MAX_ITEMS]
+    # 空得过头的对比组：半张表都是空的，摆出来也读不出东西。点一条该能直接去"补一轮"
+    gap_list = compare_gaps(vault, index)
     return {
         "generated_at": today.isoformat(),
         "inbox": inbox,
@@ -293,6 +304,7 @@ def build_digest(vault, index: dict, layout: dict, today: dt.date | None = None)
         "duplicates": dup_list,
         "cycles": [w["message"] for w in cycles][:MAX_ITEMS],
         "bad_years": bad_years,
+        "compare_gaps": gap_list[:MAX_ITEMS],
         "issues": issues_summary(vault),
         "counts": {"inbox": len(inbox), "drafts": len(draft_list),
                    "stale_drafts": sum(1 for d in draft_list if d["stale"]),
@@ -301,5 +313,6 @@ def build_digest(vault, index: dict, layout: dict, today: dt.date | None = None)
                    "no_year": len(no_year_list), "misplaced": len(misplaced_list),
                    "duplicates": len(dup_list), "cycles": len(cycles),
                    "bad_years": len(bad_years),
+                   "compare_gaps": len(gap_list),
                    "issues": issues_summary(vault)["count"]},
     }

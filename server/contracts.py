@@ -218,7 +218,7 @@ class IndexDoc(BaseModel):
 
 class Change(Strict):
     type: Literal["add_edge", "remove_edge", "update_edge", "update_frontmatter", "create_node",
-                  "update_body", "append_body"]
+                  "update_body", "append_body", "set_fact"]
     source: str                        # create_node 时是新节点的 id（= 文件名）
     path: str | None = None            # create_node 时的落点，vault 相对路径，必须在 nodes/ 下
     target: str | None = None
@@ -227,6 +227,8 @@ class Change(Strict):
     year: int | None = None
     note: str | None = None
     fields: dict[str, Any] | None = None
+    key: str | None = None             # set_fact：`## 速查` 里的键
+    value: str | None = None           # set_fact：一句话结论；给空 / 不给就是删掉这一行
     body: str | None = None            # create_node：新节点正文（不给就落「## 描述」最小骨架）；update_body：整段替换；append_body：往尾部补一段
     evidence: list[str] = Field(default_factory=list)
     confidence: float = 1.0
@@ -404,6 +406,7 @@ class NodeDetail(Strict):
     out: list[dict[str, Any]] = Field(default_factory=list)
     in_edges: list[dict[str, Any]] = Field(default_factory=list)
     obsidian_uri: str = ""
+    source_uri: str = ""               # frontmatter 的 source 指向的原文；不是 md 或不在仓库里就是空
 
 
 # ---------------------------------------------------------------- Suggest（AI 建议）
@@ -774,6 +777,34 @@ class YearProposal(Strict):
 
 class YearProposeRequest(Strict):
     node_ids: list[str] | None = None  # 不给就按 rank 取前 MAX_NODES 个缺 year 的
+
+
+class CompareCellSuggestion(Strict):
+    """对比表里一个空格子的提议。**只是提议**——写盘走 /api/changes 的 set_fact。"""
+
+    id: str                            # 成员节点 id
+    name: str
+    key: str                           # 维度名，只能是这个组 dimensions 里的
+    value: str
+    confidence: float = 0.8
+    why: str = ""
+    picked: bool = True
+    """低把握的仍然列出来但默认不勾——**填错一句会被当成笔记里的结论反复看到**，
+    而看起来很通顺的错话没人会回头核。"""
+
+
+class CompareProposal(Strict):
+    group: str = ""
+    asked: int = 0                     # 这一轮问了几个空格子
+    remaining: int = 0                 # 还剩几个没问（一次问不完时分批）
+    skipped: list[str] = Field(default_factory=list)
+    """问了但模型没填的（`节点·维度`）。**这不是失败，是它说"拿不准"**——提示词就这么要求的。
+    摆出来是为了让人知道这几格还欠着，而不是以为补齐了。"""
+    suggestions: list[CompareCellSuggestion] = Field(default_factory=list)
+
+
+class CompareProposeRequest(Strict):
+    cells: list[str] | None = None     # `节点\u0000维度`；不给就问这张表所有空格子
 
 
 # ---------------------------------------------------------------- 对话式教练（阶段 12）

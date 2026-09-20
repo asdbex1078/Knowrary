@@ -34,11 +34,22 @@ def empty_layout() -> dict:
             "groups": {}, "nodes": {}, "refs": [], "notes": [], "images": [], "edges": {}}
 
 
+def _off_canvas(node: dict) -> bool:
+    """这个节点不该出现在全局画布上。
+
+    目前只有对比组：它有自己的一张画布（`.knowrary/layouts/<id>.json`），
+    再往主图上塞一份只会让主图更难读。领域总览**不在此列**——它是一个领域的入口，
+    摆在自己那个域框里是有用的。
+    """
+    from .parser import OFF_CANVAS_TYPES
+    return node.get("type") in OFF_CANVAS_TYPES
+
+
 def bucket_nodes(index: dict) -> dict[str, dict[str, list[str]]]:
     """{field: {子目录: [节点 id]}}。fields/ 与 nodes/ 根下的文件归入 "" 桶（直接挂顶层分组）。"""
     out: dict[str, dict[str, list[str]]] = {}
     for node in index["nodes"]:
-        if node.get("virtual"):
+        if node.get("virtual") or _off_canvas(node):
             continue
         field = node.get("field") or "(未指定)"
         parts = (node.get("path") or "").split("/")
@@ -112,7 +123,7 @@ def bucket_by_layer(index: dict) -> dict[str, dict[str, list[str]]]:
     from .parser import LAYERS, UNLAYERED
     out: dict[str, dict[str, list[str]]] = {}
     for node in index["nodes"]:
-        if node.get("virtual"):
+        if node.get("virtual") or _off_canvas(node):
             continue
         field = node.get("field") or "(未指定)"
         out.setdefault(field, {}).setdefault(node.get("layer") or UNLAYERED, []).append(node["id"])
@@ -142,6 +153,30 @@ def build_initial_layout(index: dict, by: str = "dir") -> dict:
         w, h = _add_child_groups(field, subs, top_id, (0.0, y), doc, keep_order=(by == "layer"))
         doc["groups"][top_id]["w"], doc["groups"][top_id]["h"] = w, h
         y += h + FIELD_GAP
+    return doc
+
+
+COMPARE_COLS = 6                               # 对比画布一行摆几个成员，多了就换行
+
+
+def build_compare_layout(member_ids: list[str], index: dict) -> dict:
+    """对比画布的初始布局：成员按 md 里的书写顺序铺成网格，**不画分组框**。
+
+    顺序和下面那张表的行序是同一个（都来自对比组 md 里 `- 包含::` 的先后），
+    这样"表上第三行"和"图上第三个"是同一个东西——两边对不上的话，联动高亮就只是个特效。
+
+    还没建出来的成员画成幽灵占位（`state: "ghost"`），和项目画布同一套：它不进全局
+    layout、不进 vault，点一下去建。摆在原位而不是角落——对比表里它本来就该占一行，
+    "这个还没写"是这张表的一部分信息。
+    """
+    real = {n["id"] for n in index["nodes"] if not n.get("virtual")}
+    nodes: dict[str, dict] = {}
+    for i, nid in enumerate(member_ids):
+        col, row = i % COMPARE_COLS, i // COMPARE_COLS
+        nodes[nid] = _box(80.0 + col * CELL_W, 80.0 + row * CELL_H,
+                          "final" if nid in real else "ghost")
+    doc = empty_layout()
+    doc["nodes"] = nodes
     return doc
 
 

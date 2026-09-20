@@ -9,6 +9,7 @@
 import { computed, ref } from 'vue'
 import Drawer from '../ui/Drawer.vue'
 import Icon from '../ui/Icon.vue'
+import { level, weekColumns } from './heat.js'
 
 const props = defineProps({
   data: { type: Object, default: null },
@@ -18,34 +19,9 @@ const emit = defineEmits(['goto', 'refresh', 'close'])
 
 const picked = ref('')
 
-// 热力等级：建一个节点算 3 分，复习 / 答题各 1 分。**不算模型调用**——
-// 那是花销不是学习量，算进去会让"跟模型聊了一下午"看起来像"学了一整天"。
-const weight = (c) => (c ? c.built * 3 + c.reviews + c.answers : 0)
-const level = (c) => {
-  const w = weight(c)
-  return w === 0 ? 0 : w <= 2 ? 1 : w <= 5 ? 2 : w <= 10 ? 3 : 4
-}
-
-/** 按周分列铺：一列一周，周一在上。热力图的标准排法，一眼看得出节奏。 */
-const weeks = computed(() => {
-  const d = props.data
-  if (!d) return []
-  const out = []
-  const start = new Date(`${d.from}T00:00:00`)
-  const end = new Date(`${d.to}T00:00:00`)
-  const cursor = new Date(start)
-  cursor.setDate(cursor.getDate() - ((cursor.getDay() + 6) % 7))   // 回退到周一
-  while (cursor <= end) {
-    const col = []
-    for (let i = 0; i < 7; i += 1) {
-      const iso = cursor.toISOString().slice(0, 10)
-      col.push(iso >= d.from && iso <= d.to ? iso : null)
-      cursor.setDate(cursor.getDate() + 1)
-    }
-    out.push(col)
-  }
-  return out
-})
+/** 按周分列铺：一列一周，周一在上。热力图的标准排法，一眼看得出节奏。
+ *  算法在 `./heat.js`（纯函数，有单测）—— 它踩过一个时区错位，见那边的注释。 */
+const weeks = computed(() => weekColumns(props.data?.from, props.data?.to))
 
 const cell = (iso) => (iso ? props.data?.days?.[iso] : null)
 const detail = computed(() => (picked.value ? props.data?.detail?.[picked.value] : null))

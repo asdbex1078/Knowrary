@@ -37,8 +37,10 @@ def _prompt() -> str:
 
 def missing(index: dict) -> list[dict]:
     """缺 year 的已建节点，按 rank 排（重要的先补，一次问不完时不至于净问边角料）。"""
+    # 和 core.no_year 同一条口径：聚合文档没有"诞生年份"，让模型去猜只会猜出一个假的
     rows = [n for n in index["nodes"]
-            if not n.get("virtual") and not n.get("stub") and n.get("path") and not n.get("year")]
+            if not n.get("virtual") and not n.get("stub") and n.get("path")
+            and not n.get("year") and not n.get("aggregate")]
     rows.sort(key=lambda n: (-(n.get("rank") or 0), n["id"]))
     return rows
 

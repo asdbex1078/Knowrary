@@ -11,7 +11,7 @@ import datetime as dt
 import json
 import threading
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from .contracts import LAYOUT_SCHEMA_VERSION, EdgeStyle, GroupBox, LayoutDoc, LayoutPatch, NodeBox
 from .paths import DEFAULT_LAYOUT, core, layout_path
@@ -33,6 +33,10 @@ class RevisionConflict(Exception):
 
 class PatchRejected(Exception):
     """客户端补丁本身不合法（新增条目缺必填字段、引用了不存在的分组等）。"""
+
+
+# 这份 layout 还不存在时，拿什么把它填出来：index → layout dict
+Builder = Callable[[dict], dict]
 
 
 def _now() -> str:
@@ -69,19 +73,18 @@ def write_layout(vault: Path, doc: LayoutDoc, name: str = DEFAULT_LAYOUT) -> Lay
 
 
 def load_or_init(vault: Path, index: dict, name: str = DEFAULT_LAYOUT,
-                 project: dict | None = None) -> tuple[LayoutDoc, bool]:
+                 build: Builder | None = None) -> tuple[LayoutDoc, bool]:
     """没有这份 layout 时生成一份初始的并落盘。返回 (布局, 是否刚生成)。
 
-    全局图按 field / 子目录铺；**项目画布不画框**，已建的点按阶段成列、
-    还没建出来的点画成幽灵停在右下角——项目画布从第一天就该是完整的施工图，
-    你能看见还没建的东西在哪，而不是一片空白（重构方案 §5A）。
+    全局图按 field / 子目录铺；项目画布和对比画布各有各的铺法，由调用方给 `build`。
+    **这一层不认识"项目"也不认识"对比组"**：它只知道"这份 layout 不存在时拿什么填"。
+    以前这里直接写死 `build_project_layout`，于是每多一种画布就要改一次存储层。
     """
     with _LOCK:
         doc = read_layout(vault, name)
         if doc is not None:
             return doc, False
-        fresh = (LayoutDoc.model_validate(core.build_project_layout(project, index))
-                 if project is not None else initial_layout(index))
+        fresh = LayoutDoc.model_validate(build(index)) if build is not None else initial_layout(index)
         return write_layout(vault, fresh, name), True
 
 
@@ -107,13 +110,13 @@ def backup_layout(vault: Path, doc: LayoutDoc, name: str = DEFAULT_LAYOUT) -> st
 
 
 def apply_patch(vault: Path, patch: LayoutPatch, index: dict, name: str = DEFAULT_LAYOUT,
-                project: dict | None = None) -> tuple[LayoutDoc, list[dict[str, Any]], str | None]:
+                build: Builder | None = None) -> tuple[LayoutDoc, list[dict[str, Any]], str | None]:
     """读-校验-合并-写，全程持锁。返回 (新布局, 孤立引用诊断, 备份路径)。"""
     with _LOCK:
         doc = read_layout(vault, name)
         if doc is None:
-            doc = (LayoutDoc.model_validate(core.build_project_layout(project, index))
-                   if project is not None else initial_layout(index))
+            doc = (LayoutDoc.model_validate(build(index)) if build is not None
+                   else initial_layout(index))
         if patch.base_revision != doc.revision:
             raise RevisionConflict(doc)
         backup = backup_layout(vault, doc, name) if is_bulk(patch) and doc.revision else None

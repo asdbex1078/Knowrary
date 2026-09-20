@@ -98,8 +98,11 @@ def _lonely_items(index: dict, by_id: dict) -> list[dict]:
     for h in link_hints(index):
         for side, other in ((h["source"], h["target"]), (h["target"], h["source"])):
             hint_of.setdefault(side, {"relation": h["relation"], "target": other, "why": h["reason"]})
+    # 和 digest.lonely 同一条口径（这里多一个 rank 排序和建议配对，所以没直接复用）：
+    # 聚合文档不算孤点，对比组和领域总览本来就可能一条边都没有
     rows = [n for n in index["nodes"]
-            if not n.get("virtual") and not n.get("stub") and n.get("path") and not n.get("degree")]
+            if not n.get("virtual") and not n.get("stub") and n.get("path")
+            and not n.get("degree") and not n.get("aggregate")]
     # 有现成建议的排前面：同样是孤点，能一键连的那个今天真会被连
     rows.sort(key=lambda n: (n["id"] not in hint_of, -(n.get("rank") or 0), n["id"]))
     out, covered = [], set()
@@ -167,8 +170,10 @@ def quiz_pools(index: dict, log: dict, items: list[dict], doc: dict,
     - 本项目：当前项目里已经建出来的点（项目是视角，这一档就是那个视角的考试范围）
     - 已建全部：想通考一遍时用
     """
+    # 聚合文档也不收：考的是知识点，不是那张目录/对比表
     built = [n["id"] for n in index["nodes"]
-             if not n.get("virtual") and not n.get("stub") and n.get("path")]
+             if not n.get("virtual") and not n.get("stub") and n.get("path")
+             and not n.get("aggregate")]
     built_set = set(built)
     reviewed = {nid for nid, e in (log.get("nodes") or {}).items() if (e or {}).get("reviews")}
     pools = {"今日": [it["id"] for it in items if it["kind"] in ("wrong", "due")],

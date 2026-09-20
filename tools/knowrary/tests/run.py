@@ -887,7 +887,10 @@ def llm配置里的注释键不算条目():
     cfg = json.loads(repo_example.read_text(encoding="utf-8"))
     llm_backend.validate_config(cfg, repo_example)          # 以前这里会抛「角色 _说明 指向不存在的 provider」
     name, provider = llm_backend.resolve_provider(cfg, "learn")
+    # 模板照抄下来就该能用，**包括零配置那条**：claude-cli 不用填任何密钥
     assert name == "claude-cli" and provider["type"] == "claude-cli", (name, provider)
+    # 它没有结构化工具接口，于是工具协议自动退回文本围栏——能力判定不许看模型强弱
+    assert llm_backend.supports_tools(provider) is False, provider
     assert "_说明" not in llm_backend.describe(cfg, repo_example)
     # 注释键不能顶替真条目：providers 里只剩注释时仍然要报错
     try:
@@ -1599,6 +1602,415 @@ def test_sections_outline_skips_code_fences_and_extracts_by_title():
     assert core.extract_section(text, "不存在的节") is None and core.find_heading(text, "") is None
     # 最后一节取到文件尾
     assert core.extract_section(text, "关系")[1].endswith("[[x]]")
+
+
+@case
+def 命令行导入_三级匹配和网页同一套口径():
+    """`knowrary.py article` 与 `/api/import/propose` 共用 `core.proposal`。
+
+    以前这三级只长在服务层，命令行那条拿到的是缩水版：认不出清单点、不提醒撞名、
+    不报孤立块。这里盯的就是"同一个方案、同一份清单，两个入口结论一致"。
+    """
+    vault, r = build({"nodes/x/a.md": node_md("A")})
+    core.save_projects(vault, {"projects": {"pj": {"id": "pj", "name": "项目", "field": "测试", "lists": [
+        {"kind": "学习", "name": "主线", "stages": [{"name": "一", "points": [
+            {"id": "注意力机制", "name": "注意力机制", "why": "地基"},
+            {"id": "RNN与长程依赖", "name": "RNN与长程依赖", "why": "对照"}]}]}]}}})
+    points = core.project_points(vault, r.data, "pj")
+    assert [p["id"] for p in points] == ["注意力机制", "RNN与长程依赖"], points
+    assert core.project_points(vault, r.data, None) == [], "没选项目就没有待认领"
+
+    plan = {"nodes": [
+        {"id": "attention", "name": "注意力", "claims": "注意力机制", "desc": "d", "body": "b",
+         "relations": [{"type": "依赖", "target": "a", "confidence": 0.9}]},
+        {"id": "RNN", "name": "RNN", "desc": "d", "body": "b", "relations": []},
+        {"id": "无关的点", "name": "无关的点", "desc": "d", "body": "b", "relations": []}]}
+    plan, claims = core.normalize_claims(plan, points, core.rename_in_plan)
+    assert claims == [{"node_id": "注意力机制", "point_id": "注意力机制", "point_name": "注意力机制"}], claims
+    assert [n["id"] for n in plan["nodes"]] == ["注意力机制", "RNN", "无关的点"], "认领要连 id 一起换掉"
+    assert all("claims" not in n for n in plan["nodes"]), "认领字段不该漏进翻译"
+
+    claimed = {c["node_id"] for c in claims}
+    near = core.near_misses(plan, points, claimed)
+    assert [(n["node_id"], n["point_id"]) for n in near] == [("RNN", "RNN与长程依赖")], near
+    # 认领了清单点的那个连着 `a`，自己就是锚；另外两个各自成块、谁也没碰到体系
+    assert core.isolated(plan, [], r.data, claimed) == ["RNN", "无关的点"]
+    # 待审边也算"够到了体系"：审过就是真边，不该先报一句孤立、审完又不是
+    assert core.isolated(plan, [{"source": "无关的点", "target": "a"}], r.data, claimed) == ["RNN"]
+
+
+@case
+def 命令行导入_文章超长和模型不给JSON都要有说法():
+    """两道闸原来只有网页端有：命令行要么把超长文章整篇塞给模型，要么解析失败直接退出不留痕。"""
+    import knowrary as cli
+
+    vault, _ = build({"nodes/x/a.md": node_md("A")})
+    try:
+        core.check_length("字" * (core.MAX_ARTICLE_CHARS + 1))
+        raise AssertionError("超长文章没拦住")
+    except ValueError as exc:
+        assert "先切成几段" in str(exc), exc
+    assert core.check_length("短文章") == "短文章"
+
+    try:
+        cli.extract_json("模型今天不想说话", vault, "article 测试")
+        raise AssertionError("解析不出来还往下走")
+    except SystemExit as exc:
+        assert "issues.jsonl" in str(exc), exc
+    rows = core.load_issues(vault)
+    assert rows and rows[-1]["where"] == "parse_json", rows
+    # 围栏包着的照样认
+    assert cli.extract_json("好的：\n```json\n{\"nodes\": []}\n```", vault) == {"nodes": []}
+
+
+# ---------------------------------------------------------------- 横向对比：速查 / 对比项 / 对比组
+
+GROUP_FM = "type: 对比组\ndimensions: [核心方法, 适用场景]\n"
+
+
+def compare_vault(**over) -> dict:
+    """一个最小的对比组 vault：一个组 + 两个成员，成员之间连着对比边。"""
+    files = {
+        "fields/对比组/compare-分词.md": node_md(
+            "分词技术对比", field="AI", extra=GROUP_FM,
+            rels="- 包含:: [[jieba]]\n- 包含:: [[tokenizer]]"),
+        "nodes/jieba.md": node_md("jieba", field="AI", rels="- 对比:: [[tokenizer]]",
+                                  body="# jieba\n\n## 速查\n- 核心方法:: 词典 + HMM\n- 适用场景:: 中文分词"),
+        "nodes/tokenizer.md": node_md("tokenizer", field="AI",
+                                      body="# tokenizer\n\n## 速查\n- 核心方法:: 子词切分（BPE）"),
+    }
+    files.update(over)
+    return files
+
+
+@case
+def 对比组_成员是边维度进索引并标记为聚合文档():
+    """成员写成 `包含` 边而不是 frontmatter 数组：改名跟得上、check 管得着、degree 不为 0。"""
+    _, r = build(compare_vault())
+    grp = node_by_id(r, "compare-分词")
+    assert grp["dimensions"] == ["核心方法", "适用场景"], grp
+    assert grp["aggregate"] is True, grp
+    assert grp["degree"] == 2, grp
+    # 成员是普通知识点，不该被打上聚合标记
+    assert "aggregate" not in node_by_id(r, "jieba"), node_by_id(r, "jieba")
+    assert not codes(r, "error"), codes(r, "error")
+
+
+@case
+def 对比组_成员不足或没有维度都要报错():
+    _, r = build({"fields/对比组/c.md": node_md("只有一个成员的组", field="AI", extra=GROUP_FM,
+                                                rels="- 包含:: [[jieba]]"),
+                  "nodes/jieba.md": node_md("jieba", field="AI")})
+    assert "compare_too_few_members" in codes(r, "error"), codes(r, "error")
+
+    _, r2 = build({"fields/对比组/c.md": node_md("没维度的组", field="AI", extra="type: 对比组\n",
+                                                 rels="- 包含:: [[a]]\n- 包含:: [[b]]"),
+                   "nodes/a.md": node_md("A", field="AI"), "nodes/b.md": node_md("B", field="AI")})
+    assert "compare_no_dimensions" in codes(r2, "error"), codes(r2, "error")
+
+
+@case
+def 速查_只认双冒号单冒号要报出来():
+    """单冒号在 Dataview 里不是内联字段，取数时整行被忽略——而你看着它明明写了。"""
+    body = ("# A\n\n## 速查\n- 核心方法:: 对的写法\n- 适用场景: 单冒号\n"
+            "- 核心方法:: 又写了一遍\n\n这是一句散文，不该被当成错")
+    _, r = build({"nodes/a.md": node_md("A", body=body)})
+    assert core.facts_of(body) == {"核心方法": "对的写法"}, core.facts_of(body)
+    warns = codes(r, "warning")
+    assert "facts_bad_syntax" in warns and "facts_duplicate_key" in warns, warns
+    assert core.stray_facts(body) == (["- 适用场景: 单冒号"], ["核心方法"]), core.stray_facts(body)
+
+
+@case
+def 速查_不许和frontmatter写重():
+    """`年份` 的真相是 frontmatter 的 `year`。两份一定会漂，而错的 year 比空的更难发现。"""
+    _, r = build({"nodes/a.md": node_md("A", extra="year: 2017\n",
+                                        body="# A\n\n## 速查\n- 年份:: 2017\n- 核心方法:: x")})
+    assert "facts_shadows_frontmatter" in codes(r, "warning"), codes(r, "warning")
+
+
+@case
+def 对比项_小节必须对上一条真实的对比边():
+    body = ("# jieba\n\n## 对比项\n### 与 [[tokenizer]]\n- 粒度: 词 vs 子词\n"
+            "### 与 [[ngram]]\n- 有边吗: 没有\n### 随便写个标题\n")
+    files = compare_vault(**{"nodes/jieba.md": node_md(
+        "jieba", field="AI", rels="- 对比:: [[tokenizer]]", body=body)})
+    files["nodes/ngram.md"] = node_md("ngram", field="AI")
+    _, r = build(files)
+    assert core.compare_targets(body) == ["tokenizer", "ngram"], core.compare_targets(body)
+    msgs = [d.message for d in r.diags.warnings if d.code == "compare_section_without_edge"]
+    assert len(msgs) == 1 and "ngram" in msgs[0], msgs
+    assert "compare_section_no_link" in codes(r, "warning"), codes(r, "warning")
+
+
+@case
+def 对比项_对称边两头写哪边都算数():
+    """`对比` 是对称边，索引按 id 排序定向。只看 out 邻接的话，被定向到目标那头的节点会被冤枉。"""
+    body = "# tokenizer\n\n## 对比项\n### 与 [[jieba]]\n- 粒度: 子词 vs 词\n"
+    _, r = build(compare_vault(**{"nodes/tokenizer.md": node_md(
+        "tokenizer", field="AI", body=body)}))
+    assert "compare_section_without_edge" not in codes(r, "warning"), codes(r, "warning")
+
+
+@case
+def 聚合文档_不进Inbox不算孤点不催year不配重复对():
+    """每建一个对比组，这四张欠账表就各多一条永远处理不掉的待办——那不是欠账，是噪音。"""
+    vault, r = build({
+        "fields/对比组/compare-分词.md": node_md("分词技术对比", field="AI", extra=GROUP_FM,
+                                                 rels="- 包含:: [[分词]]\n- 包含:: [[jieba]]"),
+        "fields/AI.md": node_md("AI", field="AI", extra="type: 领域总览\n"),
+        "nodes/分词.md": node_md("分词", field="AI", extra="year: 2000\n"),
+        "nodes/jieba.md": node_md("jieba", field="AI", extra="year: 2012\n"),
+    })
+    index, layout = r.data, core.empty_layout()
+    assert core.inbox_ids(index, layout) == ["jieba", "分词"], core.inbox_ids(index, layout)
+    assert [n["id"] for n in core.lonely(index)] == [], core.lonely(index)
+    assert core.no_year(index) == [], core.no_year(index)
+    # 「分词技术对比」和「分词」字面重合度极高，但那是"表和它的表头"，不是重复也不该连边
+    dups, hints = core.duplicates(index), core.link_hints(index)
+    assert not [d for d in dups + hints
+                if "compare-分词" in (d["source"], d["target"])], (dups, hints)
+    # 复习队列同理：要背的是成员，不是那张表
+    import datetime as _dt
+    log = {"nodes": {}}
+    due = core.due_nodes(index, log, _dt.date(2030, 1, 1))
+    assert "compare-分词" not in [d["id"] for d in due], due
+
+    # 今日清单和出题范围各有一份自己的过滤（没复用 digest/review），漏一处就等于没改
+    today = core.build_today(vault, index, layout, core.empty_projects(), _dt.date(2030, 1, 1))
+    assert not [it for it in today["items"] if it["id"] in ("compare-分词", "AI")], today["items"]
+    pools = today["pools"]
+    assert "compare-分词" not in pools["已建全部"], pools["已建全部"]
+    assert "AI" not in pools["没考过"], pools["没考过"]
+    assert set(pools["已建全部"]) == {"jieba", "分词"}, pools["已建全部"]
+
+
+@case
+def 对比组不进全局画布领域总览照常进():
+    """对比组有自己的一张画布；领域总览是一个领域的入口，摆在域框里是有用的。"""
+    _, r = build({
+        "fields/对比组/compare-分词.md": node_md("分词技术对比", field="AI", extra=GROUP_FM,
+                                                 rels="- 包含:: [[a]]\n- 包含:: [[b]]"),
+        "fields/AI.md": node_md("AI", field="AI", extra="type: 领域总览\n"),
+        "nodes/a.md": node_md("A", field="AI"), "nodes/b.md": node_md("B", field="AI"),
+    })
+    placed = set(core.build_initial_layout(r.data)["nodes"])
+    assert placed == {"a", "b", "AI"}, placed
+    placed_by_layer = set(core.build_initial_layout(r.data, by="layer")["nodes"])
+    assert placed_by_layer == {"a", "b", "AI"}, placed_by_layer
+
+
+# ---------------------------------------------------------------- 横向对比：取数与表格
+
+def table_vault() -> dict:
+    """一个组 + 两个成员。成员在 md 里的书写顺序是 b、a（故意不是字典序）。"""
+    return {
+        "fields/对比组/compare-分词.md": node_md(
+            "分词技术对比", field="AI",
+            extra="type: 对比组\ndimensions: [年份, 核心方法, 适用场景]\n",
+            rels="- 包含:: [[tokenizer]]\n- 包含:: [[jieba]]"),
+        "nodes/jieba.md": node_md(
+            "jieba", field="AI", extra="year: 2012\n",
+            body="# jieba\n\n## 速查\n- 核心方法:: 词典 + HMM\n- 实现方式:: 双数组 Trie"),
+        "nodes/tokenizer.md": node_md(
+            "tokenizer", field="AI", extra="year: 2016\n",
+            body="# tokenizer\n\n## 速查\n- 核心方法:: 子词切分（BPE）\n"
+                 "- 适用场景:: 大模型输入\n- 实现方式:: BPE 合并表"),
+    }
+
+
+@case
+def 对比表_三条取数规则和每格的出处():
+    """年份读 frontmatter、核心方法读速查、没写的留空。每格带 source，编辑入口要按它分流。"""
+    vault, r = build(table_vault())
+    t = core.compare_table(vault, r.data, "compare-分词")
+    assert t["columns"] == ["年份", "核心方法", "适用场景"], t["columns"]
+    cells = {row["id"]: row["cells"] for row in t["rows"]}
+    assert cells["jieba"]["年份"] == {"value": "2012", "source": "frontmatter", "field": "year"}
+    assert cells["jieba"]["核心方法"] == {"value": "词典 + HMM", "source": "速查"}
+    # 没写的那格是空，不是报错，也不是"从别处猜一个"
+    assert cells["jieba"]["适用场景"] == {"value": None, "source": None}
+    assert t["cells"] == 6 and t["gaps"] == 1, t
+    assert core.compare_table(vault, r.data, "jieba") is None, "普通节点不是对比组"
+
+
+@case
+def 对比表_行序按md里的书写顺序():
+    """索引里的边按 id 排过序，拿它当行序就成了字典序——而你写下的那个顺序才是读表的顺序。"""
+    vault, r = build(table_vault())
+    t = core.compare_table(vault, r.data, "compare-分词")
+    assert [row["id"] for row in t["rows"]] == ["tokenizer", "jieba"], [x["id"] for x in t["rows"]]
+
+
+@case
+def 对比表_残差列出现两次以上才提议升成维度():
+    """残差一列干两件事：只有一个成员有的是真独特点，两个以上都有的是"这其实是个维度"。"""
+    vault, r = build(table_vault())
+    t = core.compare_table(vault, r.data, "compare-分词")
+    extra = {row["id"]: row["extra"] for row in t["rows"]}
+    assert extra["jieba"] == {"实现方式": "双数组 Trie"}, extra
+    assert t["promote"] == [{"key": "实现方式", "count": 2, "members": ["tokenizer", "jieba"]}], t["promote"]
+
+    # 只有一个成员写了的键不提议：那多半就是它真正独特的地方，升成一列只会多一列空格
+    files = table_vault()
+    files["nodes/jieba.md"] = node_md("jieba", field="AI", extra="year: 2012\n",
+                                      body="# jieba\n\n## 速查\n- 中文特有:: 需要词典")
+    vault2, r2 = build(files)
+    t2 = core.compare_table(vault2, r2.data, "compare-分词")
+    assert t2["promote"] == [], t2["promote"]
+
+
+@case
+def 对比表_整列一致才收起有空格的不算():
+    """有空格子的列是"还没填"，不是"都一样"——收起来就等于把该补的东西藏了。"""
+    files = table_vault()
+    files["fields/对比组/compare-分词.md"] = node_md(
+        "分词技术对比", field="AI", extra="type: 对比组\ndimensions: [核心方法, 适用场景]\n",
+        rels="- 包含:: [[tokenizer]]\n- 包含:: [[jieba]]")
+    files["nodes/jieba.md"] = node_md("jieba", field="AI",
+                                      body="# jieba\n\n## 速查\n- 核心方法:: 一样的值")
+    files["nodes/tokenizer.md"] = node_md("tokenizer", field="AI",
+                                          body="# tokenizer\n\n## 速查\n- 核心方法:: 一样的值\n"
+                                               "- 适用场景:: 只有我写了")
+    vault, r = build(files)
+    t = core.compare_table(vault, r.data, "compare-分词")
+    assert t["uniform"] == ["核心方法"], t["uniform"]
+
+
+@case
+def 对比表_还没写的成员照样占一行():
+    """"这个还没写"本身就是表里的信息，抽掉它这张表就在骗人。"""
+    files = table_vault()
+    files["nodes/_stubs/ngram.md"] = node_md("ngram", field="AI", extra="status: stub\n")
+    files["fields/对比组/compare-分词.md"] = node_md(
+        "分词技术对比", field="AI", extra="type: 对比组\ndimensions: [年份, 核心方法]\n",
+        rels="- 包含:: [[tokenizer]]\n- 包含:: [[jieba]]\n- 包含:: [[ngram]]")
+    vault, r = build(files)
+    row = [x for x in core.compare_table(vault, r.data, "compare-分词")["rows"] if x["id"] == "ngram"][0]
+    assert row["stub"] is True and row["built"] is True, row
+    assert all(c["value"] is None for c in row["cells"].values()), row["cells"]
+
+
+@case
+def 对比表_成员反着写属于也算数():
+    """`属于` 会被索引归一成同一条 `包含` 边。md 里找不到的成员按 id 排在后面。"""
+    files = table_vault()
+    files["nodes/ngram.md"] = node_md("ngram", field="AI", rels="- 属于:: [[compare-分词]]")
+    vault, r = build(files)
+    t = core.compare_table(vault, r.data, "compare-分词")
+    assert [row["id"] for row in t["rows"]] == ["tokenizer", "jieba", "ngram"], t["rows"]
+
+
+@case
+def 对比表_空得过头的组进欠账():
+    """半张表都是空的，摆出来也读不出东西。点一条该能直接去"补一轮"。"""
+    files = table_vault()
+    files["nodes/jieba.md"] = node_md("jieba", field="AI")          # 一格都没填
+    files["nodes/tokenizer.md"] = node_md("tokenizer", field="AI")
+    vault, r = build(files)
+    rows = core.compare_gaps(vault, r.data)
+    assert [x["id"] for x in rows] == ["compare-分词"], rows
+    assert rows[0]["gaps"] == 6 and rows[0]["cells"] == 6, rows[0]
+
+    digest = core.build_digest(vault, r.data, core.empty_layout())
+    assert digest["counts"]["compare_gaps"] == 1, digest["counts"]
+    # 填满就不该再催
+    vault2, r2 = build(table_vault())
+    assert core.compare_gaps(vault2, r2.data) == [], core.compare_gaps(vault2, r2.data)
+
+
+# ---------------------------------------------------------------- set_fact：改一格，不碰别的
+
+FACT_MD = ("---\nname: jieba\nfield: AI\ndesc: 中文分词\nyear: 2012\n---\n"
+           "# jieba\n\n一段很长的正文，写了半年。\n\n## 速查\n- 核心方法:: 老做法\n- 实现方式:: 双数组 Trie\n"
+           "\n## 关系\n- 对比:: [[tok]]\n\n## 待办\n- [ ] 补一段\n")
+
+
+def fact(key, value=None, nid="jieba"):
+    return {"type": "set_fact", "source": nid, "key": key, "value": value}
+
+
+@case
+def set_fact_改一格不碰正文和关系段():
+    """改一格表**不能**走 update_body：那条路要求把全文背回来，而长笔记读回来多半是截断过的，
+    改一格就把没看见的那半篇删掉——代价和收益完全不成比例。"""
+    out, notes = core.apply_to_text(FACT_MD, "jieba", [fact("核心方法", "词典 + HMM")])
+    assert "- 核心方法:: 词典 + HMM" in out and "老做法" not in out, out
+    assert "一段很长的正文，写了半年。" in out, "正文被动了"
+    assert "- 对比:: [[tok]]" in out and "## 待办" in out and "- [ ] 补一段" in out, "关系段/待办没原样接回"
+    assert notes == ["速查 核心方法：「老做法」→「词典 + HMM」"], notes
+
+
+@case
+def set_fact_没有这个键就追加没有这一节就新建():
+    out, _ = core.apply_to_text(FACT_MD, "jieba", [fact("适用场景", "中文检索分词")])
+    lines = [l for l in out.splitlines() if l.startswith("- ") and "::" in l and "[[" not in l]
+    assert lines == ["- 核心方法:: 老做法", "- 实现方式:: 双数组 Trie", "- 适用场景:: 中文检索分词"], lines
+
+    bare = "---\nname: b\nfield: AI\ndesc: d\n---\n# b\n\n正文\n\n## 关系\n- 对比:: [[a]]\n"
+    out2, notes = core.apply_to_text(bare, "b", [fact("核心方法", "从零建一节", nid="b")])
+    # 速查必须落在 `## 关系` 之前：写到后面的话出题和摘要都读不到它（规范 3）
+    assert out2.index("## 速查") < out2.index("## 关系"), out2
+    assert notes == ["新建 ## 速查 并写入 核心方法"], notes
+
+
+@case
+def set_fact_清空一格就是删掉那一行():
+    """表格里清空一格，本意是"这条我没有"，不是"写一个空字符串"。"""
+    out, notes = core.apply_to_text(FACT_MD, "jieba", [fact("实现方式", "")])
+    assert "实现方式" not in out and "- 核心方法:: 老做法" in out, out
+    assert notes == ["删掉速查 实现方式（原来是「双数组 Trie」）"], notes
+    try:
+        core.apply_to_text(FACT_MD, "jieba", [fact("没写过的键", "")])
+        raise AssertionError("删一个不存在的键该被拒")
+    except core.ChangeRejected as exc:
+        assert "删不掉" in str(exc), exc
+
+
+@case
+def set_fact_frontmatter那几个维度不许从正文改():
+    """`年份` 的真相在 frontmatter 的 `year`。两份一定会漂，而错的 year 比空的更难发现。"""
+    for key in ("年份", "参数量", "抽象层"):
+        try:
+            core.apply_to_text(FACT_MD, "jieba", [fact(key, "2012")])
+            raise AssertionError(f"`{key}` 该被拒")
+        except core.ChangeRejected as exc:
+            assert "update_frontmatter" in str(exc), exc
+
+
+@case
+def set_fact_键里带冒号和超长的值都要拒():
+    """键带冒号会写出一行解析不回来的东西；值超长说明它不是"一句话结论"。"""
+    for bad in (fact("核心: 方法", "x"), fact("", "x"), fact("核心方法", "字" * 401)):
+        try:
+            core.apply_to_text(FACT_MD, "jieba", [bad])
+            raise AssertionError(f"该被拒：{bad}")
+        except core.ChangeRejected:
+            pass
+    # 改完必须还能被自己的解析器读回来——写进去读不回来等于没写
+    out, _ = core.apply_to_text(FACT_MD, "jieba", [fact("核心方法", "多  个   空格  归一")])
+    assert core.facts_of(out)["核心方法"] == "多 个 空格 归一", core.facts_of(out)
+
+
+@case
+def 速查_写在关系段后面要报出来而且不许在前面再建一节():
+    """位置写错是**静默失效**：`## 关系` 之后的正文被切成 rel_tail，取数、出题、摘要
+    读的都是关系段之前那一段。追加到文件末尾是最顺手的写法，也正是会掉进这个坑的写法。"""
+    bad = ("---\nname: 乙\nfield: AI\ndesc: d\n---\n# 乙\n\n正文\n\n"
+           "## 关系\n- 对比:: [[甲]]\n\n## 速查\n- 核心方法:: 写错地方了\n")
+    _, r = build({"nodes/乙.md": bad, "nodes/甲.md": node_md("甲", field="AI")})
+    assert "facts_after_relations" in codes(r, "warning"), codes(r, "warning")
+    # 这一节取数也确实读不到——警告说的就是这件事
+    assert core.facts_of(core.split_sections(bad)[1]) == {}, core.facts_of(core.split_sections(bad)[1])
+
+    # 这时候在前面再建一节就是**两个速查**，而取数只看得见新的那个，
+    # 旧的那些格子会像"从来没写过"一样消失
+    try:
+        core.apply_to_text(bad, "乙", [{"type": "set_fact", "source": "乙",
+                                        "key": "核心方法", "value": "x"}])
+        raise AssertionError("该拒绝在前面再建一节")
+    except core.ChangeRejected as exc:
+        assert "挪到" in str(exc), exc
 
 
 # ---------------------------------------------------------------- 执行

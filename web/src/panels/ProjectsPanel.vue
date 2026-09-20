@@ -18,6 +18,7 @@
 import { computed, nextTick, ref, watch } from 'vue'
 import Drawer from '../ui/Drawer.vue'
 import Icon from '../ui/Icon.vue'
+import { todayISO } from '../today.js'
 
 const props = defineProps({
   doc: { type: Object, default: null },        // { revision, projects: {id: project} }
@@ -128,7 +129,7 @@ function newProject() {
   for (let i = 2; draft.value[id]; i += 1) id = `p${i}`
   draft.value = { ...draft.value, [id]: {
     name: '新项目', field: '', weekly_hours: 7, daily_quota: 2,
-    created: new Date().toISOString().slice(0, 10),
+    created: todayISO(),
     lists: [newList('学习', '主线')] } }
   pick.value = id
   li.value = 0

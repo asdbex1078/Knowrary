@@ -11,6 +11,10 @@
 }
 
 零第三方依赖：anthropic / openai 兼容协议都走 urllib；装了 anthropic SDK 时 anthropic 类型自动改用 SDK 流式（长输出更稳）。
+
+**工具协议有两套，按 provider 能力自动挑**（见 `supports_tools` 与 §多轮对话 + 工具协议）：
+anthropic / openai 走原生 tool use；claude-cli 是子进程、没有结构化工具接口，走文本围栏适配。
+对上是同一个契约——给 `tools`、拿回结构化的 `calls`，调用方不知道底下用的是哪套。
 """
 from __future__ import annotations
 
@@ -18,9 +22,10 @@ import hashlib
 import importlib.util
 import json
 import os
+import re
 import subprocess
-import uuid
 import urllib.error
+import uuid
 import urllib.request
 from pathlib import Path
 
@@ -305,9 +310,103 @@ def ping(provider: dict, model_override: str | None = None) -> str:
     return ask("只回复两个大写字母：OK", provider, model_override).strip()
 
 
-# ---------------------------------------------------------------- 多轮对话（阶段 12）
 
-# ---------------------------------------------------------------- claude -p 的会话复用
+# ---------------------------------------------------------------- 多轮对话 + 工具协议
+#
+# **对上只有一个契约：给 `tools`，拿回结构化的 `calls`。** 底下有两种实现，按 provider 的
+# 能力自动选（`supports_tools`），调用方一行 if 都不用写：
+#
+#     anthropic / openai  →  原生 tool use / tool_calls（schema 约束、可并行、解析失败可见）
+#     claude-cli          →  文本围栏适配层（`claude -p` 是子进程，没有结构化工具接口）
+#
+# **为什么围栏没被删掉**：它是 claude-cli 唯一能走的路，而 claude-cli 是零配置的默认
+# provider——复用本机 Claude Code 登录，不用填任何密钥。把它砍掉等于"想聊天先去开个 API key"。
+#
+# **为什么围栏也不配当唯一的路**：守协议的责任全压在模型的指令遵循上，而且失败是静默的
+# ——解析不出 JSON 就当它没调工具，那段话直接成了答案，留档上看不出任何异常。
+# Claude 守得住，换个小一点的模型未必。所以能走原生的一律走原生。
+#
+# **适配层放在这里，不放在 agent 循环里。** 循环那边只有一条代码路径：
+# `_run` 永远把 schema 传下来、永远拿结构化的 calls 回去，不知道底下用的是哪套协议。
+# 协议差异（提示词里怎么写、回答里怎么捞）全关在 `_chat_claude_cli` 一个函数内。
+#
+# 内部消息形状是中立的，provider 差异只在翻译层：
+#
+#     {"role": "system" | "user",  "content": str}
+#     {"role": "assistant", "content": str, "tool_calls": [{"id", "name", "args"}]}
+#     {"role": "tool", "tool_call_id": str, "name": str, "content": str}
+#
+# **只增不改**那条总纲对三条路都成立（claude-cli 靠前缀指纹续会话、anthropic 靠缓存断点、
+# openai 靠自动前缀缓存）：前面那一截一个字都别动。
+
+
+def supports_tools(provider: dict) -> bool:
+    """这个 provider 能不能走原生工具调用。
+
+    判据是**协议能力**，不是模型强弱：`claude -p` 收的是一段纯文本、返回的也是纯文本，
+    没有地方放 schema，也没有结构化的调用回来。别的都是 HTTP API，两家都有原生工具。
+    """
+    return provider.get("type") != "claude-cli"
+
+
+def chat(messages: list[dict], provider: dict, model_override: str | None = None,
+         on_delta=None, tools: list[dict] | None = None,
+         session: str | None = None) -> tuple[str, list[dict], dict]:
+    """多轮对话。返回 `(正文, 工具调用, 用量)`——**三种 provider 同一个契约**。
+
+    `on_delta(text)` 给流式增量；不传就整段返回。
+    `tools` 是工具表：`[{"name", "description", "input_schema"}]`（Anthropic 的字段名，
+    openai 那侧翻译成 `function`，claude-cli 那侧渲染成提示词里的一段围栏说明）。
+    不传就是纯聊天。
+    `session` 给 claude-cli 续上同一段会话，只发新增的几条（省的是缓存写）；
+    别的 provider 收到它也无妨——它们本来就每次发全量 messages 数组。
+
+    和 `ask()` 的关系：`ask()` 是单轮、无工具的，出题 / 拆计划那类"一问一答"用它就够。
+    要能追问、能调工具才走这里。
+    """
+    model = model_override or provider.get("model")
+    kind = provider["type"]
+    if kind == "claude-cli":
+        return _chat_claude_cli(messages, model, on_delta, session, tools)
+    if kind == "anthropic":
+        return _chat_anthropic(messages, provider, model or DEFAULT_MODELS["anthropic"], on_delta, tools)
+    return _chat_openai(messages, provider, model or DEFAULT_MODELS["openai"], on_delta, tools)
+
+
+def _text_of(m: dict) -> str:
+    c = m.get("content")
+    return c if isinstance(c, str) else ""
+
+
+def _split_system(messages: list[dict]) -> tuple[list[str], list[dict]]:
+    """anthropic 的 system 是顶层参数——但**只有开头那几条**。
+
+    出现在对话中间或末尾的 system 是「对话中途的操作指令」（mid-conversation system
+    message），必须留在 messages 里的原位：顶层 system 整体渲染在所有 messages 之前，
+    把会变的东西放进去，等于它一变整段对话的缓存全丢；留在队尾就只作废它自己。
+    （server/chat.py 的 `_graph_snapshot` 走的就是这条路。）
+
+    **带 tool_calls 的 assistant 正文可以是空的**（模型只调工具、一个字没说），
+    所以不能只按"有没有文本"过滤，否则那一条会被悄悄丢掉、tool_result 找不到它的 tool_use。
+    """
+    head: list[str] = []
+    rest: list[dict] = []
+    for m in messages:
+        role = m.get("role")
+        if role == "system" and not rest:
+            text = _text_of(m).strip()
+            if text:
+                head.append(text)
+            continue
+        if role == "tool" or m.get("tool_calls"):
+            rest.append(m)
+            continue
+        if role in ("user", "assistant", "system") and _text_of(m).strip():
+            rest.append({"role": role, "content": m["content"]})
+    return head, rest
+
+
+# ---------------------------------------------------------------- claude -p：会话复用 + 围栏适配
 #
 # `claude -p` 每次都是新进程，没有服务端会话，所以原来每一轮都把整段对话拍平重发。
 # 实测的代价（haiku，约 40k token 的上下文）：
@@ -319,9 +418,8 @@ def ping(provider: dict, model_override: str | None = None) -> str:
 # 一个用户回合里常常夹着三四次工具往返（每次工具结果都要再问一遍模型），
 # **那几次才是账单的大头**，而它们之间只差末尾几百个字。
 #
-# 只在**能证明前缀没变**时才续：指纹对不上就老老实实开新的一段。会话状态只在进程
-# 内存里，服务重启就全部退回重发——续错一段的代价（模型看着别人的上下文答题）
-# 远大于多花的那点钱。
+# 只在**能证明前缀没变**时才续：指纹对不上就老老实实开新的一段。
+# 续错一段的代价（模型看着别人的上下文答题）远大于多花的那点钱。
 #
 # **会话表落盘**：`uvicorn --reload` 一天要重启几十次，只放进程内存等于每次重启都
 # 从头重付一次全额 cache_write。claude 那侧的会话本来就存在磁盘上，这边跟着存一份就能续上。
@@ -330,6 +428,9 @@ _CLI_SESSIONS: dict[str, dict] = {}
 MAX_CLI_SESSIONS = 32
 _SESSION_STORE: Path | None = None
 _STORE_LOADED = False
+
+# 围栏：```knowrary {"tool": ..., "args": {...}} ``` —— 非贪婪，只认第一个块（一次只准调一个）
+_FENCE_RE = re.compile(r"```knowrary\s*(\{.*?\})\s*```", re.S)
 
 
 def use_session_store(path: Path) -> None:
@@ -361,7 +462,13 @@ def _save_sessions() -> None:
 
 
 def _fingerprint(messages: list[dict]) -> str:
-    raw = "\u0000".join(f"{m.get('role')}\u0001{m.get('content') or ''}" for m in messages)
+    """前缀指纹。**按渲染后的样子算**，不是按 role + content。
+
+    因为消息里现在可能带 `tool_calls`：两条 assistant 正文一样、调的工具不一样，
+    role + content 会算出同一个指纹，于是"续"上一段其实不同的上下文。
+    渲染后的文本里有围栏块，两者自然分得开。
+    """
+    raw = "\u0000".join(_render_one(m) for m in messages)
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
@@ -383,15 +490,17 @@ def _cli_session(key: str | None, messages: list[dict], model: str | None) -> tu
     return ["--session-id", _CLI_SESSIONS[key]["uuid"]], 0
 
 
-def _remember_cli_session(key: str | None, messages: list[dict], reply: str) -> None:
+def _remember_cli_session(key: str | None, messages: list[dict], reply: dict) -> None:
     """记下"CLI 那一侧现在知道哪些消息"——**含它自己刚生成的那条回复**。
 
-    对话循环随后会把这条回复原样接到 messages 尾巴上，下一次的前缀校验才对得上。
+    `reply` 是**调用方随后会追加的那条 assistant 消息**（正文 + 这一步调的工具），
+    不是 CLI 吐出来的原文：下一次的前缀校验比的是调用方手上那份列表，
+    两边形状对不上就等于每轮都在重开会话（而且不报错，只是账单变贵）。
     """
     have = _CLI_SESSIONS.get(key or "")
     if not have:
         return
-    known = messages + [{"role": "assistant", "content": reply}]
+    known = messages + [reply]
     have["sent"] = len(known)
     have["fingerprint"] = _fingerprint(known)
     _save_sessions()
@@ -403,83 +512,118 @@ def drop_cli_session(key: str | None) -> None:
         _save_sessions()
 
 
+def _fence_of(call: dict) -> str:
+    """把一次工具调用渲染回围栏块。转录时要用：模型得看见自己上一步调了什么。"""
+    body = json.dumps({"tool": call.get("name"), "args": call.get("args") or {}}, ensure_ascii=False)
+    return f"```knowrary\n{body}\n```"
+
+
+def _render_one(m: dict) -> str:
+    """一条中立消息 → 转录里的一段文本。
+
+    `claude -p` 收的是一段纯文本，没有 messages 数组、没有 tool_result 通道，
+    所以工具往返只能写成对话里的话。**渲染必须是确定性的**——前缀指纹是按它算的。
+    """
+    role = m.get("role")
+    text = (_text_of(m) or "").strip()
+    if role == "tool":
+        return f"我：[工具 {m.get('name')} 的结果]\n{m.get('content') or ''}"
+    if role == "system":
+        return text
+    calls = m.get("tool_calls") or []
+    if role == "assistant" and calls:
+        # 一次只准调一个，但真收到多个也照样全渲染出来，别让转录和事实对不上
+        return "你：" + "\n".join([text, *[_fence_of(c) for c in calls]]).strip()
+    return f"{'我' if role == 'user' else '你'}：{text}"
+
+
 def _render_transcript(messages: list[dict]) -> str:
     """把多轮对话拍平成一段 prompt。
 
-    `claude -p` 收的是一段纯文本，没有 messages 数组，所以多轮只能这么喂。
-    没有会话可续时**重发全文**，行为和换别的 provider 时完全一致（见 _cli_session）。
+    没有会话可续时**重发全文**，行为和换别的 provider 时完全一致（见 `_cli_session`）。
     """
-    out = []
-    for m in messages:
-        role = m.get("role")
-        text = (m.get("content") or "").strip()
-        if not text:
-            continue
-        if role == "system":
-            out.append(text)
-        else:
-            out.append(f"{'我' if role == 'user' else '你'}：{text}")
-    return "\n\n".join(out)
+    return "\n\n".join(t for t in (_render_one(m) for m in messages) if t.strip())
 
 
-def chat(messages: list[dict], provider: dict, model_override: str | None = None,
-         on_delta=None, session: str | None = None) -> tuple[str, dict]:
-    """多轮对话。`on_delta(text)` 给流式增量；不传就整段返回。
+def _fence_spec(tools: list[dict]) -> str:
+    """围栏协议的机制说明，作为一条额外的 system 消息插在开头那段 system 之后。
 
-    和 `ask()` 的关系：`ask()` 是单轮的，出题 / 拆计划那类"一问一答"用它就够；
-    对话式教练要能追问（「你说用了 CAS，那 ABA 怎么解决」），必须有这个。
-    两者共用同一套 provider 配置与用量统计，不另起一套。
+    **只讲怎么调，不重复讲有哪些工具**——工具表已经在 `prompts/chat.md` 渲染过一份
+    （同一份 `TOOLS_SPEC`）。在这儿再抄一遍等于花钱买重复，还会和那份说明打架。
     """
-    model = model_override or provider.get("model")
-    kind = provider["type"]
-    if kind == "claude-cli":
-        return _chat_claude_cli(messages, model, on_delta, session)
-    if kind == "anthropic":
-        return _chat_anthropic(messages, provider, model or DEFAULT_MODELS["anthropic"], on_delta)
-    return _chat_openai(messages, provider, model or DEFAULT_MODELS["openai"], on_delta)
+    names = "、".join(f"`{t['name']}`" for t in tools)
+    return ("（这条链路没有结构化的工具通道，所以上面那张表里的工具这样调：）\n"
+            "需要用工具时，输出**一个**这样的代码块，然后**立刻停下**等我把结果给你——\n"
+            "不要在同一条消息里既调工具又长篇大论，**也不要一次调两个**：\n\n"
+            "```knowrary\n"
+            '{"tool": "search_nodes", "args": {"q": "注意力"}}\n'
+            "```\n\n"
+            f"`tool` 只能是这几个之一：{names}；`args` 就是表里那几个参数。\n"
+            "块要闭合、里面必须是合法 JSON——**写坏了我这边看不出你想调工具**，"
+            "那段话会被当成你的回答直接发给我。")
 
 
-def _split_system(messages: list[dict]) -> tuple[list[str], list[dict]]:
-    """anthropic 的 system 是顶层参数——但**只有开头那几条**。
+def _with_fence_spec(messages: list[dict], tools: list[dict] | None) -> list[dict]:
+    """把协议说明插在**开头那段 system 之后**——工具表就在那里面，紧挨着才讲得通。
 
-    出现在对话中间或末尾的 system 是「对话中途的操作指令」（mid-conversation system
-    message），必须留在 messages 里的原位：顶层 system 整体渲染在所有 messages 之前，
-    把会变的东西放进去，等于它一变整段对话的缓存全丢；留在队尾就只作废它自己。
-    （server/chat.py 的 `_graph_snapshot` 走的就是这条路。）
+    位置必须是确定的：`--resume` 的前缀指纹按整个列表算，说明一挪位置前缀就断，
+    于是每轮都在重开会话（不报错，只是账单变贵）。开头那段 system 的长度在一段对话里
+    是稳定的（会变的图谱快照挂在队尾，见 `_split_system`），所以这个插入点是稳的。
     """
-    head: list[str] = []
-    rest: list[dict] = []
-    for m in messages:
-        role, text = m.get("role"), (m.get("content") or "")
-        if not text.strip() and role != "system":
-            continue
-        if role == "system" and not rest:
-            if text.strip():
-                head.append(text.strip())
-        elif role in ("user", "assistant", "system") and text.strip():
-            rest.append({"role": role, "content": text})
-    return head, rest
+    if not tools:
+        return messages
+    head = 0
+    while head < len(messages) and messages[head].get("role") == "system":
+        head += 1
+    return [*messages[:head], {"role": "system", "content": _fence_spec(tools)}, *messages[head:]]
 
 
-def _chat_claude_cli(messages: list[dict], model: str | None, on_delta,
-                     session: str | None = None) -> tuple[str, dict]:
-    """`claude -p --output-format stream-json`：一行一个事件。
+def _chat_claude_cli(messages: list[dict], model: str | None, on_delta, session: str | None,
+                     tools: list[dict] | None) -> tuple[str, list[dict], dict]:
+    """`claude -p` 那条路：围栏适配 + 会话续接。
 
-    增量按**消息块**给，不按 token——`--include-partial-messages` 的事件形状是内部细节，
-    盯着它写解析迟早会被上游改动打烂。块级增量已经够"看得见它在写"了。
+    对外和另外两条一样返回 `(正文, 工具调用, 用量)`——**围栏只活在这个函数里**，
+    上层不知道有它。正文是**剥掉围栏之后**的，免得屏幕上闪过一段 JSON。
 
-    给了 `session` 就尽量续上已有的那一段，只发新增的几条（见 _cli_session）。
+    给了 `session` 就尽量续上已有的那一段，只发新增的几条（见 `_cli_session`）。
     续不上（进程重启、CLI 把会话清了）会退回重发全文，不让一次省钱把对话弄炸。
     """
+    sent = _with_fence_spec(messages, tools)
     try:
-        text, usage = _run_claude_cli(messages, model, on_delta, session)
+        raw, usage = _run_claude_cli(sent, model, on_delta, session)
     except SystemExit:
         if not session or not _CLI_SESSIONS.get(session, {}).get("sent"):
             raise
         drop_cli_session(session)               # 续不上就当没有过这段会话，重发一次全文
-        text, usage = _run_claude_cli(messages, model, on_delta, None)
-    _remember_cli_session(session, messages, text)
-    return text, usage
+        raw, usage = _run_claude_cli(sent, model, on_delta, None)
+    calls = _parse_fence(raw)
+    text = _FENCE_RE.sub("", raw or "").strip()
+    # 记的是**调用方随后会追加的那条**，不是 CLI 的原文（见 _remember_cli_session）
+    _remember_cli_session(session, sent, {"role": "assistant", "content": text, "tool_calls": calls})
+    return text, calls, usage
+
+
+def _parse_fence(raw: str) -> list[dict]:
+    """从回答里捞出那个围栏块。捞不到 / JSON 坏了都返回空——**这就是围栏的先天缺陷**。
+
+    原生协议里参数写坏了仍然算"调过这个工具"（带空参数交上去让工具报错）；
+    围栏这边连"他是不是想调工具"都判不出来，只能当他没调。
+    `supports_tools` 为真的 provider 一律不走这条路，就是为了少受这个罪。
+    """
+    m = _FENCE_RE.search(raw or "")
+    if not m:
+        return []
+    try:
+        call = json.loads(m.group(1))
+    except json.JSONDecodeError:
+        return []
+    name = str(call.get("tool") or "")
+    if not name:
+        return []
+    args = call.get("args")
+    # id 只是用来把 tool_result 对回 tool_use 的，围栏这边没有真 id，自己发一个
+    return [{"id": f"fence_{uuid.uuid4().hex[:8]}", "name": name,
+             "args": args if isinstance(args, dict) else {}}]
 
 
 def _run_claude_cli(messages: list[dict], model: str | None, on_delta,
@@ -524,6 +668,39 @@ def _run_claude_cli(messages: list[dict], model: str | None, on_delta,
     return (result_text if result_text is not None else "".join(parts)), usage
 
 
+# ---------------------------------------------------------------- anthropic
+
+def _to_anthropic(messages: list[dict]) -> list[dict]:
+    """中立形状 → anthropic 的 content block。
+
+    **连着的几条 tool 结果要并成同一条 user 消息**：一个 assistant 回合里并行调了几个工具时，
+    它们的 `tool_result` 必须全在紧随其后的那一条 user 里，拆成好几条会被 API 拒。
+    """
+    out: list[dict] = []
+    for m in messages:
+        role = m.get("role")
+        if role == "tool":
+            block = {"type": "tool_result", "tool_use_id": m.get("tool_call_id") or "",
+                     "content": m.get("content") or ""}
+            if out and out[-1]["role"] == "user" and isinstance(out[-1]["content"], list) \
+                    and out[-1]["content"][-1].get("type") == "tool_result":
+                out[-1]["content"].append(block)
+            else:
+                out.append({"role": "user", "content": [block]})
+            continue
+        calls = m.get("tool_calls") or []
+        if role == "assistant" and calls:
+            blocks: list[dict] = []
+            if _text_of(m).strip():
+                blocks.append({"type": "text", "text": m["content"]})
+            blocks += [{"type": "tool_use", "id": c["id"], "name": c["name"], "input": c.get("args") or {}}
+                       for c in calls]
+            out.append({"role": "assistant", "content": blocks})
+            continue
+        out.append({"role": role, "content": m.get("content")})
+    return out
+
+
 def _cached_system(blocks: list[str]) -> list[dict]:
     """顶层 system 整段打一个缓存断点。
 
@@ -535,6 +712,20 @@ def _cached_system(blocks: list[str]) -> list[dict]:
     """
     return [{"type": "text", "text": "\n\n".join(blocks),
              "cache_control": {"type": "ephemeral"}}]
+
+
+def _cached_tools(tools: list[dict]) -> list[dict]:
+    """工具表也打一个断点。
+
+    它和顶层 system 一样是逐字不变的一大块（十来个工具的 schema），而且在 anthropic 的
+    prompt 里**排在 system 之前**——不标它，system 那个断点前面就永远躺着一段没缓存的内容。
+    断点打在最后一个工具上，覆盖到此为止的整张表。
+    """
+    if not tools:
+        return tools
+    out = [dict(t) for t in tools]
+    out[-1]["cache_control"] = {"type": "ephemeral"}
+    return out
 
 
 def _cached(messages: list[dict]) -> list[dict]:
@@ -552,12 +743,16 @@ def _cached(messages: list[dict]) -> list[dict]:
                 if messages[i].get("role") != "system"), None)
     if idx is None:
         return messages
-    text = messages[idx].get("content") or ""
-    if not isinstance(text, str):
-        return messages                      # 已经是分块格式了，别去动它
     out = list(messages)
-    out[idx] = {**out[idx], "content": [{"type": "text", "text": text,
-                                         "cache_control": {"type": "ephemeral"}}]}
+    content = out[idx].get("content")
+    if isinstance(content, str):
+        out[idx] = {**out[idx], "content": [{"type": "text", "text": content,
+                                             "cache_control": {"type": "ephemeral"}}]}
+    elif isinstance(content, list) and content and isinstance(content[-1], dict):
+        # 已经是分块的（tool_use / tool_result）：断点挂在最后一块上，覆盖同样的范围
+        blocks = [dict(b) for b in content]
+        blocks[-1]["cache_control"] = {"type": "ephemeral"}
+        out[idx] = {**out[idx], "content": blocks}
     return out
 
 
@@ -565,7 +760,7 @@ def _has_mid_system(messages: list[dict]) -> bool:
     """有没有「不在开头」的 system 消息。"""
     seen_turn = False
     for m in messages:
-        if m.get("role") in ("user", "assistant"):
+        if m.get("role") in ("user", "assistant", "tool"):
             seen_turn = True
         elif m.get("role") == "system" and seen_turn:
             return True
@@ -580,11 +775,10 @@ def _fold_mid_system(messages: list[dict]) -> list[dict]:
     """
     out: list[dict] = []
     for m in messages:
-        text = (m.get("content") or "")
         if m.get("role") != "system" or not out:
             out.append(m)
             continue
-        wrapped = f"<system-reminder>\n{text}\n</system-reminder>"
+        wrapped = f"<system-reminder>\n{_text_of(m)}\n</system-reminder>"
         prev = out[-1]
         if prev.get("role") == "user" and isinstance(prev.get("content"), str):
             out[-1] = {**prev, "content": f"{prev['content']}\n\n{wrapped}"}
@@ -593,45 +787,62 @@ def _fold_mid_system(messages: list[dict]) -> list[dict]:
     return out
 
 
-def _chat_anthropic(messages: list[dict], provider: dict, model: str, on_delta) -> tuple[str, dict]:
+def _chat_anthropic(messages: list[dict], provider: dict, model: str, on_delta,
+                    tools: list[dict] | None) -> tuple[str, list[dict], dict]:
     """**Sonnet 5 不支持 mid-conversation system message**（400），Opus 5 / 4.8 / Fable 5 支持。
 
     与其维护一张"哪个模型行"的表（它一定会过期），不如撞上 400 再退一步：
     折成 user 文本重发一次。只在报错确实是这件事、而且真有中途 system 时才重试。
     """
     try:
-        return _post_anthropic(messages, provider, model, on_delta)
+        return _post_anthropic(messages, provider, model, on_delta, tools)
     except SystemExit as exc:
         if "role" not in str(exc) or "system" not in str(exc) or not _has_mid_system(messages):
             raise
-        return _post_anthropic(_fold_mid_system(messages), provider, model, on_delta)
+        return _post_anthropic(_fold_mid_system(messages), provider, model, on_delta, tools)
 
 
-def _post_anthropic(messages: list[dict], provider: dict, model: str, on_delta) -> tuple[str, dict]:
+def _post_anthropic(messages: list[dict], provider: dict, model: str, on_delta,
+                    tools: list[dict] | None) -> tuple[str, list[dict], dict]:
     api_key = resolve_secret(provider.get("api_key")) or os.environ.get("ANTHROPIC_API_KEY")
     if not api_key:
         raise LLMConfigError("anthropic provider 缺少 api_key（也可设置 ANTHROPIC_API_KEY）")
     base = (provider.get("base_url") or "https://api.anthropic.com").rstrip("/")
     max_tokens = int(provider.get("max_tokens", 16000))
     system, rest = _split_system(messages)
-    payload = {"model": model, "max_tokens": max_tokens, "messages": _cached(rest)}
+    payload = {"model": model, "max_tokens": max_tokens, "messages": _cached(_to_anthropic(rest))}
     if system:
         payload["system"] = _cached_system(system)
+    if tools:
+        payload["tools"] = _cached_tools(tools)
     headers = {"x-api-key": api_key, "anthropic-version": "2023-06-01"}
     if on_delta is None:
         data = _post_json(f"{base}/v1/messages", headers, payload)
-        text = "".join(b.get("text", "") for b in data.get("content", []) if b.get("type") == "text")
-        return text, _anthropic_usage(data.get("usage") or {}, model)
+        blocks = data.get("content") or []
+        text = "".join(b.get("text", "") for b in blocks if b.get("type") == "text")
+        calls = [{"id": b.get("id") or "", "name": b.get("name") or "", "args": b.get("input") or {}}
+                 for b in blocks if b.get("type") == "tool_use"]
+        return text, calls, _anthropic_usage(data.get("usage") or {}, model)
 
     payload["stream"] = True
     parts, usage = [], empty_usage()
     usage["model"] = model
+    pending: dict[int, dict] = {}          # 流式的 tool_use：参数是一片一片来的，按块号攒
     for ev, data in _sse(f"{base}/v1/messages", headers, payload):
-        if ev == "content_block_delta":
-            piece = (data.get("delta") or {}).get("text") or ""
+        if ev == "content_block_start":
+            block = data.get("content_block") or {}
+            if block.get("type") == "tool_use":
+                pending[data.get("index")] = {"id": block.get("id") or "",
+                                              "name": block.get("name") or "", "json": ""}
+        elif ev == "content_block_delta":
+            delta = data.get("delta") or {}
+            piece = delta.get("text") or ""
             if piece:
                 parts.append(piece)
                 on_delta(piece)
+            frag = delta.get("partial_json")
+            if frag is not None and data.get("index") in pending:
+                pending[data["index"]]["json"] += frag
         elif ev in ("message_start", "message_delta"):
             raw = (data.get("message") or data).get("usage") or {}
             for k, v in (("input_tokens", "input_tokens"), ("output_tokens", "output_tokens"),
@@ -639,16 +850,65 @@ def _post_anthropic(messages: list[dict], provider: dict, model: str, on_delta) 
                          ("cache_creation_input_tokens", "cache_write_tokens")):
                 if raw.get(k):
                     usage[v] = int(raw[k])
-    return "".join(parts), usage
+    return "".join(parts), _finish_calls(pending), usage
 
 
-def _chat_openai(messages: list[dict], provider: dict, model: str, on_delta) -> tuple[str, dict]:
+def _finish_calls(pending: dict) -> list[dict]:
+    """把攒了一路的参数片段解析成 dict。
+
+    **解析不出来不能当没调过**：那是模型真的想调这个工具、只是参数写坏了。
+    带一个空 args 交给上层，上层会把工具的报错原样喂回去让它重写——
+    这正是原生协议比文本围栏强的地方：围栏解析失败会被当成"这段话就是答案"，静默。
+    """
+    out = []
+    for _, row in sorted(pending.items(), key=lambda kv: kv[0] if kv[0] is not None else 0):
+        try:
+            args = json.loads(row["json"]) if row["json"].strip() else {}
+        except json.JSONDecodeError:
+            args = {}
+        out.append({"id": row["id"], "name": row["name"], "args": args if isinstance(args, dict) else {}})
+    return out
+
+
+# ---------------------------------------------------------------- openai 兼容
+
+def _to_openai(messages: list[dict]) -> list[dict]:
+    """中立形状 → OpenAI 兼容的 messages。"""
+    out: list[dict] = []
+    for m in messages:
+        role = m.get("role")
+        if role == "tool":
+            out.append({"role": "tool", "tool_call_id": m.get("tool_call_id") or "",
+                        "content": m.get("content") or ""})
+            continue
+        calls = m.get("tool_calls") or []
+        if role == "assistant" and calls:
+            out.append({"role": "assistant", "content": _text_of(m) or None,
+                        "tool_calls": [{"id": c["id"], "type": "function",
+                                        "function": {"name": c["name"],
+                                                     "arguments": json.dumps(c.get("args") or {},
+                                                                             ensure_ascii=False)}}
+                                       for c in calls]})
+            continue
+        if _text_of(m).strip():
+            out.append({"role": role, "content": m["content"]})
+    return out
+
+
+def _openai_tools(tools: list[dict]) -> list[dict]:
+    return [{"type": "function", "function": {"name": t["name"], "description": t.get("description") or "",
+                                              "parameters": t.get("input_schema") or {"type": "object"}}}
+            for t in tools]
+
+
+def _chat_openai(messages: list[dict], provider: dict, model: str, on_delta,
+                 tools: list[dict] | None) -> tuple[str, list[dict], dict]:
     api_key = resolve_secret(provider.get("api_key")) or "none"
     base = provider["base_url"].rstrip("/")
     headers = {"Authorization": f"Bearer {api_key}"}
-    payload = {"model": model, "messages": [{"role": m["role"], "content": m.get("content") or ""}
-                                            for m in messages if (m.get("content") or "").strip()],
-               "stream": on_delta is not None}
+    payload = {"model": model, "messages": _to_openai(messages), "stream": on_delta is not None}
+    if tools:
+        payload["tools"] = _openai_tools(tools)
     if provider.get("max_tokens"):
         payload["max_tokens"] = int(provider["max_tokens"])
     if provider.get("temperature") is not None:
@@ -656,26 +916,47 @@ def _chat_openai(messages: list[dict], provider: dict, model: str, on_delta) -> 
     if on_delta is None:
         data = _post_json(f"{base}/chat/completions", headers, payload)
         try:
-            text = data["choices"][0]["message"]["content"]
+            msg = data["choices"][0]["message"]
         except (KeyError, IndexError, TypeError):
             raise SystemExit("OpenAI 兼容接口返回格式异常：\n" + json.dumps(data, ensure_ascii=False)[:800])
-        return text, empty_usage()
+        calls = [{"id": c.get("id") or "", "name": (c.get("function") or {}).get("name") or "",
+                  "args": _loads_args((c.get("function") or {}).get("arguments"))}
+                 for c in (msg.get("tool_calls") or [])]
+        return msg.get("content") or "", calls, empty_usage()
 
     payload["stream_options"] = {"include_usage": True}   # 不要它就拿不到这轮的 token 数
     parts, usage = [], empty_usage()
     usage["model"] = model
+    pending: dict[int, dict] = {}        # 流式的 tool_calls：name 只来一次，arguments 是碎片
     for _, data in _sse(f"{base}/chat/completions", headers, payload):
         for ch in data.get("choices") or []:
-            piece = (ch.get("delta") or {}).get("content") or ""
+            delta = ch.get("delta") or {}
+            piece = delta.get("content") or ""
             if piece:
                 parts.append(piece)
                 on_delta(piece)
+            for c in delta.get("tool_calls") or []:
+                row = pending.setdefault(c.get("index") or 0, {"id": "", "name": "", "json": ""})
+                if c.get("id"):
+                    row["id"] = c["id"]
+                fn = c.get("function") or {}
+                if fn.get("name"):
+                    row["name"] = fn["name"]
+                row["json"] += fn.get("arguments") or ""
         raw = data.get("usage") or {}
         if raw:
             usage["input_tokens"] = int(raw.get("prompt_tokens") or 0)
             usage["output_tokens"] = int(raw.get("completion_tokens") or 0)
             usage["cache_read_tokens"] = int((raw.get("prompt_tokens_details") or {}).get("cached_tokens") or 0)
-    return "".join(parts), usage
+    return "".join(parts), _finish_calls(pending), usage
+
+
+def _loads_args(raw) -> dict:
+    try:
+        data = json.loads(raw or "{}")
+    except (json.JSONDecodeError, TypeError):
+        return {}
+    return data if isinstance(data, dict) else {}
 
 
 def _sse(url: str, headers: dict, payload: dict):

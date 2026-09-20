@@ -13,6 +13,7 @@ import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from .facts import FACTS_HEADING, FM_DIMENSIONS, RE_FACT, section_bounds
 from .mdio import (RE_ID_OK, RE_NEXT_H2, RE_REL_HEADER, dump_frontmatter, read, split_frontmatter,
                     write)
 from .parser import LAYERS, LAYOUT_KEYS, STATUS_VALUES, digest_of
@@ -22,10 +23,11 @@ from .relations import Edge, parse_relations
 EDITABLE_FIELDS = ("name", "field", "layer", "params", "type", "status", "year", "start_year", "end_year",
                    "aliases", "tags", "desc", "learned", "source")
 CHANGE_TYPES = ("add_edge", "remove_edge", "update_edge", "update_frontmatter", "create_node",
-                "update_body", "append_body")
+                "update_body", "append_body", "set_fact")
 # 新建的知识点只允许落在这两棵树下（规范 2：nodes/ 是知识点，fields/ 是领域总览）
 NODE_ROOTS = ("nodes", "fields")
 MAX_BODY = 40000      # 正文写回的上限：编辑框写崩了也不至于把一个文件撑爆
+MAX_FACT = 400        # 一格对比表的上限：它是"一句话结论"，长解释该写进正文别处
 
 
 class ChangeRejected(Exception):
@@ -95,6 +97,63 @@ def _checked_body(change: dict) -> str:
     return text
 
 
+
+def _set_fact(body: str, tail: str, change: dict) -> tuple[str, str]:
+    """改 `## 速查` 里的一行（没有就追加，没有这一节就新建）。
+
+    **为什么不复用 `update_body`**：整段替换要求先把原文一字不落地读回来，而长笔记读回来
+    多半是截断过的——改一格表就把没看见的那半篇删掉，这个代价和"改一格"完全不成比例
+    （`server/chat.py` 里那条纪律说的就是这件事）。这条路径只碰一行，从根上免掉那个风险。
+
+    值给空就是删掉这一行：表格里清空一格，本意就是"这条我没有"，不是"写一个空字符串"。
+    """
+    key = str(change.get("key") or "").strip()
+    raw = change.get("value")
+    value = None if raw is None or not str(raw).strip() else " ".join(str(raw).split())
+    if not key or "::" in key or ":" in key or "：" in key:
+        raise ChangeRejected(f"速查的键不合法：`{key}`（不能为空，也不能含冒号）")
+    if key in FM_DIMENSIONS:
+        raise ChangeRejected(f"`{key}` 的真相在 frontmatter 的 `{FM_DIMENSIONS[key]}`，"
+                             f"改它要走 update_frontmatter——正文里再写一份就是双源")
+    if value and len(value) > MAX_FACT:
+        raise ChangeRejected(f"这一格太长（{len(value)} 字，上限 {MAX_FACT}）。"
+                             f"对比表的格子是一句话结论，长解释写进正文别处")
+
+    line = f"- {key}:: {value}"
+    span = section_bounds(body, FACTS_HEADING)
+    if span is None and section_bounds(tail, FACTS_HEADING) is not None:
+        # 已经有一节，只是写在了 `## 关系` 后面。这时候在前面再建一节就是**两个速查**，
+        # 而取数只看得见新的那个——旧的那些格子会像"从来没写过"一样消失。
+        raise ChangeRejected(f"这个节点的 `## {FACTS_HEADING}` 写在了 `## 关系` 后面，"
+                             f"那里的内容取数读不到。先把它整节挪到 `## 关系` 之前再改")
+    if span is None:
+        if value is None:
+            raise ChangeRejected(f"这个节点还没有 `## {FACTS_HEADING}` 这一节，没有 `{key}` 可删")
+        # 新建一节接在正文末尾——也就是 `## 关系` 之前（规范 3 要求速查写在关系段之前，
+        # 写到后面的话出题和摘要都读不到它）
+        return f"{body.rstrip(chr(10))}\n\n## {FACTS_HEADING}\n{line}\n", f"新建 ## {FACTS_HEADING} 并写入 {key}"
+
+    lines = body.split("\n")
+    start, end = span
+    for i in range(start + 1, min(end, len(lines))):
+        m = RE_FACT.match(lines[i])
+        if not m or m.group("key").strip() != key:
+            continue
+        old = m.group("value").strip()
+        if value is None:
+            del lines[i]
+            return "\n".join(lines), f"删掉速查 {key}（原来是「{old}」）"
+        lines[i] = line
+        return "\n".join(lines), f"速查 {key}：「{old}」→「{value}」"
+
+    if value is None:
+        raise ChangeRejected(f"速查里没有 `{key}` 这一行，删不掉")
+    # 插在这一节最后一个有字的行后面，别插到小节之间的空行前
+    at = max((i for i in range(start + 1, min(end, len(lines))) if lines[i].strip()), default=start)
+    lines.insert(at + 1, line)
+    return "\n".join(lines), f"速查新增 {key}：「{value}」"
+
+
 def apply_to_text(text: str, node_id: str, changes: list[dict]) -> tuple[str, list[str]]:
     """把这一批变更作用到单个文件的原文上，返回 (新原文, 变更说明)。"""
     fm_text, body, section, tail = split_sections(text)
@@ -151,6 +210,9 @@ def apply_to_text(text: str, node_id: str, changes: list[dict]) -> tuple[str, li
                 raise ChangeRejected(f"追加后正文太长（{len(body) + len(add)} 字，上限 {MAX_BODY}）")
             body = body.rstrip("\n") + "\n\n" + add.strip("\n") + "\n"
             notes.append(f"正文追加一段（+{len(add)} 字）")
+        elif kind == "set_fact":
+            body, note = _set_fact(body, tail, change)
+            notes.append(note)
         elif kind == "update_frontmatter":
             for key, value in (change.get("fields") or {}).items():
                 if key in LAYOUT_KEYS or key == "id":

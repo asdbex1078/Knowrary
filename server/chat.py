@@ -10,9 +10,11 @@
    的 dry_run 同一份代码），我看过 diff 点了才落盘（4.4「Agent 只提议不越权」）。
 2. **复习判定只许降级**（F10.5）：对话里看出答错可以直接记「忘了」，看出答对**不准**记「记得」。
    判严了最多多复习一次，判宽了会让一个其实已经忘了的点从此不再出现。
-3. **工具走文本协议，不用原生 function calling。** 默认 provider 是 `claude -p`（子进程），
-   它没有结构化工具接口；文本协议是 claude-cli / anthropic / openai 三种后端唯一都通的路，
-   也和现有 prompt「只输出 JSON」的做法同源。
+3. **工具协议有两套，按 provider 能力自动挑**——但这一层看不见。`_run` 永远把 schema 传下去、
+   永远拿结构化的 `calls` 回来，**一行 `if 围栏 else 原生` 都没有**。anthropic / openai 走
+   原生 tool use；`claude -p` 是子进程、没有结构化工具接口，由 `llm_backend` 用文本围栏适配。
+   原生是默认，因为围栏**失败是静默的**（捞不到 JSON 就当没调工具，那段话直接成了答案）；
+   围栏留着，因为 claude-cli 是零配置的默认 provider，砍了等于"想聊天先去开个 API key"。
 """
 from __future__ import annotations
 
@@ -57,7 +59,7 @@ READ_BUDGET = 16000      # 一次读多个节点时的总预算：省步数不�
 READ_MAX_IDS = 5
 _PROMPTS: dict[str, str] = {}
 
-# ```knowrary {...}``` —— 非贪婪，只认第一个块（prompt 里要求一次一个工具）
+# ```knowrary {...}``` —— 兜底用：工具走原生协议了，模型偶尔仍会手写一个块出来，别让它进正文
 _TOOL_RE = re.compile(r"```knowrary\s*(\{.*?\})\s*```", re.S)
 
 
@@ -639,37 +641,136 @@ def _into_list(vault: Path, project: str | None, born: list[str]) -> dict | None
 
 # 工具表：名字 → (实现, 给模型看的一行说明)。口径只决定**给它看见哪几行**——
 # 表里没有的调了会被退回去（`run` 里那句"没有 xx 这个工具"）。
-TOOL_DOC = {
-    "search_nodes": "`q`、`limit`（默认 8） | 按关键字找节点。**讲任何一个概念之前先搜一下**，看我图里有没有",
-    "read_node": ("`id` 或 `ids`（一次最多 5 个），可选 `outline: true`（只看目录）、`section`（只读某一节） | "
-                  "读节点的正文和关系。要引用我已有的笔记就先读它，别凭印象说「你笔记里写过」。"
-                  "**要往好几个节点补内容时一次把它们全读进来**，别一个一个读。"
-                  "搜索结果标了「长笔记」的，先 `outline` 看目录再按 `section` 读那一节，别整篇读了又被截断"),
-    "overview": "无 | 图谱概况：节点数、领域、还有多少壳",
-    "today": "无 | 今日清单：错题 / 到期复习 / 计划里还没建的点",
-    "projects": ("可选 `project`（项目 id 或名字） | 我的项目、清单、进度和时间账（还剩多少、来不来得及）。"
-                 "**要核对某一个项目就带上 `project`**，别把所有项目全拉进来；不传是全量"),
-    "quiz": "`node_ids`、`count`（默认 3） | 按这些节点出题考我",
-    "record_review": "`id`、`grade` | 记一次复习。**只能记「忘了」**，见下面的纪律",
-    "propose_changes": "`changes` | 提议把学到的东西写进图谱。**只是提议**，会变成一张卡片等我点「写入」",
-    "propose_project": "`id`、`name`、`field`、`level`、`lists` | 提议建一个项目，或往现有项目里加一份清单。同样只是卡片",
-    "propose_points": "`project`、`list`、`goal` | 把某个项目的某份清单拆成知识点。走面板上「让 AI 拆一份」同一条链路，同样出卡片",
-    "propose_list_edit": ("`project`、`list`、`edits` | 提议改清单里**已有**的条目：换 id / 删掉 / 改负荷说明。"
-                          "**看出清单里有错的、重复的、该删的，直接提这张卡**，别让我自己去面板改"),
+# 工具表：**一份数据，三个用途**——渲染给人看的说明书、生成给模型的 JSON Schema、当白名单。
+#
+# 原来只有说明书那一份（一段自然语言写的参数描述），因为工具协议是文本围栏：模型照着
+# 说明书写一个 ```knowrary {...}``` 块，服务端用正则去捞。捞不着就当它没调工具，
+# 那段话直接被当成答案——**失败是静默的**。现在走原生 tool use，参数形状由 schema 约束、
+# 调用以结构化字段回来，所以参数必须是结构化的。
+#
+# §3.4 那条纪律照旧：说明书、schema、白名单是同一份数据。"表里写着能用、调了却说没有"
+# 是最让人发火的那种 bug，两边各写一遍迟早对不上。
+TOOLS_SPEC: dict[str, dict] = {
+    "search_nodes": {
+        "doc": "按关键字找节点。**讲任何一个概念之前先搜一下**，看我图里有没有",
+        "params": {"q": ("string", "关键字，多个词用空格隔开，任一词命中即算"),
+                   "limit": ("integer", "返回几条，默认 8")},
+        "required": ["q"],
+    },
+    "read_node": {
+        "doc": ("读节点的正文和关系。要引用我已有的笔记就先读它，别凭印象说「你笔记里写过」。"
+                "**要往好几个节点补内容时一次把它们全读进来**，别一个一个读。"
+                "搜索结果标了「长笔记」的，先 `outline` 看目录再按 `section` 读那一节，别整篇读了又被截断"),
+        "params": {"id": ("string", "要读的节点 id"),
+                   "ids": (["array", "string"], "一次读多个节点，最多 5 个"),
+                   "outline": ("boolean", "只看目录，不读正文"),
+                   "section": ("string", "只读某一节（填小标题）")},
+        "required": [],
+    },
+    "overview": {"doc": "图谱概况：节点数、领域、还有多少壳", "params": {}, "required": []},
+    "today": {"doc": "今日清单：错题 / 到期复习 / 计划里还没建的点", "params": {}, "required": []},
+    "projects": {
+        "doc": ("我的项目、清单、进度和时间账（还剩多少、来不来得及）。"
+                "**要核对某一个项目就带上 `project`**，别把所有项目全拉进来；不传是全量"),
+        "params": {"project": ("string", "项目 id 或名字；不传就是全量")},
+        "required": [],
+    },
+    "quiz": {
+        "doc": "按这些节点出题考我",
+        "params": {"node_ids": (["array", "string"], "要考的节点 id"),
+                   "count": ("integer", "出几道，默认 3，最多 10")},
+        "required": ["node_ids"],
+    },
+    "record_review": {
+        "doc": "记一次复习。**只能记「忘了」**，见下面的纪律",
+        "params": {"id": ("string", "节点 id"),
+                   "grade": ("string", "只能是「忘了」；判「记得」得我自己点")},
+        "required": ["id", "grade"],
+    },
+    "propose_changes": {
+        "doc": "提议把学到的东西写进图谱。**只是提议**，会变成一张卡片等我点「写入」",
+        "params": {"changes": (["array", "object"], "变更集，形状见下面的格式说明")},
+        "required": ["changes"],
+    },
+    "propose_project": {
+        "doc": "提议建一个项目，或往现有项目里加一份清单。同样只是卡片",
+        "params": {"id": ("string", "项目 id，只能 ASCII 字母数字 `_` `-`（它会成为文件名）"),
+                   "name": ("string", "项目名，中文放这里"),
+                   "field": ("string", "顶层领域"),
+                   "level": ("string", "学到什么份上：了解 / 会用 / 精通"),
+                   "weekly_hours": ("number", "每周投入几小时"),
+                   "lists": (["array", "object"], "要建的清单，形状见下面的格式说明")},
+        "required": ["id", "name", "field", "level"],
+    },
+    "propose_points": {
+        "doc": "把某个项目的某份清单拆成知识点。走面板上「让 AI 拆一份」同一条链路，同样出卡片",
+        "params": {"project": ("string", "项目 id"),
+                   "list": ("string", "清单名"),
+                   "goal": ("string", "这份清单要达成什么")},
+        "required": ["project", "list"],
+    },
+    "propose_list_edit": {
+        "doc": ("提议改清单里**已有**的条目：换 id / 删掉 / 改负荷说明。"
+                "**看出清单里有错的、重复的、该删的，直接提这张卡**，别让我自己去面板改"),
+        "params": {"project": ("string", "项目 id"),
+                   "list": ("string", "清单名"),
+                   "edits": (["array", "object"], "要做的改动，形状见下面的格式说明")},
+        "required": ["project", "list", "edits"],
+    },
 }
+
+
+def _param_brief(spec: dict) -> str:
+    """说明书里那一列参数。必填的加星号——schema 会拦住，但人看表时也该一眼看出来。"""
+    if not spec["params"]:
+        return "无"
+    req = set(spec["required"])
+    return "、".join(f"`{k}`" + ("**（必填）**" if k in req else "") for k in spec["params"])
+
+
+# 说明书那一份：`| 工具 | 参数 | 用途 |` 三列里的后两列，从 TOOLS_SPEC 渲染出来
+TOOL_DOC = {name: f"{_param_brief(spec)} | {spec['doc']}" for name, spec in TOOLS_SPEC.items()}
+
+
+def _json_type(t) -> dict:
+    if isinstance(t, list):                       # ("array", 元素类型)
+        return {"type": "array", "items": {"type": t[1]}}
+    return {"type": t}
+
+
+def tool_schemas(names) -> list[dict]:
+    """白名单 → 给模型的工具定义（Anthropic 字段名；openai 那侧在 llm_backend 里翻译）。
+
+    **只渲染白名单里的**：复习那一档关掉时 `quiz` / `record_review` 是真的被收走，
+    不是留着工具再叮嘱一句"别用"——手段还在手里、只靠一句话拦着，那是压制不是关闭。
+    """
+    out = []
+    for name in names:
+        spec = TOOLS_SPEC.get(name)
+        if not spec:
+            continue
+        props = {k: {**_json_type(t), "description": desc} for k, (t, desc) in spec["params"].items()}
+        out.append({"name": name, "description": spec["doc"],
+                    "input_schema": {"type": "object", "properties": props,
+                                     "required": list(spec["required"])}})
+    return out
+
 
 READ_ONLY = ("search_nodes", "read_node", "overview")
 
-# 两个"要写东西"的工具得多给一段格式说明。**跟着白名单一起渲染**——
+# 三个"要写东西"的工具得多给一段格式说明。**跟着白名单一起渲染**——
 # 写死在基底里的话，面试口径的说明书上会白纸黑字写着一个它调不动的工具。
+#
+# schema 只能说清参数的**形状**（类型、必填），说不清**什么时候该用哪个**
+# （`append_body` 还是 `update_body`、几件事要不要拆成几张卡、正文该写到什么份上）。
+# 那些是纪律，仍然只能用散文写，所以这一份没有被 schema 取代。
 FORMAT_DOC = {
-    "propose_project": """建项目长这样（`id` 只能 ASCII，它会成为文件名；中文放 `name`）：
+    "propose_project": """`propose_project` 的参数长这样（`id` 只能 ASCII，它会成为文件名；中文放 `name`）：
 
-```knowrary
-{"tool": "propose_project", "args": {
-  "id": "nlp", "name": "NLP 方向", "field": "AI", "level": "会用", "weekly_hours": 7,
-  "lists": [{"kind": "学习", "name": "主线", "goal": "三个月吃透 Transformer 到 RLHF",
-             "target_date": "2026-12-15"}]}}
+```json
+{"id": "nlp", "name": "NLP 方向", "field": "AI", "level": "会用", "weekly_hours": 7,
+ "lists": [{"kind": "学习", "name": "主线", "goal": "三个月吃透 Transformer 到 RLHF",
+            "target_date": "2026-12-15"}]}
 ```
 
 一个项目下可以有好几份清单，`kind` 决定怎么拆：`学习`（按依赖顺序）/ `面试`（按会怎么问）/
@@ -680,14 +781,13 @@ FORMAT_DOC = {
 它一路决定出题深浅、拆点拆多细——按他刚才说的目标挑，别一律给默认档。
 
 **先建项目，再拆点**——拆点是另一步，别在同一条消息里全干完。""",
-    "propose_list_edit": """改清单里**已有**的条目长这样（只动 `projects.json`，不碰 md）：
+    "propose_list_edit": """改清单里**已有**的条目（只动 `projects.json`，不碰 md），参数长这样：
 
-```knowrary
-{"tool": "propose_list_edit", "args": {
-  "project": "transformer", "list": "主线", "edits": [
-    {"op": "rename", "id": "多头注意力", "to": "MHA"},
-    {"op": "drop", "id": "符号主义与连接主义"},
-    {"op": "set", "id": "MLA", "load": "重", "why": "要能推导才算过"}]}}
+```json
+{"project": "transformer", "list": "主线", "edits": [
+  {"op": "rename", "id": "多头注意力", "to": "MHA"},
+  {"op": "drop", "id": "符号主义与连接主义"},
+  {"op": "set", "id": "MLA", "load": "重", "why": "要能推导才算过"}]}
 ```
 
 - `rename` 换 id：**同一个概念在两份清单里写成了两个 id** 时用它（节点已经建成 `MHA`，
@@ -697,10 +797,10 @@ FORMAT_DOC = {
 - `set` 改字段：只能改 `name` / `why` / `load`（负荷三档 `轻 / 中 / 重`，它直接决定时间账）。
 
 **这张卡不改 md，也不会把节点从图里删掉**——清单只是引用一组 id。真要动节点，那是 `propose_changes`。""",
-    "propose_changes": """`propose_changes` 的 `changes` 和图谱的 ChangeSet 同一个形状，七种改动：
+    "propose_changes": """`propose_changes` 的 `changes` 和图谱的 ChangeSet 同一个形状，八种改动：
 
-```knowrary
-{"tool": "propose_changes", "args": {"changes": [
+```json
+{"changes": [
   {"type": "create_node", "source": "NPU", "path": "nodes/02-计算机硬件/NPU.md",
    "fields": {"name": "NPU", "field": "计算机系统", "layer": "硬件", "year": 2017,
               "desc": "一句话摘要（显示层：画布卡片上就这一句）",
@@ -712,8 +812,9 @@ FORMAT_DOC = {
   {"type": "remove_edge", "source": "GQA", "relation": "演化为", "target": "MLA"},
   {"type": "update_edge", "source": "GQA", "target": "MLA", "from_relation": "对比",
    "note": "两条路，不是一条线上的先后"},
-  {"type": "update_frontmatter", "source": "内存墙", "fields": {"desc": "改过的一句话摘要"}}
-]}}
+  {"type": "update_frontmatter", "source": "内存墙", "fields": {"desc": "改过的一句话摘要"}},
+  {"type": "set_fact", "source": "jieba", "key": "核心方法", "value": "词典 + HMM，一句话结论"}
+]}
 ```
 
 **往已有节点里补东西，默认用 `append_body`**：它只往正文尾部接一段，不动我原来写的字，
@@ -734,6 +835,12 @@ FORMAT_DOC = {
   `id` 和画布坐标（`x / y / w / h / group / collapsed / pinned`）永远改不了，提了整批退回。
   给空串等于删掉这一行。`status` 只能填 `active / deprecated / disputed / stub`；
   `params` 是参数量、按 `175B` / `340M` / `1.3万亿` 这样写（拿来在图上比大小，不是规格表）。
+
+`set_fact` 改的是正文 `## 速查` 里的**一行**（横向对比表的一格）：`key` 是维度名、
+`value` 是一句话结论（30 字上下，长解释写进正文别处），`value` 给空就是删掉这一行。
+它只碰那一行，所以**不要求你把全文背回来**——改一格表用 `update_body` 是拿整篇的风险
+换一句话的收益。`年份` / `参数量` / `抽象层` 不走这里（它们的真相在 frontmatter），
+改那三个用 `update_frontmatter`。
 
 **`desc` 尤其要盯。** 正文改完、`desc` 还停在旧说法上，是这套图最容易攒下的烂账——
 `update_body` / `append_body` **碰不到 frontmatter**，摘要只能靠 `update_frontmatter` 单独改。
@@ -1214,10 +1321,11 @@ def _graph_snapshot(vault: Path) -> str:
 
 
 def strip_tools(text: str) -> str:
-    """把工具块从要给人看的文本里摘掉。
+    """把工具块从要给人看的文本里摘掉。**现在是兜底，不是协议的一部分。**
 
-    流式增量里也会带着这个块，前端按同一条正则过滤——**两边用同一个形状**，
-    否则会出现"聊天记录里没有、屏幕上闪过一段 JSON"这种事。
+    工具调用已经走原生 tool use，正文里本不该再出现 ```knowrary 块。但模型见过太多
+    这种写法，偶尔还是会手写一个出来——那既不会被执行，也不该让人在屏幕上看见一段 JSON。
+    前端按同一条正则过滤（`stripToolBlocks`），**两边用同一个形状**。
     """
     return _TOOL_RE.sub("", text or "").strip()
 
@@ -1265,20 +1373,8 @@ def _fit_history(msgs: list[dict]) -> tuple[list[dict], int]:
     return kept, len(msgs) - len(kept)
 
 
-def _parse_tool(text: str) -> tuple[str, dict] | None:
-    m = _TOOL_RE.search(text or "")
-    if not m:
-        return None
-    try:
-        call = json.loads(m.group(1))
-    except json.JSONDecodeError:
-        return None
-    name = str(call.get("tool") or "")
-    return (name, call.get("args") or {}) if name else None
-
-
 def llm_session_key(req: ChatRequest) -> str:
-    """给 LLM 后端认这一段对话的钥匙。
+    """续接缓存（`server/turns.py`）认这一段对话的钥匙。
 
     和留档用的 `req.session` 不是一回事：口径换了系统提示词就换了，不能续同一段；
     项目换了图的范围也变了。三样拼起来才是"同一段上下文"。
@@ -1286,18 +1382,23 @@ def llm_session_key(req: ChatRequest) -> str:
     return f"{req.project or '_scratch'}|{req.session or '_'}|{req.stance or DEFAULT_STANCE}"
 
 
-def _stream(vault: Path, messages: list[dict], op: str = "chat", session: str | None = None):
+def _stream(vault: Path, messages: list[dict], tools: list[dict], op: str = "chat",
+            session: str | None = None):
     """在后台线程里跑一次 LLM 调用，把增量从队列里取出来往外 yield。
 
     生成器里没法从回调 yield，所以只能用队列过一道。
+    收尾那条 `_done` 带着 `calls`：模型这一步调了哪几个工具，**结构化地**回来。
+    底下用的是原生 tool use 还是文本围栏，由 provider 的能力决定，这里看不见——
+    适配关在 `llm_backend` 里，循环只有一条代码路径（见那边的 §多轮对话 + 工具协议）。
     """
     q: queue.Queue = queue.Queue()
     box: dict = {}
 
     def work() -> None:
         try:
-            box["text"], box["usage"] = llm_chat(vault, "learn", messages, op=op,
-                                                 on_delta=lambda t: q.put(t), session=session)
+            box["text"], box["calls"], box["usage"] = llm_chat(
+                vault, "learn", messages, tools=tools, op=op, on_delta=lambda t: q.put(t),
+                session=session)
         except BaseException as exc:             # SystemExit 是 llm_backend 的报错方式
             box["error"] = str(exc)
         finally:
@@ -1313,7 +1414,8 @@ def _stream(vault: Path, messages: list[dict], op: str = "chat", session: str | 
     th.join()
     if box.get("error"):
         raise RuntimeError(box["error"])
-    yield {"type": "_done", "text": box.get("text") or "", "usage": box.get("usage") or {}}
+    yield {"type": "_done", "text": box.get("text") or "", "calls": box.get("calls") or [],
+           "usage": box.get("usage") or {}}
 
 
 def run(vault: Path, req: ChatRequest):
@@ -1372,8 +1474,8 @@ def _rebuild(vault: Path, req: ChatRequest, history: list[dict], dropped: int) -
 def _assemble(vault: Path, req: ChatRequest, history: list[dict], dropped: int) -> list[dict]:
     """拼这一轮要发的消息。**能续就只追加最后那句话**，续不上才整段重建（复盘 §11.2）。
 
-    要守住的性质只有一条：**只增不改**。claude-cli 靠前缀指纹续会话、anthropic 靠缓存断点、
-    openai 靠自动前缀缓存——三条路要的是同一件事，前面那一截一个字都别动。
+    要守住的性质只有一条：**只增不改**。anthropic 靠缓存断点、openai 靠自动前缀缓存——
+    两条路要的是同一件事，前面那一截一个字都别动。
     前端回传的可见轮次不再用来重建上下文，只用来证明"这一段没被改过"（见 turns.resume）。
     """
     prior = turns.resume(vault, llm_session_key(req), history)
@@ -1388,90 +1490,78 @@ def _assemble(vault: Path, req: ChatRequest, history: list[dict], dropped: int) 
     return messages
 
 
-def _run(vault: Path, req: ChatRequest):
-    history, dropped = _fit_history([m.model_dump() for m in req.messages])
-    if not history or history[-1]["role"] != "user":
-        raise ChatRejected("最后一条必须是我说的话")
-    user_ts = append_log(vault, "user", history[-1]["content"], project=req.project,
-                         session=req.session, stance=req.stance or DEFAULT_STANCE)
+def _invoke(vault: Path, name: str, args: dict, allowed: set, cached: str | None) -> tuple[str, dict]:
+    """跑一个工具。**三条非正常路径一条都不抛**，全都把话说给模型听，对话继续往下走。
 
-    allowed = set(tools_of(req.stance, vault))   # 和说明书同一份数据，复习关掉就真的调不动
-    messages = _assemble(vault, req, history, dropped)
-    said: list[str] = []      # 过程：每一次"还要接着调工具"的那段话
-    answer = ""
-    last_raw = ""             # 收尾那段的**原文**：存进续接缓存的是它，不是剥过工具块的版本
-    # 同一轮里同参数的工具调用只真跑一次：模型确实会连着用一模一样的参数再搜一遍
-    # （真实对话里观察到的），每重复一次就白烧一个来回。
-    seen_calls: dict[str, str] = {}
-    for step in range(MAX_STEPS):
-        text = ""
-        usage: dict = {}
-        for ev in _stream(vault, messages, op=f"chat-{req.stance or DEFAULT_STANCE}",
-                          session=llm_session_key(req)):
-            if ev["type"] == "delta":
-                yield ev
-            else:
-                text, usage = ev["text"], ev["usage"]
-        step_text = strip_tools(text)
-        call = _parse_tool(text)
-        if not call:
-            # 不再调工具 = 这一段就是答案本身。前面那些"我先查一下""工具挂了"是过程，
-            # 拼进正文的话，每次都要在一堆过程里找那几句有营养的（真实使用里最费时间的一点）。
-            answer, last_raw = step_text, text
-            break
-        said.append(step_text)
+    1. 同参数重复调用：真实对话里模型会用一模一样的参数再搜一遍，每重复一次白烧一个来回。
+       第二次直接还回上次的结果，并明说别再调了。
+    2. 调了白名单外的工具：回一句"这一档没有它，可用的是…"，不报错。
+    3. 工具自己炸了：告诉模型它炸了，同时记一笔——工具出错原来只在那一轮对话里闪一下，
+       "这东西为什么老出问题"没有任何地方能回答（layer 那个白名单 bug 就是这么藏了一阵）。
+    """
+    if cached is not None:
+        return (f"这次调用和刚才那次一模一样，结果没变，不再跑一遍：\n{cached}"
+                f"\n\n**直接用这个结果回答，不要再调工具了。**"), {}
+    fn = TOOLS.get(name) if name in allowed else None
+    if fn is None:
+        return f"这一档口径下没有 `{name}` 这个工具。可用的是：{'、'.join(sorted(allowed))}。", {}
+    try:
+        return fn(vault, args)
+    except Exception as exc:
+        log.warning("工具 %s 失败：%s", name, exc)
+        core.record_issue(vault, "tool", f"{type(exc).__name__}: {exc}", where=name,
+                          detail={"args": json.dumps(args, ensure_ascii=False)[:200]})
+        return f"工具 `{name}` 执行失败：{exc}", {}
 
-        name, args = call
-        key = f"{name}:{json.dumps(args, ensure_ascii=False, sort_keys=True)}"
+
+def _tool_events(name: str, args: dict, result: str, extra: dict):
+    """一次工具调用要往 SSE 上推的那几条。**事件是有类型的**，前端按类型渲染不解析文本。"""
+    yield {"type": "tool", "name": name, "args": args,
+           "summary": result[:200], **{k: v for k, v in extra.items() if k in ("card", "quiz")}}
+    for field, key in (("card", "card"), ("project", "project"), ("points", "points"),
+                       ("list_edit", "list_edit")):
+        if extra.get(field):
+            yield {"type": key, key: extra[field]}
+    if extra.get("id") and name == "record_review":
+        yield {"type": "review", "id": extra["id"], "next_due": extra.get("next_due")}
+
+
+def _step_calls(vault: Path, req: ChatRequest, calls: list[dict], turn: dict):
+    """跑完这一步的全部工具调用，`yield` 事件，返回要接到消息列表尾巴上的那几条结果。
+
+    **一步里可以有好几个工具调用。** 文本围栏时代只能一次一个（一个块、然后停下），
+    于是"搜一下再读三个节点"要烧掉四个来回。原生协议本来就允许并行，这里跟着放开。
+
+    `turn` 是这一轮的随身物：`allowed`（白名单）、`seen_calls`（同参去重）、`user_ts`（留档锚点）。
+    """
+    results: list[dict] = []
+    for call in calls:
+        name, raw_args = call["name"], call.get("args") or {}
+        key = f"{name}:{json.dumps(raw_args, ensure_ascii=False, sort_keys=True)}"
         # 当前项目 / 会话 / 这一轮的锚点跟着一起传进工具：在某个项目里聊天，today 和出题范围
         # 都该是这个项目的；卡片流水要靠 session 和 turn 把卡和回合对上。
         # 放在 key 之后算，免得它们进了去重键。
-        args = {**args, "_project": req.project or "", "_session": req.session or "",
-                "_turn": user_ts or ""}
-        fn = TOOLS.get(name) if name in allowed else None
-        if key in seen_calls:
-            result, extra = (f"这次调用和刚才那次一模一样，结果没变，不再跑一遍：\n{seen_calls[key]}"
-                             f"\n\n**直接用这个结果回答，不要再调工具了。**"), {}
-        elif fn is None:
-            result, extra = (f"这一档口径下没有 `{name}` 这个工具。"
-                             f"可用的是：{'、'.join(sorted(allowed))}。"), {}
-        else:
-            try:
-                result, extra = fn(vault, args)
-            except Exception as exc:             # 工具炸了也要让对话继续，把错误告诉模型
-                log.warning("工具 %s 失败：%s", name, exc)
-                # 记一笔：工具出错原来只在那一轮对话里闪一下，
-                # "这东西为什么老出问题"没有任何地方能回答（layer 那个白名单 bug 就是这么藏了一阵）
-                core.record_issue(vault, "tool", f"{type(exc).__name__}: {exc}", where=name,
-                                  detail={"args": json.dumps(args, ensure_ascii=False)[:200]})
-                result, extra = f"工具 `{name}` 执行失败：{exc}", {}
-        seen_calls.setdefault(key, result)
-        yield {"type": "tool", "name": name, "args": args,
-               "summary": result[:200], **{k: v for k, v in extra.items() if k in ("card", "quiz")}}
-        if extra.get("card"):
-            yield {"type": "card", "card": extra["card"]}
-        if extra.get("project"):
-            yield {"type": "project", "project": extra["project"]}
-        if extra.get("points"):
-            yield {"type": "points", "points": extra["points"]}
-        if extra.get("list_edit"):
-            yield {"type": "list_edit", "list_edit": extra["list_edit"]}
-        if extra.get("id") and name == "record_review":
-            yield {"type": "review", "id": extra["id"], "next_due": extra.get("next_due")}
+        args = {**raw_args, "_project": req.project or "", "_session": req.session or "",
+                "_turn": turn["user_ts"] or ""}
+        result, extra = _invoke(vault, name, args, turn["allowed"], turn["seen_calls"].get(key))
+        turn["seen_calls"].setdefault(key, result)
+        yield from _tool_events(name, args, result, extra)
+        results.append({"role": "tool", "tool_call_id": call.get("id") or "",
+                        "name": name, "content": result})
+    return results
 
-        messages = messages + [{"role": "assistant", "content": text},
-                               {"role": "user", "content": f"[工具 {name} 的结果]\n{result}"}]
-    else:
-        yield {"type": "tool", "name": "（停）", "args": {},
-               "summary": f"连着调了 {MAX_STEPS} 次工具还没给出回答，这一轮到此为止。"}
-        answer = said.pop() if said else ""      # 用尽了步数：最后说的那段当答案
 
-    trace = [t for t in said if t.strip()]
+def _wrap_up(vault: Path, req: ChatRequest, history: list[dict], turn: dict):
+    """收尾：算高亮、摘检验题、存续接缓存、留档，最后推 `done`。
+
+    `turn` 带着循环跑出来的东西：`said` / `answer` / `last_raw` / `messages` / `usage` / `user_ts`。
+    """
+    trace = [t for t in turn["said"] if t.strip()]
     # 高亮按"这一轮提到过谁"算，所以连过程一起看——图上该亮的节点常常是查出来的那个
-    touched = _mentioned(vault, "\n\n".join([*trace, answer]))
+    touched = _mentioned(vault, "\n\n".join([*trace, turn["answer"]]))
     # 讲完一段随口问的那个检验问题：攒进题库。它是**在我刚学完那一刻、对着我当时的理解**
     # 提出来的，比事后让模型看着 md 现编的题贴身；而且它已经生成过一次了，别再付第二次钱。
-    answer, checks = pull_checks(answer, touched)
+    answer, checks = pull_checks(turn["answer"], touched)
     for c in checks:
         try:
             row = core.add_question(vault, c["stem"], c["points"], source="chat")
@@ -1484,16 +1574,62 @@ def _run(vault: Path, req: ChatRequest):
     # `visible` 是下一轮用来证明"这一段没被改过"的，必须和前端会回传的内容**逐字一致**——
     # 所以存的是 pull_checks 之后的 answer（```check 围栏已经摘掉，前端拿到的就是它）。
     # 步数用尽那一轮不存：它的内部列表结尾是半截工具结果，接着往下发没有意义。
-    if last_raw and answer.strip():
+    if turn["last_raw"] and answer.strip():
         turns.remember(vault, llm_session_key(req),
                        visible=[*history, {"role": "assistant", "content": answer}],
-                       messages=[*messages, {"role": "assistant", "content": last_raw}])
+                       messages=[*turn["messages"], {"role": "assistant", "content": turn["last_raw"]}])
     ts = append_log(vault, "assistant", answer, node_ids=touched, project=req.project,
                     session=req.session, stance=req.stance or DEFAULT_STANCE, trace=trace)
     # node_ids 从调试信息升级成了界面契约：「聊到哪、图上亮哪」靠它（重构方案 §8 第 4 条）
     # ts / user_ts 同理：梳理游标就停在某一条留档上，界面得知道这两条各自是哪一条。
-    yield {"type": "done", "text": answer, "trace": trace, "usage": usage, "node_ids": touched,
-           "ts": ts, "user_ts": user_ts}
+    yield {"type": "done", "text": answer, "trace": trace, "usage": turn["usage"],
+           "node_ids": touched, "ts": ts, "user_ts": turn["user_ts"]}
+
+
+def _run(vault: Path, req: ChatRequest):
+    history, dropped = _fit_history([m.model_dump() for m in req.messages])
+    if not history or history[-1]["role"] != "user":
+        raise ChatRejected("最后一条必须是我说的话")
+    allowed = tools_of(req.stance, vault)        # 和说明书、schema 同一份数据，复习关掉就真的调不动
+    turn = {
+        "user_ts": append_log(vault, "user", history[-1]["content"], project=req.project,
+                              session=req.session, stance=req.stance or DEFAULT_STANCE),
+        "allowed": set(allowed),
+        # 同一轮里同参数的工具调用只真跑一次：模型确实会连着用一模一样的参数再搜一遍
+        # （真实对话里观察到的），每重复一次就白烧一个来回。
+        "seen_calls": {},
+        "said": [],            # 过程：每一次"还要接着调工具"的那段话
+        "answer": "",
+        "last_raw": "",        # 收尾那段的**原文**：存进续接缓存的是它，不是剥过工具块的版本
+        "messages": _assemble(vault, req, history, dropped),
+        "usage": {},
+    }
+    tools = tool_schemas(allowed)
+    for _ in range(MAX_STEPS):
+        text, calls = "", []
+        for ev in _stream(vault, turn["messages"], tools, op=f"chat-{req.stance or DEFAULT_STANCE}",
+                          session=llm_session_key(req)):
+            if ev["type"] == "delta":
+                yield ev
+            else:
+                text, calls, turn["usage"] = ev["text"], ev["calls"], ev["usage"]
+        step_text = strip_tools(text)
+        if not calls:
+            # 不再调工具 = 这一段就是答案本身。前面那些"我先查一下""工具挂了"是过程，
+            # 拼进正文的话，每次都要在一堆过程里找那几句有营养的（真实使用里最费时间的一点）。
+            turn["answer"], turn["last_raw"] = step_text, text
+            break
+        turn["said"].append(step_text)
+        results = yield from _step_calls(vault, req, calls, turn)
+        turn["messages"] = turn["messages"] + [{"role": "assistant", "content": text,
+                                                "tool_calls": calls}] + results
+    else:
+        yield {"type": "tool", "name": "（停）", "args": {},
+               "summary": f"连着调了 {MAX_STEPS} 次工具还没给出回答，这一轮到此为止。"}
+        # 用尽了步数：最后说的那段当答案
+        turn["answer"] = turn["said"].pop() if turn["said"] else ""
+
+    yield from _wrap_up(vault, req, history, turn)
 
 
 def _mentioned(vault: Path, text: str) -> list[str]:

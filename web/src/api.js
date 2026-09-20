@@ -46,6 +46,13 @@ export const fetchInbox = () => request('/api/inbox')
 export const fetchDigest = () => request('/api/digest')
 export const fetchDue = () => request('/api/review/due')
 
+// —— 横向对比：两个只读接口，表是现算的，没有第二份数据 ——
+export const fetchCompareGroups = () => request('/api/compare')
+export const fetchCompareTable = (id) => request(`/api/compare/${encodeURIComponent(id)}`)
+/** 补空格子：一次调用问完整张表。只提议，写回仍走 /api/changes 的 set_fact。 */
+export const postCompareFill = (id, body) =>
+  postJSON(`/api/compare/${encodeURIComponent(id)}/propose`, body)
+
 /** 把 Inbox 节点放上画布。不给 group/at 就由服务端按邻居投票找位置。 */
 export const postPlace = (body) => request('/api/place', {
   method: 'POST',

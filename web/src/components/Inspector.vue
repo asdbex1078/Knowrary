@@ -172,6 +172,19 @@ const CHANGE_ICON = { add_edge: 'plus', remove_edge: 'trash', update_edge: 'penc
                   <dt>权重</dt><dd class="tnum">{{ (selected.weight * 100).toFixed(0) }}% · pageRank</dd>
                 </template>
                 <template v-if="detail"><dt>文件</dt><dd>{{ detail.path }}</dd></template>
+                <!-- 来源：这个点是从哪篇文章 / 哪张图导进来的。
+                     翻两三个节点就能看出「这批是一次倒进来的」，而这件事以前在界面上完全不可见。
+                     source 存的是文件名不是路径，能不能打开由服务端找过一次才知道（source_uri）。 -->
+                <template v-if="selected.source">
+                  <dt>来源</dt>
+                  <dd>
+                    <a v-if="detail?.source_uri" :href="detail.source_uri"
+                       title="在 Obsidian 里打开原文">{{ selected.source }}</a>
+                    <span v-else class="muted"
+                          :title="detail ? '原文不在仓库里（可能是一张图、一篇论文，或者导完就扔了）' : '先打开这个节点'">
+                      {{ selected.source }}</span>
+                  </dd>
+                </template>
               </dl>
 
               <div v-if="detail" class="act-row">

@@ -14,6 +14,8 @@ import assert from 'node:assert/strict'
 import { blankMenu, buildMenu, edgeMenu, groupMenu, nodeMenu } from '../src/canvas/menus.js'
 import { ancestors, computeCollapsed } from '../src/canvas/lod.js'
 import { timelineOptions } from '../src/canvas/timeline.js'
+import { level, weekColumns } from '../src/panels/heat.js'
+import { localISO, todayISO } from '../src/today.js'
 
 const CASES = []
 const test = (name, fn) => CASES.push([name, fn])
@@ -158,6 +160,86 @@ test('时间线选项来自 layout 的分组，空 layout 不炸', () => {
   assert.deepEqual(timelineOptions(null), [])
   const opts = timelineOptions({ groups: { g: { name: '硬件' } }, nodes: { a: { group: 'g' } } })
   assert.ok(Array.isArray(opts))
+})
+
+/** 真实布局的形状：顶层按主题、二级按抽象层，于是二级里必然有一堆重名。 */
+const twoFields = {
+  groups: {
+    'g-计算机系统': { name: '计算机系统' },
+    'g-计算机系统--理论': { name: '理论', parent: 'g-计算机系统' },
+    'g-计算机系统--硬件': { name: '硬件', parent: 'g-计算机系统' },
+    'g-AI': { name: 'AI' },
+    'g-AI--理论': { name: '理论', parent: 'g-AI' },
+    'g-AI--AI应用': { name: 'AI应用', parent: 'g-AI' },
+  },
+}
+
+test('重名的二级分组带上父级——选择器里不能并排站两个「理论」', () => {
+  // 布局按「主题 × 抽象层」铺开，理论 / 硬件 / 体系结构 / 系统软件 / AI应用 天然各有两份。
+  // 只显示 name 的话点哪个全靠试，等于把这个功能藏了一半。
+  const byId = new Map(timelineOptions(twoFields).map((o) => [o.id, o.name]))
+  assert.equal(byId.get('g-计算机系统--理论'), '计算机系统／理论')
+  assert.equal(byId.get('g-AI--理论'), 'AI／理论')
+  assert.equal(byId.get('g-计算机系统--硬件'), '硬件', '不重名的不该加前缀，加了只是啰嗦')
+  assert.equal(byId.get('g-计算机系统'), '计算机系统', '顶层没有父级，原样')
+  const names = [...byId.values()]
+  assert.equal(new Set(names).size, names.length, '还有显示名撞车的：' + names.join(' / '))
+})
+
+test('时间线选项按树序铺，父的紧跟着自己的孩子', () => {
+  // 以前按 (depth, name) 排：所有二级分组被跨父级打散，AI 和它的孩子隔着半个列表，
+  // 而两个「理论」正好被 name 排到一起。缩进就成了唯一线索，同名同缩进等于没线索。
+  const flat = timelineOptions(twoFields).map((o) => `${'  '.repeat(o.depth)}${o.name}`)
+  assert.equal(flat.length, 6)
+  // 断言只锁"父子相邻"，不锁两个顶层谁在前——那由 zh 排序决定，不是这个函数的语义
+  const block = (top) => flat.slice(flat.indexOf(top), flat.indexOf(top) + 3).sort()
+  assert.deepEqual(block('AI'), ['  AI／理论', '  AI应用', 'AI'].sort())
+  assert.deepEqual(block('计算机系统'), ['  硬件', '  计算机系统／理论', '计算机系统'].sort())
+})
+
+test('分组树坏掉也要把每个分组摆出来', () => {
+  // 父指向不存在的分组 / 指向自己 / 两个互为父子：都是 layout 手改或迁移残留能造出来的。
+  // 这种时候少列一个分组最坑——你只会以为它没了，而不会想到是选择器没走到它。
+  const broken = timelineOptions({ groups: {
+    ghost: { name: '爹没了', parent: '不存在' },
+    self: { name: '自己当爹', parent: 'self' },
+    a: { name: '甲', parent: 'b' },
+    b: { name: '乙', parent: 'a' },
+  } })
+  assert.deepEqual(broken.map((o) => o.id).sort(), ['a', 'b', 'ghost', 'self'])
+  assert.equal(broken.find((o) => o.id === 'ghost').depth, 0)
+})
+
+// ---------------------------------------------------------------- 日历热力图
+
+test('日期一律按本地算，不是 UTC', () => {
+  // `toISOString().slice(0, 10)` 在 UTC+8 会把本地午夜的 9/20 说成 9/19。
+  // 疼在三处：`learned` 是永久写进 md 的、`placedAt` 决定草稿放了多久、
+  // 热力图每一格的 key 全往前错一天（今天那格顶着昨天的 key 查，永远查不到）。
+  assert.equal(localISO(new Date('2026-09-20T00:00:00')), '2026-09-20')
+  assert.equal(localISO(new Date('2026-09-20T23:59:59')), '2026-09-20')
+  assert.equal(localISO(new Date('2026-01-05T00:00:00')), '2026-01-05')   // 月 / 日都要补零
+  assert.equal(todayISO(), localISO(new Date()))
+  assert.match(todayISO(), /^\d{4}-\d{2}-\d{2}$/)
+})
+
+test('热力图铺到的最后一格就是 to 那天', () => {
+  const cols = weekColumns('2026-09-01', '2026-09-20')
+  const flat = cols.flat().filter(Boolean)
+  assert.equal(flat[0], '2026-09-01')
+  assert.equal(flat[flat.length - 1], '2026-09-20', '最后一天没铺进去 = 今天的数据看不见')
+  assert.equal(cols[0].length, 7)
+  assert.equal(new Set(flat).size, flat.length, '有重复的日期')
+  assert.ok(cols[0].indexOf(null) >= 0, '9/1 是周二，那一列前面该有占位')
+  assert.deepEqual(weekColumns(null, null), [])
+})
+
+test('热力等级：复习一次也要点亮，模型调用不算学习量', () => {
+  assert.equal(level(null), 0)
+  assert.equal(level({ built: 0, reviews: 0, answers: 0, calls: 9, cost_usd: 3 }), 0)
+  assert.equal(level({ built: 0, reviews: 1, answers: 0 }), 1, '只复习了一次就该亮')
+  assert.equal(level({ built: 1, reviews: 0, answers: 0 }), 2)
+  assert.equal(level({ built: 4, reviews: 0, answers: 0 }), 4)
 })
 
 // ---------------------------------------------------------------- 跑

@@ -19,8 +19,9 @@ const TOOL_LABEL = {
   propose_list_edit: '拟了一张清单卡',
 }
 
-/** 工具块是给服务端看的，不该在屏幕上闪过——和 server/chat.py 的 strip_tools 同一个形状。
- *  流式时块可能只到一半，所以未闭合的也要藏掉。 */
+/** 工具调用走原生协议（tool_calls），正文里本不该再出现这种块——**这是兜底**：
+ *  模型见过太多围栏写法，偶尔仍会手写一个出来，它不会被执行，但也不该在屏幕上闪过。
+ *  和 server/chat.py 的 strip_tools 同一个形状。流式时块可能只到一半，未闭合的也要藏掉。 */
 export function stripToolBlocks(text) {
   return text.replace(/```knowrary[\s\S]*?```/g, '').replace(/```knowrary[\s\S]*$/, '').trim()
 }

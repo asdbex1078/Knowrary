@@ -1939,6 +1939,149 @@ async def case_lineage(page: Page, ck: Check) -> None:
                lambda v: (v or 0) >= 4, timeout=12)
 
 
+# ---------------------------------------------------------------- 横向对比
+
+COMPARE_GROUP_MD = ("---\nid: compare-test\nname: 甲乙对比\nfield: 测试\ntype: 对比组\n"
+                    "dimensions: [年份, 核心方法, 适用场景]\ndesc: 甲和乙横着比一遍\n---\n"
+                    "# 甲乙对比\n\n## 关系\n- 包含:: [[乙]]\n- 包含:: [[甲]]\n")
+
+
+async def case_compare_edit(page: Page, ck: Check, vault: Path) -> None:
+    """双击改一格 → 写回 md 的 `## 速查` 里那一行。
+
+    最该钉住的是**只改那一行**：这条路存在的全部理由就是不走 `update_body`——
+    整段替换要求把全文背回来，改一格表就把没看见的那半篇删掉。
+    """
+    md_before = (vault / "nodes" / "组A" / "乙.md").read_text("utf-8")
+    # 表头此时是 成员|年份|核心方法|适用场景|其它（上一段刚把「核心方法」勾了回来）
+    out = await page.ev("""(() => {
+      const tr = [...document.querySelectorAll('.cmp-table tbody tr')]
+        .find((r) => r.querySelector('th').textContent.includes('乙'));
+      if (!tr) return 'no-row';
+      const th = [...document.querySelectorAll('.cmp-table thead th')].map((x) => x.textContent.trim());
+      const td = tr.querySelectorAll('td')[th.indexOf('适用场景') - 1];
+      td.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
+      return 'ok';
+    })()""")
+    assert out == "ok", out
+    typed = await poll(page, """(() => {
+      const el = document.querySelector('.cmp-table .cell-edit');
+      if (!el) return '';
+      el.value = '改成这句';
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+      el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+      return 'ok';
+    })()""", lambda v: v == "ok", timeout=8)
+    ck.add("双击开得出编辑框", typed == "ok", str(typed))
+
+    text = await poll_file(vault / "nodes" / "组A" / "乙.md", "改成这句")
+    ck.add("改一格写进了 `## 速查` 那一行", "- 适用场景:: 改成这句" in text,
+           text.split("## 速查")[-1].strip()[:70] if "## 速查" in text else text[-70:])
+    # **真正要钉住的不变量**：除了那一行，原文每一行都还在。
+    # （不逐字比整篇：这个文件本来没有 `## 关系` 段，writer 会补一个空的——
+    #  那是所有变更类型共有的归一化，不是 set_fact 干的。）
+    kept = set(text.splitlines())
+    lost = [ln for ln in md_before.splitlines() if ln.strip() and ln not in kept]
+    ck.add("只改那一行：原文其余每一行都还在", lost == ["- 适用场景:: 只有乙写了"],
+           str(lost))
+
+    shown = await poll(page, """(() => {
+      const tr = [...document.querySelectorAll('.cmp-table tbody tr')]
+        .find((r) => r.querySelector('th').textContent.includes('乙'));
+      return tr ? tr.textContent.replace(/\s+/g, ' ') : '';
+    })()""", lambda v: v and "改成这句" in v, timeout=10)
+    ck.add("表格立刻跟着变", "改成这句" in (shown or ""), (shown or "")[:60])
+
+    # frontmatter 那几列不给在表里改：它们的真相在 frontmatter，从正文写第二份就是双源
+    fm_edit = await page.ev("""(() => {
+      const tr = [...document.querySelectorAll('.cmp-table tbody tr')]
+        .find((r) => r.querySelector('th').textContent.includes('乙'));
+      const th = [...document.querySelectorAll('.cmp-table thead th')].map((x) => x.textContent.trim());
+      const td = tr.querySelectorAll('td')[th.indexOf('年份') - 1];
+      td.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
+      return document.querySelector('.cmp-table .cell-edit') ? 'editable' : 'readonly';
+    })()""")
+    ck.add("年份那一列不给在表里改（真相在 frontmatter）", fm_edit == "readonly", str(fm_edit))
+
+
+async def case_compare(page: Page, ck: Check, vault: Path) -> None:
+    """对比组：目录 → 它自己的画布 → 下面那张表。**全程不碰全局图。**
+
+    这是第三种 layout（全局 / 项目 / 对比），所以最该钉住的是"进了对比画布之后，
+    拖东西写的是对比那份文件、全局图一个字没动"。
+    """
+    (vault / "fields" / "对比组").mkdir(parents=True, exist_ok=True)
+    (vault / "fields" / "对比组" / "compare-test.md").write_text(COMPARE_GROUP_MD, "utf-8")
+    for rel, facts in (
+            ("nodes/组A/甲.md", "## 速查\n- 核心方法:: 一样的做法\n- 实现方式:: 甲的实现\n"),
+            ("nodes/组A/乙.md", "## 速查\n- 核心方法:: 一样的做法\n- 适用场景:: 只有乙写了\n"
+                                "- 实现方式:: 乙的实现\n")):
+        f = vault / rel
+        text = f.read_text("utf-8")
+        # **插在 `## 关系` 之前**：写到后面的话取数、出题、摘要全都读不到（规范 3 的硬约束）。
+        # 前面的用例可能已经给这两个文件加过关系段，所以不能图省事往文件尾巴上追加。
+        at = text.find("## 关系")
+        f.write_text((text[:at] + facts + "\n" + text[at:]) if at >= 0
+                     else text.rstrip() + "\n\n" + facts, "utf-8")
+
+    before = ck.layout()
+    await use_scope(page, "")
+    await switch_mode(page, "全局图")
+    await open_rail(page, "对比")
+    listed = await poll(page, """(() => {
+      const a = document.querySelector('aside.study');
+      return a ? a.textContent.replace(/\s+/g, ' ') : '';
+    })()""", lambda v: v and "甲乙对比" in v, timeout=12)
+    ck.add("对比目录里列出了这个组", "甲乙对比" in (listed or ""), (listed or "")[:70])
+    ck.add("目录写明成员数和空格子数", "2 个成员" in (listed or "") and "格空" in (listed or ""),
+           (listed or "")[:90])
+
+    await click_text(page, "aside.study .tl-btn", "甲乙对比")
+    header = await poll(page, """(() => {
+      const t = document.querySelector('.cmp-table thead');
+      return t ? [...t.querySelectorAll('th')].map((x) => x.textContent.trim()).join('|') : '';
+    })()""", lambda v: v and "成员" in v, timeout=12)
+    # 「核心方法」两行值一样 → 整列一致，默认收起；「其它」是残差列
+    ck.add("表头 = 成员 + 有差异的列 + 残差列",
+           header == "成员|年份|适用场景|其它（速查里没归类的）", header)
+
+    rows = json.loads(await page.ev("""JSON.stringify([...document.querySelectorAll('.cmp-table tbody tr')]
+      .map((tr) => [...tr.querySelectorAll('th,td')].map((c) => c.textContent.trim())))"""))
+    ck.add("行序跟着 md 里 `- 包含::` 的书写顺序（乙在前）",
+           [r[0] for r in rows] == ["乙", "甲"], str([r[0] for r in rows]))
+    ck.add("没填的格子留空不报错", rows[1][2] == "—", str(rows[1]))
+    ck.add("残差列把没归类的键原样摆出来", "实现方式" in rows[0][3], rows[0][3])
+
+    promote = await page.ev("document.querySelector('.cmp-promote')?.textContent.replace(/\s+/g, ' ') || ''")
+    ck.add("两个成员都写了的残差键，提示升成一列", "实现方式" in (promote or ""), (promote or "")[:70])
+
+    # 列可选：勾回「核心方法」，它该出现在表头里；这只是视图偏好，不回写 md
+    md_before = (vault / "nodes" / "组A" / "甲.md").read_text("utf-8")
+    await click_text(page, ".cmp-head .btn", "列")
+    await click_text(page, ".cmp-cols .chip", "核心方法")
+    await asyncio.sleep(0.4)
+    header2 = await page.ev("""[...document.querySelectorAll('.cmp-table thead th')]
+      .map((x) => x.textContent.trim()).join('|')""")
+    ck.add("勾上之后整列一致的那列也出得来", "核心方法" in (header2 or ""), header2)
+    ck.add("改列不碰 md", (vault / "nodes" / "组A" / "甲.md").read_text("utf-8") == md_before, "")
+
+    await case_compare_edit(page, ck, vault)
+
+    canvas = await poll(page, "document.querySelectorAll('[data-shape=\"kg-node\"]').length",
+                        lambda v: (v or 0) == 2, timeout=12)
+    ck.add("对比画布上只有这个组的成员", canvas == 2, f"{canvas} 个")
+
+    own = get(ck.api + "/api/layout?layout=compare-test")["layout"]
+    ck.add("对比画布自己一份 layout", set(own["nodes"]) == {"甲", "乙"}, str(sorted(own["nodes"])))
+    after = ck.layout()
+    ck.add("全局图一个字没动", after["revision"] == before["revision"]
+           and "compare-test" not in after["nodes"], f"r{before['revision']} → r{after['revision']}")
+
+    await switch_mode(page, "全局图")
+    await poll(page, "document.querySelectorAll('[data-shape=\"kg-node\"]').length",
+               lambda v: (v or 0) >= 4, timeout=12)
+
+
 # ---------------------------------------------------------------- 参数量图表
 
 async def case_stats(page: Page, ck: Check, vault: Path) -> None:
@@ -2495,6 +2638,7 @@ async def scenarios(page: Page, api: str, results: list) -> None:
     await case_tour(page, ck)
     await case_lineage(page, ck)
     await case_stats(page, ck, VAULT_HOLDER[0])
+    await case_compare(page, ck, VAULT_HOLDER[0])
     await case_inbox_new_field(page, ck, VAULT_HOLDER[0])   # 放最后：它往 vault 里加了个零边新领域节点，会改「今日」面板的形状
     results.extend(ck.items)
 

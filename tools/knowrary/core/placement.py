@@ -340,9 +340,14 @@ def place_or_grow(node_id: str, index: dict, layout: dict, today: str | None = N
 
 
 def inbox_ids(index: dict, layout: dict) -> list[str]:
-    """还没放到画布上的节点（虚拟 stub 不算，它们连文件都还没有）。"""
+    """还没放到画布上的节点（虚拟 stub 不算，它们连文件都还没有）。
+
+    聚合文档也不算：Inbox 问的是"这个知识点该放进哪个域框"，而对比组根本不上全局画布、
+    领域总览早就摆好了。不排掉的话，每建一个对比组 Inbox 就多一条永远处理不掉的待办。
+    """
     placed = set(layout.get("nodes", {}))
-    return sorted(n["id"] for n in index["nodes"] if not n.get("virtual") and n["id"] not in placed)
+    return sorted(n["id"] for n in index["nodes"]
+                  if not n.get("virtual") and not n.get("aggregate") and n["id"] not in placed)
 
 
 def plan_field_group(field: str, layout: dict) -> tuple[str, dict] | None:

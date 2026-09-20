@@ -120,7 +120,8 @@ def due_nodes(index: dict, log: dict, today: dt.date | None = None) -> list[dict
     today = today or dt.date.today()
     out = []
     for node in index["nodes"]:
-        if node.get("virtual") or node.get("stub"):
+        # 聚合文档不进复习队列：要背的是成员，不是那张目录/表
+        if node.get("virtual") or node.get("stub") or node.get("aggregate"):
             continue
         entry = log["nodes"].get(node["id"])
         due = next_due_for(entry, node.get("learned"))
