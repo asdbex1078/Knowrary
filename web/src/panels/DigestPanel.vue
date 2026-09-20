@@ -103,6 +103,43 @@ const total = () => {
           </ul>
         </section>
 
+        <!-- 整批孤点：按来源聚合。**同一篇文章拆出来的节点全是孤点，那不是「还没连」，
+             是「边没写进去」**——2026-09-10 那次导入 20 条边一条没落盘，混在散点里躺了 10 天。
+             排在散点前面：它要人当场去查存档，而不是慢慢连。 -->
+        <section v-if="digest.lonely_batches?.length" class="section">
+          <div class="section-head">
+            <Icon name="warn" :size="13" />整批孤点
+            <span class="count">{{ digest.counts.lonely_batches }}</span>
+          </div>
+          <p class="dim" style="font-size: 11.5px; margin-bottom: 6px">
+            按来源聚的。<b>一整批全是孤点</b>多半是那次导入的边没落盘（去
+            <code>.knowrary/imports/</code> 对一下方案里写没写边）；只有一半的通常是
+            抄进来的参考资料还没盘活。
+          </p>
+          <ul>
+            <li v-for="b in digest.lonely_batches" :key="b.source" class="card"
+                style="padding: 8px 10px">
+              <div>
+                <b>{{ b.source }}</b>
+                <span class="tag warn" v-if="b.whole" style="margin-left: 6px"
+                      title="这一批一条边都没有，去 .knowrary/imports/ 对一下当时的方案">
+                  全批没边
+                </span>
+              </div>
+              <div class="dim" style="font-size: 11.5px">
+                拆出 {{ b.total }} 个，其中 <b>{{ b.lonely }}</b> 个一条边都没有
+              </div>
+              <div style="font-size: 11.5px; margin-top: 4px">
+                <span v-for="(id, i) in b.ids.slice(0, 6)" :key="id">
+                  <span class="link" @click="emit('goto', id)">{{ id }}</span>
+                  <span v-if="i < Math.min(b.ids.length, 6) - 1" class="dim">、</span>
+                </span>
+                <span v-if="b.lonely > 6" class="dim"> …</span>
+              </div>
+            </li>
+          </ul>
+        </section>
+
         <!-- 孤点：一条关系都没有的已建节点。**这张图最大的一笔欠账**——整个产品都建在
              边上，实盘却有六成节点度为 0。上面的连边建议只认得出名字有线索的那些，
              `eBPF`、`乐观锁` 这种名字上看不出亲戚的一条都提不出来，那正是要问 AI 的部分。 -->

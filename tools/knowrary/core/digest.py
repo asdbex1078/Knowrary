@@ -205,6 +205,40 @@ def lonely(index: dict) -> list[dict]:
              "desc": n.get("desc") or ""} for n in rows]
 
 
+def lonely_batches(index: dict) -> list[dict]:
+    """按来源聚合孤点：**一整批一起进来、又一条边都没有，多半是导入那一步丢了边。**
+
+    这条是从一次真实损失里长出来的：2026-09-10 导入的 8 个节点，方案里写了 20 条边，
+    stub 也建出来了，**唯独边一条没落盘**。`lonely` 当时照常把它们列了出来，
+    但混在另外 38 个"抄来的图"孤点里，看上去和那些没区别，于是躺了 10 天。
+
+    单看一个节点是孤点，说明不了什么（可能只是还没想好连谁）；
+    但**同一篇文章拆出来的 8 个节点全是孤点**，那不是"还没连"，那是"没写进去"。
+    所以这里报的是批，不是点。
+
+    `ratio == 1` 且不止一两个的那种，才是 bug 的形状；半数的那种通常是
+    "抄进来的参考资料一直没盘活"，也是欠账，但性质不同——`whole` 把两者分开。
+    """
+    by_src: dict[str, list[dict]] = {}
+    for n in index["nodes"]:
+        if n.get("virtual") or n.get("stub") or not n.get("path") or n.get("aggregate"):
+            continue
+        src = str(n.get("source") or "").strip()
+        if src:
+            by_src.setdefault(src, []).append(n)
+    out = []
+    for src, rows in by_src.items():
+        alone = [n for n in rows if not n.get("degree")]
+        if len(alone) < 2:            # 一个孤点不成批
+            continue
+        out.append({"source": src, "total": len(rows), "lonely": len(alone),
+                    "ratio": round(len(alone) / len(rows), 2),
+                    "whole": len(alone) == len(rows) and len(rows) >= 3,
+                    "ids": [n["id"] for n in alone][:MAX_ITEMS]})
+    out.sort(key=lambda d: (-d["whole"], -d["ratio"], -d["lonely"]))
+    return out
+
+
 def no_year(index: dict) -> list[str]:
     """还没填 year 的已建节点。
 
@@ -282,6 +316,7 @@ def build_digest(vault, index: dict, layout: dict, today: dt.date | None = None)
     bridge_list = bridges(index, layout)
     dup_list, link_list = _pairs(index)
     lonely_list = lonely(index)
+    batch_list = lonely_batches(index)
     no_year_list = no_year(index)
     misplaced_list = misplaced(index, layout)
     # 年份可疑：演化边两端倒挂、或者年份落在未来。**它们是 index 算出来的结构性矛盾**，
@@ -299,6 +334,7 @@ def build_digest(vault, index: dict, layout: dict, today: dt.date | None = None)
         "bridges": bridge_list,
         "links": link_list,
         "lonely": lonely_list[:MAX_ITEMS],
+        "lonely_batches": batch_list[:MAX_ITEMS],
         "no_year": no_year_list[:MAX_ITEMS],
         "misplaced": misplaced_list,
         "duplicates": dup_list,
@@ -310,6 +346,7 @@ def build_digest(vault, index: dict, layout: dict, today: dt.date | None = None)
                    "stale_drafts": sum(1 for d in draft_list if d["stale"]),
                    "due": len(due), "stubs": len(stubs), "bridges": len(bridge_list),
                    "links": len(link_list), "lonely": len(lonely_list),
+                   "lonely_batches": len(batch_list),
                    "no_year": len(no_year_list), "misplaced": len(misplaced_list),
                    "duplicates": len(dup_list), "cycles": len(cycles),
                    "bad_years": len(bad_years),

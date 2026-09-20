@@ -388,7 +388,8 @@ def cmd_digest(args: argparse.Namespace) -> None:
     c = d["counts"]
     print(f"{d['generated_at']} 的欠账：Inbox {c['inbox']}，草稿 {c['drafts']}"
           f"（放久了 {c['stale_drafts']}），待复习 {c['due']}，stub {c['stubs']}，"
-          f"跨分组桥 {c['bridges']}，孤点 {c['lonely']}，缺 year {c['no_year']}，连边建议 {c['links']}，"
+          f"跨分组桥 {c['bridges']}，孤点 {c['lonely']}（整批 {c['lonely_batches']}），"
+          f"缺 year {c['no_year']}，连边建议 {c['links']}，"
           f"重复候选 {c['duplicates']}，域不符 {c['misplaced']}，方向矛盾 {c['cycles']}")
     n = args.top
     for nid in d["inbox"][:n]:
@@ -402,6 +403,12 @@ def cmd_digest(args: argparse.Namespace) -> None:
     if d["lonely"]:
         names = "、".join(x["id"] for x in d["lonely"][:6])
         print(f"  · 孤点：{c['lonely']} 个一条关系都没有（{names}{' …' if c['lonely'] > 6 else ''}）")
+    # 整批孤点排在散点后面：它指向的往往不是"还没连"，而是那次导入的边没落盘
+    for b in d["lonely_batches"][:n]:
+        why = "，多半是那次导入的边没落盘" if b["whole"] else ""
+        print(f"  · 整批孤点：《{b['source']}》拆出的 {b['total']} 个里 "
+              f"{b['lonely']} 个一条边都没有{why}（{'、'.join(b['ids'][:4])}"
+              f"{' …' if b['lonely'] > 4 else ''}）")
     for h in d["links"][:n]:
         alone = "（两端都还是孤点）" if h["lonely"] == 2 else "（有一端是孤点）" if h["lonely"] else ""
         print(f"  · 连边建议：{h['source']} {h['relation']} → {h['target']}{alone} — {h['reason']}")

@@ -1343,6 +1343,44 @@ def digest_孤点只算已经建出来的():
 
 
 @case
+def digest_整批孤点要和散点分开报():
+    """**同一篇文章拆出来的节点全是孤点，那不是「还没连」，是「边没写进去」。**
+
+    这条从一次真实损失里长出来：2026-09-10 导入的 8 个节点，方案里 20 条边，
+    stub 都建出来了，唯独边一条没落盘。`lonely` 照常列了它们，但混在另外 38 个
+    「抄来的图」孤点里看不出区别，于是躺了 10 天。所以要按来源聚合，并把
+    「全军覆没」和「半数没连」分开——前者是 bug 的形状，后者只是欠账。
+    """
+    files = {f"nodes/x/丢{i}.md": node_md(f"丢{i}", extra="source: 丢边的那篇.md\n") for i in range(3)}
+    # 抄来的那批：一半连上了，一半没有 —— 是欠账，不是 bug
+    files["nodes/x/抄甲.md"] = node_md("抄甲", extra="source: 抄来的图.jpg\n",
+                                       rels="- 相关:: [[抄乙]]\n")
+    files["nodes/x/抄乙.md"] = node_md("抄乙", extra="source: 抄来的图.jpg\n")
+    files["nodes/x/抄丙.md"] = node_md("抄丙", extra="source: 抄来的图.jpg\n")
+    files["nodes/x/抄丁.md"] = node_md("抄丁", extra="source: 抄来的图.jpg\n")
+    # 同一来源只有一个孤点：不成批，不报
+    files["nodes/x/单甲.md"] = node_md("单甲", extra="source: 单篇.md\n")
+    files["nodes/x/单乙.md"] = node_md("单乙", extra="source: 单篇.md\n",
+                                       rels="- 相关:: [[抄乙]]\n")
+    # 没有 source 的散点：不成批
+    files["nodes/x/散点.md"] = node_md("散点")
+    d = _digest_of(files)
+
+    got = {b["source"]: b for b in d["lonely_batches"]}
+    assert set(got) == {"丢边的那篇.md", "抄来的图.jpg"}, list(got)
+
+    lost = got["丢边的那篇.md"]
+    assert (lost["total"], lost["lonely"], lost["whole"]) == (3, 3, True), lost
+    copied = got["抄来的图.jpg"]
+    # 抄乙 被 抄甲 连着，所以孤的是 抄丙 / 抄丁 两个
+    assert (copied["total"], copied["lonely"], copied["whole"]) == (4, 2, False), copied
+
+    # 全军覆没的排最前：那条才是要人当场去查的
+    assert d["lonely_batches"][0]["source"] == "丢边的那篇.md", d["lonely_batches"]
+    assert d["counts"]["lonely_batches"] == 2, d["counts"]
+
+
+@case
 def digest_缺year和年份可疑是两回事():
     """`bad_years` 是**算得出来的矛盾**（演化边两端倒挂），`no_year` 只是没填。
     没填不是错，但它是历史视图的开关——没有 year 的节点根本不出现在时间轴上。"""

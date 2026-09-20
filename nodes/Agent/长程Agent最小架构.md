@@ -44,3 +44,8 @@ source: 长程Agent任务生命周期与可控终止.md
 - [PostgreSQL：MVCC](https://www.postgresql.org/docs/current/mvcc.html)：持久化状态更新要处理并发与一致性。
 
 ## 关系
+- 包含:: [[取消检查点]] — Worker 内的检查点
+- 包含:: [[崩溃恢复]] — Recovery Worker
+- 包含:: [[任务暂停与恢复]]
+- 包含:: [[任务取消语义]] — Cancellation Channel
+- 依赖:: [[harness]] — Worker 就是 Harness 的 LLM/工具循环

@@ -36,3 +36,4 @@ source: 长程Agent任务生命周期与可控终止.md
 `cancel_requested` 与 `cancel_observed` 分开记录，正好对应 [[任务取消语义]] 里“服务端标记”和“Worker 在 [[取消检查点]] 看到”两个时刻。
 
 ## 关系
+- 属于:: [[长程Agent最小架构]] — 对应 Operation Log
