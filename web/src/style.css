@@ -1147,6 +1147,9 @@ kbd.key {
 .chip.m-due      { background: var(--gold-soft, #f6e6c4); color: var(--gold-text, #7a5410); }
 .chip.m-learned  { background: var(--accent-soft); color: var(--accent-text); }
 .chip.m-mastered { background: var(--ok-soft, #d8efdc); color: var(--ok-text, #1f6b35); }
+/* 清单卡上的「删掉」：和掌握度五档不是一回事，单独一个红档，别去挤那五个名字 */
+.chip.m-drop     { background: var(--danger-soft); color: var(--danger); }
+.edge-row .to.gone { text-decoration: line-through; opacity: .65; }
 
 /* 类名别叫 .stage：画布那个 .stage 是 display:flex + overflow:hidden 的横向容器，
    撞上之后每个阶段都会被排成一行、超出的部分被裁掉（阶段名挤扁、「建」按钮消失） */

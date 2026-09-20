@@ -59,6 +59,10 @@ def chat(vault: Path, role: str, messages: list[dict], op: str = "chat", on_delt
     `session` 给 claude-cli 用来续上同一段会话，只发新增的几条（省的是缓存写）；
     别的 provider 收到它也无妨——它们本来就每次发全量 messages 数组。
     """
+    # 会话表跟着 vault 落盘：`uvicorn --reload` 一天几十次，只放内存等于每次重启全额重付（复盘 §11.2）。
+    # 放在这里而不是让 llm_backend 自己找路径——**vault 在哪只有服务层知道**，
+    # 而 llm_backend 是 CLI 也在用的下层，不该反过来依赖服务层的目录约定。
+    llm_backend.use_session_store(vault / ".knowrary" / "cli-sessions.json")
     cfg, _ = llm_backend.load_config(vault)
     name, provider = llm_backend.resolve_provider(cfg, role)
     started = time.monotonic()

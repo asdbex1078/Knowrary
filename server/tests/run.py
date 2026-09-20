@@ -2826,7 +2826,6 @@ def llm_模型不认中途system就折进user重发():
 @case
 def llm_别的400不重发():
     """只在报错确实是这件事时才退一步，别把所有 400 都当成它。"""
-    import llm_backend as backend
     try:
         _fake_anthropic([{"role": "system", "content": "静态" * 20},
                          {"role": "user", "content": "在么"},
@@ -2880,7 +2879,7 @@ def chat_第二轮的前缀和第一轮逐字节一样():
             c.post("/api/chat", json={"messages": msgs, "session": "s1", "stance": "教练"})
         finally:
             restore_chat(original)
-        return backend._hoist_system(seen[0])       # 按 claude-cli 的口径摆好再比
+        return seen[0]      # 不再 _hoist_system：只增不改现在由 chat._assemble 保证（复盘 §11.2）
 
     第一轮 = 发一轮([{"role": "user", "content": "第一句"}])
     第二轮 = 发一轮([{"role": "user", "content": "第一句"},
@@ -2901,60 +2900,163 @@ def chat_第二轮的前缀和第一轮逐字节一样():
 
 
 @case
+def chat_第二轮接着上一轮的完整上下文往下发():
+    """**这一条是 §11.2 的护栏。**
+
+    前端回传的是 `strip_tools` 之后的可见轮次，服务端内部那份还夹着工具往返。
+    以前每轮都拿前端那份重建上下文，于是**只要上一轮调过工具，前缀必然对不上**，
+    claude-cli 的 `--resume` 就永远续不上（67 段真实会话里 54 段只有一次往返 =
+    每次都整段重发、全额重写缓存）。现在改成从服务端缓存续，工具往返留在上下文里。
+    """
+    c, vault, _ = with_inbox_node()
+
+    original, _ = stub_chat([tool_block("overview", {}), "看完了"])
+    try:
+        c.post("/api/chat", json={"messages": [{"role": "user", "content": "图里有啥"}],
+                                  "session": "s1"})
+    finally:
+        restore_chat(original)
+
+    original, seen = stub_chat(["接着说"])
+    try:
+        c.post("/api/chat", json={"messages": [{"role": "user", "content": "图里有啥"},
+                                               {"role": "assistant", "content": "看完了"},
+                                               {"role": "user", "content": "再说说"}],
+                                  "session": "s1"})
+    finally:
+        restore_chat(original)
+
+    sent = seen[0]
+    assert any("[工具 overview 的结果]" in (m.get("content") or "") for m in sent), \
+        "上一轮的工具往返没带过来——那就是又整段重建了一次，--resume 必然续不上"
+    assert sent[-1]["content"] == "再说说", [m["role"] for m in sent]
+    # 只增不改：新的一句必须接在后面，前面那截一个字都不许动
+    assert sent[1]["content"] == "图里有啥", sent[1]["content"][:60]
+
+
+@case
+def chat_历史被改过就退回整段重建():
+    """续接只在**能证明这一段没被改过**时才走。
+
+    对不上就老老实实重建——续错一段（模型看着别人的上下文答题）比多花那点钱糟得多。
+    """
+    c, vault, _ = with_inbox_node()
+    original, _ = stub_chat([tool_block("overview", {}), "看完了"])
+    try:
+        c.post("/api/chat", json={"messages": [{"role": "user", "content": "图里有啥"}],
+                                  "session": "s1"})
+    finally:
+        restore_chat(original)
+
+    original, seen = stub_chat(["重来"])
+    try:
+        c.post("/api/chat", json={"messages": [{"role": "user", "content": "图里有啥"},
+                                               {"role": "assistant", "content": "我改过这句"},
+                                               {"role": "user", "content": "再说说"}],
+                                  "session": "s1"})
+    finally:
+        restore_chat(original)
+
+    sent = seen[0]
+    assert not any("[工具" in (m.get("content") or "") for m in sent), "改过历史还在续，危险"
+    assert [m["role"] for m in sent] == ["system", "user", "assistant", "user", "system"], \
+        [m["role"] for m in sent]
+
+
+@case
+def chat_图谱没变就不重复贴快照():
+    """贴一条就动一次前缀。**「建一个节点就换一次前缀」正是这么来的**——
+
+    快照原来每轮都重贴一份，位置还会随历史长度漂。现在只在内容真变了时才追加。
+    """
+    c, vault, _ = with_inbox_node()
+
+    def 发一轮(msgs):
+        original, seen = stub_chat(["好"])
+        try:
+            c.post("/api/chat", json={"messages": msgs, "session": "s1"})
+        finally:
+            restore_chat(original)
+        return seen[0]
+
+    from server.chat import SNAP_HEAD
+    快照数 = lambda sent: sum(1 for m in sent if (m.get("content") or "").startswith(SNAP_HEAD))
+
+    assert 快照数(发一轮([{"role": "user", "content": "一"}])) == 1
+    二 = 发一轮([{"role": "user", "content": "一"}, {"role": "assistant", "content": "好"},
+                {"role": "user", "content": "二"}])
+    assert 快照数(二) == 1, "图谱没变还多贴了一份快照，前缀白断"
+
+    core.write(vault / "nodes/组A/e.md", node_md("E"))
+    index_service.invalidate()
+    三 = 发一轮([{"role": "user", "content": "一"}, {"role": "assistant", "content": "好"},
+                {"role": "user", "content": "二"}, {"role": "assistant", "content": "好"},
+                {"role": "user", "content": "三"}])
+    assert 快照数(三) == 2, "建了节点却没补新快照，模型看到的还是旧数字"
+    # 老那份必须原地不动：它已经在缓存前缀里了
+    assert 三[2]["content"] == 二[2]["content"], "旧快照被改写了，前缀断在这里"
+
+
+@case
 def llm_单轮功能的低比值不该报警():
     """出题 / 关系建议那类一问一答每次都是新前缀，比值天然贴着 0。
 
     把它们算进告警，等于天天在响——**一个天天响的告警等于没有告警**，
     真正该看的多轮对话反而被淹了。
     """
+    import datetime as _dt
     from core import usage as usage_mod
-    log = {"totals": {"cache_read_tokens": 100, "cache_write_tokens": 100},
-           "by_op": {"suggest": {"calls": 9, "cache_read_tokens": 0, "cache_write_tokens": 9000},
-                     "chat-教练": {"calls": 9, "cache_read_tokens": 90000, "cache_write_tokens": 9000}}}
+
+    # **窗口是今天、数据取自 `recent`**（`by_day` 没有 op 维度）。
+    # 这条用例一度还在喂 `by_op`，于是 `worst` 恒为 None——断言全部空转，
+    # 谁也没发现监控已经不看它了。造数据必须走和线上同一条路。
+    ts = _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    def rows(op: str, n: int, read: int, write: int) -> list[dict]:
+        return [{"op": op, "ts": ts, "ok": True,
+                 "cache_read_tokens": read, "cache_write_tokens": write} for _ in range(n)]
+
+    log = {"recent": rows("suggest", 9, 0, 1000) + rows("chat-教练", 9, 10000, 1000)}
     health = usage_mod.cache_health(log)
     assert health["ok"], health                      # 单轮的 0 比值不算数
     assert health["worst"]["op"] == "chat-教练", health
 
-    log["by_op"]["chat-教练"]["cache_read_tokens"] = 9000      # 多轮掉到 1× = 每轮重写
+    log = {"recent": rows("suggest", 9, 0, 1000) + rows("chat-教练", 9, 1000, 1000)}
     assert not usage_mod.cache_health(log)["ok"], "多轮比值掉到 1 了还说健康"
 
-    log["by_op"]["chat-教练"]["calls"] = 2                     # 样本太少的比值没意义
+    log = {"recent": rows("suggest", 9, 0, 1000) + rows("chat-教练", 2, 1000, 1000)}
     assert usage_mod.cache_health(log)["ok"], "才 2 次调用就报警，噪声"
 
 
 @case
-def llm_会变的那块给别的后端要挪回开头():
-    """anthropic 把会变的块留在队尾（mid-conversation system），别的后端不能照抄。
+def llm_会话只在前缀逐字节没动时才续():
+    """`--resume` 的全部前提：**这一段只增不改**。
 
-    因为**它会动**：这一轮在队尾，下一轮被新对话挤到中间，消息列表就不再只增不改。
-    claude-cli 的会话续用靠指纹校验前缀，一动就续不上，**白白退回重发全文而且不报错**。
-    这条用例钉的就是那次静默回归。
+    原来的做法是把会变的那块（图谱快照）挪回开头，指望它别动。但快照本身会变，
+    位置也会随历史长度漂，于是"调过工具就续不上"（复盘 §11.2：67 段会话 54 段只有一次往返）。
+    现在只增不改由 `chat._assemble` 保证，这里钉的是 llm_backend 这一侧的判定：
+    **前缀一字不差才续，差一个字就重开一段。**
     """
     import llm_backend as backend
     静态 = {"role": "system", "content": "静态指令"}
     快照 = {"role": "system", "content": "85 个节点"}
-    第一轮 = backend._hoist_system([静态, {"role": "user", "content": "u1"}, 快照])
-    assert [m["role"] for m in 第一轮] == ["system", "system", "user"], 第一轮
+    第一轮 = [静态, {"role": "user", "content": "u1"}, 快照]
 
     key = "回归用例"
     backend.drop_cli_session(key)
     assert backend._cli_session(key, 第一轮, "m")[0][0] == "--session-id"
     backend._remember_cli_session(key, 第一轮, "a1")
 
-    第二轮 = backend._hoist_system([静态, {"role": "user", "content": "u1"},
-                                  {"role": "assistant", "content": "a1"},
-                                  {"role": "user", "content": "u2"}, 快照])
+    # 只往后追加：续上，而且只发新增的那两条
+    第二轮 = [*第一轮, {"role": "assistant", "content": "a1"}, {"role": "user", "content": "u2"}]
     extra, start = backend._cli_session(key, 第二轮, "m")
-    assert extra[0] == "--resume", (extra, "第二轮没续上 = 又在重发全文")
+    assert extra[0] == "--resume", (extra, "只追加也没续上 = 又在重发全文")
     assert start == 4, (start, "续上了却还在重发前面几条")
 
-    # 图谱真变了就该重开：那时候前缀确实不一样了
-    变了 = backend._hoist_system([静态, {"role": "user", "content": "u1"},
-                                {"role": "assistant", "content": "a1"},
-                                {"role": "user", "content": "u2"},
-                                {"role": "system", "content": "86 个节点"}])
-    assert backend._cli_session(key, 变了, "m")[0][0] == "--session-id", "图谱变了还在续旧会话"
-    backend.drop_cli_session(key)
+    # 前面那截动一个字就必须重开：续错一段比多花钱糟得多
+    改过 = [静态, {"role": "user", "content": "u1 改过了"}, 快照,
+           {"role": "assistant", "content": "a1"}, {"role": "user", "content": "u2"}]
+    assert backend._cli_session(key, 改过, "m")[0][0] == "--session-id", "前缀变了还在续"
 
 
 @case
@@ -3387,6 +3489,150 @@ def chat_能在对话里把清单拆成点():
     # **没落盘**
     got = c.get("/api/projects").json()["doc"]["projects"]["mha"]["lists"][0]["stages"]
     assert got == [], "提议就写进清单了"
+
+
+def _vault_with_list(c) -> None:
+    """一个带清单的项目，给清单卡那几条用例做地基。"""
+    c.put("/api/projects", json={"base_revision": 0, "projects": {"ai": {
+        "name": "AI 发展史", "weekly_hours": 7,
+        "lists": [{"kind": "学习", "name": "主线", "goal": "理清连接主义这条线",
+                   "stages": [{"name": "一", "deadline": None, "points": [
+                       {"id": "多头注意力", "name": "多头注意力", "load": "中", "why": ""},
+                       {"id": "符号主义与连接主义", "name": "两个主义", "load": "中", "why": ""},
+                       {"id": "MLA", "name": "MLA", "load": "轻", "why": ""}]}]}]}}})
+
+
+@case
+def chat_能提议改清单里已有的条目():
+    """复盘 §11.4：以前模型只能往清单里**加**，撞上"同一个概念两个 id""拆完旧条目还躺着"
+    只能说一句"那条得你自己去面板删"——而它的提示词里明写着不许把选择题丢回来。
+    """
+    c, _, _ = with_inbox_node()
+    _vault_with_list(c)
+    original, _ = stub_chat([tool_block("propose_list_edit", {"project": "ai", "list": "主线", "edits": [
+        {"op": "rename", "id": "多头注意力", "to": "MHA"},
+        {"op": "drop", "id": "符号主义与连接主义"},
+        {"op": "set", "id": "MLA", "load": "重"}]}), "卡摆好了"])
+    try:
+        r = c.post("/api/chat", json={"messages": [{"role": "user", "content": "清单里那几条不对"}]})
+    finally:
+        restore_chat(original)
+
+    cards = [e for e in sse_events(r) if e["type"] == "list_edit"]
+    assert len(cards) == 1, [e["type"] for e in sse_events(r)]
+    card = cards[0]["list_edit"]
+    assert card["project"] == "ai" and card["list"] == 0, card
+    assert [(e["op"], e["id"]) for e in card["edits"]] == [
+        ("rename", "多头注意力"), ("drop", "符号主义与连接主义"), ("set", "MLA")], card["edits"]
+    assert card["edits"][2]["before"] == {"load": "轻"}, card["edits"][2]   # 卡上看得见改之前是什么
+    assert card["left"] == 2 and card["empties"] is False, card
+    # **没落盘**：和别的卡一个规矩，人点了才算
+    got = c.get("/api/projects").json()["doc"]["projects"]["ai"]["lists"][0]["stages"][0]["points"]
+    assert [p["id"] for p in got] == ["多头注意力", "符号主义与连接主义", "MLA"], got
+
+
+@case
+def chat_改清单认不出的会退回去而不是硬改():
+    """退回时要说清楚**为什么**，模型才改得对；尤其"新 id 已经有了"那条——
+    那说明这俩是重复，该删一条，不是改名。"""
+    c, _, _ = with_inbox_node()
+    _vault_with_list(c)
+    original, _ = stub_chat([tool_block("propose_list_edit", {"project": "ai", "list": "主线", "edits": [
+        {"op": "rename", "id": "多头注意力", "to": "MLA"},      # 撞上已有的 → 这是重复
+        {"op": "drop", "id": "查无此点"},
+        {"op": "set", "id": "MLA", "load": "超重"},             # 负荷只有三档
+        {"op": "炸了", "id": "MLA"}]}), "都没立住"])
+    try:
+        r = c.post("/api/chat", json={"messages": [{"role": "user", "content": "改一下"}]})
+    finally:
+        restore_chat(original)
+
+    assert not [e for e in sse_events(r) if e["type"] == "list_edit"], "一条都不该立住"
+    said = next(e for e in sse_events(r) if e["type"] == "tool")["summary"]
+    assert "重复" in said, said
+    assert "查无此点" in said, said
+    assert "三档" in said, said
+
+
+@case
+def chat_清单删空了要在卡上喊出来():
+    """清单没了，项目进度和今日清单跟着全空——这事不能悄悄发生。"""
+    c, _, _ = with_inbox_node()
+    _vault_with_list(c)
+    original, _ = stub_chat([tool_block("propose_list_edit", {"project": "ai", "list": "主线", "edits": [
+        {"op": "drop", "id": "多头注意力"}, {"op": "drop", "id": "符号主义与连接主义"},
+        {"op": "drop", "id": "MLA"}]}), "清空了"])
+    try:
+        r = c.post("/api/chat", json={"messages": [{"role": "user", "content": "全删了吧"}]})
+    finally:
+        restore_chat(original)
+    card = next(e for e in sse_events(r) if e["type"] == "list_edit")["list_edit"]
+    assert card["empties"] is True and card["left"] == 0, card
+    said = next(e for e in sse_events(r) if e["type"] == "tool")["summary"]
+    assert "空清单" in said, said
+
+
+@case
+def chat_面试口径改不动清单():
+    """面试那一档只读 + 出题：边考边改清单和边考边改图谱是同一件事。"""
+    c, _, _ = with_inbox_node()
+    _vault_with_list(c)
+    original, _ = stub_chat([tool_block("propose_list_edit", {"project": "ai", "edits": [
+        {"op": "drop", "id": "MLA"}]}), "改不了"])
+    try:
+        r = c.post("/api/chat", json={"messages": [{"role": "user", "content": "删了它"}],
+                                      "stance": "面试"})
+    finally:
+        restore_chat(original)
+    assert not [e for e in sse_events(r) if e["type"] == "list_edit"], "面试口径居然能改清单"
+    assert "没有 `propose_list_edit` 这个工具" in \
+        next(e for e in sse_events(r) if e["type"] == "tool")["summary"]
+
+
+@case
+def settings_教练别考我和今日面板复习是两个开关():
+    """复盘之后拆的（§11.1）：原来只有一个总闸，"别在聊天里考我"只能靠关总闸达成，
+    而总闸一关，**今日面板里的到期与错题也跟着被摘掉**——想专心复习的那个地方恰好空了。
+    """
+    c, vault, _ = with_inbox_node()          # d 的 learned 是 2026-09-01，早就该复习
+
+    def 今日():
+        return c.get("/api/coach/today").json()
+
+    def 教练提示词() -> str:
+        original, seen = stub_chat(["好"])
+        try:
+            c.post("/api/chat", json={"messages": [{"role": "user", "content": "在么"}]})
+        finally:
+            restore_chat(original)
+        return seen[0][0]["content"]
+
+    assert any(it["kind"] == "due" for it in 今日()["items"]), 今日()["items"]
+    assert "`quiz`" in 教练提示词(), "默认全开，说明书上该有出题工具"
+
+    # 只关「教练会考我」：聊天里收手，今日面板照旧
+    c.put("/api/settings", json={"review_in_chat": False})
+    assert any(it["kind"] == "due" for it in 今日()["items"]), "关的是聊天那一档，今日面板不该空"
+    assert 今日()["pools"]["今日"], "出题范围也不该空"
+    p = 教练提示词()
+    assert "`quiz`" not in p, "工具没收走，只靠嘱咐一句是压制不是关闭"
+    assert "复习本身还开着" in p, p[-400:]          # 别把它说成"复习关了"
+
+    # 再关总闸：整套都不出现，**出题范围也跟着空**（原来这里行没了、数字还在）
+    c.put("/api/settings", json={"review_enabled": False})
+    assert not [it for it in 今日()["items"] if it["kind"] in ("due", "wrong")], 今日()["items"]
+    assert 今日()["pools"]["今日"] == [], 今日()["pools"]
+    assert "整套在设置里关着" in 教练提示词()
+
+
+@case
+def settings_总闸关着时子开关一律当关():
+    """子开关是总闸下面的一档，不能出现"总闸关了、教练还在考我"。"""
+    c, vault, _ = with_inbox_node()
+    c.put("/api/settings", json={"review_enabled": False, "review_in_chat": True})
+    from server.paths import core as core_mod
+    assert core_mod.review_in_chat(vault) is False
+    assert c.get("/api/settings").json()["review_in_chat"] is True, "子开关自己的值要留着，只是不生效"
 
 
 @case

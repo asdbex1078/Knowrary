@@ -911,6 +911,47 @@ def 用量按本地日期分桶():
 
 
 @case
+def 教练换个说法再问一次不该攒出一道新题():
+    """教练问了一道、人没答，下一轮它会换个说法再问——规整后当然不一样，于是每问一次入库一条。
+
+    真实题库里 10 道题有 5 道是同一道 XOR 题的不同措辞，而且全部 `asked` 都是 0
+    （2026-09-19 复盘 §11.3）。**没答过的题，同一组考点只留最新那一条。**
+    """
+    vault = make_vault({})
+    # **考点集合每次都不一样**（`_mentioned` 按当轮提到的节点算，图在长集合就在变），
+    # 所以只按集合相等去并，一条都并不掉——真正稳定的信号是题面本身
+    core.add_question(vault, "1969 年 Minsky 用 XOR 打死单层感知机，为什么要拖到 1986 年才翻盘？",
+                      ["达特茅斯会议"], source="chat")
+    core.add_question(vault, "1969 年 Minsky 用 XOR 打死单层感知机，可为什么要拖到 1986 年才翻盘？",
+                      ["感知器", "连接主义"], source="chat")
+    qs = core.load_pool(vault)["questions"]
+    assert len(qs) == 1, [q["stem"] for q in qs]
+    assert qs[0]["stem"].startswith("1969 年 Minsky 用 XOR 打死单层感知机，可"), qs[0]  # 以最新措辞为准
+    assert set(qs[0]["points"]) == {"达特茅斯会议", "感知器", "连接主义"}, qs[0]        # 考点取并集
+
+    # 同一个主题但确实是另一道题（实测相似度 0.3～0.4）不能被并掉
+    core.add_question(vault, "XOR 用两层网络就能解，delta rule 1960 年就有了，那缺的到底是什么？",
+                      ["Adaline"], source="chat")
+    assert len(core.load_pool(vault)["questions"]) == 2, "把一道不同的题也并掉了"
+
+    # **出题那一路不并**：一轮测验围绕同几个节点出好几道不同的题，那是设计如此
+    core.add_question(vault, "连接主义的起点是哪一年？", ["连接主义"], source="quiz")
+    core.add_question(vault, "M-P 神经元和感知器差在哪？", ["连接主义"], source="quiz")
+    assert len(core.load_pool(vault)["questions"]) == 4, "把一整轮测验并成一道了"
+
+    # 答过的那条是历史，不再被顶替
+
+    pool = core.load_pool(vault)
+    pool["questions"][0]["asked"] = 1
+    from core import pool as pool_mod          # save_pool 没从 core 包导出，直接用模块
+    pool_mod.save_pool(vault, pool)
+    core.add_question(vault, "1969 年 Minsky 用 XOR 打死单层感知机，到底卡在哪一样？",
+                      ["连接主义"], source="chat")
+    stems = [q["stem"] for q in core.load_pool(vault)["questions"]]
+    assert len(stems) == 5, stems
+
+
+@case
 def 关掉复习是收走工具而不是嘱咐一句():
     """关掉复习必须是**结构性**的：规矩整段不拼、工具真收走、今日清单里没有复习项。
 
@@ -929,6 +970,12 @@ def 关掉复习是收走工具而不是嘱咐一句():
     assert "quiz" in chat.tools_of("教练", vault), chat.tools_of("教练", vault)
     assert "每次开场先看一眼" in on and "按这些节点出题考我" in on, "默认该是全开的"
 
+    # 先只关「教练会考我」那一档：聊天里该收手的全收手，但今日面板那一侧不归它管
+    core.save_settings(vault, {"review_in_chat": False})
+    only_chat = chat._system_prompt(vault, "教练", None)
+    assert "quiz" not in chat.tools_of("教练", vault)
+    assert "复习本身还开着" in only_chat, "只关这一档时不该说成整套关了"
+
     core.save_settings(vault, {"review_enabled": False})
     off = chat._system_prompt(vault, "教练", None)
     tools = chat.tools_of("教练", vault)
@@ -941,7 +988,7 @@ def 关掉复习是收走工具而不是嘱咐一句():
     # 建设那半边不能误伤
     assert "propose_changes" in tools and "线头" in off, "关掉复习不该动到建设那半边"
     # 只剩一句陈述状态的话，没有"不要做 X"的禁令
-    assert "复习与出题在设置里关着" in off, "该留一句状态说明"
+    assert "复习与出题整套在设置里关着" in off, "该留一句状态说明"
     assert "不要出" not in off and "不要主动" not in off, "又写回禁令了"
 
     # 设置本身：默认全开、坏文件回落默认、只认登记过的键

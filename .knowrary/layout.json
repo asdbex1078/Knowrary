@@ -1,11 +1,11 @@
 {
   "schema_version": 2,
-  "revision": 98,
-  "updated_at": "2026-09-18T13:15:40Z",
+  "revision": 115,
+  "updated_at": "2026-09-19T14:37:06Z",
   "viewport": {
-    "zoom": 0.4,
-    "cx": 621.0,
-    "cy": 3108.0
+    "zoom": 0.25,
+    "cx": 820.0,
+    "cy": 1865.0
   },
   "groups": {
     "g-Agent": {
@@ -1076,7 +1076,7 @@
       "w": 196.0,
       "h": 64.0,
       "group": "g-AI--硬件",
-      "state": "draft",
+      "state": "final",
       "placedAt": "2026-09-18",
       "anchor": "NPU"
     },
@@ -1106,7 +1106,7 @@
       "w": 196.0,
       "h": 64.0,
       "group": "g-AI--理论",
-      "state": "draft",
+      "state": "final",
       "placedAt": "2026-09-18",
       "anchor": "阈值逻辑单元"
     },
@@ -1126,7 +1126,7 @@
       "w": 196.0,
       "h": 64.0,
       "group": "g-AI--理论",
-      "state": "draft",
+      "state": "final",
       "placedAt": "2026-09-18",
       "anchor": "感知器"
     }

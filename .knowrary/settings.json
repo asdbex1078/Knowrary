@@ -1,6 +1,7 @@
 {
   "schema_version": 1,
-  "review_enabled": false,
+  "review_enabled": true,
+  "review_in_chat": false,
   "review_brief": false,
   "review_marks": false
 }

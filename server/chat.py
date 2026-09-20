@@ -27,7 +27,7 @@ import threading
 
 from pathlib import Path
 
-from . import curation
+from . import curation, turns
 from .contracts import ChatRequest, QuizRequest
 from .index_service import current_index
 from .levels import fragment as level_fragment
@@ -459,6 +459,98 @@ def _tool_propose_project(vault: Path, args: dict) -> tuple[str, dict]:
             + hint), {"project": card}
 
 
+LIST_OPS = ("rename", "drop", "set")
+# 清单条目上允许改的字段。**`id` 不在这里**——换 id 是 `rename`，它要连着查重名，
+# 混进 `set` 会变成"悄悄换了一个点"，进度和复习全对不上。
+POINT_FIELDS = ("name", "why", "load")
+
+
+def _resolve_list(vault: Path, args: dict):
+    """定位 (项目, 清单, 清单序号)。定位不到就返回一句**给模型看的话**，让它自己纠正。"""
+    pid = str(args.get("project") or "").strip()
+    project = (core.load_projects(vault).get("projects") or {}).get(pid)
+    if project is None:
+        return f"没有 `{pid}` 这个项目。先 `projects` 看一眼我有哪些。"
+    lists = core.lists_of(project)
+    if not lists:
+        return f"项目「{project.get('name') or pid}」下面还没有清单。"
+    want = str(args.get("list") or "").strip()
+    if not want:
+        return project, lists[0], 0
+    idx = next((i for i, ls in enumerate(lists) if (ls.get("name") or "") == want), -1)
+    if idx < 0:
+        names = "、".join(ls.get("name") or ls.get("kind") or "?" for ls in lists)
+        return f"「{project.get('name') or pid}」下面没有叫「{want}」的清单。有的是：{names}"
+    return project, lists[idx], idx
+
+
+def _one_list_edit(edit: dict, points: dict[str, dict], dropped: set[str]) -> tuple[dict | None, str]:
+    """翻一条改动。返回 (能展示也能应用的那条, 退回给模型的话)——两者只会有一个。"""
+    op = str(edit.get("op") or "").strip()
+    nid = str(edit.get("id") or "").strip()
+    if op not in LIST_OPS:
+        return None, f"`{op or '(空)'}` 不是清单改动的类型，只有 {'、'.join(LIST_OPS)}。"
+    if nid not in points:
+        return None, f"清单里没有 `{nid}` 这个点，改不了。先 `projects` 核一眼清单里到底写的是哪个 id。"
+    old = points[nid]
+    if op == "drop":
+        return {"op": "drop", "id": nid, "name": old.get("name") or nid}, ""
+    if op == "rename":
+        to = str(edit.get("to") or "").strip()
+        if not to or not core.ID_OK.match(to):
+            return None, f"`{nid}` 要改成的新 id（`to`）没给或者不合法（不能有空格和 / \\ : * ? \" < > |）。"
+        if to in points and to not in dropped:
+            return None, (f"`{to}` 在这份清单里已经有了——那这两条是重复，该 `drop` 掉一条，"
+                          f"不是把 `{nid}` 改成它。")
+        return {"op": "rename", "id": nid, "to": to, "name": old.get("name") or nid}, ""
+    fields = {k: edit[k] for k in POINT_FIELDS if k in edit}
+    if not fields:
+        return None, f"`set {nid}` 一个字段都没给。能改的是：{'、'.join(POINT_FIELDS)}。"
+    if "load" in fields and fields["load"] not in core.LOADS:
+        return None, f"负荷只有 {'、'.join(core.LOADS)} 三档，`{fields['load']}` 不认识。"
+    return {"op": "set", "id": nid, "name": old.get("name") or nid, "fields": fields,
+            "before": {k: old.get(k) for k in fields}}, ""
+
+
+def _tool_propose_list_edit(vault: Path, args: dict) -> tuple[str, dict]:
+    """提议改清单里已有的条目：改 id / 删掉 / 改字段。**不写盘**，出一张卡等人点。
+
+    **为什么要有它**（复盘 §11.4）：以前模型只能往清单里加，不能改已有的，
+    于是撞上「同一个概念在两份清单里用了不同 id」「拆成两条之后旧的合并项还躺着」
+    这两类事时，只能说一句"那条得你自己去面板删"——而它的提示词里明写着
+    「不许把要不要做丢回来问我」。不是它不听话，是工具表里没有这条路。
+    """
+    found = _resolve_list(vault, args)
+    if isinstance(found, str):
+        return found, {}
+    project, ls, idx = found
+    points = {p["id"]: p for st in (ls.get("stages") or []) for p in (st.get("points") or [])
+              if isinstance(p, dict) and p.get("id")}
+    edits, refused = [], []
+    dropped = {str(e.get("id") or "") for e in args.get("edits") or []
+               if isinstance(e, dict) and e.get("op") == "drop"}
+    for edit in args.get("edits") or []:
+        if not isinstance(edit, dict):
+            continue
+        row, why = _one_list_edit(edit, points, dropped)
+        (edits.append(row) if row else refused.append(why))
+    if not edits:
+        return ("这组改动一条都没立住：\n" + "\n".join(f"- {w}" for w in refused)
+                if refused else "没给 edits，没什么可提议的。"), {}
+
+    left = len(points) - sum(1 for e in edits if e["op"] == "drop")
+    card = {"project": args.get("project"), "project_name": project.get("name") or args.get("project"),
+            "list": idx, "list_name": ls.get("name") or ls.get("kind") or "清单",
+            "edits": edits, "left": left, "empties": left <= 0}
+    tail = "".join(f"\n- 退回：{w}" for w in refused)
+    if left <= 0:
+        # 清单清空了，项目进度和今日清单会跟着全空——这事得让他看见，不能悄悄发生
+        tail += (f"\n\n**注意：这些删完「{card['list_name']}」就是空清单了**（{len(points)} 条全删）。"
+                 f"卡上已经标红，但你最好在卡外面说一句为什么要清空。")
+    return (f"清单卡摆在他面前了（{len(edits)} 条改动）。**还没改**，等他点「应用」。"
+            f"这张卡只动 projects.json，不碰 md、不碰画布。{tail}"), {"list_edit": card}
+
+
 def _near_projects(doc: dict, name: str, lists: list) -> list[dict]:
     """名字或目标跟已有项目撞车的，列出来。**服务端算，不靠模型自觉**。
 
@@ -541,6 +633,8 @@ TOOL_DOC = {
     "propose_changes": "`changes` | 提议把学到的东西写进图谱。**只是提议**，会变成一张卡片等我点「写入」",
     "propose_project": "`id`、`name`、`field`、`level`、`lists` | 提议建一个项目，或往现有项目里加一份清单。同样只是卡片",
     "propose_points": "`project`、`list`、`goal` | 把某个项目的某份清单拆成知识点。走面板上「让 AI 拆一份」同一条链路，同样出卡片",
+    "propose_list_edit": ("`project`、`list`、`edits` | 提议改清单里**已有**的条目：换 id / 删掉 / 改负荷说明。"
+                          "**看出清单里有错的、重复的、该删的，直接提这张卡**，别让我自己去面板改"),
 }
 
 READ_ONLY = ("search_nodes", "read_node", "overview")
@@ -565,6 +659,23 @@ FORMAT_DOC = {
 它一路决定出题深浅、拆点拆多细——按他刚才说的目标挑，别一律给默认档。
 
 **先建项目，再拆点**——拆点是另一步，别在同一条消息里全干完。""",
+    "propose_list_edit": """改清单里**已有**的条目长这样（只动 `projects.json`，不碰 md）：
+
+```knowrary
+{"tool": "propose_list_edit", "args": {
+  "project": "transformer", "list": "主线", "edits": [
+    {"op": "rename", "id": "多头注意力", "to": "MHA"},
+    {"op": "drop", "id": "符号主义与连接主义"},
+    {"op": "set", "id": "MLA", "load": "重", "why": "要能推导才算过"}]}}
+```
+
+- `rename` 换 id：**同一个概念在两份清单里写成了两个 id** 时用它（节点已经建成 `MHA`，
+  清单里却还写着 `多头注意力`，于是那条永远显示「未建」）。新 id 在这份清单里已经有了的，
+  说明这俩是重复，该 `drop` 一条而不是改。
+- `drop` 删条目：一条被拆成两条之后，旧的那条合并项还躺在清单里，进度永远差一截。
+- `set` 改字段：只能改 `name` / `why` / `load`（负荷三档 `轻 / 中 / 重`，它直接决定时间账）。
+
+**这张卡不改 md，也不会把节点从图里删掉**——清单只是引用一组 id。真要动节点，那是 `propose_changes`。""",
     "propose_changes": """`propose_changes` 的 `changes` 和图谱的 ChangeSet 同一个形状，七种改动：
 
 ```knowrary
@@ -677,6 +788,7 @@ TOOLS = {
     "propose_changes": _tool_propose,
     "propose_project": _tool_propose_project,
     "propose_points": _tool_propose_points,
+    "propose_list_edit": _tool_propose_list_edit,
 }
 
 
@@ -974,7 +1086,7 @@ def tools_of(stance: str | None, vault: Path) -> tuple[str, ...]:
     见 `_system_prompt`），白名单里没有，说明书上就不会出现。
     """
     tools = stance_of(stance)["tools"]
-    if core.review_on(vault):
+    if core.review_in_chat(vault):
         return tools
     return tuple(t for t in tools if t not in REVIEW_TOOLS)
 
@@ -999,17 +1111,25 @@ REVIEW_OPEN, REVIEW_CLOSE = "<!--review-->", "<!--/review-->"
 # 关掉时只补**一句事实**，不补"不要做 X"。规矩已经整段不渲染、工具已经收走，
 # 再写一串禁令就是在提醒它有这回事；留这一句是为了他真开口问"考我一下"时，
 # 模型知道该答"你在设置里关了复习"，而不是干巴巴甩一句"没有这个工具"。
-REVIEW_OFF_NOTE = ("\n（复习与出题在设置里关着：今日清单不含到期与错题，出题和记复习的工具"
+# 两种关法要说两句不同的事实，**不能共用一句**：总闸关了是"整套都没有"，
+# 只关聊天这一档是"功能还在，只是不该由你来考"——后者说成前者，
+# 他问一句"我不是能在今日面板复习吗"，模型会跟着答"复习关着"，等于凭空多一次误导。
+REVIEW_OFF_NOTE = ("\n（复习与出题整套在设置里关着：今日清单不含到期与错题，出题和记复习的工具"
                    "这一轮也没给。他要考试就请他去设置里打开。）")
+CHAT_REVIEW_OFF_NOTE = ("\n（他把「教练考我」这一档关了：出题和记复习的工具这一轮没给，别催复习、"
+                        "别在结尾出检验题。**复习本身还开着**——他在项目下的「今日」分栏自己复习，"
+                        "那里照常有到期与错题。他问起就这么说，别说成复习关了。）")
 
 
-def _apply_review_switch(text: str, on: bool) -> str:
-    """复习关着时，把标记块整段剔掉，并在末尾补一句明确指令。
+def _apply_review_switch(text: str, in_chat: bool, overall: bool) -> str:
+    """教练这一档关着时，把标记块整段剔掉，并在末尾补一句明确的事实。
 
     **只剔块、不改别处**：留着块里的字再叮嘱一句"别提复习"，等于同时给了正反两套指令，
     模型照着哪一套都说得通。
+
+    补哪一句由**总闸**决定：整套关了和"只是不该由你来考"是两件事（见两个 NOTE 常量）。
     """
-    if on:
+    if in_chat:
         return text.replace(REVIEW_OPEN, "").replace(REVIEW_CLOSE, "")
     out = []
     rest = text
@@ -1018,7 +1138,8 @@ def _apply_review_switch(text: str, on: bool) -> str:
         out.append(head)
         _, _, rest = tail.partition(REVIEW_CLOSE)
     out.append(rest)
-    return "".join(out).rstrip() + "\n" + REVIEW_OFF_NOTE
+    note = REVIEW_OFF_NOTE if not overall else CHAT_REVIEW_OFF_NOTE
+    return "".join(out).rstrip() + "\n" + note
 
 
 def _system_prompt(vault: Path, stance: str | None, project: str | None = None) -> str:
@@ -1046,7 +1167,10 @@ def _system_prompt(vault: Path, stance: str | None, project: str | None = None) 
             .replace("{{me}}", _me_brief(vault, project))
             .replace("{{stance_intro}}", intro.strip())
             .replace("{{stance_rules}}", rules.strip() or "（没有额外规矩）"))
-    return _apply_review_switch(text, core.review_on(vault))
+    return _apply_review_switch(text, core.review_in_chat(vault), core.review_on(vault))
+
+
+SNAP_HEAD = "## 我的图谱现在是什么样"
 
 
 def _graph_snapshot(vault: Path) -> str:
@@ -1065,7 +1189,7 @@ def _graph_snapshot(vault: Path) -> str:
     顺带一个安全性收益：user 消息里的「（系统提示）」谁都能伪造，`role: "system"` 不能，
     它是不可冒充的操作指令通道。
     """
-    return f"## 我的图谱现在是什么样\n\n{_overview(vault)}"
+    return f"{SNAP_HEAD}\n\n{_overview(vault)}"
 
 
 def strip_tools(text: str) -> str:
@@ -1190,16 +1314,19 @@ def run(vault: Path, req: ChatRequest):
         raise
 
 
-def _run(vault: Path, req: ChatRequest):
-    history, dropped = _fit_history([m.model_dump() for m in req.messages])
-    if not history or history[-1]["role"] != "user":
-        raise ChatRejected("最后一条必须是我说的话")
-    user_ts = append_log(vault, "user", history[-1]["content"], project=req.project,
-                         session=req.session, stance=req.stance or DEFAULT_STANCE)
+def _last_snapshot(messages: list[dict]) -> str | None:
+    """这段上下文里最后贴的那份图谱快照；一次都没贴过就是 None。"""
+    for m in reversed(messages):
+        text = m.get("content") or ""
+        if m.get("role") == "system" and text.startswith(SNAP_HEAD):
+            return text
+    return None
 
-    conf = stance_of(req.stance)
-    allowed = set(tools_of(req.stance, vault))   # 和说明书同一份数据，复习关掉就真的调不动
-    messages = [{"role": "system", "content": _system_prompt(vault, req.stance, req.project)}] + history
+
+def _rebuild(vault: Path, req: ChatRequest, history: list[dict], dropped: int) -> list[dict]:
+    """从零拼一段上下文。续不上时走这条（也是复盘之前唯一的一条）。"""
+    messages = [{"role": "system", "content": _system_prompt(vault, req.stance, req.project)},
+                *history]
     if dropped:
         # **截断要说出来**，不能让它默默失忆：模型不知道自己少了上下文时，
         # 会拿半截记忆当完整的用，比直接说"我没看到"糟得多。
@@ -1208,12 +1335,40 @@ def _run(vault: Path, req: ChatRequest):
         messages.insert(1, {"role": "user", "content":
             f"（提醒：这一段之前还有 {dropped} 轮没带过来。你缺的上下文别猜——"
             f"先 `search_nodes` / `read_node` 去图里找，找不到就直接问我。）"})
+    return messages
+
+
+def _assemble(vault: Path, req: ChatRequest, history: list[dict], dropped: int) -> list[dict]:
+    """拼这一轮要发的消息。**能续就只追加最后那句话**，续不上才整段重建（复盘 §11.2）。
+
+    要守住的性质只有一条：**只增不改**。claude-cli 靠前缀指纹续会话、anthropic 靠缓存断点、
+    openai 靠自动前缀缓存——三条路要的是同一件事，前面那一截一个字都别动。
+    前端回传的可见轮次不再用来重建上下文，只用来证明"这一段没被改过"（见 turns.resume）。
+    """
+    prior = turns.resume(vault, llm_session_key(req), history)
+    messages = [*prior, history[-1]] if prior else _rebuild(vault, req, history, dropped)
     # 图谱现状挂在**队尾**，不进顶层 system（见 _graph_snapshot）。
     # 工具循环随后往后追加 assistant / 工具结果，它就夹在中间——这是允许的位置
     # （mid-conversation system message 要么是最后一条，要么后面跟着 assistant）。
-    messages.append({"role": "system", "content": _graph_snapshot(vault)})
+    # **没变就不重复贴**：贴一条就动一次前缀，而"建一个节点就换一次前缀"正是这么来的。
+    snapshot = _graph_snapshot(vault)
+    if _last_snapshot(messages) != snapshot:
+        messages.append({"role": "system", "content": snapshot})
+    return messages
+
+
+def _run(vault: Path, req: ChatRequest):
+    history, dropped = _fit_history([m.model_dump() for m in req.messages])
+    if not history or history[-1]["role"] != "user":
+        raise ChatRejected("最后一条必须是我说的话")
+    user_ts = append_log(vault, "user", history[-1]["content"], project=req.project,
+                         session=req.session, stance=req.stance or DEFAULT_STANCE)
+
+    allowed = set(tools_of(req.stance, vault))   # 和说明书同一份数据，复习关掉就真的调不动
+    messages = _assemble(vault, req, history, dropped)
     said: list[str] = []      # 过程：每一次"还要接着调工具"的那段话
     answer = ""
+    last_raw = ""             # 收尾那段的**原文**：存进续接缓存的是它，不是剥过工具块的版本
     # 同一轮里同参数的工具调用只真跑一次：模型确实会连着用一模一样的参数再搜一遍
     # （真实对话里观察到的），每重复一次就白烧一个来回。
     seen_calls: dict[str, str] = {}
@@ -1231,7 +1386,7 @@ def _run(vault: Path, req: ChatRequest):
         if not call:
             # 不再调工具 = 这一段就是答案本身。前面那些"我先查一下""工具挂了"是过程，
             # 拼进正文的话，每次都要在一堆过程里找那几句有营养的（真实使用里最费时间的一点）。
-            answer = step_text
+            answer, last_raw = step_text, text
             break
         said.append(step_text)
 
@@ -1266,6 +1421,8 @@ def _run(vault: Path, req: ChatRequest):
             yield {"type": "project", "project": extra["project"]}
         if extra.get("points"):
             yield {"type": "points", "points": extra["points"]}
+        if extra.get("list_edit"):
+            yield {"type": "list_edit", "list_edit": extra["list_edit"]}
         if extra.get("id") and name == "record_review":
             yield {"type": "review", "id": extra["id"], "next_due": extra.get("next_due")}
 
@@ -1290,6 +1447,14 @@ def _run(vault: Path, req: ChatRequest):
             continue
         if row:
             yield {"type": "question", "stem": row["stem"], "points": row["points"]}
+    # 记下这一轮，下一轮就能只发增量（复盘 §11.2）。两份列表各有用处：
+    # `visible` 是下一轮用来证明"这一段没被改过"的，必须和前端会回传的内容**逐字一致**——
+    # 所以存的是 pull_checks 之后的 answer（```check 围栏已经摘掉，前端拿到的就是它）。
+    # 步数用尽那一轮不存：它的内部列表结尾是半截工具结果，接着往下发没有意义。
+    if last_raw and answer.strip():
+        turns.remember(vault, llm_session_key(req),
+                       visible=[*history, {"role": "assistant", "content": answer}],
+                       messages=[*messages, {"role": "assistant", "content": last_raw}])
     ts = append_log(vault, "assistant", answer, node_ids=touched, project=req.project,
                     session=req.session, stance=req.stance or DEFAULT_STANCE, trace=trace)
     # node_ids 从调试信息升级成了界面契约：「聊到哪、图上亮哪」靠它（重构方案 §8 第 4 条）

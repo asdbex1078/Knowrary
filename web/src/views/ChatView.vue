@@ -36,7 +36,8 @@ const props = defineProps({
   tidied: { type: Object, default: null },        // 梳理游标：{ upto, turns, at }，没梳理过是 null
   fresh: { type: Number, default: 0 },            // 游标之后还有几条没梳理
 })
-const emit = defineEmits(['send', 'stop', 'apply', 'preview', 'apply-project', 'apply-points', 'goto',
+const emit = defineEmits(['send', 'stop', 'apply', 'preview', 'apply-project', 'apply-points',
+                          'apply-list-edit', 'goto',
                           'new-session', 'pick-session', 'drop-focus', 'toggle-graph', 'stance',
                           'rename-session', 'close'])
 
@@ -328,6 +329,38 @@ function onKey(e) {
                 <Icon name="check" :size="13" />采纳进清单
               </button>
               <span class="dim" style="font-size: 11px">只写 projects.json；标了「别的项目里有」的是重叠，不是错</span>
+            </div>
+          </div>
+
+          <!-- 清单卡：改已有条目（换 id / 删 / 改字段）。只动 projects.json，不碰 md -->
+          <div v-for="(le, j) in (m.listEdits || [])" :key="`le${j}`" class="change-card">
+            <div class="cc-head">
+              <Icon name="network" :size="13" />
+              改「{{ le.project_name }}·{{ le.list_name }}」{{ le.edits.length }} 条
+              <span v-if="le.applied" class="chip m-mastered">已应用</span>
+            </div>
+            <ul>
+              <li v-for="(e, k) in le.edits" :key="k" class="edge-row point">
+                <span class="chip" :class="e.op === 'drop' ? 'm-drop' : 'm-due'">
+                  {{ e.op === 'drop' ? '删掉' : e.op === 'rename' ? '换 id' : '改字段' }}
+                </span>
+                <span class="to" :class="{ gone: e.op === 'drop' }">{{ e.name }}</span>
+                <span v-if="e.op === 'rename'" class="yr">{{ e.id }} → <b>{{ e.to }}</b></span>
+                <span v-else-if="e.op === 'set'" class="yr">
+                  <template v-for="(v, f) in e.fields" :key="f">{{ f }}：{{ e.before[f] || '（空）' }} → <b>{{ v }}</b>&nbsp;</template>
+                </span>
+              </li>
+            </ul>
+            <p v-if="le.empties" class="dim" style="font-size: 11.5px; color: var(--danger)">
+              ⚠️ 这些删完就是<b>空清单</b>了——项目进度和今日清单会跟着全空。
+            </p>
+            <p v-else class="dim" style="font-size: 11.5px">改完这份清单还剩 {{ le.left }} 个点</p>
+            <div v-if="!le.applied" class="cc-acts">
+              <button class="btn primary tiny" :disabled="busy"
+                      @click="emit('apply-list-edit', { card: le, i, j })">
+                <Icon name="check" :size="13" />应用
+              </button>
+              <span class="dim" style="font-size: 11px">只写 projects.json；不会把节点从图里删掉</span>
             </div>
           </div>
 

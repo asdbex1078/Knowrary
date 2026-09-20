@@ -1,11 +1,11 @@
 {
   "schema_version": 2,
-  "revision": 191,
-  "updated_at": "2026-09-18T12:56:09Z",
+  "revision": 194,
+  "updated_at": "2026-09-19T14:34:25Z",
   "viewport": {
     "zoom": 0.86,
-    "cx": 366.0,
-    "cy": 96.0
+    "cx": 144.0,
+    "cy": 318.0
   },
   "groups": {},
   "nodes": {
@@ -310,8 +310,8 @@
       "anchor": null
     },
     "符号主义": {
-      "x": -216.0,
-      "y": 312.0,
+      "x": -192.0,
+      "y": 216.0,
       "w": 176.0,
       "h": 52.0,
       "group": null,

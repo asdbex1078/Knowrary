@@ -59,3 +59,8 @@ node_modules/
 .knowrary/quiz-log.json
 .knowrary/review-log.json
 .knowrary/question-pool.json
+
+# Knowrary：对话续接缓存与 claude -p 会话表（复盘 §11.2）。**都是可丢的缓存，不是真值**——
+# 对话的真值是 .knowrary/chat/ 的留档，删掉这两份只是下一轮多花一次全量重发的钱。
+.knowrary/turns.json
+.knowrary/cli-sessions.json

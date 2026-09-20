@@ -19,7 +19,8 @@ SCHEMA_VERSION = 1
 # 开关全集：名字 → 默认值。**默认全开**——新装一个 vault 该有完整体验，
 # 关掉是明确的选择。加开关只动这张表，前后端都从它派生。
 DEFAULTS = {
-    "review_enabled": True,     # 总闸：关掉后复习 / 出题在界面和教练那儿都不再主动出现
+    "review_enabled": True,     # 总闸：复习这一整套在不在（今日面板的错题与到期、日历、金点）
+    "review_in_chat": True,     # 教练会不会考我 / 催我。**和总闸分开**，见 review_in_chat()
     "review_brief": True,       # 晨间简报
     "review_marks": True,       # 画布上的到期金点、活动栏「今日」角标
 }
@@ -66,3 +67,15 @@ def save_settings(vault: Path, patch: dict) -> dict:
 def review_on(vault: Path) -> bool:
     """复习这一整套现在该不该出现。总闸关了，下面几个子开关一律当关。"""
     return bool(load_settings(vault).get("review_enabled"))
+
+
+def review_in_chat(vault: Path) -> bool:
+    """**教练那一侧**该不该出题、催进度。
+
+    为什么要和总闸分开：这两件事原来是一个开关，于是"别在聊天里考我"只能靠关总闸达成，
+    而总闸一关，今日面板里的错题与到期**也跟着被摘掉**——想专心复习的那个地方恰好空了
+    （2026-09-19 复盘核出来的：设置在 09-18 21:15 关掉，此后今日面板就没有复习区了）。
+    现在总闸只管"这套功能在不在"，聊天里考不考是它下面的一档。
+    """
+    doc = load_settings(vault)
+    return bool(doc.get("review_enabled")) and bool(doc.get("review_in_chat"))

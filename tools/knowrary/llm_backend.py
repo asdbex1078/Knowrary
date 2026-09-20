@@ -295,8 +295,42 @@ def ping(provider: dict, model_override: str | None = None) -> str:
 # 只在**能证明前缀没变**时才续：指纹对不上就老老实实开新的一段。会话状态只在进程
 # 内存里，服务重启就全部退回重发——续错一段的代价（模型看着别人的上下文答题）
 # 远大于多花的那点钱。
+#
+# **会话表落盘**：`uvicorn --reload` 一天要重启几十次，只放进程内存等于每次重启都
+# 从头重付一次全额 cache_write。claude 那侧的会话本来就存在磁盘上，这边跟着存一份就能续上。
+# 存的只是 uuid + 指纹 + 发到第几条，**没有对话正文**——正文在 server/turns.py 那份缓存里。
 _CLI_SESSIONS: dict[str, dict] = {}
 MAX_CLI_SESSIONS = 32
+_SESSION_STORE: Path | None = None
+_STORE_LOADED = False
+
+
+def use_session_store(path: Path) -> None:
+    """指定会话表落在哪个文件。幂等：第一次调用时把盘上那份读进来，之后只认内存这份。"""
+    global _SESSION_STORE, _STORE_LOADED
+    _SESSION_STORE = path
+    if _STORE_LOADED:
+        return
+    _STORE_LOADED = True
+    try:
+        rows = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return                                   # 没有 / 坏了都当没有：它是可丢的缓存
+    if isinstance(rows, dict):
+        _CLI_SESSIONS.update({k: v for k, v in rows.items() if isinstance(v, dict)})
+
+
+def _save_sessions() -> None:
+    """落盘。**记不上绝不能拖垮正经调用**——续不上最多是多花一次全量重发的钱。"""
+    if _SESSION_STORE is None:
+        return
+    tmp = _SESSION_STORE.with_suffix(".tmp")
+    try:
+        _SESSION_STORE.parent.mkdir(parents=True, exist_ok=True)
+        tmp.write_text(json.dumps(_CLI_SESSIONS, ensure_ascii=False), encoding="utf-8")
+        os.replace(tmp, _SESSION_STORE)
+    except OSError:
+        pass
 
 
 def _fingerprint(messages: list[dict]) -> str:
@@ -318,6 +352,7 @@ def _cli_session(key: str | None, messages: list[dict], model: str | None) -> tu
     if len(_CLI_SESSIONS) >= MAX_CLI_SESSIONS:
         _CLI_SESSIONS.pop(next(iter(_CLI_SESSIONS)), None)     # 先进先出，别无限涨
     _CLI_SESSIONS[key] = {"uuid": str(uuid.uuid4()), "sent": 0, "fingerprint": "", "model": model}
+    _save_sessions()
     return ["--session-id", _CLI_SESSIONS[key]["uuid"]], 0
 
 
@@ -332,32 +367,13 @@ def _remember_cli_session(key: str | None, messages: list[dict], reply: str) -> 
     known = messages + [{"role": "assistant", "content": reply}]
     have["sent"] = len(known)
     have["fingerprint"] = _fingerprint(known)
+    _save_sessions()
 
 
 def drop_cli_session(key: str | None) -> None:
     """扔掉一段会话：下一次从头发。"""
-    _CLI_SESSIONS.pop(key or "", None)
-
-
-def _hoist_system(messages: list[dict]) -> list[dict]:
-    """把中途的 system 挪回开头那一串 system 的末尾——给 anthropic 以外的后端。
-
-    图谱快照挂在队尾是 anthropic 专用的招（mid-conversation system message），为的是
-    保护顶层 system 的缓存（见 `_split_system`）。别的后端没有"顶层 system"这回事：
-    claude-cli 把整串拍平，位置只影响读起来顺不顺；openai 系是 token 前缀自动匹配。
-
-    真正的麻烦是**它会动**：这一轮在队尾，下一轮被新的对话挤到中间，消息列表就不再
-    只增不改。claude-cli 的会话续用靠指纹校验前缀，一动就续不上，**白白退回重发全文
-    而且不报错**。挪到开头它就钉住了：只有图谱真的变了才换指纹，那时候本来也该重开一段。
-    """
-    head = 0
-    while head < len(messages) and messages[head].get("role") == "system":
-        head += 1
-    moved = [m for m in messages[head:] if m.get("role") == "system"]
-    if not moved:
-        return messages
-    return [*messages[:head], *moved,
-            *(m for m in messages[head:] if m.get("role") != "system")]
+    if _CLI_SESSIONS.pop(key or "", None) is not None:
+        _save_sessions()
 
 
 def _render_transcript(messages: list[dict]) -> str:
@@ -428,7 +444,6 @@ def _chat_claude_cli(messages: list[dict], model: str | None, on_delta,
     给了 `session` 就尽量续上已有的那一段，只发新增的几条（见 _cli_session）。
     续不上（进程重启、CLI 把会话清了）会退回重发全文，不让一次省钱把对话弄炸。
     """
-    messages = _hoist_system(messages)          # 队尾的 system 会动，钉回开头（见 _hoist_system）
     try:
         text, usage = _run_claude_cli(messages, model, on_delta, session)
     except SystemExit:
@@ -604,7 +619,6 @@ def _chat_openai(messages: list[dict], provider: dict, model: str, on_delta) -> 
     api_key = resolve_secret(provider.get("api_key")) or "none"
     base = provider["base_url"].rstrip("/")
     headers = {"Authorization": f"Bearer {api_key}"}
-    messages = _hoist_system(messages)          # 自动前缀缓存要的是前缀别动（见 _hoist_system）
     payload = {"model": model, "messages": [{"role": m["role"], "content": m.get("content") or ""}
                                             for m in messages if (m.get("content") or "").strip()],
                "stream": on_delta is not None}

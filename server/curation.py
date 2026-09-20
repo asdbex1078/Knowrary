@@ -242,6 +242,12 @@ def coach_today(vault: Path, project: str | None = None) -> CoachToday:
         for kind in REVIEW_KINDS:
             counts.pop(kind, None)
         today["counts"] = counts
+        # 出题范围也要跟着空：`quiz_pools` 是在过滤之前按原始 items 算的，
+        # 漏掉这一步就成了"行不显示、数字还在"——范围选择器上「今日」仍旧标着 6 个点，
+        # 点下去还真能考出来，而界面上一条到期都看不见。
+        pools = dict(today.get("pools") or {})
+        pools["今日"] = []
+        today["pools"] = pools
     return CoachToday(**today)
 
 

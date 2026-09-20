@@ -15,6 +15,8 @@ const TOOL_LABEL = {
   search_nodes: '在图里搜了一下', read_node: '读了一个节点', overview: '看了图谱概况',
   today: '看了今日清单', plans: '看了学习计划', quiz: '出了几道题',
   record_review: '记了一次复习', propose_changes: '拟了一张变更卡',
+  propose_project: '拟了一张项目卡', propose_points: '拆了一份清单',
+  propose_list_edit: '拟了一张清单卡',
 }
 
 /** 工具块是给服务端看的，不该在屏幕上闪过——和 server/chat.py 的 strip_tools 同一个形状。
@@ -150,7 +152,7 @@ export function useChat(deps) {
     // trace = 过程（"我先查一下"、工具调用、工具报错），content = 最终那段答案。
     // 混在一起的话，每次都要在一堆过程里找那几句有营养的——真实使用里最费时间的一点。
     const reply = reactive({ role: 'assistant', content: '', trace: [], cards: [], projects: [],
-                             points: [], questions: [], streaming: true, ts: '' })
+                             points: [], listEdits: [], questions: [], streaming: true, ts: '' })
     chatLog.value = [...chatLog.value, reply]
     chatBusy.value = true
     chatAbort = new AbortController()
@@ -171,6 +173,7 @@ export function useChat(deps) {
         else if (ev.type === 'card') reply.cards.push({ ...ev.card, applied: false })
         else if (ev.type === 'project') reply.projects.push({ ...ev.project, applied: false })
         else if (ev.type === 'points') reply.points.push({ ...ev.points, applied: false })
+        else if (ev.type === 'list_edit') reply.listEdits.push({ ...ev.list_edit, applied: false })
         else if (ev.type === 'question') reply.questions.push({ stem: ev.stem, points: ev.points })
         else if (ev.type === 'review') { onReview(); pushToast(`已记一次「忘了」：${ev.id}`, 'info') }
         else if (ev.type === 'done') {

@@ -207,7 +207,8 @@ const briefOn = ref(false)
 // 设置：**只有"后端也要读"的开关在这里**（复习要不要出现）。
 // 画布 / 外观那些仍旧各自记在 localStorage——它们是"这台机器上怎么看图"。
 // 先给默认值（全开）：接口还没回来的那一瞬间不该先闪一下"关着"的样子。
-const settings = ref({ review_enabled: true, review_brief: true, review_marks: true })
+const settings = ref({ review_enabled: true, review_in_chat: true, review_brief: true,
+                       review_marks: true })
 const settingsOn = ref(false)
 const reviewOn = computed(() => !!settings.value.review_enabled)
 const reviewMarks = computed(() => reviewOn.value && settings.value.review_marks !== false)
@@ -265,6 +266,41 @@ async function applyProjectCard({ card, i, j }) {
                   : `已创建项目「${card.name}」，面板已经切过去了——点「让 AI 拆一份」把点填进来`, 'success')
   } catch (err) {
     setBanner(`创建失败：${err.body?.detail || err.message}`, 'error')
+  } finally {
+    chatBusy.value = false
+  }
+}
+
+/** 对话里提议的清单改动：改 id / 删条目 / 改字段。**只动 projects.json，不碰 md**。
+ *  和采纳拆点同一条路（整份替换 + base_revision 乐观锁），只是这一张是改已有的条目。 */
+async function applyListEditCard({ card, i, j }) {
+  chatBusy.value = true
+  try {
+    const doc = await fetchProjects()
+    const next = JSON.parse(JSON.stringify(doc.doc.projects || {}))
+    const ls = next[card.project]?.lists?.[card.list]
+    if (!ls) throw new Error('这份清单不在了（项目可能被改过）')
+    let done = 0
+    for (const e of card.edits) {
+      for (const st of ls.stages || []) {
+        const at = (st.points || []).findIndex((p) => p.id === e.id)
+        if (at < 0) continue
+        if (e.op === 'drop') st.points.splice(at, 1)
+        else if (e.op === 'rename') st.points[at].id = e.to
+        else Object.assign(st.points[at], e.fields)
+        done += 1
+        break                       // 一个 id 只改一处：清单里本来就不该有重复条目
+      }
+    }
+    if (!done) throw new Error('这些点在清单里都找不到了')
+    await putProjects({ base_revision: doc.doc.revision, projects: next })
+    chatLog.value[i].listEdits[j].applied = true
+    await refreshPlans()
+    await switchProject(card.project)
+    openPanel('plans', { force: true })
+    setBanner(`已改「${card.project_name}·${card.list_name}」${done} 条，面板已经切过去了`, 'success')
+  } catch (err) {
+    setBanner(`改清单失败：${err.body?.detail || err.message}`, 'error')
   } finally {
     chatBusy.value = false
   }
@@ -2870,7 +2906,21 @@ async function saveSettings(patch) {
   }
   await Promise.all([refreshDue(), refreshToday(), refreshOpenQuiz()])
   render()                                   // 到期金点要跟着一起消失 / 回来
-  setBanner(reviewOn.value ? '复习与出题已打开' : '复习与出题已关掉：教练也不会再提了', 'success')
+  // 提示要说**这一次改了什么**：三个开关共用一句"复习已关掉"的话，
+  // 关掉「教练会考我」时会看到"整套关了"，而今日分栏其实还在——提示自己就把人误导了
+  setBanner(banner_of(patch), 'success')
+}
+
+function banner_of(patch) {
+  if ('review_enabled' in patch) {
+    return reviewOn.value ? '复习与出题已打开'
+                          : '复习与出题整套已关掉：「今日」分栏里的到期与错题也收起了'
+  }
+  if ('review_in_chat' in patch) {
+    return settings.value.review_in_chat ? '教练会在对话里考你了'
+                                         : '教练不再考你、不再催欠账；「今日」分栏里照常能复习'
+  }
+  return '设置已保存'
 }
 
 function toggleTheme() {
@@ -3096,7 +3146,8 @@ onBeforeUnmount(() => {
                   :stance="chatStance" @stance="setStance"
                   :graph-open="graphPane" :tidied="chatTidied" :fresh="chatFresh"
                   @send="sendChat" @stop="stopChat" @apply="applyChatCard" @preview="previewChatCard"
-                  @apply-project="applyProjectCard" @apply-points="applyPointsCard" @goto="gotoNode"
+                  @apply-project="applyProjectCard" @apply-points="applyPointsCard"
+                  @apply-list-edit="applyListEditCard" @goto="gotoNode"
                   @new-session="newChatSession" @pick-session="pickChatSession" @rename-session="renameSession"
                   @drop-focus="chatFocus = null" @toggle-graph="toggleGraphPane"
                   @close="switchMode(currentProject ? 'project' : 'structure')" />

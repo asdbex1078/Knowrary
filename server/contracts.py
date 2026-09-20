@@ -855,7 +855,8 @@ class SettingsRead(Strict):
     """
 
     schema_version: int = 1
-    review_enabled: bool = True        # 总闸：关掉后复习 / 出题在界面和教练那儿都不主动出现
+    review_enabled: bool = True        # 总闸：复习这一整套在不在（今日面板的到期与错题、日历、金点）
+    review_in_chat: bool = True        # 教练会不会考我 / 催我。总闸关了它一律当关
     review_brief: bool = True          # 晨间简报
     review_marks: bool = True          # 画布到期金点、活动栏「今日」角标
 
@@ -864,6 +865,7 @@ class SettingsPatch(Strict):
     """只改给到的那几个；没给的保持原样（前端不必把整份设置背回来）。"""
 
     review_enabled: bool | None = None
+    review_in_chat: bool | None = None
     review_brief: bool | None = None
     review_marks: bool | None = None
 

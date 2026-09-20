@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import datetime as dt
 import re
+from difflib import SequenceMatcher
 from pathlib import Path
 
 from .mdio import load_json, write_json_atomic
@@ -67,9 +68,39 @@ def norm(stem: str) -> str:
     return re.sub(r"[\s，。、？?！!,.：:；;「」“”\"'()（）]+", "", stem).lower()
 
 
+# 判"换个说法问的同一道题"的相似度阈值。**这个数是量出来的，不是拍的**：
+# 真实题库里那 5 道 XOR 同义题两两相似度 0.68～0.97，而真正不同的题彼此最高只有 0.19
+# （2026-09-19 复盘 §11.3）。0.6 落在中间那段空白里，两边都有很宽的余量。
+SAME_Q = 0.6
+
+
+def _same_question(q: dict, stem: str, points: list[str]) -> bool:
+    """是不是"换个说法问的同一道"。
+
+    **不能只看考点集合。** 考点是 `_mentioned` 按当轮提到的节点算的，图在长、集合就在变——
+    那 5 道 XOR 同义题的考点集合**每次都不一样**（`['达特茅斯会议']`、`['连接主义']`、
+    `['感知器','连接主义']`…），按集合相等去并一条都并不掉。真正稳定的信号是题面本身。
+    """
+    if set(q.get("points") or []) == set(points):
+        return True
+    return SequenceMatcher(None, norm(q.get("stem", "")), norm(stem)).ratio() >= SAME_Q
+
+
 def add(vault: Path, stem: str, points: list[str], ref_answer: str = "",
         source: str = "chat") -> dict | None:
-    """收一道题。同一道（规整后相同）只留一份，考点取并集。返回落盘的那条。"""
+    """收一道题。同一道只留一份，考点取并集。返回落盘的那条。
+
+    **「同一道」有两把尺子，缺了第二把就会攒出一堆同义题。** 第一把是题面规整后完全相同；
+    第二把是**考点集合相同、而且那条还没答过**——教练问了一道题、人没答，下一轮它会换个说法
+    再问一次，规整后当然不一样，于是每问一次就入库一条。真实题库里 10 道题有 5 道是
+    同一道 XOR 题的不同措辞（2026-09-19 复盘 §11.3），而全部 `asked` 都是 0。
+
+    换句话说：**教练随口问的那些题里，没答过、而且问的是同一件事的只留最新一条**（措辞以最新为准，
+    它每次都在照着当时的理解重新问，后问的通常更贴）。答过的那些不动——它们已经是历史了。
+
+    **只对 `source="chat"` 生效。** 出题那一路（`source="quiz"`）一轮本来就会围绕同几个节点
+    出好几道**不同的**题，那是设计如此，不是重复；两条路共用一把尺子会把一整轮测验并成一道。
+    """
     stem = (stem or "").strip()[:MAX_STEM]
     points = [p for p in dict.fromkeys(points or []) if p]
     if not stem or not points:
@@ -82,6 +113,14 @@ def add(vault: Path, stem: str, points: list[str], ref_answer: str = "",
             q["ref_answer"] = q.get("ref_answer") or ref_answer[:MAX_STEM]
             save_pool(vault, pool)
             return q
+    if source == "chat":
+        for q in pool["questions"]:
+            if q.get("source") == "chat" and not q.get("asked") and _same_question(q, stem, points):
+                q["stem"] = stem                              # 换个说法问的同一道：以最新措辞为准
+                q["points"] = list(dict.fromkeys([*q.get("points", []), *points]))
+                q["ref_answer"] = ref_answer[:MAX_STEM] or q.get("ref_answer") or ""
+                save_pool(vault, pool)
+                return q
     row = {"id": f"q{len(pool['questions']) + 1}-{key[:12] or 'x'}",
            "stem": stem, "ref_answer": (ref_answer or "")[:MAX_STEM], "points": points,
            "full_answer": "", "beyond_vault": [],

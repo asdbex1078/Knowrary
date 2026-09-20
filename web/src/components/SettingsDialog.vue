@@ -63,8 +63,16 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onKey, true))
                      @change="emit('set', { review_enabled: !settings.review_enabled })" />
               <span class="check"><Icon name="check" :size="11" :width="2.6" /></span>
               <span class="label">复习与出题
-                <span class="sub">关掉后教练也不再开场播报欠账、不再出检验题，出题和记复习的工具直接收走；
-                  复习记录照常积累，只是不拿它来打断你</span></span>
+                <span class="sub">总闸。关掉后「今日」分栏里的到期与错题一并收起，出题范围也跟着空；
+                  复习记录照常积累，只是整套不再出现</span></span>
+            </label>
+            <label class="switch-row" :class="{ muted: !settings.review_enabled }">
+              <input type="checkbox" :disabled="!settings.review_enabled" :checked="settings.review_in_chat"
+                     @change="emit('set', { review_in_chat: !settings.review_in_chat })" />
+              <span class="check"><Icon name="check" :size="11" :width="2.6" /></span>
+              <span class="label">教练会考我
+                <span class="sub">关掉后教练不再开场播报欠账、不再在结尾出检验题，出题和记复习的工具直接收走。
+                  <b>「今日」分栏里照常能复习</b>——那是专心复习的地方，不受这一档影响</span></span>
             </label>
             <label class="switch-row" :class="{ muted: !settings.review_enabled }">
               <input type="checkbox" :disabled="!settings.review_enabled" :checked="settings.review_brief"
