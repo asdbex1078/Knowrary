@@ -2824,6 +2824,36 @@ def llm_模型不认中途system就折进user重发():
 
 
 @case
+def llm_嵌套着跑claude_cli要提前报警():
+    """`claude -p` 不能嵌套，而它是零配置的默认 provider——不提前说就要等第一句话才炸。
+
+    但**只在真有角色指向 claude-cli 时才吭声**：配了 anthropic / openai 的人
+    嵌套着跑没有任何问题，对他们报警就是狼来了。
+    """
+    import llm_backend as backend
+    cli = {"providers": {"claude-cli": {"type": "claude-cli"}},
+           "roles": {"learn": "claude-cli", "review": "claude-cli"}}
+    api = {"providers": {"gpt": {"type": "openai", "base_url": "https://x/v1"}},
+           "roles": {"learn": "gpt", "review": "gpt"}}
+    mixed = {"providers": {"claude-cli": {"type": "claude-cli"},
+                           "gpt": {"type": "openai", "base_url": "https://x/v1"}},
+             "roles": {"learn": "gpt", "review": "claude-cli"}}
+    old = os.environ.get("CLAUDECODE")
+    try:
+        os.environ.pop("CLAUDECODE", None)
+        assert backend.nested_cli_warning(cli) == "", "不在 Claude Code 里也报警"
+        os.environ["CLAUDECODE"] = "1"
+        assert "learn、review" in backend.nested_cli_warning(cli)
+        assert backend.nested_cli_warning(api) == "", "没用 claude-cli 还报警 = 狼来了"
+        one = backend.nested_cli_warning(mixed)
+        assert "review" in one and "learn、" not in one, one     # 只点名真中招的那个角色
+    finally:
+        os.environ.pop("CLAUDECODE", None)
+        if old is not None:
+            os.environ["CLAUDECODE"] = old
+
+
+@case
 def llm_别的400不重发():
     """只在报错确实是这件事时才退一步，别把所有 400 都当成它。"""
     try:
@@ -3681,6 +3711,36 @@ def chat_搜索连tags和aliases一起搜():
     assert meta["hits"] == 1 and "tlu" in body, body
     body, meta = chat_mod._tool_search(vault, {"q": "M-P"})
     assert meta["hits"] == 1 and "tlu" in body, body
+
+
+@case
+def chat_中断不算出错():
+    """点「停止」/ 关页面走的是生成器被关闭，它既不是模型的锅也没什么可查的。
+
+    两件事要分开：留档里得留个**说得清**的记号（"没答成：" 后面空着，读的人只会当成 bug），
+    而且**不进出错流水**——issues.jsonl 是用来看"这东西为什么老出问题"的，
+    把人主动按的停止算进去，那张表就没法看了。
+    """
+    from server import chat as chat_mod
+    from server.contracts import ChatRequest
+    c, vault, _ = with_inbox_node()
+    original, _ = stub_chat([tool_block("overview", {}), "看完了"])
+    try:
+        gen = chat_mod.run(vault, ChatRequest(messages=[{"role": "user", "content": "中断测试"}],
+                                              session="s1"))
+        next(gen)                      # 收到第一个事件
+        gen.close()                    # 客户端断了
+    finally:
+        restore_chat(original)
+
+    rows = [json.loads(l) for l in
+            (vault / ".knowrary/chat/_scratch" / f"{dt.date.today():%Y-%m}.jsonl")
+            .read_text(encoding="utf-8").splitlines()]
+    kinds = [r["role"] for r in rows]
+    assert kinds == ["user", "assistant"], f"留档没成对：{kinds}"
+    assert "被我中断" in rows[1]["text"], rows[1]["text"]
+    assert "没答成" not in rows[1]["text"], rows[1]["text"]
+    assert not core.load_issues(vault), "把人按的停止记进出错流水了"
 
 
 @case

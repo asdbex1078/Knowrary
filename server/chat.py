@@ -16,6 +16,7 @@
 """
 from __future__ import annotations
 
+import asyncio
 import datetime as dt
 import json
 import logging
@@ -1301,10 +1302,20 @@ def run(vault: Path, req: ChatRequest):
     这一轮要是炸了（模型不通、配置写错），**留档里也要留个记号**：
     只记提问不记结果的话，失败五次就攒出五条没人答的问题，
     下次接着聊时全被读回去当上下文。
+
+    **中断不是出错，两条路要分开。** 点「停止」或关掉页面走的是生成器被关闭
+    （`GeneratorExit`，异步那侧是 `CancelledError`），它既不是模型的锅也没什么可查的：
+    - 留档里写成"被我中断了"，而不是"没答成：" —— 后者冒号后面是空的，读留档的人只会以为是个 bug；
+    - **不进出错流水**。`issues.jsonl` 是用来回答"这东西为什么老出问题"的，
+      把人主动按的停止算进去，那张表就没法看了。
     """
     try:
         yield from _run(vault, req)
     except ChatRejected:
+        raise
+    except (GeneratorExit, asyncio.CancelledError):
+        append_log(vault, "assistant", "（这一轮被我中断了）",
+                   project=req.project, session=req.session, stance=req.stance or DEFAULT_STANCE)
         raise
     except BaseException as exc:
         append_log(vault, "assistant", f"（这一轮没答成：{str(exc)[:200]}）",

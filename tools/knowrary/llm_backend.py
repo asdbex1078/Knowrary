@@ -99,6 +99,33 @@ def resolve_provider(cfg: dict, role: str, override: str | None = None) -> tuple
     return name, cfg["providers"][name]
 
 
+def nested_cli_warning(cfg: dict) -> str:
+    """在 Claude Code 会话里又要跑 `claude -p` —— 每一次调用都会当场失败。
+
+    报错是 `Error: Claude Code cannot be launched inside another Claude Code session.`，
+    2026-09-16 就整轮报废过一次。它是**零配置的默认路径**，所以最容易在
+    "从 Claude Code 里顺手起个服务" 的时候踩到，而且要等第一句话发出去才炸。
+
+    只在**真的有角色指向 claude-cli** 时才吭声：配了 anthropic / openai 的人
+    嵌套着跑没有任何问题，对他们报警就是狼来了。
+
+    返回一段给人看的话；没问题就返回空串。
+    """
+    if not os.environ.get("CLAUDECODE"):
+        return ""
+    providers = cfg.get("providers") or {}
+    roles = cfg.get("roles") or {}
+    hit = sorted({r for r in ROLES
+                  if (providers.get(roles.get(r)) or {}).get("type") == "claude-cli"})
+    if not hit:
+        return ""
+    return ("⚠️  当前终端在一个 Claude Code 会话里，而角色 "
+            f"{'、'.join(hit)} 指向 claude-cli —— `claude -p` 不能嵌套运行，"
+            "这些调用会全部失败。\n"
+            "    要么换个普通终端起服务，要么在 .knowrary/llm.local.json 里"
+            "把这些角色指到 anthropic / openai 类型的 provider。")
+
+
 def resolve_secret(value: str | None) -> str | None:
     """api_key 支持 `env:VAR_NAME` 引用环境变量。"""
     if isinstance(value, str) and value.startswith("env:"):
