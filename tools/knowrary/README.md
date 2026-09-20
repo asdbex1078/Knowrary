@@ -27,8 +27,8 @@ python3 $KG layout check --vault /Users/moka/IdeaProjects/Knowrary            # 
 # 2b. 校验（错误退出码 1）——与 index 共用同一套解析和诊断，额外查密钥泄露与索引契约
 python3 $KG check /Users/moka/IdeaProjects/Knowrary
 
-# 2c. 自测（零依赖，覆盖幂等、诊断、归一、契约）
-python3 /Users/moka/IdeaProjects/Knowrary/tools/knowrary/tests/run.py [关键字]
+# 2c. 自测（覆盖幂等、诊断、归一、契约）。用 .venv：有两条用例跨到服务层，要 pydantic v2
+.venv/bin/python /Users/moka/IdeaProjects/Knowrary/tools/knowrary/tests/run.py [关键字]
 
 # 3. 文章 → 节点
 #    3a. 在 Claude Code 里用 skill（推荐）：/knowrary-import <文章路径>，或直接说"把这篇文章融入我的图谱"
@@ -54,7 +54,7 @@ python3 $KG llm test --vault <vault> [--llm x]  # 连通性测试；退出码非
 | --- | --- |
 | `knowrary.py` | 全部命令（CLI 薄壳，解析与校验都调 `core/`） |
 | `core/` | 核心库：`mdio.py`（IO / frontmatter / 目录扫描）、`relations.py`（类型表、关系解析、方向归一）、`parser.py`（节点与 frontmatter 校验）、`index.py`（index.json 生成、内容哈希与 revision）、`layout.py`（初始布局生成、孤立引用判定）、`schema.py`（index 契约校验）、`diagnostics.py`（结构化诊断）。`server/` 直接 import，避免两套实现漂移 |
-| `tests/run.py` | 零依赖自测（24 个用例）|
+| `tests/run.py` | 自测（114 个用例）。core 本身零依赖，但用例里有两条跨到服务层，所以要用 `.venv` 跑 |
 | `llm_backend.py` | LLM 后端：读配置、按角色选 provider、claude-cli / anthropic / openai 三种调用；多轮对话 + 两套工具协议的适配（原生 tool use / 文本围栏，按 `supports_tools` 自动挑）。零依赖，urllib |
 | `core/proposal.py` | 导入方案的三级匹配：认领清单点 / 名字撞脸 / 和体系断开。命令行与网页共用这一份 |
 | `core/llmjson.py` | 模型输出 → JSON 的容错与留痕，同上共用 |

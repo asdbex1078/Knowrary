@@ -66,7 +66,7 @@ KNOWRARY_VAULT=/别的/vault ./server/dev.sh 9000
 | `index_service.py` | 按 md 文件指纹缓存索引，变化即重建并写 `.knowrary/index.json` |
 | `layout_store.py` | layout 读写：初始生成、部分合并、revision 校验、原子写、孤立引用 |
 | `app.py` | FastAPI 路由与静态托管 |
-| `tests/run.py` | 服务层自测（TestClient + 临时 vault，42 个用例） |
+| `tests/run.py` | 服务层自测（TestClient + 临时 vault，219 个用例） |
 
 初始布局生成与孤立引用判定住在 `tools/knowrary/core/layout.py`（零第三方依赖），
 所以 `python3 tools/knowrary/knowrary.py layout init/check` 不需要 .venv 也能用。
@@ -74,6 +74,6 @@ KNOWRARY_VAULT=/别的/vault ./server/dev.sh 9000
 ## 自测
 
 ```bash
-.venv/bin/python server/tests/run.py          # 42 个用例
+.venv/bin/python server/tests/run.py          # 219 个用例
 .venv/bin/python server/tests/run.py revision # 只跑名字含 revision 的
 ```

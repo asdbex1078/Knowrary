@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Knowrary core 自测（零第三方依赖）：python3 tools/knowrary/tests/run.py [关键字]
+"""Knowrary core 自测：.venv/bin/python tools/knowrary/tests/run.py [关键字]
+
+**要用 .venv，不能用系统 python3。** core 库本身零第三方依赖，但这套用例里有两条
+跨到服务层验口径一致性（复习开关那两条要 import server.chat），而 server 依赖 pydantic v2；
+系统 python3 若是 v1，那两条会在 import 时就抛 "field constraints set but not enforced"，
+看上去像测试挂了，其实是解释器选错了。
 
 每个用例在临时目录里搭一个最小 vault，跑 build_index 并断言节点/边/诊断/契约。
 覆盖阶段 1 验收点：索引可重建且结果一致、非法 YAML / 未知目标 / 非法年份都有诊断、
