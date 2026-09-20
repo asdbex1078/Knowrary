@@ -236,6 +236,8 @@ class ChangeSet(Strict):
     base_revision: int                 # 基于哪个 index revision 提出的变更
     changes: list[Change]
     dry_run: bool = True               # 默认只预览；确认后再发一次 dry_run=false
+    card: str | None = None            # 这次写入来自哪张卡（对话里提的）。面板手动改就不带，
+    """采纳率的分子靠它。没有它，服务端只知道"有人写了一次"，分不出是卡片还是面板操作。"""
 
 
 class FileDiff(Strict):
@@ -653,6 +655,7 @@ class ProjectsWrite(Strict):
 
     base_revision: int
     projects: dict[str, Project]
+    card: str | None = None            # 同 ChangeSet.card：项目卡 / 拆点卡 / 清单卡落地时带上
 
 
 class ProjectsSaved(Strict):
@@ -876,6 +879,9 @@ class UsageRead(Strict):
     totals: UsageBucket
     by_op: dict[str, UsageBucket] = Field(default_factory=dict)
     cache: CacheHealth = Field(default_factory=CacheHealth)
+    cards: dict[str, Any] = Field(default_factory=dict)
+    """今天摆了几张卡 / 点了几张 + 累计采纳率。**卡片流水里不存钱**，
+    金额在这个接口里才和花费拼到一起（见 core/cards.py）。"""
     recent: list[dict[str, Any]] = Field(default_factory=list)
     provider: str = ""                 # 当前各角色用的是谁，方便对账
     roles: dict[str, str] = Field(default_factory=dict)

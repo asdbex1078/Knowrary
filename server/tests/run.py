@@ -3533,6 +3533,70 @@ def _vault_with_list(c) -> None:
 
 
 @case
+def cards_摆了几张点了几张算得出来():
+    """账本知道花了多少，md 知道最后写进去什么，**中间那一段原来没人记**——
+    摆出来几张、点了几张、几张被丢了。采纳率是这套教练唯一真正的产出指标。
+    """
+    c, vault, _ = with_inbox_node()
+    original, _ = stub_chat([tool_block("propose_changes", {"changes": [
+        {"type": "update_frontmatter", "source": "a", "fields": {"desc": "改过的摘要"}}]}),
+        "卡摆好了"])
+    try:
+        r = c.post("/api/chat", json={"messages": [{"role": "user", "content": "改一下 a"}],
+                                      "session": "s1"})
+    finally:
+        restore_chat(original)
+    card = next(e for e in sse_events(r) if e["type"] == "card")["card"]
+    assert card["card_id"], card                      # 卡片带 id，采纳才认得回来
+
+    st = core.card_stats(vault)
+    assert (st["proposed"], st["applied"]) == (1, 0), st       # 摆出来了，还没点
+
+    # dry_run 不算采纳：卡上改一次摘要就重算一次 diff，带上去会让采纳率虚高
+    c.post("/api/changes", json={"base_revision": card["base_revision"], "dry_run": True,
+                                 "changes": card["changes"], "card": card["card_id"]})
+    assert core.card_stats(vault)["applied"] == 0, "dry_run 被算成采纳了"
+
+    ok = c.post("/api/changes", json={"base_revision": card["base_revision"], "dry_run": False,
+                                      "changes": card["changes"], "card": card["card_id"]})
+    assert ok.status_code == 200, ok.text
+    st = core.card_stats(vault)
+    assert (st["proposed"], st["applied"]) == (1, 1), st
+
+    # 面板上手动改的不带 card，不该进分母
+    c.post("/api/changes", json={"base_revision": c.get("/api/index").json()["revision"],
+                                 "dry_run": False,
+                                 "changes": [{"type": "update_frontmatter", "source": "b",
+                                              "fields": {"desc": "手动改的"}}]})
+    assert core.card_stats(vault)["proposed"] == 1, "面板操作混进卡片流水了"
+
+    # 接口上花费和产出拼在一起（两份互不相干的流水，这里才第一次凑到）
+    got = c.get("/api/llm/usage").json()
+    assert got["cards"]["applied"] == 1 and got["cards"]["total_proposed"] == 1, got["cards"]
+
+
+@case
+def cards_项目那三张卡的采纳也认得回来():
+    """项目卡 / 拆点卡 / 清单卡走的是 PUT /api/projects，和变更卡不是同一条路。"""
+    c, vault, _ = with_inbox_node()
+    original, _ = stub_chat([tool_block("propose_project", {
+        "id": "nlp", "name": "NLP", "field": "AI",
+        "lists": [{"kind": "学习", "name": "主线", "goal": "吃透"}]}), "卡摆好了"])
+    try:
+        r = c.post("/api/chat", json={"messages": [{"role": "user", "content": "建个 NLP 项目"}]})
+    finally:
+        restore_chat(original)
+    card = next(e for e in sse_events(r) if e["type"] == "project")["project"]
+    assert card["card_id"] and card["id"] == "nlp", card     # card_id 和项目 id 是两回事，别撞
+
+    assert core.card_stats(vault)["applied"] == 0
+    saved = c.put("/api/projects", json={"base_revision": 0, "card": card["card_id"], "projects": {
+        "nlp": {"name": "NLP", "lists": card["lists"]}}})
+    assert saved.status_code == 200, saved.text
+    assert core.card_stats(vault)["applied"] == 1, core.card_stats(vault)
+
+
+@case
 def chat_能提议改清单里已有的条目():
     """复盘 §11.4：以前模型只能往清单里**加**，撞上"同一个概念两个 id""拆完旧条目还躺着"
     只能说一句"那条得你自己去面板删"——而它的提示词里明写着不许把选择题丢回来。

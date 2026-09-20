@@ -6,6 +6,8 @@ from .diagnostics import Diagnostic, Diagnostics
 from .coach import build_today, current_stage, project_lines
 from .calendar import MAX_DAYS as CALENDAR_MAX_DAYS, build_calendar, streak
 from .digest import build_digest, duplicates, group_labels, kinship, link_hints, lonely, misplaced, no_year
+from .cards import (KINDS as CARD_KINDS, applied as card_applied, cards_path, load as load_cards,
+                    new_card_id, proposed as card_proposed, stats as card_stats)
 from .issues import (issues_path, load as load_issues, record as record_issue,
                      summary as issues_summary)
 from .index import INDEX_SCHEMA_VERSION, IndexResult, build_index, content_hash, index_path, load_previous
@@ -53,6 +55,8 @@ __all__ = [
     "projects_path", "point_ids", "by_field_and_layer", "add_question", "enrich_questions", "pool_norm", "pool_for_nodes", "load_pool", "mark_questions", "pool_stats", "save_open", "load_open", "clear_open", "LEVELS", "DEFAULT_LEVEL", "level_of", "progress_of", "progress_of_project", "stage_points",
     "schedule_of", "upgrade_v1", "record_review", "record_usage", "load_usage", "usage_summary",
     "load_settings", "save_settings", "review_in_chat", "review_on",
+    "CARD_KINDS", "card_applied", "card_proposed", "card_stats", "cards_path",
+    "load_cards", "new_card_id",
     "build_article_prompt", "cards_from_index", "cards_from_nodes", "describe_points", "describe_related",
     "select_linkable", "select_related",
     "Heading", "describe_outline", "extract_section", "find_heading", "outline",

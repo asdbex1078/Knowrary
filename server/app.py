@@ -224,12 +224,15 @@ def get_projects() -> ProjectsRead:
 @app.put("/api/projects", response_model=ProjectsSaved)
 def put_projects(req: ProjectsWrite) -> ProjectsSaved:
     """整份替换计划。base_revision 对不上返回 409，客户端重新拉取后再提交。"""
+    vault = vault_path()
     try:
-        return projects_svc.write(vault_path(), req)
+        saved = projects_svc.write(vault, req)
     except projects_svc.PlansConflict as exc:
         raise HTTPException(status_code=409, detail={"error": str(exc), "current_revision": exc.current}) from exc
     except projects_svc.PlansRejected as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+    core.card_applied(vault, req.card or "")           # 项目卡 / 拆点卡 / 清单卡的采纳都走这条路
+    return saved
 
 
 @app.post("/api/chat")
@@ -325,7 +328,10 @@ def get_llm_usage() -> UsageRead:
     data = core.usage_summary(core.load_usage(vault))
     cfg, _ = _llm_config(vault)
     roles = {r: v for r, v in (cfg.get("roles") or {}).items() if isinstance(v, str)}
+    # 卡片产出和花费**在这里才第一次凑到一起**：账本知道花了多少，卡片流水知道换来了什么。
+    # 两边都不存对方的数，接口现拼（同日历那条纪律：派生，不落第二份）。
     return UsageRead(**data, roles=roles, provider="、".join(sorted(set(roles.values()))),
+                     cards=core.card_stats(vault, data["date"]),
                      cost_known=bool(data["totals"]["cost_usd"]) or _reports_cost(cfg, roles))
 
 
@@ -523,6 +529,7 @@ def post_changes(changeset: ChangeSet) -> ChangeResult:
         return ChangeResult(applied=False, files=files, index_revision=index["revision"])
     snapshot = core.commit(vault, edits)
     invalidate(vault)                      # md 变了，索引缓存作废
+    core.card_applied(vault, changeset.card or "")     # 采纳率的分子：**只在真落盘之后记**
     return ChangeResult(applied=True, files=files, backup=snapshot or None,
                         index_revision=current_index(vault)["revision"])
 

@@ -73,6 +73,17 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onKey, true))
           <span v-else-if="usage.cache" class="dim">
             · 今天 {{ usage.cache.calls }} 次多轮调用，还不够判</span>
           <span v-if="usage.totals.cache_ratio" class="dim">　累计 {{ usage.totals.cache_ratio }}×</span></dd>
+        <!-- 花了多少 vs 换来了什么。**这两个数来自两份互不相干的流水**（账本 + 卡片流水），
+             在接口里才第一次拼到一起；这里不存任何摊派过的金额 -->
+        <dt>卡片产出<span class="dim">（今天）</span></dt>
+        <dd v-if="usage.cards?.proposed">
+          摆出 <b>{{ usage.cards.proposed }}</b> 张 · 点了 <b>{{ usage.cards.applied }}</b> 张
+          <span v-if="usage.cost_known && usage.cards.applied" class="dim">
+            · 每张落地的卡 ≈ {{ money(usage.today.cost_usd / usage.cards.applied) }}</span>
+          <span v-if="usage.cards.total_proposed" class="dim">　累计采纳
+            {{ Math.round(usage.cards.total_applied / usage.cards.total_proposed * 100) }}%
+            （{{ usage.cards.total_applied }}/{{ usage.cards.total_proposed }}）</span></dd>
+        <dd v-else class="dim">今天还没摆过卡</dd>
         <dt>角色 → provider</dt>
         <dd>{{ Object.entries(usage.roles).map(([r, p]) => `${r} → ${p}`).join('，') || '默认 claude-cli' }}</dd>
       </dl>

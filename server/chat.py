@@ -364,6 +364,22 @@ def _tool_review(vault: Path, args: dict) -> tuple[str, dict]:
             {"id": nid, "grade": "忘了", "next_due": done.next_due})
 
 
+def _mint_card(vault: Path, kind: str, args: dict, detail: dict | None = None) -> str:
+    """给一张卡发个 id，并记一笔「摆出来了」。
+
+    采纳那一笔在**落盘那一侧**记（`/api/changes`、`PUT /api/projects`），不在这儿——
+    这里只知道卡摆出去了，点没点是后来的事，可能隔好几天（见 core/cards.py）。
+    """
+    card_id = core.new_card_id()
+    try:
+        core.card_proposed(vault, card_id, kind, session=args.get("_session") or "",
+                           project=args.get("_project") or "", turn=args.get("_turn") or "",
+                           detail=detail)
+    except OSError as exc:
+        log.warning("卡片流水没记上：%s", exc)     # 旁路，绝不拖垮正经提卡
+    return card_id
+
+
 def _tool_propose_points(vault: Path, args: dict) -> tuple[str, dict]:
     """把一份清单拆成知识点。**走的是面板上「让 AI 拆一份」同一条链路**——
     同一套模板、同一份时间账、同一个"别的项目已经列过"的标注，只是入口在对话里。
@@ -405,7 +421,8 @@ def _tool_propose_points(vault: Path, args: dict) -> tuple[str, dict]:
     extra = f"其中 {dupes} 个别的项目里也列过（重叠是合法的，掌握度还是同一个）。" if dupes else ""
     return (f"拆出 {n} 个点，卡片摆出来了。{extra}**还没进清单**，等他点「采纳」。"
             f"别在同一条消息里又拆一遍。"),\
-           {"points": {"project": pid, "project_name": project.get("name") or pid,
+           {"points": {"card_id": _mint_card(vault, "points", args, {"points": n}),
+                       "project": pid, "project_name": project.get("name") or pid,
                        "list": idx, "list_name": ls.get("name") or "", **proposal}}
 
 
@@ -439,7 +456,8 @@ def _tool_propose_project(vault: Path, args: dict) -> tuple[str, dict]:
     # 让模型给：它刚跟你聊完目标，"面试要用"还是"了解一下"它比默认值清楚；
     # 认不出就退回 core.DEFAULT_LEVEL，不瞎填——档位填错会一路影响出题和拆解。
     level = str(args.get("level") or "").strip()
-    card = {"id": pid, "action": "update" if exists else "create", "near": near,
+    card = {"card_id": _mint_card(vault, "project", args, {"action": "update" if exists else "create"}),
+            "id": pid, "action": "update" if exists else "create", "near": near,
             "name": str(args.get("name") or pid)[:120],
             "field": str(args.get("field") or "")[:120],
             "level": level if level in core.LEVELS else core.DEFAULT_LEVEL,
@@ -540,7 +558,8 @@ def _tool_propose_list_edit(vault: Path, args: dict) -> tuple[str, dict]:
                 if refused else "没给 edits，没什么可提议的。"), {}
 
     left = len(points) - sum(1 for e in edits if e["op"] == "drop")
-    card = {"project": args.get("project"), "project_name": project.get("name") or args.get("project"),
+    card = {"card_id": _mint_card(vault, "list_edit", args, {"edits": len(edits)}),
+            "project": args.get("project"), "project_name": project.get("name") or args.get("project"),
             "list": idx, "list_name": ls.get("name") or ls.get("kind") or "清单",
             "edits": edits, "left": left, "empties": left <= 0}
     tail = "".join(f"\n- 退回：{w}" for w in refused)
@@ -589,7 +608,8 @@ def _tool_propose(vault: Path, args: dict) -> tuple[str, dict]:
     born = [str(c.get("source") or "") for c in changes
             if isinstance(c, dict) and c.get("type") == "create_node" and c.get("source")]
     into = _into_list(vault, args.get("_project"), born)
-    card = {"changes": changes, "base_revision": index["revision"],
+    card = {"card_id": _mint_card(vault, "changes", args, {"files": len(files)}),
+            "changes": changes, "base_revision": index["revision"],
             "files": [f.model_dump() for f in files], "into": into}
     tail = (f"写入时会顺手把 {'、'.join(into['points'])} 加进「{into['project_name']}·{into['list_name']}」清单。"
             if into else "")
@@ -1403,9 +1423,11 @@ def _run(vault: Path, req: ChatRequest):
 
         name, args = call
         key = f"{name}:{json.dumps(args, ensure_ascii=False, sort_keys=True)}"
-        # 当前项目跟着一起传进工具：在某个项目里聊天，today / 出题范围都该是这个项目的。
-        # 放在 key 之后算，免得它进了去重键。
-        args = {**args, "_project": req.project or ""}
+        # 当前项目 / 会话 / 这一轮的锚点跟着一起传进工具：在某个项目里聊天，today 和出题范围
+        # 都该是这个项目的；卡片流水要靠 session 和 turn 把卡和回合对上。
+        # 放在 key 之后算，免得它们进了去重键。
+        args = {**args, "_project": req.project or "", "_session": req.session or "",
+                "_turn": user_ts or ""}
         fn = TOOLS.get(name) if name in allowed else None
         if key in seen_calls:
             result, extra = (f"这次调用和刚才那次一模一样，结果没变，不再跑一遍：\n{seen_calls[key]}"

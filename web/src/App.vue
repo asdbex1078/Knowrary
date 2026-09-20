@@ -255,7 +255,7 @@ async function applyProjectCard({ card, i, j }) {
           weekly_hours: card.weekly_hours,
           daily_quota: card.daily_quota, created: new Date().toISOString().slice(0, 10),
           lists: card.lists }
-    await putProjects({ base_revision: doc.doc.revision, projects: next })
+    await putProjects({ base_revision: doc.doc.revision, projects: next, card: card.card_id })
     chatLog.value[i].projects[j].applied = true
     await refreshPlans()
     // **直接把人送到那一项**：建完还要自己去左侧栏找项目面板、再在下拉里挑一遍，
@@ -293,7 +293,7 @@ async function applyListEditCard({ card, i, j }) {
       }
     }
     if (!done) throw new Error('这些点在清单里都找不到了')
-    await putProjects({ base_revision: doc.doc.revision, projects: next })
+    await putProjects({ base_revision: doc.doc.revision, projects: next, card: card.card_id })
     chatLog.value[i].listEdits[j].applied = true
     await refreshPlans()
     await switchProject(card.project)
@@ -326,7 +326,7 @@ async function applyPointsCard({ card, i, j }) {
       else ls.stages.push({ name: st.name, deadline: st.deadline || null, points })
     }
     if (!ls.field && card.suggested_field) ls.field = card.suggested_field
-    await putProjects({ base_revision: doc.doc.revision, projects: next })
+    await putProjects({ base_revision: doc.doc.revision, projects: next, card: card.card_id })
     chatLog.value[i].points[j].applied = true
     await refreshPlans()
     await switchProject(card.project)
@@ -2012,8 +2012,11 @@ async function previewChanges() {
  * 不会覆盖掉人手写的东西。digest 对不上时仍然 409，但 detail 是一句话而不是带
  * current_revision 的对象——那种不重试，原样报给人看。
  */
-async function writeChanges(changes, { dryRun = false } = {}) {
-  const body = { base_revision: indexRevision.value, dry_run: dryRun, changes }
+async function writeChanges(changes, { dryRun = false, card = '' } = {}) {
+  // card = 这次写入来自哪张卡。**只在真写入时带**——dry_run 不是采纳，
+  // 带上去会让采纳率虚高（卡上改一次摘要就重算一次 diff）
+  const body = { base_revision: indexRevision.value, dry_run: dryRun, changes,
+                 ...(card && !dryRun ? { card } : {}) }
   try {
     return await postChanges(body)
   } catch (err) {
@@ -2397,7 +2400,7 @@ async function previewChatCard({ card, i, j }) {
 async function applyChatCard({ card, i, j }) {
   chatBusy.value = true
   try {
-    const res = await writeChanges(card.changes)
+    const res = await writeChanges(card.changes, { card: card.card_id })
     // 卡上改过的话 diff 是旧的：换成真写下去的那份，留档里看到的就是落盘的样子
     Object.assign(chatLog.value[i].cards[j], { applied: true, editing: false, stale: false, files: res.files })
     await load()
