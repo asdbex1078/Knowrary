@@ -1577,6 +1577,46 @@ def digest_整批孤点要和散点分开报():
 
 
 @case
+def move_node_只换目录_内容和id都不动():
+    """**`id` 默认取文件名，所以建错地方之后改 frontmatter 改不动它。**
+
+    实盘上两种固定来源：导入时的 stub 落在 `nodes/_stubs/`、后来补成了真节点；
+    一个知识点改成 `type: 流派` 之后该挪进 `fields/`。在此之前这两种只能绕过 writer
+    手动 `mv` —— 而「md 写回只走 ChangeSet」是硬约束，绕过去就没有备份、没有 diff、
+    没有指纹校验。
+    """
+    vault = make_vault({"nodes/_stubs/甲.md": node_md("甲", field="测试")})
+    index = core.build_index(vault).data
+    before = core.read(vault / "nodes/_stubs/甲.md")
+
+    edits = core.plan(vault, [{"type": "move_node", "source": "甲", "path": "nodes/测试/甲.md"}], index)
+    assert len(edits) == 1 and edits[0].changed, edits
+    assert edits[0].before == edits[0].after, "挪目录不许动内容"
+    core.commit(vault, edits)
+    assert (vault / "nodes/测试/甲.md").exists() and not (vault / "nodes/_stubs/甲.md").exists()
+    assert core.read(vault / "nodes/测试/甲.md") == before, "内容要一个字不差"
+    # id 没变 = 边和 layout 都不用动
+    assert {n["id"] for n in core.build_index(vault).data["nodes"]} == {"甲"}
+
+    # 文件名就是 id，不许借挪目录改名
+    index = core.build_index(vault).data
+    for bad, why in ((("nodes/测试/乙.md"), "改名"), ("doc/甲.md", "跑到 nodes/fields 之外")):
+        try:
+            core.plan(vault, [{"type": "move_node", "source": "甲", "path": bad}], index)
+            raise AssertionError(f"{why} 该被拒：{bad}")
+        except core.ChangeRejected:
+            pass
+
+    # 和改内容混在一批要拒：改的是旧文件还是新文件说不清
+    try:
+        core.plan(vault, [{"type": "move_node", "source": "甲", "path": "nodes/别处/甲.md"},
+                          {"type": "update_frontmatter", "source": "甲", "fields": {"desc": "x"}}], index)
+        raise AssertionError("混在一批该被拒")
+    except core.ChangeRejected:
+        pass
+
+
+@case
 def 迁成流派之后旧的画布条目要报出来():
     """**`OFF_CANVAS_TYPES` 只在布局生成时跳过，已经摆上去的那份没人清。**
 

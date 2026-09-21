@@ -218,9 +218,9 @@ class IndexDoc(BaseModel):
 
 class Change(Strict):
     type: Literal["add_edge", "remove_edge", "update_edge", "update_frontmatter", "create_node",
-                  "update_body", "append_body", "set_fact"]
+                  "update_body", "append_body", "set_fact", "move_node"]
     source: str                        # create_node 时是新节点的 id（= 文件名）
-    path: str | None = None            # create_node 时的落点，vault 相对路径，必须在 nodes/ 下
+    path: str | None = None            # create_node 的落点 / move_node 的新位置，vault 相对路径
     target: str | None = None
     relation: str | None = None
     from_relation: str | None = None   # update_edge 时用来定位原来那条边

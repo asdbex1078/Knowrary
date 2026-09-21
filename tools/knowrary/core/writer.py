@@ -23,7 +23,7 @@ from .relations import Edge, parse_relations
 EDITABLE_FIELDS = ("name", "field", "layer", "params", "type", "status", "year", "start_year", "end_year",
                    "aliases", "tags", "desc", "learned", "source", "color", "timeless")
 CHANGE_TYPES = ("add_edge", "remove_edge", "update_edge", "update_frontmatter", "create_node",
-                "update_body", "append_body", "set_fact")
+                "update_body", "append_body", "set_fact", "move_node")
 # 新建的知识点只允许落在这两棵树下（规范 2：nodes/ 是知识点，fields/ 是领域总览）
 NODE_ROOTS = ("nodes", "fields")
 MAX_BODY = 40000      # 正文写回的上限：编辑框写崩了也不至于把一个文件撑爆
@@ -45,10 +45,12 @@ class FileEdit:
     before: str
     after: str
     notes: list[str] = field(default_factory=list)
+    moved_from: Path | None = None
+    """挪过来的话，这是原来那个文件。内容一个字不改也算「变了」——见 changed。"""
 
     @property
     def changed(self) -> bool:
-        return self.before != self.after
+        return self.before != self.after or self.moved_from is not None
 
 
 def split_sections(text: str) -> tuple[str, str, str, str]:
@@ -304,6 +306,43 @@ def _create_node_edit(vault: Path, change: dict, taken: set[str]) -> FileEdit:
                     after=_render_new_node(fields, body), notes=notes)
 
 
+def _move_node_edit(vault: Path, change: dict, meta: dict) -> FileEdit:
+    """把一个节点的 md 挪到另一个目录。**内容一个字不动，只换位置。**
+
+    为什么需要它：`id` 默认取文件名，所以节点一旦建错地方，改 frontmatter 改不动它 ——
+    而实盘上这种事有两种固定来源：
+
+    1. 导入时建的 stub 落在 `nodes/_stubs/`，后来补成了真节点，目录名就开始骗人；
+    2. 一个知识点改成 `type: 流派` / `对比组` 之后，按惯例该挪进 `fields/` 那棵树。
+
+    在此之前这两种只能绕过 writer 手动 `mv` —— 而「md 写回只走 ChangeSet」是硬约束，
+    绕过去就意味着没有备份、没有 diff、没有指纹校验。
+
+    **文件名不许变**：它就是 id，改名是 `rename` 那条独立链路的事（要同步 5 个文件里的
+    引用）。这里只换目录，所以 id、边、layout 全都不用动。
+    """
+    node_id = change["source"]
+    rel = str(change.get("path") or "").strip()
+    if not rel:
+        raise ChangeRejected(f"move_node 没给目标路径（{node_id}）")
+    target = (vault / rel).resolve()
+    if not target.is_relative_to(vault.resolve()) or rel.split("/")[0] not in NODE_ROOTS:
+        raise ChangeRejected(f"只能挪到 {' / '.join(NODE_ROOTS)} 下面：{rel}")
+    if target.name != f"{node_id}.md":
+        raise ChangeRejected(
+            f"文件名就是 id，挪目录不许改名：{target.name} ≠ {node_id}.md（改名走 rename）")
+    old = vault / meta["path"]
+    if target == old.resolve():
+        raise ChangeRejected(f"`{node_id}` 已经在 {rel} 了")
+    if target.exists():
+        raise ChangeRejected(f"目标已存在：{rel}")
+    text = read(old)
+    if meta.get("digest") and digest_of(text) != meta["digest"]:
+        raise WriteConflict(f"{meta['path']} 在索引生成后被改过（可能是 Obsidian），请刷新后重试")
+    return FileEdit(path=target, rel=rel, before=text, after=text, moved_from=old,
+                    notes=[f"从 {meta['path']} 挪到 {rel}（内容不变）"])
+
+
 def plan(vault: Path, changes: list[dict], index: dict) -> list[FileEdit]:
     """把 ChangeSet 变成"每个文件改成什么样"，不写盘。外部改过的文件直接报冲突。"""
     by_node: dict[str, list[dict]] = {}
@@ -319,6 +358,22 @@ def plan(vault: Path, changes: list[dict], index: dict) -> list[FileEdit]:
     nodes = {n["id"]: n for n in index["nodes"]}
     edits: list[FileEdit] = []
     taken = set(nodes)
+    # 挪目录单独走：它不改内容，和「同一个文件的若干处内容修改」合并不了
+    for node_id, group in list(by_node.items()):
+        moves = [c for c in group if c["type"] == "move_node"]
+        if not moves:
+            continue
+        if len(moves) > 1:
+            raise ChangeRejected(f"`{node_id}` 一次只能挪一个地方，给了 {len(moves)} 个")
+        if len(group) > 1:
+            raise ChangeRejected(
+                f"`{node_id}` 的挪目录要单独提一次：和改内容混在一起时，"
+                f"改的是旧文件还是新文件说不清")
+        meta = nodes.get(node_id)
+        if not meta or not meta.get("path"):
+            raise ChangeRejected(f"节点 `{node_id}` 不存在或没有对应文件")
+        edits.append(_move_node_edit(vault, moves[0], meta))
+        del by_node[node_id]
     created: dict[str, FileEdit] = {}
     for change in creates:
         edit = _create_node_edit(vault, change, taken)
@@ -352,11 +407,12 @@ def backup(vault: Path, edits: list[FileEdit]) -> str:
     stamp = dt.datetime.now().strftime("%Y%m%d-%H%M%S")
     root = vault / ".knowrary" / "backup" / stamp
     for edit in edits:
-        if not edit.path.exists():
+        src = edit.moved_from or edit.path
+        if not src.exists():
             continue                        # 新建的文件没有"原文"可备份
-        target = root / edit.rel
+        target = root / src.relative_to(vault).as_posix()
         target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(edit.path, target)
+        shutil.copy2(src, target)
     return root.relative_to(vault).as_posix()
 
 
@@ -368,4 +424,8 @@ def commit(vault: Path, edits: list[FileEdit]) -> str:
     snapshot = backup(vault, touched)
     for edit in touched:
         write(edit.path, edit.after)
+        # 挪目录：新的写好了才删旧的。反过来的话中途崩一次就丢文件，
+        # 而这一层的全部意义就是「别让写回丢东西」。
+        if edit.moved_from is not None and edit.moved_from.exists():
+            edit.moved_from.unlink()
     return snapshot
