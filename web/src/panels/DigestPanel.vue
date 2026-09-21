@@ -242,6 +242,26 @@ const total = () => {
           </ul>
         </section>
 
+        <!-- 不该上图：对比组 / 流派 / 领域线改完 type 之后，画布上那份旧条目没人清。
+             改 md 不动画布这条分界是对的，代价就是这一类。 -->
+        <section v-if="digest.off_canvas?.length" class="section">
+          <div class="section-head">
+            <Icon name="warn" :size="13" />不该上图
+            <span class="count">{{ digest.counts.off_canvas }}</span>
+          </div>
+          <p class="dim" style="font-size: 11.5px; margin-bottom: 6px">
+            对比组 / 流派 / 领域线**不上全局画布**（主图已经够挤了），
+            但把一个知识点改成这些类型之后，画布上那份旧条目没人清 ——
+            <b>改 md 不动画布</b>，这条分界是对的，代价就是这一类。
+          </p>
+          <ul>
+            <li v-for="o in digest.off_canvas" :key="o.id" class="card" style="padding: 8px 10px">
+              <span class="link" @click="emit('goto', o.id)">{{ o.name }}</span>
+              <span class="dim" style="font-size: 11.5px"> · {{ o.type }} —— 还占着主图的位置</span>
+            </li>
+          </ul>
+        </section>
+
         <!-- 框压人：框盖在别的域的点上。**症状很阴：框是空的，报出来的却是「塞不下了」**
              —— place 往里放东西时会避开那些外来的点，于是永远放不进去。 -->
         <section v-if="digest.squatted?.length" class="section">

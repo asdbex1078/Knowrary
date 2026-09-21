@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
-  "revision": 165,
-  "updated_at": "2026-09-21T04:51:56Z",
+  "revision": 166,
+  "updated_at": "2026-09-21T04:56:33Z",
   "viewport": {
     "zoom": 0.4,
     "cx": 1459.0,
@@ -552,28 +552,8 @@
       "placedAt": null,
       "anchor": null
     },
-    "CISC": {
-      "x": 48.0,
-      "y": 1412.0,
-      "w": 196.0,
-      "h": 64.0,
-      "group": "g-计算机系统--体系结构",
-      "state": "final",
-      "placedAt": null,
-      "anchor": null
-    },
     "ISA": {
       "x": 288.0,
-      "y": 1412.0,
-      "w": 196.0,
-      "h": 64.0,
-      "group": "g-计算机系统--体系结构",
-      "state": "final",
-      "placedAt": null,
-      "anchor": null
-    },
-    "RISC": {
-      "x": 528.0,
       "y": 1412.0,
       "w": 196.0,
       "h": 64.0,
@@ -1091,26 +1071,6 @@
       "state": "final",
       "placedAt": "2026-09-18",
       "anchor": "NPU"
-    },
-    "符号主义": {
-      "x": 766.0,
-      "y": 116.0,
-      "w": 196.0,
-      "h": 64.0,
-      "group": "g-AI--理论",
-      "state": "draft",
-      "placedAt": "2026-09-18",
-      "anchor": null
-    },
-    "连接主义": {
-      "x": 486.0,
-      "y": 324.0,
-      "w": 196.0,
-      "h": 64.0,
-      "group": "g-AI--理论",
-      "state": "draft",
-      "placedAt": "2026-09-18",
-      "anchor": null
     },
     "Hodgkin-Huxley模型": {
       "x": 646.0,

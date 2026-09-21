@@ -1577,6 +1577,38 @@ def digest_整批孤点要和散点分开报():
 
 
 @case
+def 迁成流派之后旧的画布条目要报出来():
+    """**`OFF_CANVAS_TYPES` 只在布局生成时跳过，已经摆上去的那份没人清。**
+
+    改 md 不动画布这条分界是对的（否则手工摆位会被一次改 frontmatter 冲掉），
+    代价就是这一类：把知识点改成 `type: 流派` 之后它该从主图消失，实际还占着位置。
+    实盘上撞到 4 个（CISC / RISC / 符号主义 / 连接主义）。
+
+    而且其中两个还挂在草稿列表里 —— 「草稿放了 N 天该定稿了」对一个
+    **压根不该在画布上**的点是句没意义的催促，所以草稿那一项也要把它们摘掉。
+    """
+    vault = make_vault({
+        "nodes/x/知识点.md": node_md("知识点", field="测试"),
+        "fields/流派/某派.md": (
+            "---\nname: 某派\nfield: 测试\ntype: 流派\nstart_year: 1990\n"
+            "desc: 某派\n---\n# 某派\n\n## 关系\n- 包含:: [[知识点]]\n- 包含:: [[乙]]\n"),
+        "nodes/x/乙.md": node_md("乙", field="测试"),
+    })
+    index = core.build_index(vault).data
+    layout = {"schema_version": 2, "revision": 1, "groups": {}, "nodes": {
+        "知识点": {"x": 0, "y": 0, "w": 196, "h": 64, "group": None, "state": "final"},
+        "某派": {"x": 300, "y": 0, "w": 196, "h": 64, "group": None, "state": "draft"},
+    }}
+    off = core.off_canvas(index, layout)
+    assert [o["id"] for o in off] == ["某派"], off
+    assert off[0]["type"] == "流派", off[0]
+    # 草稿那一项要把它摘掉：它不该在画布上，催「该定稿了」没有意义
+    import datetime as dt
+    assert core.drafts(layout, dt.date.today(), {"某派"}) == [], "不该上图的不算草稿"
+    assert [d["id"] for d in core.drafts(layout, dt.date.today())] == ["某派"], "不传 skip 时照旧"
+
+
+@case
 def 框压在别人家的点上要报出来():
     """**症状很阴：框是空的，报出来的却是「塞不下了」。**
 

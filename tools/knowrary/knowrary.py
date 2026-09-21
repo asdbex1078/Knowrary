@@ -390,7 +390,7 @@ def cmd_digest(args: argparse.Namespace) -> None:
           f"（放久了 {c['stale_drafts']}），待复习 {c['due']}，stub {c['stubs']}，"
           f"跨分组桥 {c['bridges']}，孤点 {c['lonely']}（整批 {c['lonely_batches']}），"
           f"缺 year {c['no_year']}，连边建议 {c['links']}，"
-          f"重复候选 {c['duplicates']}，域/层不符 {c['misplaced']}，框压人 {c['squatted']}，方向矛盾 {c['cycles']}")
+          f"重复候选 {c['duplicates']}，域/层不符 {c['misplaced']}，框压人 {c['squatted']}，不该上图 {c['off_canvas']}，方向矛盾 {c['cycles']}")
     n = args.top
     for nid in d["inbox"][:n]:
         print(f"  · Inbox：{nid}")
@@ -412,6 +412,9 @@ def cmd_digest(args: argparse.Namespace) -> None:
     for h in d["links"][:n]:
         alone = "（两端都还是孤点）" if h["lonely"] == 2 else "（有一端是孤点）" if h["lonely"] else ""
         print(f"  · 连边建议：{h['source']} {h['relation']} → {h['target']}{alone} — {h['reason']}")
+    for o in d["off_canvas"][:n]:
+        print(f"  ⚠ 不该上图：{o['id']}（{o['type']}）还摆在全局画布上 —— "
+              f"改 md 不动画布，所以迁类型之后这份旧条目没人清")
     for sq in d["squatted"][:n]:
         who = "、".join(f"{v['id']}（{v['group']}）" for v in sq["victims"][:3])
         print(f"  ⚠ 框压人：「{sq['group_name']}」这个框盖住了别的域的 {sq['count']} 个点：{who}"

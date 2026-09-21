@@ -10,6 +10,7 @@ from collections import Counter, defaultdict
 from difflib import SequenceMatcher
 
 from .compare import gaps as compare_gaps
+from .parser import OFF_CANVAS_TYPES
 from .placement import by_field_and_layer, inbox_ids
 from .issues import summary as issues_summary
 from .review import due_nodes, load_log
@@ -35,10 +36,15 @@ def _age_days(value, today: dt.date) -> int | None:
         return None
 
 
-def drafts(layout: dict, today: dt.date) -> list[dict]:
+def drafts(layout: dict, today: dt.date, skip: set[str] | None = None) -> list[dict]:
+    """画布上还挂着 draft 的点。
+
+    `skip` 是「压根不该在画布上」的那些（见 off_canvas）——
+    对它们说「草稿放了 N 天该定稿了」是句没意义的催促，该做的是把它们从画布上清掉。
+    """
     out = []
     for nid, n in sorted(layout.get("nodes", {}).items()):
-        if n.get("state") != "draft":
+        if n.get("state") != "draft" or (skip and nid in skip):
             continue
         age = _age_days(n.get("placedAt"), today)
         out.append({"id": nid, "group": n.get("group"), "placedAt": n.get("placedAt"),
@@ -295,6 +301,29 @@ def _top_group(gid: str | None, groups: dict) -> str | None:
     return None
 
 
+def off_canvas(index: dict, layout: dict) -> list[dict]:
+    """不该上全局画布、却还摆在上面的点（对比组 / 流派 / 领域线）。
+
+    **改 md 不动画布，这条分界是对的**（否则手工摆位会被一次改 frontmatter 冲掉），
+    代价就是这一类：把一个知识点改成 `type: 流派` 之后它该从主图上消失，
+    而 `OFF_CANVAS_TYPES` 只在**布局生成**时跳过，已经摆上去的那份没人清。
+
+    实盘上撞到 4 个：`CISC` / `RISC` / `符号主义` / `连接主义` 迁成流派之后
+    还在主图上占着位置，而且 `符号主义` / `连接主义` 那两个还挂在草稿列表里
+    ——「草稿放了 N 天该定稿了」，但它们压根就不该在那儿。
+    """
+    types = OFF_CANVAS_TYPES
+    by_id = {n["id"]: n for n in index["nodes"]}
+    out = []
+    for nid, place in sorted((layout.get("nodes") or {}).items()):
+        node = by_id.get(nid)
+        if not node or node.get("type") not in types:
+            continue
+        out.append({"id": nid, "type": node.get("type"),
+                    "name": node.get("name") or nid, "group": place.get("group")})
+    return out[:MAX_ITEMS]
+
+
 def squatted(layout: dict) -> list[dict]:
     """**框压在别人家的点上。** 返回 {框, 压住了谁, 那些点属于谁}。
 
@@ -394,7 +423,8 @@ def build_digest(vault, index: dict, layout: dict, today: dt.date | None = None)
     today = today or dt.date.today()
     log = load_log(vault)
     inbox = inbox_ids(index, layout)
-    draft_list = drafts(layout, today)
+    off_list = off_canvas(index, layout)
+    draft_list = drafts(layout, today, {o["id"] for o in off_list})
     due = due_nodes(index, log, today)
     stubs = [n["id"] for n in index["nodes"] if n.get("stub")]
     cycles = [w for w in index.get("warnings", []) if w.get("code") == "relation_cycle"]
@@ -424,6 +454,7 @@ def build_digest(vault, index: dict, layout: dict, today: dt.date | None = None)
         "no_year": no_year_list[:MAX_ITEMS],
         "misplaced": misplaced_list,
         "squatted": squat_list,
+        "off_canvas": off_list,
         "duplicates": dup_list,
         "cycles": [w["message"] for w in cycles][:MAX_ITEMS],
         "bad_years": bad_years,
@@ -436,7 +467,7 @@ def build_digest(vault, index: dict, layout: dict, today: dt.date | None = None)
                    "lonely_batches": len(batch_list),
                    "no_year": len(no_year_list), "misplaced": len(misplaced_list),
                    "duplicates": len(dup_list), "cycles": len(cycles),
-                   "squatted": len(squat_list),
+                   "squatted": len(squat_list), "off_canvas": len(off_list),
                    "bad_years": len(bad_years),
                    "compare_gaps": len(gap_list),
                    "issues": issues_summary(vault)["count"]},
