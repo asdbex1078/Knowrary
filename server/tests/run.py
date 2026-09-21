@@ -2264,7 +2264,11 @@ def inbox_零边与缺域框标记_一键建域框放进去():
     core.write(vault / "nodes/新域/孤点三.md", node_md("孤点三", field="生物"))
     index_service.invalidate()
     r = c.post("/api/place", json={"base_revision": lay["revision"], "ids": ["孤点三"]}).json()
-    assert r["placed"] == [] and "判不出分组" in r["skipped"][0]["reason"], r
+    # **"放不下"和"判不出分组"必须分开说**：前者要人去挪框，后者要人去填 layer / 建域框。
+    # 混成一句的话，人只能反复点「放进去」然后反复失败（实盘上撞过两次）。
+    reason = r["skipped"][0]["reason"]
+    assert r["placed"] == [] and "判不出" in reason, r
+    assert "layer" in reason or "建域框" in reason, f"只说失败不给下一步：{reason}"
 
 
 @case

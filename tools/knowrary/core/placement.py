@@ -265,6 +265,39 @@ def is_lane_stack(parent: str | None, layout: dict) -> bool:
     return all(a["y"] + a["h"] <= b["y"] + 1 for a, b in zip(lanes, lanes[1:]))
 
 
+def growth_blocker(gid: str, layout: dict, extra: float = CELL_H) -> str | None:
+    """框长不动的话，**是被谁挡的**。长得动返回 None。
+
+    这条存在的理由：原来放不上去只回一句"放不下或判不出分组"——
+    两件完全不同的事混成一句，而且不说被谁挡住。人看到之后无从下手，
+    只能反复点「放进去」然后反复失败。**长不动是设计（不许压到已有元素），
+    说不清才是 bug。**
+
+    只报**新压上的**那个兄弟：本来就被人拖重叠的不算，那不是这次长出来的锅。
+    """
+    groups = layout.get("groups", {})
+    box = groups.get(gid)
+    if not box:
+        return None
+    names = {oid: (g.get("name") or oid) for oid, g in groups.items()}
+    hit: list[str] = []
+    cur: str | None = gid
+    while cur and cur in groups:
+        b = groups[cur]
+        grown = {**b, "h": b["h"] + extra}
+        sibs = [(oid, o) for oid, o in groups.items()
+                if oid != cur and o.get("parent") == b.get("parent")]
+        for oid, sib in sibs:
+            if _rects_overlap(grown, sib) and not _rects_overlap(b, sib):
+                gap = sib["y"] - (b["y"] + b["h"])
+                hit.append(f"「{names[oid]}」（下方只剩 {max(gap, 0):.0f}px，要 {extra:.0f}px）")
+        cur = b.get("parent")
+    if not hit:
+        return None
+    return (f"「{names[gid]}」满了，往下长会压到 " + "、".join(hit[:2])
+            + "。挪一下相邻的框，或者整体重排（`knowrary.py layout init --by layer --force`）")
+
+
 def plan_lane_growth(gid: str, layout: dict, extra: float = CELL_H) -> tuple[dict, dict] | None:
     """给一条泳道加一行：它自己长高，**下面的泳道连同里面的节点整体下移**。
 

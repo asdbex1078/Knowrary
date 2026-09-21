@@ -3,7 +3,7 @@
 // 原来是顶栏下面一整条 chips，分组一多就换行把画布压矮。
 import Drawer from '../ui/Drawer.vue'
 import Icon from '../ui/Icon.vue'
-import { BY_LAYER as TL_BY_LAYER } from '../canvas/timeline.js'
+import { BY_LAYER as TL_BY_LAYER, BY_SCHOOL as TL_BY_SCHOOL } from '../canvas/timeline.js'
 
 defineProps({
   options: { type: Array, default: () => [] },
@@ -17,6 +17,7 @@ const emit = defineEmits(['close', 'toggle', 'select-all', 'toggle-family', 'tog
 
 const FAMS = ['演化', '依赖', '对照']
 const BY_LAYER = TL_BY_LAYER
+const BY_SCHOOL = TL_BY_SCHOOL
 </script>
 
 <template>
@@ -57,6 +58,17 @@ const BY_LAYER = TL_BY_LAYER
                     @click="emit('toggle', BY_LAYER)">
               <Icon :name="selected.includes(BY_LAYER) ? 'check' : 'timeline'" :size="14" />
               按抽象层<span class="dim" style="margin-left: auto; font-size: 10.5px">{{ layered }}</span>
+            </button>
+          </li>
+          <li>
+            <!-- 按流派：左侧那列标题就是流派名 + 年份区间，道自己就是那条时间带。
+                 **一个点可以同时属于两派**（现代Intel微架构：前端 CISC、后端 RISC 式 μops），
+                 第二派起画成空心虚线的影子——重叠因此看得见，而不是被迫二选一藏起来。 -->
+            <button class="tl-btn" :class="{ on: selected.includes(BY_SCHOOL) }"
+                    title="按流派分泳道，早出现的在上面；同属两派的点在两条道各出现一次（第二份是空心影子，不带边）"
+                    @click="emit('toggle', BY_SCHOOL)">
+              <Icon :name="selected.includes(BY_SCHOOL) ? 'check' : 'timeline'" :size="14" />
+              按流派
             </button>
           </li>
           <li v-if="options.length" class="tl-sub">按分组（选一层当泳道）</li>

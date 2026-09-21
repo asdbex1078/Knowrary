@@ -955,6 +955,8 @@ function bindEvents(g) {
   }
 
   g.on('node:click', safe(({ node }) => {
+    // 影子点（按流派分道时第二派起的那一份）：跳到真身，别停在合成 id 上
+    if (node.shape === 'kg-dot' && node.getData()?.shadow) { gotoNode(node.getData().realId); return }
     if (node.shape === 'kg-cluster') enterGroup(node.id)
     else if (node.shape === 'kg-group') setActiveGroup(node.id)
     if (node.shape === 'kg-ref') gotoNode(node.getData()?.target)

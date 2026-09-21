@@ -19,7 +19,7 @@ from .mdio import (NODE_DIRS, RE_ID_OK, RE_LINK, RE_REL_HEADER, dump_frontmatter
                    yaml_scalar)
 from .parser import (AGGREGATE_TYPES, LAYERS, OFF_CANVAS_TYPES, UNLAYERED, Node, digest_of,
                      is_aggregate, load_node, load_vault, validate_frontmatter)
-from .placement import (by_field_and_layer, inbox_ids, is_lane_stack, place_node,
+from .placement import (by_field_and_layer, growth_blocker, inbox_ids, is_lane_stack, place_node,
                         place_or_grow, plan_field_group, plan_growth, plan_lane_growth, plan_new_lane, target_group)
 from .projects import (DEFAULT_LEVEL, DEFAULT_LOAD, ID_OK, KINDS, LEVELS, level_of, exam_state, states_of, study_state, LOAD_HOURS, LOADS, MASTERY_ORDER, all_progress,
                        all_schedules, as_date, ascii_id, done_ids, empty_projects, legacy_plans_path,
@@ -56,7 +56,7 @@ from .schema import validate_index
 __all__ = [
     "ChangeRejected", "Diagnostic", "Diagnostics", "Edge", "FileEdit", "INDEX_SCHEMA_VERSION",
     "DEFAULT_LOAD", "GRADES", "ID_OK", "KINDS", "LAYERS", "UNLAYERED", "exam_state", "states_of", "study_state", "LOADS", "LOAD_HOURS", "MASTERY_ORDER", "all_progress",
-    "all_schedules", "as_date", "ascii_id", "CALENDAR_MAX_DAYS", "append_answers", "build_calendar", "issues_path", "load_issues", "record_issue", "issues_summary", "build_digest", "duplicates", "group_labels", "kinship", "link_hints", "lonely", "lonely_batches", "SCHOOL_TYPE", "schools", "school_of", "misplaced", "no_year", "streak", "build_today",
+    "all_schedules", "as_date", "ascii_id", "CALENDAR_MAX_DAYS", "append_answers", "build_calendar", "issues_path", "load_issues", "record_issue", "issues_summary", "build_digest", "duplicates", "group_labels", "kinship", "link_hints", "lonely", "lonely_batches", "growth_blocker", "SCHOOL_TYPE", "schools", "school_of", "misplaced", "no_year", "streak", "build_today",
     "current_stage", "done_ids", "project_lines", "due_nodes", "legacy_plans_path", "list_field", "lists_of",
     "empty_projects", "inbox_ids", "load_log", "load_projects", "load_quiz_log", "mastery_of",
     "merge_progress", "next_due_for", "place_node", "place_or_grow", "plan_growth",

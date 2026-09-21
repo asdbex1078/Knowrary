@@ -12,7 +12,7 @@ import { computed, reactive, ref } from 'vue'
 import {
   buildHistoryCells, buildLineageCells, highlightEdges, markStop, mount, paintHistoryTime,
 } from '../canvas/render.js'
-import { timelineOptions } from '../canvas/timeline.js'
+import { BY_LAYER, BY_SCHOOL, timelineOptions } from '../canvas/timeline.js'
 import { fetchSchools } from '../api.js'
 
 export const STEP_MS = 760   // 回放每站停多久。跳的是"有事发生的年份"，不是日历年，所以可以停久一点
@@ -324,10 +324,18 @@ export function useHistory(deps) {
     highlightEdges(graph.value, null)
   }
 
+  // 「按抽象层」和「按流派」是**同一个维度上的两个选择**：泳道只能按一样东西切。
+  // 同时选中的后果不是"两种都生效"，而是两边对不上——laneOf 按层给道名，
+  // 泳道次序按流派排，于是 `kept.filter(lane === '老派')` 全空、一个真身都画不出来，
+  // 只剩影子（影子不看 lane）。**这种 bug 不报错、图照常画，只是点全没了。**
+  const EXCLUSIVE = [BY_LAYER, BY_SCHOOL]
+
   function toggleTimeline(id) {
-    timelines.value = timelines.value.includes(id)
-      ? timelines.value.filter((x) => x !== id)
-      : [...timelines.value, id]
+    const on = timelines.value.includes(id)
+    const rest = EXCLUSIVE.includes(id)
+      ? timelines.value.filter((x) => !EXCLUSIVE.includes(x))   // 选一个就把另一个顶掉
+      : timelines.value
+    timelines.value = on ? rest.filter((x) => x !== id) : [...rest, id]
     renderHistory({ view: 'fit' })
   }
 

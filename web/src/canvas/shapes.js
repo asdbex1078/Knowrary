@@ -207,6 +207,13 @@ export function registerShapes() {
     inherit: 'rect',
     width: DOT, height: DOT,
     markup: [
+      // 跨派标记环。**只在「按流派」那一档、且这个点属于两派以上时才画。**
+      //
+      // 试过在默认视图里给每个点都套一圈流派色，结论是噪音：圆点的颜色本来就按
+      // 分组 / 领域配，再套一圈两个都读不出来。现在它只回答一个问题——
+      // **「这个点除了这条道，还属于哪一派」**。只属于一派的不画：道已经说了。
+      { tagName: 'circle', selector: 'ring' },
+      { tagName: 'circle', selector: 'ring2' },
       { tagName: 'circle', selector: 'body' },
       { tagName: 'text', selector: 'initial' },
       { tagName: 'text', selector: 'name' },
@@ -215,6 +222,8 @@ export function registerShapes() {
     attrs: {
       body: { r: DOT / 2, refCx: '50%', refCy: '50%', fill: '#fff', stroke: '#c6d0da',
               strokeWidth: 1.6, class: 'kg-card' },
+      ring: { r: RING_R, refCx: '50%', refCy: '50%', fill: 'none', strokeWidth: 2.2, opacity: 0 },
+      ring2: { r: RING_R, refCx: '50%', refCy: '50%', fill: 'none', strokeWidth: 2.2, opacity: 0 },
       initial: { refX: '50%', refY: '50%', textAnchor: 'middle', textVerticalAnchor: 'middle',
                  fontSize: 13, fontWeight: 700 },
       name: { refX: DOT + 6, refY: '50%', textAnchor: 'start', textVerticalAnchor: 'middle',
@@ -224,27 +233,6 @@ export function registerShapes() {
   }, true)
 
   // 历史视图的年份刻度：一根竖线加年份标签
-  // 流派时间带：一条横跨 start_year～end_year 的浅色条，**背后压着一条累计走势**。
-  //
-  // 为什么带子和曲线画在同一个形状里：它们讲的是同一个流派的两件事——
-  // 带子是"声明的跨度"，曲线是"实际积累到哪一步"。**两者不一致的地方就是欠账**
-  // （带子很长而曲线一直平 = 这段时期一个点都没记），拆成两个 cell 就对不齐了。
-  //
-  // 曲线是 polyline 不是 path：累计值只在成员出现那一年跳，中间必须是水平的。
-  // 画成平滑曲线会让人以为那几年在稳步增长，而事实是那几年什么都没发生——
-  // 这条线存在的全部意义就是让"什么都没发生"看得见。
-  Graph.registerNode('kg-band', {
-    inherit: 'rect',
-    markup: [{ tagName: 'rect', selector: 'body' },
-             { tagName: 'polyline', selector: 'curve' },
-             { tagName: 'text', selector: 'label' }],
-    attrs: {
-      body: { rx: 4, ry: 4, strokeWidth: 1 },
-      curve: { fill: 'none', strokeWidth: 1.5, strokeLinejoin: 'miter', pointerEvents: 'none' },
-      label: { refX: 8, refY: 11, fontSize: 11.5, fontWeight: 600, textAnchor: 'start' },
-    },
-  }, true)
-
   Graph.registerNode('kg-tick', {
     inherit: 'rect',
     width: 1, height: 40,
@@ -317,6 +305,7 @@ export function registerShapes() {
 // 分组标题条的上限 = 布局给标题留的内边距（core.layout.PAD_TOP），超了会被子分组压住
 export const HEAD_MAX = 44
 export const DOT = 28            // 时间轴上一个知识点的直径
+const RING_R = DOT / 2 + 3.5     // 跨派标记环：贴着圆点外缘，不挤占名字的位置
 export const CLUSTER_W = 260
 export const CLUSTER_H = 128
 
@@ -375,28 +364,21 @@ export function imageAttrs(image) {
   }
 }
 
-export function laneAttrs(name) {
+export function laneAttrs(name, school = null) {
   const t = tokens()
-  return { body: { fill: t.groupFill, stroke: t.groupStroke }, label: { text: name, fill: t.edgeLabel } }
-}
-
-/** 一条流派带的样式。`points` 是已经算好的阶梯折线（相对带子左上角）。 */
-export function bandAttrs(band, points) {
-  const base = band.color || (theme === 'dark' ? NEUTRAL_DARK.line : NEUTRAL.line)
-  return {
-    // 带子本身压得很淡：它是背景，圆点和连线才是主角
-    body: { fill: withAlpha(base, 0.13), stroke: withAlpha(base, 0.45) },
-    // 曲线用同一个色但不透明——**重叠时两条带子叠在一起，只有曲线还分得出谁是谁**
-    curve: { stroke: base, points: points.map(([x, y]) => `${x},${y}`).join(' ') },
-    label: { text: bandLabel(band), fill: base },
+  if (!school) {
+    return { body: { fill: t.groupFill, stroke: t.groupStroke },
+             label: { text: name, fill: t.edgeLabel } }
   }
-}
-
-/** 带子上的标签：名字 + 年份区间。`open` 用「–」收尾，表示还在延续而不是数据缺了。 */
-export function bandLabel(band) {
-  const span = band.open || typeof band.end !== 'number'
-    ? `${band.start}–` : `${band.start}–${band.end}`
-  return `${band.name}  ${span}`
+  // 按流派分道：这条道就是那条时间带。压得很淡（它是背景，圆点才是主角），
+  // 标题带年份区间，`open` 用「–」收尾表示还在延续——和顶部带子那一档同一套口径。
+  const base = school.color || (theme === 'dark' ? NEUTRAL_DARK.line : NEUTRAL.line)
+  const span = school.open || typeof school.end !== 'number'
+    ? `${school.start}–` : `${school.start}–${school.end}`
+  return {
+    body: { fill: withAlpha(base, 0.10), stroke: withAlpha(base, 0.40) },
+    label: { text: `${name}  ${span}`, fill: base },
+  }
 }
 
 /** #rrggbb → rgba()。带子要半透明，而 X6 的 fill 不吃独立的 opacity。 */
@@ -432,18 +414,51 @@ export function initialOf(name = '') {
 }
 
 /** 时间轴上的圆点：圆 + 首字 + 旁边的全名（挤的时候由 showName 关掉）。 */
-export function dotAttrs(meta, color = NEUTRAL, { showName = true, year = null } = {}) {
+export function dotAttrs(meta, color = NEUTRAL,
+                         { showName = true, year = null, schools = [], shadow = false } = {}) {
   const name = meta?.name || meta?.id || ''
+  const tip = schools.length
+    ? `${name}${year ? `（${year}）` : ''} · ${schools.map((s) => s.name).join(' / ')}`
+    : (year ? `${name}（${year}）` : name)
   return {
-    body: { fill: color.fill, stroke: color.line, strokeWidth: 1.8 },
+    // 影子实例：这个点在别的流派道里也出现了一次，**这一份不带边**。
+    // 画成空心是为了让"它同时属于两派"这件事在图上看得见，而不是让人以为建了两个点。
+    ...ringAttrs(schools),
+    body: shadow
+      ? { fill: 'transparent', stroke: color.line, strokeWidth: 1.4, strokeDasharray: '3 3' }
+      : { fill: color.fill, stroke: color.line, strokeWidth: 1.8 },
     initial: { text: initialOf(name), fill: color.text },
     // 文本**永远画出来**，只把 opacity 压成 0：这样悬停和回放点亮时，
     // CSS 一句 opacity:1 就能让它现形（presentation 属性打不过 CSS）。
     // 真删掉文本的话，DOM 里没东西可现。
     name: { text: name, fill: tokens().title, opacity: showName ? 1 : 0 },
-    tip: { text: year ? `${name}（${year}）` : name },
+    tip: { text: tip },
   }
 }
+
+/**
+ * 跨派标记环：**两派各画半圈**，一派不画。
+ *
+ * 一派不画是关键的一半：那条道的标题已经写着流派名了，再套一圈是重复。
+ * 环只在"这个点不止属于这一派"时才出现，于是**它出现本身就是信息**。
+ *
+ * 实盘上的例子：`现代Intel微架构` 同时属于 CISC 和 RISC——前端 CISC 指令集、
+ * 后端拆成 RISC 式 μops。它在两条道各有一份（真身 + 影子），两份都带双色环。
+ *
+ * 超过两派只取前两个：再多就成了色轮，读不出东西，剩下的交给 tooltip。
+ */
+function ringAttrs(schools) {
+  const off = { ring: { opacity: 0 }, ring2: { opacity: 0 } }
+  if (!schools || schools.length < 2) return off
+  const half = Math.PI * RING_R                  // 半圈弧长
+  const [a, b] = schools
+  return {
+    ring: { stroke: a.color, opacity: 0.95, strokeDasharray: `${half} ${half}` },
+    ring2: { stroke: b.color, opacity: 0.95, strokeDasharray: `${half} ${half}`,
+             strokeDashoffset: half },
+  }
+}
+
 
 /**
  * 知识点卡片的样式。

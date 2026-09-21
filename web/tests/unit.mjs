@@ -13,7 +13,7 @@
 import assert from 'node:assert/strict'
 import { blankMenu, buildMenu, edgeMenu, groupMenu, nodeMenu } from '../src/canvas/menus.js'
 import { ancestors, computeCollapsed } from '../src/canvas/lod.js'
-import { timelineOptions, packBands, bandCurve, BAND_H } from '../src/canvas/timeline.js'
+import { timelineOptions, bandCurve, buildTimeline, BY_SCHOOL } from '../src/canvas/timeline.js'
 import { level, weekColumns } from '../src/panels/heat.js'
 import { localISO, todayISO } from '../src/today.js'
 
@@ -242,49 +242,69 @@ test('热力等级：复习一次也要点亮，模型调用不算学习量', ()
   assert.equal(level({ built: 4, reviews: 0, answers: 0 }), 4)
 })
 
-// ---------------------------------------------------------------- 流派时间带
+// ---------------------------------------------------------------- 流派泳道
 
-test('流派带子：能同一行就同一行，撞上才换行', () => {
-  // 1-3 / 5-9 / 2-6 —— first-fit 会把 5-9 放回第一行，剩 2-6 单独一行。
-  // "一条一行"会排成三行，而它们实际只有两层重叠，三行读不出这件事。
-  const scale = { at: (y) => y * 10, width: 200 }
-  const { bands, rows } = packBands([
-    { id: 'A', name: 'A', start: 1, end: 3 },
-    { id: 'B', name: 'B', start: 5, end: 9 },
-    { id: 'C', name: 'C', start: 2, end: 6 },
-  ], scale, 200)
-  assert.equal(rows, 2, '最少行数 = 最大并存深度')
-  const row = Object.fromEntries(bands.map((b) => [b.id, b.row]))
-  assert.deepEqual(row, { A: 0, C: 1, B: 0 })
+test('流派分道：出现早的在上面，未归派垫底', () => {
+  const index = { nodes: [
+    { id: '甲', name: '甲', year: 1990 }, { id: '丙', name: '丙', year: 2005 },
+    { id: '辛', name: '辛', year: 2000 },
+  ], edges: [] }
+  const schools = [
+    { id: '老派', name: '老派', start: 1985, end: 2000, members: ['甲'], curve: [], peak: 0 },
+    { id: '新派', name: '新派', start: 2005, open: true, members: ['丙'], curve: [], peak: 0 },
+  ]
+  const plan = buildTimeline(index, { nodes: {}, groups: {} }, { timelines: [BY_SCHOOL], schools })
+  assert.deepEqual(plan.lanes.map((l) => l.name), ['老派', '新派', '未归派'],
+                   '按 start_year 排，「未归派」是余数不是一派，永远垫底')
+  assert.equal(plan.lanes[0].school.id, '老派', '道自己就带着流派信息，渲染层按它上色')
+  assert.equal(plan.lanes[2].school, null, '未归派没有流派')
 })
 
-test('流派带子：end 留空一直画到轴尾', () => {
-  const scale = { at: (y) => y * 10, width: 200 }
-  const { bands } = packBands([{ id: 'X', name: 'X', start: 5, end: null, open: true }], scale, 999)
-  assert.equal(bands[0].x, 50 + 40, 'x 从 start 起（带 TICK_OFFSET）')
-  assert.ok(bands[0].w > 900, '一直延伸到右端，不是缺数据')
+test('流派分道：跨两派的点每道一份，第二份是影子', () => {
+  const index = { nodes: [{ id: '现代Intel', name: '现代Intel', year: 1995 }], edges: [] }
+  const schools = [
+    { id: 'CISC', name: 'CISC', start: 1964, open: true, members: ['现代Intel'], curve: [], peak: 0 },
+    { id: 'RISC', name: 'RISC', start: 1980, open: true, members: ['现代Intel'], curve: [], peak: 0 },
+  ]
+  const plan = buildTimeline(index, { nodes: {}, groups: {} }, { timelines: [BY_SCHOOL], schools })
+  // 前端 CISC 指令集、后端拆成 RISC 式 μops —— 它真的同时属于两派。
+  // placed 是 Map<id, 位置>、一个点只有一个位置，所以第二派起用合成 id 补影子。
+  assert.deepEqual([...plan.placed.keys()], ['现代Intel', '现代Intel@RISC'])
+  assert.equal(plan.placed.get('现代Intel@RISC').shadow, true)
+  assert.equal(plan.placed.get('现代Intel@RISC').realId, '现代Intel', '影子要能跳回真身')
+  assert.ok(!plan.placed.get('现代Intel').shadow)
 })
 
 test('流派走势：阶梯不是折线，平台就是停摆', () => {
   const scale = { at: (y) => y, width: 100 }
-  const school = { start: 1940, end: null, open: true, peak: 2,
+  const school = { start: 1940, end: null, open: true,
                    curve: [{ year: 1940, n: 0 }, { year: 1943, n: 1 }, { year: 1986, n: 2 }] }
-  const pts = bandCurve(school, scale, 2, 2500)   // 轴尾要在最后一年之后
-  const ys = pts.map((p) => p[1])
-  // 1943→1986 那一段必须是**水平**的：中间两点 y 相同，说明那 43 年一级没涨
+  const pts = bandCurve(school, scale, 2, 2500, 40)
   const flat = pts.filter((p, i) => i > 0 && p[1] === pts[i - 1][1])
   assert.ok(flat.length >= 2, '阶梯要有平段，画成斜线会让人以为在稳步增长')
-  assert.ok(Math.min(...ys) < Math.max(...ys), '有涨有平')
   assert.equal(pts[pts.length - 1][0], 2500, '最后一级之后一直平推到轴尾')
 })
 
 test('流派走势：共用 y 刻度，成员少的就该画得矮', () => {
   const scale = { at: (y) => y, width: 100 }
-  const few = { start: 1900, end: 2000, peak: 1, curve: [{ year: 1900, n: 0 }, { year: 1950, n: 1 }] }
-  const many = { start: 1900, end: 2000, peak: 10, curve: [{ year: 1900, n: 0 }, { year: 1950, n: 10 }] }
-  const top = (s) => Math.min(...bandCurve(s, scale, 10, 2000).map((p) => p[1]))
+  const few = { start: 1900, end: 2000, curve: [{ year: 1900, n: 0 }, { year: 1950, n: 1 }] }
+  const many = { start: 1900, end: 2000, curve: [{ year: 1900, n: 0 }, { year: 1950, n: 10 }] }
+  const top = (s) => Math.min(...bandCurve(s, scale, 10, 2000, 40).map((p) => p[1]))
   assert.ok(top(few) > top(many), '各自归一化会把 1 个和 10 个画成一样高')
-  assert.ok(top(many) < BAND_H / 2, '满格的那条要真的顶到上面')
+  assert.ok(top(many) < 40 / 2, '满格的那条要真的顶到上面')
+})
+
+test('流派走势：道的高度变了，曲线跟着缩放', () => {
+  // 曲线是道的背景，写死高度会让它在高的道里缩在底部、在矮的道里溢出去
+  const scale = { at: (y) => y, width: 100 }
+  const s = { start: 1900, end: 2000, curve: [{ year: 1900, n: 0 }, { year: 1950, n: 1 }] }
+  // 顶点永远离道顶 3px（满格就是满格），**跟着高度变的是纵向跨度**
+  const span = (h) => {
+    const ys = bandCurve(s, scale, 1, 2000, h).map((p) => p[1])
+    return Math.max(...ys) - Math.min(...ys)
+  }
+  assert.ok(span(80) > span(40) * 1.5, `道高翻倍，跨度也该翻倍：${span(80)} vs ${span(40)}`)
+  assert.deepEqual(bandCurve(s, scale, 1, 2000, 0), [], '高度为 0 就别画')
 })
 
 // ---------------------------------------------------------------- 跑

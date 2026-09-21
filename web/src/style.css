@@ -903,6 +903,10 @@ kbd.key {
    淡入淡出交给 transition，回放时只加减 class，不动 cell —— 零重建 = 零闪、零跳。 */
 .kg-history .x6-node, .kg-history .x6-edge { transition: opacity .34s var(--ease); }
 .kg-history .x6-node.kg-future, .kg-history .x6-edge.kg-future { opacity: .16; }
+/* 聚焦某一条流派带时，非成员淡下去。**和 kg-future 分开**：两件事要能同时成立
+   （拖着时间滑块看某一派），共用一个 class 会让每拖一下就把聚焦擦掉一次。 */
+.kg-history .x6-node.kg-off-school, .kg-history .x6-edge.kg-off-school { opacity: .14; }
+.kg-history [data-shape="kg-band"] { cursor: pointer; }
 .kg-history .kg-off { display: none; }
 
 /* 导览停在哪一站：金色描边加一圈呼吸光晕。

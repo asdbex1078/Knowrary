@@ -6,9 +6,9 @@ import { Snapline } from '@antv/x6-plugin-snapline'
 import { Transform } from '@antv/x6-plugin-transform'
 import { clusterSummary, containerOf } from './lod.js'
 import { CLUSTER_H, CLUSTER_W, CURSOR_ID, CURSOR_W, FAMILY_STYLE, clusterBox, NODE_H, NODE_W, aggregateAttrs,
-         aggregateLabel, bandAttrs, clusterAttrs, activationAttrs, dotAttrs, edgeAttrs, groupAttrs, imageAttrs, laneAttrs, nodeAttrs,
+         aggregateLabel, clusterAttrs, activationAttrs, dotAttrs, edgeAttrs, groupAttrs, imageAttrs, laneAttrs, nodeAttrs,
          noteAttrs, paletteFor, NEUTRAL, refAttrs, registerShapes, sizeFor, tickAttrs, tokens } from './shapes.js'
-import { AXIS_H, BAND_H, TICK_OFFSET, activeAt, buildTimeline } from './timeline.js'
+import { AXIS_H, TICK_OFFSET, activeAt, buildTimeline } from './timeline.js'
 import { buildLineage } from './lineage.js'
 
 /**
@@ -22,35 +22,43 @@ export function buildHistoryCells(index, layout, options = {}) {
   const colorKeys = [...Object.keys(layout.groups), ...fields]
   const nodes = []
   for (const lane of plan.lanes) {
+    // 按流派分道时这条道**自己就是那条带**：流派色、标题带年份区间。
+    // 顶部不再单独摆一排带子 —— 那才是"带子和成员割裂"的根：两张互不相干的图。
     nodes.push({ id: `lane:${lane.name}`, shape: 'kg-lane', x: -40, y: lane.y,
-                 width: lane.width + 80, height: lane.h, zIndex: 1, attrs: laneAttrs(lane.name),
-                 data: { kind: 'lane' } })
-  }
-  // 流派时间带：排在刻度之前建，zIndex 比泳道高、比圆点低——它是背景，不抢主角
-  for (const band of plan.bands || []) {
-    nodes.push({
-      id: band.id, shape: 'kg-band', x: band.x, y: band.y,
-      width: band.w, height: BAND_H, zIndex: 3,
-      // 曲线取点算的是绝对坐标，这里要换成相对带子左上角的
-      attrs: bandAttrs(band, (band.points || []).map(([x, y]) => [x - band.x, y])),
-      data: { kind: 'band', name: band.name, field: band.field || null,
-              members: band.members || [], start: band.start, end: band.end ?? null },
-    })
+                 width: lane.width + 80, height: lane.h, zIndex: 1,
+                 attrs: laneAttrs(lane.name, lane.school),
+                 data: { kind: 'lane', school: lane.school?.id || null } })
   }
   for (const tick of plan.ticks) {
     nodes.push({ id: `tick:${tick.year}`, shape: 'kg-tick', x: tick.x + TICK_OFFSET, y: AXIS_H,
                  width: 1, height: Math.max(plan.height - AXIS_H, 80), zIndex: 2,
                  attrs: tickAttrs(tick.year), data: { kind: 'tick' } })
   }
+  // 每个点属于哪几条带。**按带子的排序来**，这样同一个点的环色在不同视图里是稳定的
+  // 每个点属于哪几派（只有「按流派」那一档才有值）。tooltip 用它。
+  const schoolsOf = new Map()
+  for (const band of plan.lanes.filter((l) => l.school).map((l) => ({
+    id: l.school.id, name: l.name, color: l.school.color, members: l.school.members || [] }))) {
+    for (const m of band.members || []) {
+      if (!schoolsOf.has(m)) schoolsOf.set(m, [])
+      schoolsOf.get(m).push({ id: band.id, name: band.name, color: band.color || '#8899aa' })
+    }
+  }
   for (const [id, box] of plan.placed) {
-    const meta = byId.get(id)
-    const group = layout.nodes?.[id]?.group
+    // **影子实例**：按流派分道时，属于第二派起的点在那条道上补一份。
+    // 合成 id 是 `真身@流派`，所以取元数据、配色、跳转全都要落回 realId。
+    const real = box.realId || id
+    const meta = byId.get(real)
+    const group = layout.nodes?.[real]?.group
     const color = paletteFor(group || (meta?.field ? `field:${meta.field}` : null), colorKeys)
+    const mine = schoolsOf.get(real) || []
     nodes.push({
       id, shape: 'kg-dot', x: box.x, y: box.y, width: box.w, height: box.h, zIndex: 10,
-      attrs: dotAttrs(meta, color, { showName: box.showName !== false, year: box.year }),
+      attrs: dotAttrs(meta, color, { showName: box.showName !== false, year: box.year,
+                                     schools: mine, shadow: !!box.shadow }),
       data: { kind: 'node', group: group || null, field: meta?.field || null,
-              name: meta?.name || id, year: box.year },
+              name: meta?.name || id, year: box.year, shadow: !!box.shadow, realId: real,
+              schools: mine.map((s) => s.id) },
     })
   }
   // 时间游标：位置由 paintHistoryTime 每次挪，这里只负责把它建出来

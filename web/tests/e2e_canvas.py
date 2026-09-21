@@ -2133,44 +2133,85 @@ async def case_schools(page: Page, ck: Check, vault: Path) -> None:
     (vault / "fields/流派/老派.md").write_text(
         "---\nname: 老派\nfield: 测试\ntype: 流派\nstart_year: 1985\nend_year: 2000\n"
         "color: \"#5b8def\"\ndesc: 老派\n---\n# 老派\n\n## 关系\n"
-        "- 包含:: [[甲]]\n- 演化为:: [[丙]] (2005)\n", "utf-8")
+        "- 包含:: [[甲]]\n- 包含:: [[丙]]\n- 演化为:: [[丙]] (2005)\n", "utf-8")
     (vault / "fields/流派/新派.md").write_text(
         "---\nname: 新派\nfield: 测试\ntype: 流派\nstart_year: 2005\n"
         "color: \"#d08a3e\"\ndesc: 新派\n---\n# 新派\n\n## 关系\n"
         "- 包含:: [[丙]]\n- 包含:: [[庚]]\n", "utf-8")
     await menu_click(page, "重新加载")
     await switch_mode(page, "历史")
-    bands = await poll(page, "document.querySelectorAll('[data-shape=\"kg-band\"]').length",
-                       lambda v: (v or 0) >= 2, timeout=15)
-    ck.add("流派画成时间带", (bands or 0) == 2, f"{bands} 条带子（老派 / 新派）")
 
-    ids = await page.ev("""JSON.stringify([...document.querySelectorAll('[data-shape="kg-band"]')]
-      .map((e) => e.getAttribute('data-cell-id')).sort())""")
-    ck.add("带子的 id 就是流派节点 id", json.loads(ids) == ["新派", "老派"], ids)
+    # **默认视图里不该有流派**：试过在顶上摆一排时间带，结论是割裂 ——
+    # 带子在顶上、成员散在下面各条道里，中间没有任何线索，读起来是两张互不相干的图。
+    # 在圆点上加流派色外环也不行：圆点的颜色本来就按分组 / 领域配，再套一圈是噪音加噪音。
+    await poll(page, "document.querySelectorAll('[data-shape=\"kg-dot\"]').length",
+               lambda v: (v or 0) >= 4, timeout=12)   # 历史视图是圆点，wait_render 等的是卡片
+    stray = await page.ev("""[...document.querySelectorAll('.x6-node')]
+      .map((e) => e.getAttribute('data-cell-id')).filter((id) => id === '老派' || id === '新派').length""")
+    ck.add("默认视图里流派不占位置", (stray or 0) == 0, f"{stray} 个流派 cell（该是 0）")
 
-    # 老派 1985–2000、新派 2005– 不重叠 → 同一行；重叠才换行
-    same = await page.ev("""(() => {
-      const y = [...document.querySelectorAll('[data-shape="kg-band"]')]
-        .map((e) => e.getBoundingClientRect().top)
-      return Math.abs(y[0] - y[1]) < 4
+    # 流派只作为**左侧筛选里的一档**存在
+    opened = await page.ev("""(() => {
+      const b = [...document.querySelectorAll('.topbar .icon-btn, .tool-btn, button')]
+        .find((x) => (x.title || '').includes('时间线') || (x.textContent || '').includes('时间线'))
+      b?.click(); return !!b
     })()""")
-    ck.add("不重叠的两条带子排同一行", bool(same), "能同行就同行，撞上才换行")
+    picked = await page.ev("""(() => {
+      const b = [...document.querySelectorAll('.tl-btn')]
+        .find((x) => (x.textContent || '').includes('按流派'))
+      b?.click(); return !!b
+    })()""")
+    ck.add("时间线选择器里有「按流派」这一档", bool(opened and picked),
+           f"抽屉={opened} 按钮={picked}")
 
-    dots = await page.ev("""JSON.stringify([...document.querySelectorAll('[data-shape="kg-dot"]')]
-      .map((e) => e.getAttribute('data-cell-id')).sort())""")
-    ck.add("流派不再画成圆点", "老派" not in json.loads(dots) and "新派" not in json.loads(dots),
-           f"圆点：{dots}")
+    lanes = await poll(page, """JSON.stringify([...document.querySelectorAll('[data-shape="kg-lane"]')]
+      .map((e) => e.querySelector('text')?.textContent || ''))""",
+                       lambda v: v and any('老派' in x for x in json.loads(v)), timeout=12)
+    names = json.loads(lanes) if lanes else []
+    ck.add("泳道标题是流派名 + 年份区间",
+           any('老派' in n and '1985' in n for n in names), f"{names}")
+    ck.add("出现早的流派排在上面",
+           next((i for i, n in enumerate(names) if '老派' in n), 9)
+           < next((i for i, n in enumerate(names) if '新派' in n), 9), f"{names}")
 
-    # **带 → 点的演化边**：老派 --演化为--> 丙
-    linked = await page.ev("""[...document.querySelectorAll('.x6-edge')]
-      .some((e) => (e.getAttribute('data-cell-id') || '').includes('老派'))""")
-    ck.add("带↔点的演化边没断", bool(linked), "老派 演化为→ 丙 这条线要画出来")
+    dots = json.loads(await poll(page, """JSON.stringify(
+      [...document.querySelectorAll('[data-shape="kg-dot"]')]
+        .map((e) => e.getAttribute('data-cell-id')).sort())""",
+      lambda v: v and len(json.loads(v)) >= 4, timeout=12) or "[]")
+    ck.add("成员排进自己那条流派道", "甲" in dots and "庚" in dots, f"{dots}")
+    ck.add("同属两派的点在两条道各出现一次",
+           len([d for d in dots if d and d.startswith("丙")]) == 2,
+           f"丙 应有真身 + `丙@新派` 影子两份；实际全部圆点：{dots}")
 
-    curve = await page.ev("""document.querySelector('[data-shape="kg-band"] polyline')
-      ?.getAttribute('points')?.length > 0""")
-    ck.add("带子背后有累计走势", bool(curve), "polyline 有点")
+    # 跨派标记环：**一派不画（道已经说了），两派才画**，所以"环出现"本身就是信息
+    rings = await page.ev("""(() => {
+      const of = (id) => [...document.querySelectorAll(`[data-cell-id="${id}"] circle`)]
+        .filter((c) => c.getAttribute('fill') === 'none'
+                    && Number(c.getAttribute('opacity')) > 0.5)
+      const colors = (id) => new Set(of(id).map((c) => c.getAttribute('stroke')))
+      return JSON.stringify({ 丙: of('丙').length, 丙色: [...colors('丙')].length,
+                              甲: of('甲').length, 庚: of('庚').length })
+    })()""")
+    rg = json.loads(rings)
+    ck.add("跨两派的点画双色环", rg.get('丙') == 2 and rg.get('丙色') == 2,
+           f"丙 属于老派+新派 → 两个半圈两种色；实际 {rings}")
+    ck.add("只属一派的点不画环", rg.get('甲') == 0 and rg.get('庚') == 0,
+           f"道的标题已经写着流派名了，再套一圈是重复；实际 {rings}")
 
-
+    # **只看 body 那个圆**：跨派环也是 circle，而且也带 dasharray（半圈弧长），
+    # 拿 querySelector('circle') 会取到环、测出来永远是真 —— 一条看着绿其实没在验的用例。
+    shadow = await page.ev("""(() => {
+      const body = (id) => [...document.querySelectorAll(`[data-cell-id="${id}"] circle`)]
+        .find((c) => c.getAttribute('fill') !== 'none')
+      const dash = (id) => body(id)?.getAttribute('stroke-dasharray') || ''
+      const fill = (id) => body(id)?.getAttribute('fill') || ''
+      return JSON.stringify({ 影子: [dash('丙@新派'), fill('丙@新派')],
+                              真身: [dash('丙'), fill('丙')] })
+    })()""")
+    sh = json.loads(shadow)
+    ck.add("影子空心虚线、真身实心",
+           sh['影子'][0] == '3 3' and sh['影子'][1] == 'transparent' and not sh['真身'][0],
+           f"[dasharray, fill] → {shadow}")
 async def case_tour(page: Page, ck: Check) -> None:
     """沿演化链导览：跟着最长的那条「谁接谁」一站站走，镜头推过去、游标跟着走。
 

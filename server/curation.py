@@ -106,7 +106,12 @@ def place(vault: Path, req: PlaceRequest) -> PlaceResult:
                 one = req.model_copy(update={"group": gid})
         box, gpatch, npatch = _one_placement(nid, one, index, plain, today)
         if box is None:
-            skipped.append({"id": nid, "reason": "目标分组放不下或判不出分组，留在 Inbox"})
+            # **"放不下"和"判不出分组"要分开说**：前者要人去挪框，后者要人去填 layer /
+            # 建域框。混成一句的话，人只能反复点「放进去」然后反复失败。
+            target = one.group or core.target_group(nid, index, plain)
+            reason = (core.growth_blocker(target, plain) if target
+                      else f"判不出 `{nid}` 该进哪个分组——填一下它的 layer，或者用「建域框并放入」")
+            skipped.append({"id": nid, "reason": reason or "目标分组放不下，留在 Inbox"})
             continue
         _merge_patch(plain, patch_groups, patch_nodes, gpatch, npatch)
         plain["nodes"][nid] = box                      # 并进工作副本：下一个节点会避开它
