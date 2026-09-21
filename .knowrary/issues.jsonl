@@ -1,0 +1,3 @@
+{"ts": "2026-09-21T11:22:58+08:00", "kind": "write", "where": "/api/changes", "message": "节点 id `Logic Theorist` 不合法（不能为空，也不能含 / \\ : * ? \" < > | 和空白）"}
+{"ts": "2026-09-21T11:23:17+08:00", "kind": "write", "where": "/api/changes", "message": "节点 id `Logic Theorist` 不合法（不能为空，也不能含 / \\ : * ? \" < > | 和空白）"}
+{"ts": "2026-09-21T11:23:44+08:00", "kind": "write", "where": "/api/changes", "message": "文件名要和 id 一致（id 默认取文件名）：Logic Theorist.md ≠ LogicTheorist.md"}

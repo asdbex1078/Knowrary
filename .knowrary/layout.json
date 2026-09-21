@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
-  "revision": 157,
-  "updated_at": "2026-09-20T12:55:00Z",
+  "revision": 158,
+  "updated_at": "2026-09-21T03:35:43Z",
   "viewport": {
     "zoom": 0.4,
     "cx": 1459.0,
@@ -1249,6 +1249,66 @@
       "state": "final",
       "placedAt": "2026-09-20",
       "anchor": "RISC"
+    },
+    "LISP": {
+      "x": 406.0,
+      "y": 4.0,
+      "w": 196.0,
+      "h": 64.0,
+      "group": "g-AI--理论",
+      "state": "final",
+      "placedAt": "2026-09-21",
+      "anchor": null
+    },
+    "LogicTheorist": {
+      "x": 408.0,
+      "y": 88.0,
+      "w": 196.0,
+      "h": 64.0,
+      "group": "g-AI--理论",
+      "state": "final",
+      "placedAt": "2026-09-21",
+      "anchor": null
+    },
+    "Perceptrons": {
+      "x": 459.0,
+      "y": 406.0,
+      "w": 196.0,
+      "h": 64.0,
+      "group": "g-AI--理论",
+      "state": "final",
+      "placedAt": "2026-09-21",
+      "anchor": "感知器"
+    },
+    "VAX": {
+      "x": 98.0,
+      "y": 1573.0,
+      "w": 196.0,
+      "h": 64.0,
+      "group": "g-计算机系统--体系结构",
+      "state": "final",
+      "placedAt": "2026-09-21",
+      "anchor": "RISC"
+    },
+    "专家系统": {
+      "x": 682.0,
+      "y": 4.0,
+      "w": 196.0,
+      "h": 64.0,
+      "group": "g-AI--理论",
+      "state": "final",
+      "placedAt": "2026-09-21",
+      "anchor": "LISP"
+    },
+    "知识获取瓶颈": {
+      "x": 958.0,
+      "y": 4.0,
+      "w": 196.0,
+      "h": 64.0,
+      "group": "g-AI--理论",
+      "state": "final",
+      "placedAt": "2026-09-21",
+      "anchor": "专家系统"
     }
   },
   "refs": [],
