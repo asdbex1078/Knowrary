@@ -1,12 +1,13 @@
 ---
 name: Intel平台
 field: 计算机系统
-layer: 硬件
+year: 1968
 tags:
   - 硬件
   - 计算机硬件
 desc: CPU 的具体厂商实例，资料入口 Intel手册。现代 Intel 的 CISC/RISC 混合设计见 现代Intel微架构
 source: 知识图谱zhis.jpg
+layer: 硬件
 ---
 # Intel平台
 

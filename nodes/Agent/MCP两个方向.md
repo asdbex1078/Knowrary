@@ -13,6 +13,7 @@ desc: 作 client（agent 通过 MCP 调自己的工具）是多一跳、收益�
 learned: 2026-09-20
 source: MCP.md
 layer: AI应用
+timeless: true
 ---
 # MCP 两个方向
 

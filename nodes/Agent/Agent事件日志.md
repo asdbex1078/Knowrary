@@ -1,7 +1,6 @@
 ---
 name: Agent 事件日志
 field: Agent
-layer: AI应用
 type: 模式
 aliases:
   - Operation Log
@@ -12,6 +11,8 @@ tags:
 desc: 追加写入的事件表，服务端统一生成时间，保留请求 ID、幂等键和状态版本，用来区分“准备发送”和“已真正发出”
 learned: 2026-09-10
 source: 长程Agent任务生命周期与可控终止.md
+layer: AI应用
+timeless: true
 ---
 # Agent 事件日志
 

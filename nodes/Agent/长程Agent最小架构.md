@@ -1,7 +1,6 @@
 ---
 name: 长程 Agent 最小架构
 field: Agent
-layer: AI应用
 type: 模式
 tags:
   - Agent
@@ -10,6 +9,8 @@ tags:
 desc: 六个组件：Task Store、Worker、Cancellation Channel、Operation Log、Recovery Worker、Idempotency Layer
 learned: 2026-09-10
 source: 长程Agent任务生命周期与可控终止.md
+layer: AI应用
+timeless: true
 ---
 # 长程 Agent 最小架构
 

@@ -1,12 +1,13 @@
 ---
 name: CPU
 field: 计算机系统
-layer: 硬件
+year: 1971
 tags:
   - 硬件
   - 计算机硬件
 desc: 组成：控制器、运算器、高速缓存、寄存器；具体实例 Intel平台
 source: 知识图谱zhis.jpg
+layer: 硬件
 ---
 # CPU
 

@@ -1,12 +1,13 @@
 ---
 name: JVM语言
 field: 计算机系统
-layer: 高级语言
+year: 1995
 tags:
   - 语言
   - 高级语言
 desc: Java、Scala、Kotlin：编译为 字节码 后在 JVM 上运行
 source: 知识图谱zhis.jpg
+layer: 高级语言
 ---
 # JVM语言
 

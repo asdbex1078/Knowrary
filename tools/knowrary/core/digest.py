@@ -247,10 +247,18 @@ def no_year(index: dict) -> list[str]:
     就根本不出现在时间轴上，而"时间轴上少了谁"是这张图里最不容易看出来的一种缺失。
 
     聚合文档除外：一张对比表没有"诞生年份"，催也补不出来。
+
+    **`timeless: true` 的也除外。** 这条是从「缺 year 49 个」这笔永远清不掉的欠账来的：
+    实盘上那 49 个里只有 9 个真有历史锚点，其余是**结构概念**（寄存器 / 栈内存 /
+    控制器）、**外部学科入口**（数论 / 物理-电学）和**工程原则**（那批 Agent 节点）——
+    它们不是"某一年发生的事"，硬填一个年份就是编。
+    而催不动又清不掉的欠账最后的下场是被整条无视，连真该补的那几个一起。
+    所以给「看过了，它本来就没有年份」一个说法，别让它和「还没填」混在一起。
     """
     return sorted(n["id"] for n in index["nodes"]
                   if not n.get("virtual") and not n.get("stub") and n.get("path")
-                  and not n.get("year") and not n.get("aggregate"))
+                  and not n.get("year") and not n.get("aggregate")
+                  and not n.get("timeless"))
 
 
 def _top_group(gid: str | None, groups: dict) -> str | None:

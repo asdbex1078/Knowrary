@@ -30,7 +30,8 @@ NEWER_FIRST = ("修订",)
 
 INDEX_SCHEMA_VERSION = 1
 NODE_FM_FIELDS = ("name", "field", "type", "status", "desc", "year", "start_year", "end_year",
-                  "aliases", "tags", "learned", "source", "layer", "params", "dimensions", "color")
+                  "aliases", "tags", "learned", "source", "layer", "params", "dimensions", "color",
+                  "timeless")
 
 
 @dataclass

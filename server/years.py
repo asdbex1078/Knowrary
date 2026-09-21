@@ -40,7 +40,7 @@ def missing(index: dict) -> list[dict]:
     # 和 core.no_year 同一条口径：聚合文档没有"诞生年份"，让模型去猜只会猜出一个假的
     rows = [n for n in index["nodes"]
             if not n.get("virtual") and not n.get("stub") and n.get("path")
-            and not n.get("year") and not n.get("aggregate")]
+            and not n.get("year") and not n.get("aggregate") and not n.get("timeless")]
     rows.sort(key=lambda n: (-(n.get("rank") or 0), n["id"]))
     return rows
 
