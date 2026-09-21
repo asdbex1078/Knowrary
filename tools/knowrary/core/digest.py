@@ -91,7 +91,8 @@ def _common_affix(a: str, b: str) -> tuple[int, int]:
     return head, tail
 
 
-def kinship(a_id: str, name_a: str, b_id: str, name_b: str) -> dict | None:
+def kinship(a_id: str, name_a: str, b_id: str, name_b: str,
+            layer_a: str | None = None, layer_b: str | None = None) -> dict | None:
     """两个名字像不像"同一族"；像的话，该连的是哪条边。
 
     中文复合词天生共享中心语：`内存` / `堆内存` / `栈内存` 的字面重合度 0.8，稳稳
@@ -106,14 +107,27 @@ def kinship(a_id: str, name_a: str, b_id: str, name_b: str) -> dict | None:
 
     唯一的例外是多出来的那一截**加了等于没加**（`MHA` / `MHA机制`）：那是同一个
     东西被建了两遍，返回 None 交回给重复候选。
+
+    **跨抽象层的字面包含一律不提。** 这是从实盘上一批稳定误报来的：
+    `内存`（硬件层那块物理存储）被判成包含 `堆内存` / `栈内存` / `程序的内存布局`
+    （系统软件层的进程虚拟地址空间划分）、包含 `内存墙`（体系结构层的一个**现象**）；
+    `CPU` 被判成包含 `CPU实模式与平坦模式`（寻址方式，不是部件）。
+    中文复合词共享中心语的毛病在跨层时最狠 —— 名字越像，层次差得越远。
+    `layer` 本来就是为「和主题正交的另一个维度」准备的，这里正好拿它当闸。
+
+    只拦「包含」不拦「对比」：同级兄弟本来就该在同一层，跨层的那些
+    （`JVM语言` / `汇编语言`）由调用方按同一条规则再滤一次。
     """
     if name_a == name_b:
         return None
+    cross_layer = bool(layer_a and layer_b and layer_a != layer_b)
     for short, long_, sid, lid in ((name_a, name_b, a_id, b_id), (name_b, name_a, b_id, a_id)):
         if short not in long_:
             continue
         if long_.replace(short, "", 1).strip() in EMPTY_TAILS:
             return None                       # 同一个东西的两种写法，是重复不是上下位
+        if cross_layer:
+            return None                       # 名字上是包含，层次上不是一回事
         return {"source": sid, "target": lid, "relation": "包含",
                 "reason": f"「{long_}」的名字里含着「{short}」，多半是它的一种"}
     head, tail = _common_affix(name_a, name_b)
@@ -122,6 +136,8 @@ def kinship(a_id: str, name_a: str, b_id: str, name_b: str) -> dict | None:
     rest_a, rest_b = name_a[head:len(name_a) - tail], name_b[head:len(name_b) - tail]
     if not rest_a or not rest_b or max(len(rest_a), len(rest_b)) > AFFIX_REMAIN:
         return None
+    if cross_layer:
+        return None                           # 同级兄弟本来就该在同一层（JVM语言 / 汇编语言）
     shared = "…".join(x for x in (name_a[:head], name_a[len(name_a) - tail:] if tail else "") if x)
     return {"source": a_id, "target": b_id, "relation": "对比",
             "reason": f"同族兄弟：都带「{shared}」，差在「{rest_a}」/「{rest_b}」"}
@@ -150,12 +166,18 @@ def _pairs(index: dict) -> tuple[list[dict], list[dict]]:
             name_a = a.get("name") or a["id"]
             name_b = b.get("name") or b["id"]
             ratio = round(SequenceMatcher(None, name_a, name_b).ratio(), 2)
-            kin = kinship(a["id"], name_a, b["id"], name_b)
+            kin = kinship(a["id"], name_a, b["id"], name_b, a.get("layer"), b.get("layer"))
             if kin:
                 # 孤立节点优先：连边建议最大的用处就是把 degree 0 的点接回图里，
                 # 两个都孤立的那条最该先连。
                 lonely = int(not a.get("degree")) + int(not b.get("degree"))
                 hints.append({**kin, "lonely": lonely, "score": ratio})
+                continue
+            # **跨抽象层的两个点，名字再像也不是重复。**
+            # 不加这一条的话，上面 kinship 拦下来的那些（`内存` / `堆内存`、
+            # `内存` / `内存墙`）会原样落进重复候选 —— 从"建议连一条错边"
+            # 变成"建议合并两个根本不同的东西"，**比原来更糟**。
+            if a.get("layer") and b.get("layer") and a["layer"] != b["layer"]:
                 continue
             if ratio >= NAME_SIMILAR:
                 dups.append({"a": a["id"], "b": b["id"], "score": ratio,

@@ -1577,6 +1577,31 @@ def digest_整批孤点要和散点分开报():
 
 
 @case
+def 跨抽象层的字面相似既不是包含也不是重复():
+    """**名字越像，层次可能差得越远** —— 中文复合词共享中心语的毛病在跨层时最狠。
+
+    实盘上这批误报很稳定：`内存`（硬件层那块物理存储）被判成包含 `堆内存`
+    （系统软件层的进程地址空间划分）、包含 `内存墙`（体系结构层的一个**现象**）。
+
+    而且**拦一半比不拦更糟**：只在 kinship 里拦掉「包含」的话，这些对会原样落进
+    重复候选（名字相似度够），从「建议连一条错边」变成「建议把两个根本不同的东西合并」。
+    所以两道闸要一起加。
+    """
+    d = _digest_of({
+        # 名字字面包含，但一个在硬件层、一个在系统软件层
+        "nodes/x/内存.md": node_md("内存", extra="layer: 硬件\n"),
+        "nodes/x/堆内存.md": node_md("堆内存", extra="layer: 系统软件\n"),
+        # 同层的字面包含照常提
+        "nodes/x/寄存器.md": node_md("寄存器", extra="layer: 硬件\n"),
+        "nodes/x/通用寄存器.md": node_md("通用寄存器", extra="layer: 硬件\n"),
+    })
+    pairs = {(h["source"], h["target"]) for h in d["links"]}
+    assert ("寄存器", "通用寄存器") in pairs, d["links"]
+    assert not any("堆内存" in p for p in pairs), f"跨层的不该提连边：{d['links']}"
+    assert d["duplicates"] == [], f"跨层的更不该判成重复：{d['duplicates']}"
+
+
+@case
 def timeless_是看过了本来就没年份_和还没填要分开():
     """**催不动又清不掉的欠账，最后会被整条无视 —— 连真该补的那几个一起。**
 

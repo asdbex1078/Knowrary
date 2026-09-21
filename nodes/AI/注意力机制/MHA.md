@@ -41,3 +41,4 @@ decode 每生成一个 token 都要把历史 KV 读一遍，而 MHA 的 KV cache
 - 演化为:: [[MQA]] (2019) — h 份 K/V 压成 1 份
 - 演化为:: [[GQA]] (2023) — 分 g 组、组内共用 K/V
 - 演化为:: [[MLA]] (2024) — K/V 压成低维 latent
+- 依赖:: [[KV-Cache]] — h 个 head 各有独立 K/V，全都要存进 cache —— MQA/GQA/MLA 砍的就是这笔

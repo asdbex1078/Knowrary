@@ -12,3 +12,5 @@ layer: AI应用
 
 ## 关系
 - 基于:: [[KV-Cache]]
+- 对比:: [[MQA]] — 同样为了砍 KV cache，走的是两条路：MQA 砍 head 数，MLA 压成低维 latent
+- 部件:: [[Transformer]] — 同上：砍 KV cache 的三条路都长在注意力这一层里
