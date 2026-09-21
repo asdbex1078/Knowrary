@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
-  "revision": 159,
-  "updated_at": "2026-09-21T03:43:28Z",
+  "revision": 160,
+  "updated_at": "2026-09-21T03:56:38Z",
   "viewport": {
     "zoom": 0.4,
     "cx": 1459.0,
@@ -121,7 +121,7 @@
       "x": 118.0,
       "y": -336.0,
       "w": 1920.0,
-      "h": 1152.0,
+      "h": 1352.0,
       "parent": null,
       "collapsed": false,
       "pinned": null,
@@ -169,7 +169,7 @@
       "x": 1606.0,
       "y": -292.0,
       "w": 504.0,
-      "h": 336.0,
+      "h": 536.0,
       "parent": "g-AI",
       "collapsed": false,
       "pinned": null,
@@ -1329,6 +1329,86 @@
       "state": "final",
       "placedAt": "2026-09-21",
       "anchor": "Perceptrons"
+    },
+    "BERT": {
+      "x": 1660.0,
+      "y": -41.0,
+      "w": 196.0,
+      "h": 64.0,
+      "group": "g-AI--AI应用",
+      "state": "final",
+      "placedAt": "2026-09-21",
+      "anchor": "Transformer"
+    },
+    "CTC": {
+      "x": 1653.0,
+      "y": 40.0,
+      "w": 196.0,
+      "h": 64.0,
+      "group": "g-AI--AI应用",
+      "state": "final",
+      "placedAt": "2026-09-21",
+      "anchor": null
+    },
+    "ResNet": {
+      "x": 666.0,
+      "y": 587.0,
+      "w": 196.0,
+      "h": 64.0,
+      "group": "g-AI--理论",
+      "state": "final",
+      "placedAt": "2026-09-21",
+      "anchor": "AlexNet"
+    },
+    "SIFT": {
+      "x": 878.0,
+      "y": 492.0,
+      "w": 196.0,
+      "h": 64.0,
+      "group": "g-AI--理论",
+      "state": "final",
+      "placedAt": "2026-09-21",
+      "anchor": "AlexNet"
+    },
+    "ViT": {
+      "x": 1906.0,
+      "y": 60.0,
+      "w": 196.0,
+      "h": 64.0,
+      "group": "g-AI--AI应用",
+      "state": "final",
+      "placedAt": "2026-09-21",
+      "anchor": "Transformer"
+    },
+    "Whisper": {
+      "x": 1889.0,
+      "y": 160.0,
+      "w": 196.0,
+      "h": 64.0,
+      "group": "g-AI--AI应用",
+      "state": "final",
+      "placedAt": "2026-09-21",
+      "anchor": "CTC"
+    },
+    "word2vec": {
+      "x": 1011.0,
+      "y": 406.0,
+      "w": 196.0,
+      "h": 64.0,
+      "group": "g-AI--理论",
+      "state": "final",
+      "placedAt": "2026-09-21",
+      "anchor": "反向传播"
+    },
+    "注意力机制": {
+      "x": 1658.0,
+      "y": 159.0,
+      "w": 196.0,
+      "h": 64.0,
+      "group": "g-AI--AI应用",
+      "state": "final",
+      "placedAt": "2026-09-21",
+      "anchor": "Transformer"
     }
   },
   "refs": [],

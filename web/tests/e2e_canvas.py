@@ -2117,7 +2117,7 @@ async def case_stats(page: Page, ck: Check, vault: Path) -> None:
     idx = get(page.api + "/api/index")
     ck.add("看不懂的 params 只警告、不丢节点",
            any(d["code"] == "bad_params" for d in idx["warnings"]) and not idx["errors"],
-           str(idx["warnings"])[:120])
+           f"warnings={str(idx['warnings'])[:80]} | errors={str(idx['errors'])[:120]}")
     await open_rail(page, "参数量")
 
 
@@ -2138,6 +2138,12 @@ async def case_schools(page: Page, ck: Check, vault: Path) -> None:
         "---\nname: 新派\nfield: 测试\ntype: 流派\nstart_year: 2005\n"
         "color: \"#d08a3e\"\ndesc: 新派\n---\n# 新派\n\n## 关系\n"
         "- 包含:: [[丙]]\n- 包含:: [[庚]]\n", "utf-8")
+    # 主道靠**声明**：md 里第一条 `属于` 就是它（和对比组行序同一口径）。
+    # 真身画在主道、影子在别的道，而**边只连真身** —— 判错就读成反的。
+    # 必须写在两条线建好之后，否则 `[[新派]]` 还不存在，报 unknown_target。
+    (vault / "nodes/组B/丙.md").write_text(
+        "---\nname: 丙\nfield: 测试\ndesc: 丙说明\nyear: 2005\nlayer: 理论\n---\n# 丙\n\n正文\n\n"
+        "## 关系\n- 属于:: [[新派]]\n- 演化为:: [[庚]] (2015)\n", "utf-8")
     await menu_click(page, "重新加载")
     await switch_mode(page, "历史")
 
@@ -2181,7 +2187,10 @@ async def case_schools(page: Page, ck: Check, vault: Path) -> None:
     ck.add("成员排进自己那条流派道", "甲" in dots and "庚" in dots, f"{dots}")
     ck.add("同属两派的点在两条道各出现一次",
            len([d for d in dots if d and d.startswith("丙")]) == 2,
-           f"丙 应有真身 + `丙@新派` 影子两份；实际全部圆点：{dots}")
+           f"丙 应有真身 + 一个影子两份；实际全部圆点：{dots}")
+    # 丙 的 md 里第一条写的是 `属于 新派` → 真身在新派道，影子在老派道
+    ck.add("真身落在 md 里声明的那条道", "丙@老派" in dots and "丙" in dots,
+           f"主道是声明出来的不是算出来的（边只连真身，判错就读成反的）：{dots}")
 
     # 跨派标记环：**一派不画（道已经说了），两派才画**，所以"环出现"本身就是信息
     rings = await page.ev("""(() => {
@@ -2205,7 +2214,7 @@ async def case_schools(page: Page, ck: Check, vault: Path) -> None:
         .find((c) => c.getAttribute('fill') !== 'none')
       const dash = (id) => body(id)?.getAttribute('stroke-dasharray') || ''
       const fill = (id) => body(id)?.getAttribute('fill') || ''
-      return JSON.stringify({ 影子: [dash('丙@新派'), fill('丙@新派')],
+      return JSON.stringify({ 影子: [dash('丙@老派'), fill('丙@老派')],
                               真身: [dash('丙'), fill('丙')] })
     })()""")
     sh = json.loads(shadow)

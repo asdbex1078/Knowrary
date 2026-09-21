@@ -12,7 +12,7 @@ import { computed, reactive, ref } from 'vue'
 import {
   buildHistoryCells, buildLineageCells, highlightEdges, markStop, mount, paintHistoryTime,
 } from '../canvas/render.js'
-import { BY_LAYER, BY_SCHOOL, timelineOptions } from '../canvas/timeline.js'
+import { BY_LAYER, LINE_MODES, timelineOptions } from '../canvas/timeline.js'
 import { fetchSchools } from '../api.js'
 
 export const STEP_MS = 760   // 回放每站停多久。跳的是"有事发生的年份"，不是日历年，所以可以停久一点
@@ -95,14 +95,17 @@ export function useHistory(deps) {
   // 别的视图不需要知道它存在，所以这份取数也不该爬到 App.vue 去。
   // 按 index revision 缓存：图没变就不重复问服务端（换时间线 / 切紧凑都会重渲染）。
   const schools = ref([])
+  const homes = ref({})
   let schoolsRev = Symbol('未取过')
   async function ensureSchools() {
     const rev = indexDoc.value?.revision ?? null
     if (schoolsRev === rev) return
     try {
-      schools.value = (await fetchSchools()).schools || []
+      const got = await fetchSchools()
+      schools.value = got.schools || []
+      homes.value = got.homes || {}
     } catch {
-      schools.value = []      // 取不到就不画带子，历史图照常能看——别为一层背景把整张图拖垮
+      schools.value = []      // 取不到就不分流派道，历史图照常能看——别为一层背景把整张图拖垮
     }
     schoolsRev = rev
   }
@@ -118,7 +121,7 @@ export function useHistory(deps) {
     const g = graph.value
     const cells = buildHistoryCells(indexDoc.value, layoutDoc.value, {
       timelines: timelines.value, families: histFamilies(), compact: hist.compact, trunk: hist.trunk,
-      schools: schools.value,
+      schools: schools.value, homes: homes.value,
     })
     histPlan.value = cells.plan
     applyingViewport.value = true
@@ -328,7 +331,7 @@ export function useHistory(deps) {
   // 同时选中的后果不是"两种都生效"，而是两边对不上——laneOf 按层给道名，
   // 泳道次序按流派排，于是 `kept.filter(lane === '老派')` 全空、一个真身都画不出来，
   // 只剩影子（影子不看 lane）。**这种 bug 不报错、图照常画，只是点全没了。**
-  const EXCLUSIVE = [BY_LAYER, BY_SCHOOL]
+  const EXCLUSIVE = [BY_LAYER, ...LINE_MODES]
 
   function toggleTimeline(id) {
     const on = timelines.value.includes(id)

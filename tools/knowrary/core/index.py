@@ -19,7 +19,7 @@ from .analysis import find_cycles, pagerank
 from .diagnostics import Diagnostics
 from .mdio import RE_LINK, json_safe, load_json
 from .compare import COMPARE_TYPE, MEMBER_RELATION
-from .schools import SCHOOL_TYPE
+from .schools import LINE_TYPES
 from .facts import (COMPARE_HEADING, FACTS_HEADING, FM_DIMENSIONS, bare_compare_headings,
                     compare_targets, facts_of, section_bounds, stray_facts)
 from .parser import Node, is_aggregate, load_vault, validate_frontmatter, parse_params
@@ -206,7 +206,7 @@ def _check_compare(ctx: BuildContext) -> None:
         if node.fm.get("type") == COMPARE_TYPE:
             _check_compare_group(node, out_by_type[node.id].get(MEMBER_RELATION, set()),
                                  ctx.diags, loc)
-        if node.fm.get("type") == SCHOOL_TYPE:
+        if node.fm.get("type") in LINE_TYPES:
             _check_school(node, out_by_type[node.id].get(MEMBER_RELATION, set()), ctx.diags, loc)
         _check_node_facts(node, out_by_type[node.id].get("对比", set()), ctx.diags, loc)
 
@@ -235,11 +235,11 @@ def _check_school(node: Node, members: set[str], diags: Diagnostics, loc: dict) 
     """
     if not isinstance(node.fm.get("start_year"), int):
         diags.error("school_no_start_year",
-                    "流派缺 `start_year`，历史视图里排不了序也画不出时间带（不填会静默消失）。"
+                    f"`{node.fm.get('type')}` 缺 `start_year`，历史视图里排不了序也铺不出泳道（不填会静默消失）。"
                     "还在延续的流派 `end_year` 留空即可", **loc)
     if len(members) < MIN_MEMBERS:
         diags.warn("school_too_few_members",
-                   f"流派只有 {len(members)} 个成员（建议 ≥{MIN_MEMBERS}）。"
+                   f"`{node.fm.get('type')}` 只有 {len(members)} 个成员（建议 ≥{MIN_MEMBERS}）。"
                    f"成员写成 `- 包含:: [[节点]]`——**一个技术可以同时属于两个流派**，"
                    f"结构族不限制这个，重叠是这套东西本来就要表达的事", **loc)
 

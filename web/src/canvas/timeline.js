@@ -137,18 +137,37 @@ export const BY_LAYER = '__layer__'        // 时间线选择器里的特殊一�
 // 合成 id `节点id@流派id`、空心虚线、**不带边**。重叠因此在图上看得见，
 // 而不是被迫二选一藏起来。
 export const BY_SCHOOL = '__school__'
+// 按领域线（NLP / CV / ASR）。和按流派**共用整条实现**，只差筛的是哪一种线。
+// 分两档的理由不是洁癖：流派之间是竞争（互斥的世界观），领域线之间是并列，
+// 所以「同时属于两条线」在两边的含义不一样——前者罕见且有意思，后者是日常。
+// 混成一档的话，`AlexNet` 会和「连接主义」「CV」排在同一列里，而那是两个正交的维度。
+export const BY_DOMAIN = '__domain__'
 export const UNSCHOOLED = '未归派'
+export const LINE_MODES = [BY_SCHOOL, BY_DOMAIN]
+const LINE_KIND = { [BY_SCHOOL]: '流派', [BY_DOMAIN]: '领域线' }
 
 /** 泳道归属：按抽象层 / 按所选时间线的直接子分组 / 都没选就按 field。 */
-function laneOf(node, layout, selected, schools = []) {
+function laneOf(node, layout, selected, schools = [], homes = {}) {
   const place = layout.nodes?.[node.id]
   const groups = layout.groups || {}
   // **BY_SCHOOL 排在 BY_LAYER 前面**：两者理应互斥（toggleTimeline 保证），
   // 这里再兜一层——状态万一脏了，宁可按流派画（和泳道次序一致），
   // 也不能出现"道名按层、次序按派"那种一个点都画不出来的空图。
-  if (selected.includes(BY_SCHOOL)) {
-    const mine = schools.filter((s) => (s.members || []).includes(node.id))
-    return mine.length ? mine[0].name : UNSCHOOLED
+  const lineMode = LINE_MODES.find((m) => selected.includes(m))
+  if (lineMode) {
+    const kind = LINE_KIND[lineMode]
+    const mine = schools.filter((s) => s.kind === kind && (s.members || []).includes(node.id))
+    if (!mine.length) return UNSCHOOLED
+    // **主道是声明出来的，不是算出来的。** 真身画在主道上，而**边只连真身** ——
+    // 判错的话，`ViT 源自 Transformer`、`Whisper 源自 Transformer` 这些箭头
+    // 会汇聚到一条它根本没出生在那儿的道上，图上读出来就是
+    // 「语音这条线发明了 Transformer」。
+    //
+    // 试过按「线开得最早」和「在这条线里排第几」，两个都把 Transformer 判给了 ASR
+    // （那条线 1952 年就起步、而且成员少）。它出生在 NLP 是历史事实，推不出来。
+    // 口径和对比组的行序一致：**按节点 md 里 `- 属于::` 的书写顺序**（见 core.line_homes）。
+    const home = homes[node.id]
+    return (home && mine.find((s) => s.id === home)?.name) || mine[0].name
   }
   if (selected.includes(BY_LAYER)) return node.layer || UNLAYERED
   if (!selected.length) return node.field || '(未指定)'
@@ -349,19 +368,20 @@ export function activeAt(plan, upto, validity) {
  */
 export function buildTimeline(index, layout, opts = {}) {
   const { timelines = [], families = new Set(['演化']), compact = false, trunk = false,
-          schools = [] } = opts
+          schools = [], homes = {} } = opts
   // upto / validity **不参与布局**：它们只决定哪些点画成"已发生"（见 activeAt）。
   // 以前这两个值会把节点整个滤掉，于是 yearScale 只拿可见年份算，
   // 滑块一动整条 X 轴就重新拉伸、泳道行数也跟着变——回放时全图一直在滑在跳。
   // **聚合文档不画成圆点**：流派已经是一条带子了，再出一个点就是同一个东西画两遍；
   // 对比组和领域总览同理——它们是「一批知识点的容器」，不是时间轴上的一个事件。
-  const bySchool = timelines.includes(BY_SCHOOL)
+  const lineMode = LINE_MODES.find((m) => timelines.includes(m))
+  const bySchool = !!lineMode
   const withYear = index.nodes.filter(
     (n) => !n.virtual && !n.aggregate && typeof n.year === 'number')
   const laneNames = new Map()
   const kept = []
   for (const node of withYear) {
-    const lane = laneOf(node, layout, timelines, schools)
+    const lane = laneOf(node, layout, timelines, schools, homes)
     if (lane === null) continue                     // 不在所选时间线里
     laneNames.set(lane, true)
     kept.push({ node, lane })
@@ -387,7 +407,8 @@ export function buildTimeline(index, layout, opts = {}) {
   const onStage = new Set(kept.map((k) => k.node.id))
   const right = scale.width + TICK_OFFSET
   const shown = bySchool
-    ? schools.filter((s) => (s.members || []).some((m) => onStage.has(m)))
+    ? schools.filter((s) => s.kind === LINE_KIND[lineMode]
+                         && (s.members || []).some((m) => onStage.has(m)))
     : []
   const peak = Math.max(0, ...shown.map((b) => b.peak || 0))
 
@@ -411,7 +432,9 @@ export function buildTimeline(index, layout, opts = {}) {
   const shadows = []
   if (bySchool) {
     for (const { node } of kept) {
-      for (const s of shown.filter((x) => (x.members || []).includes(node.id)).slice(1)) {
+      const home = kept.find((k) => k.node.id === node.id)?.lane
+      for (const s of shown.filter((x) => (x.members || []).includes(node.id)
+                                       && x.name !== home)) {
         shadows.push({ node, lane: s.name })
       }
     }

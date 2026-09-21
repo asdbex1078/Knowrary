@@ -3,7 +3,8 @@
 // 原来是顶栏下面一整条 chips，分组一多就换行把画布压矮。
 import Drawer from '../ui/Drawer.vue'
 import Icon from '../ui/Icon.vue'
-import { BY_LAYER as TL_BY_LAYER, BY_SCHOOL as TL_BY_SCHOOL } from '../canvas/timeline.js'
+import { BY_LAYER as TL_BY_LAYER, BY_SCHOOL as TL_BY_SCHOOL,
+         BY_DOMAIN as TL_BY_DOMAIN } from '../canvas/timeline.js'
 
 defineProps({
   options: { type: Array, default: () => [] },
@@ -18,6 +19,7 @@ const emit = defineEmits(['close', 'toggle', 'select-all', 'toggle-family', 'tog
 const FAMS = ['演化', '依赖', '对照']
 const BY_LAYER = TL_BY_LAYER
 const BY_SCHOOL = TL_BY_SCHOOL
+const BY_DOMAIN = TL_BY_DOMAIN
 </script>
 
 <template>
@@ -69,6 +71,16 @@ const BY_SCHOOL = TL_BY_SCHOOL
                     @click="emit('toggle', BY_SCHOOL)">
               <Icon :name="selected.includes(BY_SCHOOL) ? 'check' : 'timeline'" :size="14" />
               按流派
+            </button>
+          </li>
+          <li>
+            <!-- 领域线和流派是**两个正交的维度**：AlexNet 在主张这一维属于连接主义、
+                 在领域这一维属于 CV。所以是两档泳道，不是一档里的两种颜色。 -->
+            <button class="tl-btn" :class="{ on: selected.includes(BY_DOMAIN) }"
+                    title="按任务领域分泳道（NLP / CV / ASR）；Transformer 之后三条线会在同一年出现同一个点"
+                    @click="emit('toggle', BY_DOMAIN)">
+              <Icon :name="selected.includes(BY_DOMAIN) ? 'check' : 'timeline'" :size="14" />
+              按领域线
             </button>
           </li>
           <li v-if="options.length" class="tl-sub">按分组（选一层当泳道）</li>

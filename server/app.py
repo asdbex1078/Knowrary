@@ -232,7 +232,23 @@ def get_schools() -> dict:
     各写一遍，迟早对不上——和工具表/白名单必须同一份数据是同一个道理。
     """
     vault = vault_path()
-    return {"schools": core.schools(current_index(vault))}
+    index = current_index(vault)
+    # `homes` 只覆盖跨多条线的那几个点：它们的真身画在哪条道上是个历史事实，
+    # 推不出来，按 md 里 `- 属于::` 的书写顺序定（见 core.line_homes）。
+    return {"schools": core.schools(index), "homes": core.line_homes(vault, index)}
+
+
+@app.get("/api/schools/{kind}")
+def get_schools_of_kind(kind: str) -> dict:
+    """只要某一种线（`流派` / `领域线`）。
+
+    **两者分档不是洁癖**：流派之间是竞争（互斥的世界观），领域线之间是并列；
+    混在一档里，「这个点同时属于两条线」的含义就跟着混了——
+    前者重叠是件值得盯着看的事，后者是日常。
+    """
+    if kind not in core.LINE_TYPES:
+        raise HTTPException(status_code=404, detail=f"没有 `{kind}` 这种线，只有：{core.LINE_TYPES}")
+    return {"schools": core.schools(current_index(vault_path()), kind)}
 
 
 @app.get("/api/compare/{group_id}")

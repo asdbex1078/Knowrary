@@ -1343,6 +1343,40 @@ def digest_孤点只算已经建出来的():
 
 
 @case
+def 跨多条线的点_主道按md书写顺序而不是算出来():
+    """**「它出生在哪条线」是历史事实，推不出来。**
+
+    Transformer 属于 NLP / CV / ASR 三条线，出生在 NLP。试过两种算法都判错：
+    按「线开得最早」判给 ASR（那条 1952 年就起步），
+    按「在这条线里排第几」也判给 ASR（那条成员少、它排第 2）。
+
+    主道决定真身画在哪，而**边只连真身** —— 判错的话，`ViT 源自 Transformer`
+    这些箭头会汇聚到一条它没出生在那儿的道上，读出来就是「语音发明了 Transformer」。
+    所以口径和对比组行序一致：**md 里第一条 `属于` 就是主道**，想换去挪那两行。
+    """
+    def line(nid, start, members):
+        rels = "".join(f"- 包含:: [[{m}]]\n" for m in members)
+        return (f"---\nname: {nid}\nfield: AI\ntype: 领域线\nstart_year: {start}\n"
+                f"desc: {nid}\n---\n# {nid}\n\n## 关系\n{rels}")
+    vault = make_vault({
+        # 早线只有两个成员、而且开得更早 —— 两种算法都会把 T 判给它
+        "fields/领域线/早线.md": line("早线", 1950, ["老点"]),
+        "fields/领域线/晚线.md": line("晚线", 1990, ["甲", "乙"]),
+        "nodes/AI/老点.md": node_md("老点", field="AI", extra="year: 1960\n"),
+        "nodes/AI/甲.md": node_md("甲", field="AI", extra="year: 1995\n"),
+        "nodes/AI/乙.md": node_md("乙", field="AI", extra="year: 2000\n"),
+        # T 的 md 里**先写晚线** = 它出生在晚线
+        "nodes/AI/T.md": node_md("T", field="AI", extra="year: 2017\n",
+                                 rels="- 属于:: [[晚线]]\n- 属于:: [[早线]]\n"),
+    })
+    index = core.build_index(vault).data
+    homes = core.line_homes(vault, index)
+    assert homes.get("T") == "晚线", homes
+    # 只属于一条线的不进 homes：没有歧义就别读盘
+    assert "老点" not in homes and "甲" not in homes, homes
+
+
+@case
 def 修订是唯一新指向旧的演化边_不该报倒挂():
     """**误报比不报更糟**：报几次之后人就开始无视这条诊断，真倒挂那次也跟着被无视。
 

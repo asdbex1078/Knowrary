@@ -13,7 +13,8 @@
 import assert from 'node:assert/strict'
 import { blankMenu, buildMenu, edgeMenu, groupMenu, nodeMenu } from '../src/canvas/menus.js'
 import { ancestors, computeCollapsed } from '../src/canvas/lod.js'
-import { timelineOptions, bandCurve, buildTimeline, BY_SCHOOL } from '../src/canvas/timeline.js'
+import { timelineOptions, bandCurve, buildTimeline, BY_SCHOOL, BY_DOMAIN }
+  from '../src/canvas/timeline.js'
 import { level, weekColumns } from '../src/panels/heat.js'
 import { localISO, todayISO } from '../src/today.js'
 
@@ -250,8 +251,8 @@ test('流派分道：出现早的在上面，未归派垫底', () => {
     { id: '辛', name: '辛', year: 2000 },
   ], edges: [] }
   const schools = [
-    { id: '老派', name: '老派', start: 1985, end: 2000, members: ['甲'], curve: [], peak: 0 },
-    { id: '新派', name: '新派', start: 2005, open: true, members: ['丙'], curve: [], peak: 0 },
+    { id: '老派', kind: '流派', name: '老派', start: 1985, end: 2000, members: ['甲'], curve: [], peak: 0 },
+    { id: '新派', kind: '流派', name: '新派', start: 2005, open: true, members: ['丙'], curve: [], peak: 0 },
   ]
   const plan = buildTimeline(index, { nodes: {}, groups: {} }, { timelines: [BY_SCHOOL], schools })
   assert.deepEqual(plan.lanes.map((l) => l.name), ['老派', '新派', '未归派'],
@@ -263,8 +264,8 @@ test('流派分道：出现早的在上面，未归派垫底', () => {
 test('流派分道：跨两派的点每道一份，第二份是影子', () => {
   const index = { nodes: [{ id: '现代Intel', name: '现代Intel', year: 1995 }], edges: [] }
   const schools = [
-    { id: 'CISC', name: 'CISC', start: 1964, open: true, members: ['现代Intel'], curve: [], peak: 0 },
-    { id: 'RISC', name: 'RISC', start: 1980, open: true, members: ['现代Intel'], curve: [], peak: 0 },
+    { id: 'CISC', kind: '流派', name: 'CISC', start: 1964, open: true, members: ['现代Intel'], curve: [], peak: 0 },
+    { id: 'RISC', kind: '流派', name: 'RISC', start: 1980, open: true, members: ['现代Intel'], curve: [], peak: 0 },
   ]
   const plan = buildTimeline(index, { nodes: {}, groups: {} }, { timelines: [BY_SCHOOL], schools })
   // 前端 CISC 指令集、后端拆成 RISC 式 μops —— 它真的同时属于两派。
@@ -305,6 +306,48 @@ test('流派走势：道的高度变了，曲线跟着缩放', () => {
   }
   assert.ok(span(80) > span(40) * 1.5, `道高翻倍，跨度也该翻倍：${span(80)} vs ${span(40)}`)
   assert.deepEqual(bandCurve(s, scale, 1, 2000, 0), [], '高度为 0 就别画')
+})
+
+test('流派和领域线是两个正交的维度，同一个点归属不同', () => {
+  // AlexNet 在「主张」这一维属于连接主义，在「领域」这一维属于 CV。
+  // 混成一档的话它会和两者排在同一列里 —— 而那是两件不同的事。
+  const index = { nodes: [{ id: 'AlexNet', name: 'AlexNet', year: 2012 }], edges: [] }
+  const lines = [
+    { id: '连接主义', kind: '流派', name: '连接主义', start: 1943, open: true,
+      members: ['AlexNet'], curve: [], peak: 0 },
+    { id: 'CV', kind: '领域线', name: 'CV', start: 1960, open: true,
+      members: ['AlexNet'], curve: [], peak: 0 },
+  ]
+  const lane = (mode) => buildTimeline(index, { nodes: {}, groups: {} },
+                                       { timelines: [mode], schools: lines }).lanes.map((l) => l.name)
+  assert.deepEqual(lane(BY_SCHOOL), ['连接主义'], '按流派只看流派')
+  assert.deepEqual(lane(BY_DOMAIN), ['CV'], '按领域线只看领域线')
+})
+
+test('线只筛当档那一种，另一种不该冒出来当泳道', () => {
+  // 少了 kind 过滤的话，「按流派」会把 NLP / CV / ASR 也铺成道 —— 不报错，只是读不懂
+  const index = { nodes: [{ id: 'x', name: 'x', year: 2000 }], edges: [] }
+  const lines = [{ id: 'NLP', kind: '领域线', name: 'NLP', start: 1950, open: true,
+                   members: ['x'], curve: [], peak: 0 }]
+  const plan = buildTimeline(index, { nodes: {}, groups: {} },
+                             { timelines: [BY_SCHOOL], schools: lines })
+  assert.deepEqual(plan.lanes.map((l) => l.name), ['未归派'],
+                   '按流派时，只属于领域线的点落「未归派」')
+})
+
+test('跨多条线的点：真身落在声明的主道上，影子在别的道', () => {
+  // 边只连真身，所以主道选错会让「源自 X」的箭头汇聚到错的道上
+  const index = { nodes: [{ id: 'T', name: 'T', year: 2017 }], edges: [] }
+  const lines = [
+    { id: '早线', kind: '领域线', name: '早线', start: 1950, open: true, members: ['T'], curve: [], peak: 0 },
+    { id: '晚线', kind: '领域线', name: '晚线', start: 1990, open: true, members: ['T'], curve: [], peak: 0 },
+  ]
+  const plan = buildTimeline(index, { nodes: {}, groups: {} },
+                             { timelines: [BY_DOMAIN], schools: lines, homes: { T: '晚线' } })
+  assert.equal(plan.placed.get('T').lane, '晚线', '真身在声明的主道')
+  assert.equal(plan.placed.get('T@早线').lane, '早线', '另一条道上是影子')
+  assert.equal(plan.placed.get('T@早线').shadow, true)
+  assert.ok(!plan.placed.has('T@晚线'), '主道上不该再多一个影子')
 })
 
 // ---------------------------------------------------------------- 跑
