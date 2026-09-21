@@ -1343,6 +1343,25 @@ def digest_孤点只算已经建出来的():
 
 
 @case
+def 修订是唯一新指向旧的演化边_不该报倒挂():
+    """**误报比不报更糟**：报几次之后人就开始无视这条诊断，真倒挂那次也跟着被无视。
+
+    `A 修订 B` 的主语是修订者，它必然比被修订的那个晚（反向传播 1986 修订 Perceptrons 1969）。
+    演化族其余几个（演化为 / 扩展为 / 源自 / 被激活）都是旧→新，只有它反着来。
+    """
+    vault = make_vault({
+        "nodes/x/新.md": node_md("新", extra="year: 1986\n", rels="- 修订:: [[旧]]\n"),
+        "nodes/x/旧.md": node_md("旧", extra="year: 1969\n"),
+        # 真倒挂的那种还要照报：演化为是旧→新，反着写就是错
+        "nodes/x/甲.md": node_md("甲", extra="year: 2020\n", rels="- 演化为:: [[乙]]\n"),
+        "nodes/x/乙.md": node_md("乙", extra="year: 2000\n"),
+    })
+    warns = [w for w in core.build_index(vault).data["warnings"] if w["code"] == "year_inverted"]
+    assert len(warns) == 1, [w["message"] for w in warns]
+    assert "甲" in warns[0]["message"], warns[0]["message"]
+
+
+@case
 def 流派是聚合文档但照常要背():
     """**`aggregate` 原来管了两件事：不催你补完整、不考它。流派只该跳过前一件。**
 

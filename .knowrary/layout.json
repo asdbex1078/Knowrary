@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
-  "revision": 158,
-  "updated_at": "2026-09-21T03:35:43Z",
+  "revision": 159,
+  "updated_at": "2026-09-21T03:43:28Z",
   "viewport": {
     "zoom": 0.4,
     "cx": 1459.0,
@@ -1309,6 +1309,26 @@
       "state": "final",
       "placedAt": "2026-09-21",
       "anchor": "专家系统"
+    },
+    "AlexNet": {
+      "x": 402.0,
+      "y": 492.0,
+      "w": 196.0,
+      "h": 64.0,
+      "group": "g-AI--理论",
+      "state": "final",
+      "placedAt": "2026-09-21",
+      "anchor": "感知器"
+    },
+    "反向传播": {
+      "x": 735.0,
+      "y": 406.0,
+      "w": 196.0,
+      "h": 64.0,
+      "group": "g-AI--理论",
+      "state": "final",
+      "placedAt": "2026-09-21",
+      "anchor": "Perceptrons"
     }
   },
   "refs": [],

@@ -25,6 +25,9 @@ from .facts import (COMPARE_HEADING, FACTS_HEADING, FM_DIMENSIONS, bare_compare_
 from .parser import Node, is_aggregate, load_vault, validate_frontmatter, parse_params
 from .relations import NormalizedEdge, RelationTypes, load_relation_types, normalize_direction
 
+# 演化族里「源比目标晚」属于正常的那几个类型（见 _warn_year_inverted）。
+NEWER_FIRST = ("修订",)
+
 INDEX_SCHEMA_VERSION = 1
 NODE_FM_FIELDS = ("name", "field", "type", "status", "desc", "year", "start_year", "end_year",
                   "aliases", "tags", "learned", "source", "layer", "params", "dimensions", "color")
@@ -158,7 +161,12 @@ def _warn_year_conflicts(ctx: BuildContext) -> None:
         return y if isinstance(y, int) and not isinstance(y, bool) else None
 
     for edge in ctx.edges.values():
-        if edge.family != "演化":
+        # **演化族里只有 `修订` 是「新的指向旧的」**：`A 修订 B` 的主语是修订者，
+        # 它必然比被修订的那个晚（反向传播 1986 修订 Perceptrons 1969）。
+        # 其余几个（演化为 / 扩展为 / 源自归一后的演化为 / 被激活）都是旧→新。
+        # 一刀切按旧→新判的话，`修订` 每用一次报一次 —— 而**误报比不报更糟**：
+        # 报几次之后人就开始无视这条诊断，真的倒挂那次也跟着被无视了。
+        if edge.family != "演化" or edge.type in NEWER_FIRST:
             continue
         a, b = year_of(edge.source), year_of(edge.target)
         if a is None or b is None or a <= b:
