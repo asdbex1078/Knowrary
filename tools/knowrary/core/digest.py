@@ -295,6 +295,42 @@ def _top_group(gid: str | None, groups: dict) -> str | None:
     return None
 
 
+def squatted(layout: dict) -> list[dict]:
+    """**框压在别人家的点上。** 返回 {框, 压住了谁, 那些点属于谁}。
+
+    从一次真实的开道事故来：`AI/高级语言` 这条道是 `place/regroup --create-lane`
+    现开的，开道只管「往下长、别压到同级兄弟」，**没检查那块地是不是已经被
+    别的顶层域占了** —— 于是它落在 y 760~960，正好盖住 `计算机系统/理论` 里的
+    图灵机 / 数论 / 数字逻辑 / 二进制与香农定理 四个点。
+
+    症状很阴：框是空的（`place` 往里放东西时会避开那四个点，于是永远放不进去），
+    报出来的却是「这条道塞不下了」—— 人看到的是放不下，真相是这块地压根不是它的。
+
+    只报**跨顶层域**的压占：同一个域内部的框和点重叠通常是人手工拖出来的，那是布局风格。
+    """
+    groups = layout.get("groups", {})
+    def top_of(gid):
+        seen = set()
+        while gid in groups and groups[gid].get("parent") and gid not in seen:
+            seen.add(gid)
+            gid = groups[gid]["parent"]
+        return gid
+    out = []
+    for gid, box in sorted(groups.items()):
+        victims = []
+        for nid, n in sorted((layout.get("nodes") or {}).items()):
+            ngid = n.get("group")
+            if not ngid or ngid == gid or top_of(ngid) == top_of(gid):
+                continue
+            if (n["x"] < box["x"] + box["w"] and box["x"] < n["x"] + (n.get("w") or 0)
+                    and n["y"] < box["y"] + box["h"] and box["y"] < n["y"] + (n.get("h") or 0)):
+                victims.append({"id": nid, "group": groups.get(ngid, {}).get("name") or ngid})
+        if victims:
+            out.append({"group": gid, "group_name": box.get("name") or gid,
+                        "victims": victims[:MAX_ITEMS], "count": len(victims)})
+    return out[:MAX_ITEMS]
+
+
 def misplaced(index: dict, layout: dict) -> list[dict]:
     """`field` 和它在画布上所属的顶层域对不上的点。
 
@@ -308,6 +344,13 @@ def misplaced(index: dict, layout: dict) -> list[dict]:
 
     `want` 是它该去的那条道；`want_exists` 为假表示那条道还没建（`by_field_and_layer`
     找不到同名子框时会退回领域大框）。
+
+    **域和层两维都比。** 原来域对上就 `continue` 了，于是「域对了但躺错道」整类
+    看不见 —— 而分组 id 的生成规则本来就是 `g-<field>--<layer>`，两维都是机械可算的。
+    实盘上这么漏掉过 6 个：`AlexNet` / `ResNet` / `SIFT` / `word2vec` / `专家系统`
+    都是 `layer: AI应用`，却全躺在 `AI/理论` 里 —— 摆的时候那条道放不下，
+    `place` 退回了域大框，**而退回这件事没有任何地方会说**。
+    症状很轻（图还能看），但按层分泳道的历史视图会把它们排到错的那一行。
     """
     groups = layout.get("groups", {})
     by_id = {n["id"]: n for n in index["nodes"]}
@@ -318,7 +361,14 @@ def misplaced(index: dict, layout: dict) -> list[dict]:
         if not node or not gid or node.get("virtual") or not node.get("field"):
             continue
         top = _top_group(gid, groups)
-        if not top or top == node["field"]:
+        if not top:
+            continue
+        lane = groups.get(gid, {}).get("name") if groups.get(gid, {}).get("parent") else None
+        wrong_field = top != node["field"]
+        # 层不符只在「它确实有 layer、而且现在躺在某条道里」时才算：
+        # 躺在域大框里（没有 parent）是"还没归到任何一层"，那是另一回事。
+        wrong_layer = bool(node.get("layer") and lane and lane != node["layer"])
+        if not wrong_field and not wrong_layer:
             continue
         want = by_field_and_layer(node, layout)
         # 图上压根没有这个 field 的域 = 这张布局不是按 field 组织的（`layout init --by dir`
@@ -329,7 +379,12 @@ def misplaced(index: dict, layout: dict) -> list[dict]:
         # want 退回了领域大框 = 该去的那条泳道还不存在，挪过去之前得先建一条
         want_exists = bool(want and groups.get(want, {}).get("parent"))
         out.append({"id": nid, "field": node["field"], "layer": node.get("layer") or "",
-                    "group": gid, "group_name": _top_group(gid, groups),
+                    "group": gid,
+                    # 域不符时说顶层域，层不符时要说清是哪条道——否则「却摆在 AI」
+                    # 这句话对着一个 field 确实是 AI 的点，读起来像误报
+                    "group_name": _top_group(gid, groups) if wrong_field
+                                  else f"{top}/{lane}",
+                    "why": "域" if wrong_field else "层",
                     "want": want, "want_name": want_name, "want_exists": want_exists})
     return out[:MAX_ITEMS]
 
@@ -349,6 +404,7 @@ def build_digest(vault, index: dict, layout: dict, today: dt.date | None = None)
     batch_list = lonely_batches(index)
     no_year_list = no_year(index)
     misplaced_list = misplaced(index, layout)
+    squat_list = squatted(layout)
     # 年份可疑：演化边两端倒挂、或者年份落在未来。**它们是 index 算出来的结构性矛盾**，
     # 不依赖任何外部知识——口述一句"year 填 2017"没人能核，但"它比它的前身还早"能算。
     bad_years = [w["message"] for w in index.get("warnings", [])
@@ -367,6 +423,7 @@ def build_digest(vault, index: dict, layout: dict, today: dt.date | None = None)
         "lonely_batches": batch_list[:MAX_ITEMS],
         "no_year": no_year_list[:MAX_ITEMS],
         "misplaced": misplaced_list,
+        "squatted": squat_list,
         "duplicates": dup_list,
         "cycles": [w["message"] for w in cycles][:MAX_ITEMS],
         "bad_years": bad_years,
@@ -379,6 +436,7 @@ def build_digest(vault, index: dict, layout: dict, today: dt.date | None = None)
                    "lonely_batches": len(batch_list),
                    "no_year": len(no_year_list), "misplaced": len(misplaced_list),
                    "duplicates": len(dup_list), "cycles": len(cycles),
+                   "squatted": len(squat_list),
                    "bad_years": len(bad_years),
                    "compare_gaps": len(gap_list),
                    "issues": issues_summary(vault)["count"]},

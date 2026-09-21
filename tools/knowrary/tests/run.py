@@ -1577,6 +1577,67 @@ def digest_整批孤点要和散点分开报():
 
 
 @case
+def 框压在别人家的点上要报出来():
+    """**症状很阴：框是空的，报出来的却是「塞不下了」。**
+
+    实盘上撞过两次。一次是 `place/regroup --create-lane` 现开的 `AI/高级语言` 道
+    落在了 `计算机系统/理论` 那几个点头上 —— 往里放东西时 `place` 会避开那些点，
+    于是永远放不进去，而给人看的理由是「这条道塞不下了」。
+    另一次更大：`g-AI` 这个顶层框高 1652px，里面的内容只到 728，
+    **多出来 588px 的空框盖住了计算机系统 36 个点**。
+
+    只报跨顶层域的压占：同一个域内部框和点重叠通常是人手工拖出来的，那是布局风格。
+    """
+    layout = {"schema_version": 2, "revision": 1, "groups": {
+        "g-甲": {"name": "甲", "x": 0, "y": 0, "w": 400, "h": 600, "parent": None},
+        "g-甲--子": {"name": "甲子", "x": 20, "y": 20, "w": 200, "h": 100, "parent": "g-甲"},
+        "g-乙": {"name": "乙", "x": 0, "y": 500, "w": 400, "h": 300, "parent": None},
+    }, "nodes": {
+        # 乙 家的点，但落在 g-甲 那个过高的框里（y 500~600 那段重叠）
+        "乙点": {"x": 40, "y": 520, "w": 196, "h": 64, "group": "g-乙"},
+        # 甲 自己的点压在自己的框上：同域，不该报
+        "甲点": {"x": 30, "y": 30, "w": 196, "h": 64, "group": "g-甲--子"},
+    }}
+    got = core.squatted(layout)
+    assert [s["group"] for s in got] == ["g-甲"], got
+    assert [v["id"] for v in got[0]["victims"]] == ["乙点"], got[0]
+    # 框收到内容高度之后就不该再报
+    layout["groups"]["g-甲"]["h"] = 200
+    assert core.squatted(layout) == [], core.squatted(layout)
+
+
+@case
+def 域对了但躺错道也算摆错():
+    """**原来域对上就 `continue` 了，于是「域对了但躺错道」整类看不见。**
+
+    分组 id 的生成规则是 `g-<field>--<layer>`，两维都是机械可算的，没理由只比一维。
+    实盘上这么漏掉过 6 个：AlexNet / ResNet / SIFT / word2vec / 专家系统 都是
+    `layer: AI应用`，却全躺在 `AI/理论` 里 —— 摆的时候那条道放不下、`place` 退回了
+    域大框，**而退回这件事没有任何地方会说**。
+    """
+    vault = make_vault({
+        "nodes/x/甲.md": node_md("甲", field="测试", extra="layer: 理论\n"),
+        "nodes/x/乙.md": node_md("乙", field="测试", extra="layer: AI应用\n"),
+    })
+    index = core.build_index(vault).data
+    layout = {"schema_version": 2, "revision": 1, "groups": {
+        "g-测试": {"name": "测试", "x": 0, "y": 0, "w": 800, "h": 400, "parent": None},
+        "g-测试--理论": {"name": "理论", "x": 20, "y": 40, "w": 300, "h": 160, "parent": "g-测试"},
+        "g-测试--AI应用": {"name": "AI应用", "x": 340, "y": 40, "w": 300, "h": 160,
+                          "parent": "g-测试"},
+    }, "nodes": {
+        "甲": {"x": 40, "y": 80, "w": 196, "h": 64, "group": "g-测试--理论"},
+        "乙": {"x": 60, "y": 120, "w": 196, "h": 64, "group": "g-测试--理论"},   # 该在 AI应用
+    }}
+    got = core.misplaced(index, layout)
+    assert [m["id"] for m in got] == ["乙"], got
+    assert got[0]["why"] == "层" and got[0]["want_name"] == "AI应用", got[0]
+    # 域不符那一路不能被带坏
+    layout["nodes"]["甲"]["group"] = "g-测试--理论"
+    assert [m["id"] for m in core.misplaced(index, layout)] == ["乙"]
+
+
+@case
 def 跨抽象层的字面相似既不是包含也不是重复():
     """**名字越像，层次可能差得越远** —— 中文复合词共享中心语的毛病在跨层时最狠。
 

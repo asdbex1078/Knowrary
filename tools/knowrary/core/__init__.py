@@ -6,7 +6,8 @@ from .diagnostics import Diagnostic, Diagnostics
 from .coach import build_today, current_stage, project_lines
 from .calendar import MAX_DAYS as CALENDAR_MAX_DAYS, build_calendar, streak
 from .digest import (build_digest, duplicates, group_labels, kinship, link_hints, lonely,
-                     lonely_batches, misplaced, no_year)
+                     lonely_batches, misplaced, no_year,
+                     squatted)
 from .cards import (KINDS as CARD_KINDS, applied as card_applied, cards_path, load as load_cards,
                     new_card_id, proposed as card_proposed, stats as card_stats)
 from .issues import (issues_path, load as load_issues, record as record_issue,
@@ -56,7 +57,7 @@ from .schema import validate_index
 __all__ = [
     "ChangeRejected", "Diagnostic", "Diagnostics", "Edge", "FileEdit", "INDEX_SCHEMA_VERSION",
     "DEFAULT_LOAD", "GRADES", "ID_OK", "KINDS", "LAYERS", "UNLAYERED", "exam_state", "states_of", "study_state", "LOADS", "LOAD_HOURS", "MASTERY_ORDER", "all_progress",
-    "all_schedules", "as_date", "ascii_id", "CALENDAR_MAX_DAYS", "append_answers", "build_calendar", "issues_path", "load_issues", "record_issue", "issues_summary", "build_digest", "duplicates", "group_labels", "kinship", "link_hints", "lonely", "lonely_batches", "growth_blocker", "SCHOOL_TYPE", "DOMAIN_TYPE", "LINE_TYPES", "schools", "school_of", "line_homes", "misplaced", "no_year", "streak", "build_today",
+    "all_schedules", "as_date", "ascii_id", "CALENDAR_MAX_DAYS", "append_answers", "build_calendar", "issues_path", "load_issues", "record_issue", "issues_summary", "build_digest", "duplicates", "group_labels", "kinship", "link_hints", "lonely", "lonely_batches", "growth_blocker", "SCHOOL_TYPE", "DOMAIN_TYPE", "LINE_TYPES", "schools", "school_of", "line_homes", "misplaced", "no_year", "squatted", "streak", "build_today",
     "current_stage", "done_ids", "project_lines", "due_nodes", "legacy_plans_path", "list_field", "lists_of",
     "empty_projects", "inbox_ids", "load_log", "load_projects", "load_quiz_log", "mastery_of",
     "merge_progress", "next_due_for", "place_node", "place_or_grow", "plan_growth",

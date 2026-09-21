@@ -390,7 +390,7 @@ def cmd_digest(args: argparse.Namespace) -> None:
           f"（放久了 {c['stale_drafts']}），待复习 {c['due']}，stub {c['stubs']}，"
           f"跨分组桥 {c['bridges']}，孤点 {c['lonely']}（整批 {c['lonely_batches']}），"
           f"缺 year {c['no_year']}，连边建议 {c['links']}，"
-          f"重复候选 {c['duplicates']}，域不符 {c['misplaced']}，方向矛盾 {c['cycles']}")
+          f"重复候选 {c['duplicates']}，域/层不符 {c['misplaced']}，框压人 {c['squatted']}，方向矛盾 {c['cycles']}")
     n = args.top
     for nid in d["inbox"][:n]:
         print(f"  · Inbox：{nid}")
@@ -412,10 +412,19 @@ def cmd_digest(args: argparse.Namespace) -> None:
     for h in d["links"][:n]:
         alone = "（两端都还是孤点）" if h["lonely"] == 2 else "（有一端是孤点）" if h["lonely"] else ""
         print(f"  · 连边建议：{h['source']} {h['relation']} → {h['target']}{alone} — {h['reason']}")
+    for sq in d["squatted"][:n]:
+        who = "、".join(f"{v['id']}（{v['group']}）" for v in sq["victims"][:3])
+        print(f"  ⚠ 框压人：「{sq['group_name']}」这个框盖住了别的域的 {sq['count']} 个点：{who}"
+              f"{' …' if sq['count'] > 3 else ''} —— 它往里放东西时会避开这些点，"
+              f"于是永远放不进去，报出来却是「塞不下了」")
     for m in d["misplaced"][:n]:
         lane = f"{m['field']}/{m['layer']}" if m["layer"] else m["field"]
         tail = "（那条道还没建）" if not m["want_exists"] else ""
-        print(f"  · 域不符：{m['id']} field={m['field']}，却摆在 {m['group_name']} — 该去 {lane}{tail}")
+        # 域不符和层不符要分开说：一个是「归错了领域」，一个是「领域对但躺错了道」，
+        # 前者多半是改过 field 没挪画布，后者多半是摆的时候那条道放不下退回了大框
+        what = "域不符" if m.get("why") == "域" else "层不符"
+        key = f"field={m['field']}" if m.get("why") == "域" else f"layer={m['layer']}"
+        print(f"  · {what}：{m['id']} {key}，却摆在 {m['group_name']} — 该去 {lane}{tail}")
     for x in d["duplicates"][:n]:
         print(f"  · 重复候选：{x['a']} / {x['b']} — {x['reason']}")
     for msg in d["cycles"][:n]:
