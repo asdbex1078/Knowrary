@@ -17,7 +17,10 @@ description: 把一篇文章 / 一段笔记 / 一次学习心得拆成知识节�
 - 迁移/校验脚本：`/Users/moka/IdeaProjects/Knowrary/tools/knowrary/knowrary.py`
 - 规范原文：`/Users/moka/IdeaProjects/Knowrary/doc/规范文档/Markdown文档规范.md`
 - 提示词全文（拆分原则与输出 JSON 结构）：`/Users/moka/IdeaProjects/Knowrary/tools/knowrary/prompts/article.md`
-- 默认 vault：仓库根目录 `/Users/moka/IdeaProjects/Knowrary`（节点在 `nodes/`，领域总览在 `fields/`；解析器只扫这两个目录，`doc/ harness/ llm/` 里的 md 不是节点）
+- 默认 vault：**不再是仓库根目录**（2026-09-22 程序与知识库拆分）。不写 `--vault` 时，脚本自己
+  按「环境变量 `KNOWRARY_VAULT` → 设置页选中的库（`~/.knowrary/config.json` 的 `current`）」解析；
+  用户那份是 `/Users/moka/IdeaProjects/HunDun`。节点在 `nodes/`，领域总览在 `fields/`，
+  解析器只扫这两个目录。**拿不准就先跑一句 `knowrary.py check` 看它认的是哪个库**，别猜
 
 ## 流程
 

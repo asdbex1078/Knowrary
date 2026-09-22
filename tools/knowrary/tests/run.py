@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 import tempfile
 import traceback
@@ -24,7 +25,10 @@ sys.path.insert(0, str(HERE.parent))
 import core  # noqa: E402  （必须先注入 sys.path）
 
 REPO = HERE.parent.parent.parent
-TYPES_TABLE = REPO / "relation-types.json"
+
+# 用户级配置（复习开关等）钉到临时目录：自测不许碰开发者自己的 ~/.knowrary
+os.environ["KNOWRARY_HOME"] = tempfile.mkdtemp(prefix="knowrary-coretest-home-")
+TYPES_TABLE = REPO / "seed" / "relation-types.json"
 CASES: list = []
 _TMPDIRS: list[tempfile.TemporaryDirectory] = []
 
@@ -888,7 +892,7 @@ def v1的plans读成v2的projects且读不写盘():
 def llm配置里的注释键不算条目():
     """模板 llm.example.json 的 roles 段里就带着 `_说明`，照抄它必须能用。"""
     import llm_backend
-    repo_example = REPO / ".knowrary" / "llm.example.json"
+    repo_example = REPO / "seed" / "user" / "llm.example.json"
     cfg = json.loads(repo_example.read_text(encoding="utf-8"))
     llm_backend.validate_config(cfg, repo_example)          # 以前这里会抛「角色 _说明 指向不存在的 provider」
     name, provider = llm_backend.resolve_provider(cfg, "learn")
@@ -972,19 +976,19 @@ def 关掉复习是收走工具而不是嘱咐一句():
 
     vault = make_vault({"nodes/a.md": node_md("A")})
     (vault / "relation-types.json").write_text(
-        (Path(__file__).resolve().parents[3] / "relation-types.json").read_text("utf-8"), "utf-8")
+        (Path(__file__).resolve().parents[3] / "seed" / "relation-types.json").read_text("utf-8"), "utf-8")
 
     on = chat._system_prompt(vault, "教练", None)
     assert "quiz" in chat.tools_of("教练", vault), chat.tools_of("教练", vault)
     assert "每次开场先看一眼" in on and "按这些节点出题考我" in on, "默认该是全开的"
 
     # 先只关「教练会考我」那一档：聊天里该收手的全收手，但今日面板那一侧不归它管
-    core.save_settings(vault, {"review_in_chat": False})
+    core.save_settings({"review_in_chat": False})
     only_chat = chat._system_prompt(vault, "教练", None)
     assert "quiz" not in chat.tools_of("教练", vault)
     assert "复习本身还开着" in only_chat, "只关这一档时不该说成整套关了"
 
-    core.save_settings(vault, {"review_enabled": False})
+    core.save_settings({"review_enabled": False})
     off = chat._system_prompt(vault, "教练", None)
     tools = chat.tools_of("教练", vault)
     # 能力层：工具真的没了（说明书从白名单渲染，所以说明书上也不会有）
@@ -1000,11 +1004,11 @@ def 关掉复习是收走工具而不是嘱咐一句():
     assert "不要出" not in off and "不要主动" not in off, "又写回禁令了"
 
     # 设置本身：默认全开、坏文件回落默认、只认登记过的键
-    assert core.load_settings(vault)["review_enabled"] is False
-    core.settings.settings_path(vault).write_text("{ 这不是 json", encoding="utf-8")
-    assert core.load_settings(vault) == core.settings.empty_settings(), "坏掉的设置文件该回落默认"
-    core.save_settings(vault, {"乱写的键": True, "review_brief": False})
-    got = core.load_settings(vault)
+    assert core.load_settings()["review_enabled"] is False
+    core.settings.settings_path().write_text("{ 这不是 json", encoding="utf-8")
+    assert core.load_settings() == core.settings.empty_settings(), "坏掉的设置文件该回落默认"
+    core.save_settings({"乱写的键": True, "review_brief": False})
+    got = core.load_settings()
     assert "乱写的键" not in got and got["review_brief"] is False, got
 
 

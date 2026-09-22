@@ -1,7 +1,8 @@
 <script setup>
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, shallowRef, watch } from 'vue'
 import {
-  fetchSettings, putSettings, fetchLLMConfig, putLLMConfig, testLLMConfig as postLLMConfigTest, fetchCalendar, fetchCompareGroups, fetchCompareTable, postCompareFill, fetchDigest, postSyncToGlobal, fetchDue, fetchProjects, putProjects, postPlanPropose, fetchToday, fetchUsage, postMerge, postRename, postQuiz, postQuizDiagnose, postQuizGrade, fetchOpenQuiz, dropOpenQuiz, postRegroup, fetchIndex, fetchInbox, fetchLayout, fetchNode,
+  fetchSettings, putSettings, fetchLLMConfig, putLLMConfig, testLLMConfig as postLLMConfigTest,
+  fetchVault, browseVault, initVault, putVault, forgetVault, fetchCalendar, fetchCompareGroups, fetchCompareTable, postCompareFill, fetchDigest, postSyncToGlobal, fetchDue, fetchProjects, putProjects, postPlanPropose, fetchToday, fetchUsage, postMerge, postRename, postQuiz, postQuizDiagnose, postQuizGrade, fetchOpenQuiz, dropOpenQuiz, postRegroup, fetchIndex, fetchInbox, fetchLayout, fetchNode,
   patchLayout, postChanges, postPlace, postReview, postSuggest, postSummarize, postYearsPropose,
 } from './api.js'
 import AppHeader from './components/AppHeader.vue'
@@ -224,6 +225,7 @@ const settings = ref({ review_enabled: true, review_in_chat: true, review_brief:
                        review_marks: true })
 const settingsOn = ref(false)
 const llmConfig = ref(null)
+const vault = ref(null)
 const llmSaving = ref(false)
 const reviewOn = computed(() => !!settings.value.review_enabled)
 const reviewMarks = computed(() => reviewOn.value && settings.value.review_marks !== false)
@@ -3059,7 +3061,25 @@ async function testLLMConfig(provider) {
 
 async function openSettings() {
   settingsOn.value = true
-  await loadLLMConfig()
+  await Promise.all([loadLLMConfig(), loadVault()])
+}
+
+async function loadVault() {
+  try { vault.value = await fetchVault() } catch (err) {
+    setBanner(`知识库列表读取失败：${err.message}`, 'error')
+  }
+}
+
+/** 切库 / 初始化。**成功后整页重载**：图、项目、对话、索引 revision 全是库作用域的，
+ *  留着旧状态继续跑，下一次写回就会打到新库上。重载是这里唯一诚实的做法。 */
+async function switchVault(action, path, sample) {
+  vault.value = await action(path, sample)
+  location.reload()
+}
+
+async function forgetVaultEntry(path) {
+  vault.value = await forgetVault(path)
+  return vault.value
 }
 
 /** 改设置：先落盘再按新值刷新受影响的东西。
@@ -3258,6 +3278,10 @@ onBeforeUnmount(() => {
     <div class="workbench">
       <SettingsDialog v-if="settingsOn" :settings="settings" :llm-config="llmConfig" :llm-saving="llmSaving" :save-llm="saveLLMConfig" :test-llm="testLLMConfig" :snap="snap" :avoid-nodes="avoidNodes"
                       :auto-lod="autoLod" :aggregate="aggregate" :show-map="showMap" :theme="theme"
+                      :vault="vault" :browse-vault="browseVault"
+                      :pick-vault="(p) => switchVault(putVault, p)"
+                      :start-vault="(p, sample) => switchVault(initVault, p, sample)"
+                      :forget-vault="forgetVaultEntry"
                       @close="settingsOn = false" @set="saveSettings"
                       @toggle-snap="toggleSnap" @toggle-avoid="toggleAvoid" @toggle-map="toggleMap"
                       @toggle-lod="autoLod = !autoLod; render()"

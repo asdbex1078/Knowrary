@@ -241,7 +241,7 @@ def coach_today(vault: Path, project: str | None = None) -> CoachToday:
     index, layout = load_pair(vault)
     today = core.build_today(vault, index, layout.model_dump(),
                              core.load_projects(vault), project=project)
-    if not core.review_on(vault):
+    if not core.review_on():
         today["items"] = [it for it in today["items"] if it.get("kind") not in REVIEW_KINDS]
         counts = dict(today.get("counts") or {})
         for kind in REVIEW_KINDS:

@@ -1,18 +1,19 @@
-"""偏好设置（`.knowrary/settings.json`）：**会改变程序行为、而且后端也要读的那些开关**。
+"""偏好设置（`~/.knowrary/settings.json`）：**会改变程序行为、而且后端也要读的那些开关**。
 
 和 localStorage 的分界是故意的：「这台机器上怎么看图」（主题、对齐吸附、小地图、周边一跳）
 留在浏览器里，换台机器本来就该各看各的；而「复习和出题要不要出现」得后端也知道——
 教练的系统提示词是服务端拼的，开关只存在浏览器里的话，界面安静了，教练照样每轮
-开场看 today、结尾出 check 题。所以它跟着 vault 走。
+开场看 today、结尾出 check 题。
 
-它和 md / index / layout / review / pending 并列，是第六份契约。**只存开关，不存数据**：
-复习记录照常积累在 review-log 里，关掉的只是"要不要拿它来烦人"。
+**2026-09-22 从库里挪到了用户级**：一个人有好几个库（自己的、参考的、示例的），
+"别在聊天里考我"这种偏好不该换个库就得重设一遍，更不该跟着参考库进别人的仓库。
+**只存开关，不存数据**：复习记录照常积累在各个库的 review-log 里，关掉的只是"要不要拿它来烦人"。
 """
 from __future__ import annotations
 
 from pathlib import Path
 
-from .mdio import load_json, write_json_atomic
+from .mdio import load_json, user_dir, write_json_atomic
 
 SCHEMA_VERSION = 1
 
@@ -26,18 +27,18 @@ DEFAULTS = {
 }
 
 
-def settings_path(vault: Path) -> Path:
-    return vault / ".knowrary" / "settings.json"
+def settings_path() -> Path:
+    return user_dir() / "settings.json"
 
 
 def empty_settings() -> dict:
     return {"schema_version": SCHEMA_VERSION, **DEFAULTS}
 
 
-def load_settings(vault: Path) -> dict:
+def load_settings() -> dict:
     """读设置。文件不在、读坏了、字段缺了，一律回落到默认——
     **设置文件坏掉不该让整个库打不开**，最差也就是回到全开的初始体验。"""
-    path = settings_path(vault)
+    path = settings_path()
     if not path.exists():
         return empty_settings()
     try:
@@ -53,23 +54,23 @@ def load_settings(vault: Path) -> dict:
     return out
 
 
-def save_settings(vault: Path, patch: dict) -> dict:
+def save_settings(patch: dict) -> dict:
     """合并写回：只认 DEFAULTS 里登记过的键，别的静默忽略（前端加字段忘了加默认值时，
     让它明确地不生效，而不是悄悄存进一份谁也不认的文件）。"""
-    doc = load_settings(vault)
+    doc = load_settings()
     for key, value in (patch or {}).items():
         if key in DEFAULTS and isinstance(value, bool):
             doc[key] = value
-    write_json_atomic(settings_path(vault), doc)
+    write_json_atomic(settings_path(), doc)
     return doc
 
 
-def review_on(vault: Path) -> bool:
+def review_on() -> bool:
     """复习这一整套现在该不该出现。总闸关了，下面几个子开关一律当关。"""
-    return bool(load_settings(vault).get("review_enabled"))
+    return bool(load_settings().get("review_enabled"))
 
 
-def review_in_chat(vault: Path) -> bool:
+def review_in_chat() -> bool:
     """**教练那一侧**该不该出题、催进度。
 
     为什么要和总闸分开：这两件事原来是一个开关，于是"别在聊天里考我"只能靠关总闸达成，
@@ -77,5 +78,5 @@ def review_in_chat(vault: Path) -> bool:
     （2026-09-19 复盘核出来的：设置在 09-18 21:15 关掉，此后今日面板就没有复习区了）。
     现在总闸只管"这套功能在不在"，聊天里考不考是它下面的一档。
     """
-    doc = load_settings(vault)
+    doc = load_settings()
     return bool(doc.get("review_enabled")) and bool(doc.get("review_in_chat"))

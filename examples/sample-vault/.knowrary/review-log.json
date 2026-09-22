@@ -1,0 +1,66 @@
+{
+  "schema_version": 2,
+  "updated_at": "2026-09-22T08:57:21Z",
+  "nodes": {
+    "tcp": {
+      "reviews": [
+        {
+          "date": "2026-09-02",
+          "grade": "记得"
+        },
+        {
+          "date": "2026-09-08",
+          "grade": "记得"
+        },
+        {
+          "date": "2026-09-21",
+          "grade": "记得"
+        }
+      ],
+      "step": 3,
+      "lapses": 0,
+      "next_due": "2026-09-25"
+    },
+    "udp": {
+      "reviews": [
+        {
+          "date": "2026-09-10",
+          "grade": "记得"
+        },
+        {
+          "date": "2026-09-20",
+          "grade": "记得"
+        }
+      ],
+      "step": 2,
+      "lapses": 0,
+      "next_due": "2026-09-22"
+    },
+    "http-1-1": {
+      "reviews": [
+        {
+          "date": "2026-09-13",
+          "grade": "记得"
+        },
+        {
+          "date": "2026-09-19",
+          "grade": "忘了"
+        }
+      ],
+      "step": 0,
+      "lapses": 1,
+      "next_due": "2026-09-20"
+    },
+    "http": {
+      "reviews": [
+        {
+          "date": "2026-09-20",
+          "grade": "记得"
+        }
+      ],
+      "step": 1,
+      "lapses": 0,
+      "next_due": "2026-09-21"
+    }
+  }
+}

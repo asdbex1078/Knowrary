@@ -916,6 +916,43 @@ class SettingsPatch(Strict):
     review_marks: bool | None = None
 
 
+class VaultEntry(Strict):
+    """一个候选知识库目录。`status` 决定界面上那一行能点什么。"""
+
+    path: str
+    name: str
+    status: Literal["vault", "empty", "occupied", "program", "missing"]
+
+
+class VaultRead(Strict):
+    """「设置 → 知识库」要的全部（用户级配置 `~/.knowrary/config.json`，不在任何 vault 里）。
+
+    `pinned` 是"当前库被环境变量 `KNOWRARY_VAULT` 钉住了"——此时界面上切库不会生效，
+    得让人知道，否则点了没反应只会以为坏了。
+    """
+
+    current: VaultEntry | None = None
+    recent: list[VaultEntry] = Field(default_factory=list)
+    root: str
+    pinned: bool = False
+
+
+class VaultBrowse(Strict):
+    """目录选择器的一页：当前在哪、能不能往上走、下面有哪些子目录。"""
+
+    path: str
+    parent: str | None = None
+    root: str
+    roots: list[VaultEntry] = Field(default_factory=list)   # 可以一键跳过去的落脚点
+    status: Literal["vault", "empty", "occupied", "program", "missing"]
+    entries: list[VaultEntry] = Field(default_factory=list)
+
+
+class VaultPick(Strict):
+    path: str
+    sample: bool = False               # 初始化时顺带铺一份示例内容（examples/sample-vault）
+
+
 class LLMProviderRead(Strict):
     """脱敏后的模型 provider；真实 api_key 永远不从服务端返回。"""
 
@@ -929,6 +966,8 @@ class LLMProviderRead(Strict):
 
 
 class LLMConfigRead(Strict):
+    # 模型配置只有一份：~/.knowrary/llm.local.json，**所有知识库共用**。
+    # 库里放的只有数据（摆位、项目、复习记录），不放配置。
     path: str | None = None
     exists: bool = False
     providers: list[LLMProviderRead] = Field(default_factory=list)

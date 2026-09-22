@@ -11,6 +11,7 @@ import datetime as dt
 import hashlib
 import json
 import os
+import shutil
 import sys
 import tempfile
 import time
@@ -19,6 +20,14 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO))
+
+# **第一件事：把用户级配置目录钉到临时位置。**
+# 模型与密钥、复习开关现在都在 ~/.knowrary/（配置跟人不跟库），自测要是不隔离，
+# 跑一遍测试就会把开发者自己的密钥和开关改掉——2026-09-22 真的发生过一次。
+# 必须在 import server.* 之前设好：那边有模块在 import 期就解析路径。
+_USER_HOME = tempfile.mkdtemp(prefix="knowrary-test-home-")
+os.environ["KNOWRARY_HOME"] = _USER_HOME
+os.environ.pop("KNOWRARY_LLM_CONFIG", None)
 
 from fastapi.testclient import TestClient  # noqa: E402
 
@@ -52,10 +61,13 @@ def make_vault(files: dict[str, str] | None = None) -> Path:
     tmp = tempfile.TemporaryDirectory(prefix="knowrary-server-")
     _TMPDIRS.append(tmp)
     vault = Path(tmp.name)
-    (vault / "relation-types.json").write_text((REPO / "relation-types.json").read_text("utf-8"), "utf-8")
+    (vault / "relation-types.json").write_text((REPO / "seed" / "relation-types.json").read_text("utf-8"), "utf-8")
     for rel, text in (files or DEFAULT_FILES).items():
         core.write(vault / rel, text)
     os.environ["KNOWRARY_VAULT"] = str(vault)
+    # **每个用例一份干净的用户级目录**：模型密钥和复习开关都在那儿（配置跟人不跟库），
+    # 共用一份的话，前一条关掉的复习会串到后一条——"今日"清单莫名其妙变空，查半天。
+    os.environ["KNOWRARY_HOME"] = tempfile.mkdtemp(prefix="knowrary-home-")
     index_service.invalidate()
     return vault
 
@@ -3394,7 +3406,8 @@ def usage_不报价的provider不该摆出一个0元():
     那不是今天没花钱，是这个 provider 压根不报价。
     """
     c, vault, _ = with_inbox_node()
-    core.write(vault / ".knowrary" / "llm.local.json", json.dumps({
+    home = llm_home()      # 模型配置是用户级的，不在库里
+    core.write(home / "llm.local.json", json.dumps({
         "providers": {"bailian": {"type": "openai", "base_url": "http://x/v1", "model": "qwen-plus"}},
         "roles": {"learn": "bailian", "review": "bailian"}}, ensure_ascii=False))
     core.record_usage(vault, {"op": "chat", "ok": True, "ms": 10, "cost_usd": 23.0,
@@ -3404,7 +3417,7 @@ def usage_不报价的provider不该摆出一个0元():
     assert u["totals"]["cost_usd"] == 23.0, u["totals"]     # 历史金额还在，不许抹
     assert not u["cost_known"], "不报价的 provider 还在摆 $"
 
-    core.write(vault / ".knowrary" / "llm.local.json", json.dumps({
+    core.write(home / "llm.local.json", json.dumps({
         "providers": {"cli": {"type": "claude-cli"}},
         "roles": {"learn": "cli", "review": "cli"}}, ensure_ascii=False))
     assert c.get("/api/llm/usage").json()["cost_known"], "claude-cli 会报价，这时该显示"
@@ -4071,7 +4084,7 @@ def settings_总闸关着时子开关一律当关():
     c, vault, _ = with_inbox_node()
     c.put("/api/settings", json={"review_enabled": False, "review_in_chat": True})
     from server.paths import core as core_mod
-    assert core_mod.review_in_chat(vault) is False
+    assert core_mod.review_in_chat() is False
     assert c.get("/api/settings").json()["review_in_chat"] is True, "子开关自己的值要留着，只是不生效"
 
 
@@ -5298,9 +5311,18 @@ LLM_CFG = {
 
 
 def llm_client() -> tuple[TestClient, Path]:
+    """模型配置是**用户级**的（`~/.knowrary/llm.local.json`），所以写到 KNOWRARY_HOME 里，
+    不在库里——每个用例现开一份，互不干扰。返回的第二项仍是 vault（别的断言要用）。"""
     c, vault = client()
-    core.write_json_atomic(vault / ".knowrary" / "llm.local.json", json.loads(json.dumps(LLM_CFG)))
+    core.write_json_atomic(llm_home() / "llm.local.json", json.loads(json.dumps(LLM_CFG)))
     return c, vault
+
+
+def llm_home() -> Path:
+    """每个模型用例一份干净的用户级目录：不然前一条改的 provider 会串进下一条。"""
+    home = Path(tempfile.mkdtemp(prefix="knowrary-llmhome-")).resolve()
+    os.environ["KNOWRARY_HOME"] = str(home)
+    return home
 
 
 @case
@@ -5312,7 +5334,8 @@ def 新增的provider还没保存就能先测一把():
     llm_backend.ask_detailed = lambda prompt, provider, m=None: (
         seen.update(provider) or ("OK", {"model": provider.get("model")}))
     c, vault = llm_client()
-    before = (vault / ".knowrary" / "llm.local.json").read_text("utf-8")
+    cfg_path = Path(os.environ["KNOWRARY_HOME"]) / "llm.local.json"
+    before = cfg_path.read_text("utf-8")
     try:
         r = c.post("/api/llm/config/test", json={"provider": {
             "name": "qwen3-plus", "type": "openai", "model": "qwen3-plus",
@@ -5323,7 +5346,7 @@ def 新增的provider还没保存就能先测一把():
     assert r.status_code == 200, r.text
     assert r.json()["model"] == "qwen3-plus", r.text
     assert seen.get("api_key") == "sk-new", (seen, "测的不是输入框里那把钥匙")
-    assert (vault / ".knowrary" / "llm.local.json").read_text("utf-8") == before, "测试写了配置文件"
+    assert cfg_path.read_text("utf-8") == before, "测试写了配置文件"
 
 
 @case
@@ -5356,11 +5379,11 @@ def 保存新增的provider不碰别人的密钥和注释():
                                        "roles": {"learn": "bailian", "review": "bailian"}})
     assert r.status_code == 200, r.text
     assert [p["name"] for p in r.json()["providers"]] == ["claude-cli", "bailian", "qwen3-plus"]
-    saved = json.loads((vault / ".knowrary" / "llm.local.json").read_text("utf-8"))
+    saved = json.loads((Path(os.environ["KNOWRARY_HOME"]) / "llm.local.json").read_text("utf-8"))
     assert saved["providers"]["bailian"]["api_key"] == "sk-old", "别人的密钥被空串洗掉了"
     assert saved["providers"]["qwen3-plus"]["api_key"] == "sk-new", saved
     assert saved["_说明"] == LLM_CFG["_说明"] and "_说明" in saved["roles"], "注释行被吃了"
-    assert (vault / ".knowrary" / "backup").exists(), "改配置前没留备份"
+    assert (Path(os.environ["KNOWRARY_HOME"]) / "backup").exists(), "改配置前没留备份"
 
 
 @case
@@ -5377,6 +5400,461 @@ def 改名之后roles要跟着指过去():
                                         "roles": {"learn": "bailian-2", "review": "bailian-2"}})
     assert ok.status_code == 200, ok.text
     assert ok.json()["roles"] == {"learn": "bailian-2", "review": "bailian-2"}, ok.text
+
+
+# ---------------------------------------------------------------- 知识库（vault）选择
+
+def tmp_dir(prefix: str) -> Path:
+    """一个会被自动清掉的临时目录。**一律 resolve**：macOS 的 `/var` 是指向
+    `/private/var` 的符号链接，而服务端回的全是规范路径，不摊平就永远对不上。"""
+    tmp = tempfile.TemporaryDirectory(prefix=prefix)
+    _TMPDIRS.append(tmp)
+    return Path(tmp.name).resolve()
+
+
+def vault_client(files: dict[str, str] | None = None) -> tuple[TestClient, Path, Path]:
+    """起一个"没被环境变量钉住"的服务：当前库改由用户级配置说了算。
+
+    这一组用例是整份自测里唯一**不设 `KNOWRARY_VAULT`** 的——设了就 pinned，
+    切库会被钉住，正好测不到要测的东西。`KNOWRARY_HOME` 指到临时目录，
+    真实的 `~/.knowrary` 一个字节都不许碰。
+
+    库也**不直接建在系统临时根目录下**：那一层堆着上千个别人的临时目录，
+    目录浏览的用例会把它们一起列出来（还会撞上 400 条的上限）。
+    """
+    from server import vaults
+    base = tmp_dir("knowrary-base-")
+    vault = base / "库"
+    (vault / ".knowrary").mkdir(parents=True)
+    (vault / "relation-types.json").write_text((REPO / "seed" / "relation-types.json").read_text("utf-8"), "utf-8")
+    for rel, text in (files or DEFAULT_FILES).items():
+        core.write(vault / rel, text)
+    home = tmp_dir("knowrary-home-")
+    os.environ["KNOWRARY_HOME"] = str(home)
+    os.environ.pop("KNOWRARY_VAULT", None)
+    vaults.save({"schema_version": 1, "current": str(vault), "recent": [str(vault)]})
+    index_service.invalidate()
+    return TestClient(app), vault, home
+
+
+@case
+def 没选过库时不拿仓库自己顶上():
+    """2026-09-22 拆分前这里会回落到仓库根目录。数据搬走之后那条从兼容变成陷阱：
+    在代码仓库里随手建个 nodes/ 就被当成库。现在一律明说"还没选"。"""
+    from server import vaults
+    make_vault()
+    os.environ["KNOWRARY_HOME"] = str(Path(tempfile.mkdtemp(prefix="knowrary-home-")).resolve())
+    os.environ.pop("KNOWRARY_VAULT", None)
+    try:
+        (REPO / "nodes").mkdir(exist_ok=True)      # 就算仓库里冒出个 nodes/ 也不许认
+        try:
+            vaults.current_vault()
+            raise AssertionError("没选库却自作主张挑了一个")
+        except vaults.NoVaultSelected as exc:
+            assert "设置" in str(exc), str(exc)
+        assert TestClient(app).get("/api/vault").json()["current"] is None
+    finally:
+        (REPO / "nodes").rmdir()
+        os.environ.pop("KNOWRARY_HOME", None)
+
+
+@case
+def 一个库都没选时接口给409而不是崩():
+    """程序还没被指向任何数据，是个要人做一次选择的状态——不是 404 也不是 500。"""
+    make_vault()
+    os.environ["KNOWRARY_HOME"] = str(Path(tempfile.mkdtemp(prefix="knowrary-home-")).resolve())
+    os.environ.pop("KNOWRARY_VAULT", None)
+    try:
+        c = TestClient(app)
+        r = c.get("/api/health")
+        assert r.status_code == 409, (r.status_code, r.text)
+        assert r.json()["need_vault"] is True, r.text
+        assert c.get("/api/vault").status_code == 200, "选库接口自己也 409 了，人就没法自救"
+        assert c.get("/api/vault/browse").status_code == 200, "浏览接口也挂了"
+    finally:
+        os.environ.pop("KNOWRARY_HOME", None)
+
+
+@case
+def 初始化空目录会铺出骨架和种子():
+    c, _, home = vault_client()
+    target = tmp_dir("knowrary-new-") / "新库"
+    target.mkdir()
+    r = c.post("/api/vault/init", json={"path": str(target)})
+    assert r.status_code == 200, r.text
+    assert r.json()["current"]["path"] == str(target), r.text
+    for rel in ("nodes", "fields", "assets", ".knowrary/layouts", ".knowrary/imports", ".knowrary/coaches"):
+        assert (target / rel).is_dir(), f"骨架少了 {rel}"
+    # 库里只铺**数据**要用的那几份；模型、开关这些配置在 ~/.knowrary/，不进库
+    for rel in ("relation-types.json", "README.md", ".gitignore", ".knowrary/coach.example.md"):
+        assert (target / rel).is_file(), f"种子少了 {rel}"
+    assert json.loads((home / "config.json").read_text("utf-8"))["current"] == str(target)
+    assert not (target / ".knowrary" / "settings.json").exists(), "开关是用户级的，不该铺进库里"
+    assert not (target / ".knowrary" / "llm.local.json").exists(), "密钥更不该铺进库里"
+    assert c.get("/api/index").json()["stats"]["nodes"] == 0, "新库里不该有别人的节点"
+
+
+@case
+def 勾了示例才铺示例内容():
+    """示例是给第一次打开的人看的，默认不铺——否则所有人建库的第一件事都是删它。"""
+    c, _, _ = vault_client()
+    blank = tmp_dir("knowrary-blank-") / "空库"
+    blank.mkdir()
+    c.post("/api/vault/init", json={"path": str(blank)})
+    index_service.invalidate()
+    assert c.get("/api/index").json()["stats"]["nodes"] == 0, "没勾却铺了示例"
+    assert not (blank / "fields" / "网络.md").exists()
+
+    withsample = tmp_dir("knowrary-sample-") / "带示例的库"
+    withsample.mkdir()
+    r = c.post("/api/vault/init", json={"path": str(withsample), "sample": True})
+    assert r.status_code == 200, r.text
+    # 这一条要在读索引之前问：读一次索引就会把 index.json 现建出来，之后再问就分不清是搬来的还是建的
+    assert not (withsample / ".knowrary" / "index.json").exists(), "派生缓存不该跟着搬"
+    index_service.invalidate()
+    stats = c.get("/api/index").json()["stats"]
+    assert stats["nodes"] == 9 and stats["stubs"] == 1, stats
+    assert stats["errors"] == 0 and stats["warnings"] == 0, ("示例库自己都不合规", stats)
+    assert set(stats["by_family"]) == {"结构", "依赖", "演化", "对照", "弱关联"}, (
+        "示例要覆盖全部 5 个关系族，否则演示不出关系是怎么回事", stats["by_family"])
+    doc = c.get("/api/projects").json()["doc"]
+    assert "http-evolution" in doc["projects"], doc["projects"].keys()
+    assert (withsample / ".knowrary" / "layout.json").exists(), "示例没带摆好的图，打开还是一团乱"
+    assert (withsample / "素材").is_dir(), "没带可导入的素材，「导入」面板里一个文件都选不到"
+
+
+@case
+def 示例的复习与答题日期跟着今天走():
+    """写死日期会烂：示例是某一天造的，半年后新用户看到「逾期 183 天」、热力图挤在一个旧月份，
+    功能没坏但看着像坏了。锚点 + 平移让它无论哪天初始化都是"今天有一个到期"。"""
+    import datetime as dt
+    c, _, _ = vault_client()
+    target = tmp_dir("knowrary-demo-") / "示例库"
+    target.mkdir()
+    assert c.post("/api/vault/init", json={"path": str(target), "sample": True}).status_code == 200
+
+    assert not (target / ".knowrary" / "_demo.json").exists(), "锚点文件该铺完就删，别留给用户"
+    log = core.load_json(target / ".knowrary" / "review-log.json")
+    today = dt.date.today()
+    dues = {nid: dt.date.fromisoformat(e["next_due"]) for nid, e in log["nodes"].items()}
+    assert any(d == today for d in dues.values()), ("没有一个正好今天到期", dues)
+    assert any(d < today for d in dues.values()), ("没有逾期的，「今日」就没东西可做", dues)
+    assert any(d > today for d in dues.values()), ("全都到期＝看不出「学稳了就不打扰」", dues)
+    assert max(abs((d - today).days) for d in dues.values()) <= 14, ("日期离今天太远，多半没平移", dues)
+    assert any(e["lapses"] for e in log["nodes"].values()), "没有忘过一次的，看不出间隔会被打回去"
+
+    quiz = core.load_json(target / ".knowrary" / "quiz-log.json")
+    ts = [a["ts"][:10] for a in quiz["answers"]]
+    assert all(abs((dt.date.fromisoformat(t) - today).days) <= 14 for t in ts), ("答题时间没跟着平移", ts)
+    from core import quiz as quiz_core
+    wrong = quiz_core.wrong_nodes(quiz)
+    assert {w["id"] for w in wrong} == {"quic", "http-2"}, ("错题本该有两条", wrong)
+
+
+@case
+def 锚点过期时日期真的会被挪():
+    """上一条在造数据的当天跑，平移量是 0 —— 等于没测。这条把锚点拨回 100 天前，
+    看它是不是真挪了 100 天（半年后新用户遇到的正是这个分支）。"""
+    import datetime as dt
+    from server import vaults
+    target = tmp_dir("knowrary-rebase-") / "旧示例"
+    target.mkdir()
+    vaults._copy_tree(vaults.SAMPLE, target)
+    before = core.load_json(target / ".knowrary" / "review-log.json")
+    old_due = {nid: e["next_due"] for nid, e in before["nodes"].items()}
+    anchor = dt.date.today() - dt.timedelta(days=100)
+    core.write_json_atomic(target / ".knowrary" / "_demo.json", {"anchor": anchor.isoformat()})
+
+    vaults._rebase_demo(target)
+
+    after = core.load_json(target / ".knowrary" / "review-log.json")
+    for nid, e in after["nodes"].items():
+        moved = (dt.date.fromisoformat(e["next_due"]) - dt.date.fromisoformat(old_due[nid])).days
+        assert moved == 100, (nid, old_due[nid], e["next_due"], moved)
+    assert not (target / ".knowrary" / "_demo.json").exists(), "锚点文件没删掉"
+    quiz = core.load_json(target / ".knowrary" / "quiz-log.json")
+    assert all(a["ts"].endswith("Z") for a in quiz["answers"]), ("平移把时间后缀吃掉了", quiz["answers"][0])
+
+
+@case
+def 锚点文件坏了也不许挡着建库():
+    """示例数据平移失败最多是日期不新鲜，不该让人建不成库。"""
+    from server import vaults
+    target = tmp_dir("knowrary-badmark-") / "库"
+    target.mkdir()
+    vaults._copy_tree(vaults.SAMPLE, target)
+    (target / ".knowrary" / "_demo.json").write_text("{不是 JSON", "utf-8")
+    vaults._rebase_demo(target)
+    assert not (target / ".knowrary" / "_demo.json").exists(), "坏掉的锚点文件也该清走"
+    assert (target / ".knowrary" / "review-log.json").exists(), "复习记录被牵连删掉了"
+
+
+@case
+def 重复初始化不覆盖已有数据():
+    """幂等：手滑点两次「初始化」不该把人的笔记洗掉。"""
+    c, _, _ = vault_client()
+    target = tmp_dir("knowrary-new-") / "新库"
+    target.mkdir()
+    c.post("/api/vault/init", json={"path": str(target)})
+    core.write(target / "nodes" / "x.md", node_md("X"))
+    (target / "README.md").write_text("我改过了", "utf-8")
+    r = c.post("/api/vault/init", json={"path": str(target)})
+    assert r.status_code == 200, r.text
+    assert (target / "README.md").read_text("utf-8") == "我改过了", "种子把人改过的文件覆盖了"
+    assert (target / "nodes" / "x.md").exists(), "节点被清掉了"
+
+
+@case
+def 非空又不像库的目录一律拒绝():
+    """往别人的工程目录里撒十几个文件是不可逆的，这一步必须挡住，而且不许留下半个骨架。"""
+    c, _, _ = vault_client()
+    busy = tmp_dir("knowrary-busy-")
+    (busy / "pom.xml").write_text("<project/>", "utf-8")
+    r = c.post("/api/vault/init", json={"path": str(busy)})
+    assert r.status_code == 422, (r.status_code, r.text)
+    assert not (busy / "nodes").exists(), "拒绝了还是留了痕"
+    assert c.put("/api/vault/current", json={"path": str(busy)}).status_code == 422, "切到非库目录居然成了"
+
+
+@case
+def 切库之后数据接口跟着换():
+    c, vault, _ = vault_client()
+    other = tmp_dir("knowrary-other-") / "另一个库"
+    other.mkdir()
+    c.post("/api/vault/init", json={"path": str(other)})
+    index_service.invalidate()
+    assert c.get("/api/health").json()["vault"] == str(other), "切了库 health 还指着老的"
+    assert c.get("/api/index").json()["stats"]["nodes"] == 0
+    r = c.put("/api/vault/current", json={"path": str(vault)})
+    assert r.status_code == 200, r.text
+    index_service.invalidate()
+    assert c.get("/api/health").json()["vault"] == str(vault), "切回去没生效"
+    assert c.get("/api/index").json()["stats"]["nodes"] == 3, c.get("/api/index").json()["stats"]
+    assert any(e["path"] == str(other) for e in r.json()["recent"]), r.text
+
+
+@case
+def 最近列表能移除但不删目录():
+    c, vault, _ = vault_client()
+    other = tmp_dir("knowrary-other-") / "另一个库"
+    other.mkdir()
+    c.post("/api/vault/init", json={"path": str(other)})
+    c.put("/api/vault/current", json={"path": str(vault)})
+    r = c.request("DELETE", f"/api/vault/recent?path={other}")
+    assert r.status_code == 200, r.text
+    assert not any(e["path"] == str(other) for e in r.json()["recent"]), r.text
+    assert other.is_dir() and (other / "nodes").is_dir(), "只该从列表移除，目录不许动"
+
+
+@case
+def 程序自己的目录一律不能当知识库():
+    """2026-09-22 的第二次故障：被钉住的旧服务往 `<仓库>/.knowrary/` 写了 index.json 和
+    layout.json，仓库于是"长得像库"，在目录选择器里显示成「已是库」被选中——
+    可它没有 nodes/，解析器退回去扫整个仓库，把 examples/ 里的示例当成了人家的知识库。
+    只判"是不是库"堵不住：它确实**变成**了库。所以按身份拒绝。"""
+    from server import vaults
+    c, _, _ = vault_client()
+    (REPO / ".knowrary").mkdir(exist_ok=True)      # 复现：仓库里冒出 .knowrary/
+    try:
+        assert vaults.status(REPO) == "program", vaults.status(REPO)
+        assert vaults.status(REPO / "server") == "program", "仓库里的别的目录也不行"
+        # examples/ 是唯一例外：示例库放出来就是给人切过去随便改的
+        assert vaults.status(REPO / "examples" / "sample-vault") == "vault", "示例库该能切过去"
+        ok = c.put("/api/vault/current", json={"path": str(REPO / "examples" / "sample-vault")})
+        assert ok.status_code == 200, ok.text
+        assert ok.json()["current"]["path"].endswith("sample-vault"), ok.text
+        r = c.put("/api/vault/current", json={"path": str(REPO)})
+        assert r.status_code == 422 and "程序自己的目录" in r.json()["detail"], r.text
+        r = c.post("/api/vault/init", json={"path": str(REPO)})
+        assert r.status_code == 422, r.text
+        os.environ["KNOWRARY_VAULT"] = str(REPO)   # 旧版 dev.sh 干的就是这个
+        try:
+            vaults.current_vault()
+            raise AssertionError("钉在程序目录上也照单全收")
+        except vaults.NoVaultSelected as exc:
+            assert "dev.sh" in str(exc), str(exc)
+        assert c.get("/api/health").status_code == 409
+    finally:
+        os.environ.pop("KNOWRARY_VAULT", None)
+        try:
+            (REPO / ".knowrary").rmdir()
+        except OSError:
+            pass
+
+
+@case
+def 指着一个不是库的目录要当场报错():
+    """2026-09-22 的真实故障：旧版 dev.sh 把 KNOWRARY_VAULT 钉在代码仓库上，而仓库的 nodes/
+    已经搬走。解析器按老规矩退回去扫整个目录，把 examples/ 里的示例节点当成了人家的知识库——
+    界面上 17 个节点 26 个错误，而人只会以为"切换没生效"。与其扫出垃圾，不如直说不是库。"""
+    from server import vaults
+    c, _, _ = vault_client()
+    notvault = tmp_dir("knowrary-notvault-")
+    (notvault / "pom.xml").write_text("<project/>", "utf-8")
+    os.environ["KNOWRARY_VAULT"] = str(notvault)
+    try:
+        try:
+            vaults.current_vault()
+            raise AssertionError("不是库也照单全收了")
+        except vaults.NoVaultSelected as exc:
+            assert "不是知识库" in str(exc), str(exc)
+        r = c.get("/api/health")
+        assert r.status_code == 409, (r.status_code, r.text)
+        assert "KNOWRARY_VAULT" in r.json()["detail"], r.text
+    finally:
+        os.environ.pop("KNOWRARY_VAULT", None)
+
+
+@case
+def 上次选的库不见了也要说清楚():
+    """库被删了 / 改名了：报"它不在了"，不是默默扫出一堆别的东西。"""
+    from server import vaults
+    c, _, _ = vault_client()
+    gone = tmp_dir("knowrary-gone-") / "搬走了"
+    gone.mkdir()
+    c.post("/api/vault/init", json={"path": str(gone)})
+    shutil.rmtree(gone)
+    index_service.invalidate()
+    try:
+        vaults.current_vault()
+        raise AssertionError("库都没了还认")
+    except vaults.NoVaultSelected as exc:
+        assert "不在了" in str(exc) or "不是知识库" in str(exc), str(exc)
+    assert c.get("/api/health").status_code == 409
+    assert c.get("/api/vault").status_code == 200, "自救的入口不能跟着挂"
+
+
+@case
+def 环境变量钉住时读回pinned():
+    """自测和脚本靠 KNOWRARY_VAULT 临时覆盖；界面上得说清"在这儿切没用"。"""
+    c, vault, _ = vault_client()
+    os.environ["KNOWRARY_VAULT"] = str(vault)
+    try:
+        body = c.get("/api/vault").json()
+        assert body["pinned"] is True, body
+        assert body["current"]["path"] == str(vault), body
+    finally:
+        os.environ.pop("KNOWRARY_VAULT", None)
+
+
+@case
+def 目录浏览只在放行范围内并标出状态():
+    """能枚举本机目录的接口：`..` 和符号链接摊平后越界的一律弹回落脚点。"""
+    c, vault, _ = vault_client()
+    r = c.get("/api/vault/browse", params={"path": str(vault.parent)}).json()
+    names = {e["name"]: e["status"] for e in r["entries"]}
+    assert names.get(vault.name) == "vault", names
+    assert r["roots"] and r["roots"][0]["name"] == "家目录", r["roots"]
+    home = str(Path.home().resolve())
+    assert c.get("/api/vault/browse", params={"path": "/etc"}).json()["path"] != "/etc", "越界没弹回"
+    escaped = c.get("/api/vault/browse", params={"path": f"{vault}/../../../../etc"}).json()["path"]
+    assert escaped != "/etc" and escaped.startswith((home, str(vault.parent))), escaped
+
+
+@case
+def 不给路径时选择器停在当前库旁边():
+    """开在家目录是不够的：库放在别的分支上时，从家目录根本走不过去。"""
+    c, vault, _ = vault_client()
+    assert c.get("/api/vault/browse").json()["path"] == str(vault.parent), c.get("/api/vault/browse").json()
+
+
+@case
+def 用户级配置读坏了不影响开机():
+    """配置文件烂掉最差回到"没选过"，不能让整个程序打不开。"""
+    from server import vaults
+    c, vault, home = vault_client()
+    (home / "config.json").write_text("{不是 JSON", "utf-8")
+    assert vaults.load()["current"] is None, vaults.load()
+    assert c.get("/api/vault").status_code == 200
+
+
+# ---------------------------------------------------------------- 密钥跟人不跟库
+
+def llm_scope_client() -> tuple[TestClient, Path, Path]:
+    """起一个不被 KNOWRARY_VAULT 钉住的服务，并把用户级目录指到临时位置。"""
+    c, vault, home = vault_client()
+    os.environ.pop("KNOWRARY_LLM_CONFIG", None)
+    return c, vault, home
+
+
+@case
+def 模型配置只有一份且在用户级():
+    """一个人有好几个库（自己的、参考的、示例的）。密钥绑在库上就得切一次配一次，
+    参考库和示例库里更不该出现密钥。所以**配置只有一份**：~/.knowrary/llm.local.json。"""
+    c, vault, home = llm_scope_client()
+    before = c.get("/api/llm/config").json()
+    assert before["exists"] is False, before
+    assert before["path"] == str(home / "llm.local.json"), before
+    r = c.put("/api/llm/config", json={
+        "providers": [{"name": "qwen", "type": "openai", "model": "qwen-max",
+                       "base_url": "https://x/v1", "api_key": "sk-1"}],
+        "roles": {"learn": "qwen", "review": "qwen"}})
+    assert r.status_code == 200, r.text
+    assert (home / "llm.local.json").exists(), "没落到用户级"
+    assert not (vault / ".knowrary" / "llm.local.json").exists(), "不该在库里建一份"
+
+
+@case
+def 换个库也读得到同一套密钥():
+    c, _, home = llm_scope_client()
+    c.put("/api/llm/config", json={
+        "providers": [{"name": "qwen", "type": "openai", "model": "qwen-max",
+                       "base_url": "https://x/v1", "api_key": "sk-1"}],
+        "roles": {"learn": "qwen", "review": "qwen"}})
+    other = tmp_dir("knowrary-other-") / "另一个库"
+    other.mkdir()
+    c.post("/api/vault/init", json={"path": str(other)})
+    got = c.get("/api/llm/config").json()
+    assert [p["name"] for p in got["providers"]] == ["qwen"], got
+    assert got["providers"][0]["api_key_set"] is True, got
+
+
+@case
+def 库里放一份配置不再生效():
+    """2026-09-22 之前库级优先于用户级。现在**没有库级这回事**——
+    留着那条分支就意味着参考库能悄悄带一套 provider 进来，而且切库还要重配。"""
+    c, vault, home = llm_scope_client()
+    core.write_json_atomic(home / "llm.local.json", {
+        "providers": {"共用": {"type": "openai", "model": "m", "base_url": "https://u/v1", "api_key": "sk-u"}},
+        "roles": {"learn": "共用", "review": "共用"}})
+    core.write_json_atomic(vault / ".knowrary" / "llm.local.json", {
+        "providers": {"库里塞的": {"type": "openai", "model": "m", "base_url": "https://v/v1", "api_key": "sk-v"}},
+        "roles": {"learn": "库里塞的", "review": "库里塞的"}})
+    got = c.get("/api/llm/config").json()
+    assert [p["name"] for p in got["providers"]] == ["共用"], ("库里那份不该被读", got)
+
+
+@case
+def 改名不该把密钥弄丢():
+    """密钥留空的意思是"保持原值"，而原值要按**旧名字**去找。只按新名字找的话，
+    改一次名字密钥就静默消失——2026-09-22 真把一份线上密钥冲掉了。"""
+    c, _, home = llm_scope_client()
+    c.put("/api/llm/config", json={
+        "providers": [{"name": "老名字", "type": "openai", "model": "m",
+                       "base_url": "https://x/v1", "api_key": "sk-keep"}],
+        "roles": {"learn": "老名字", "review": "老名字"}})
+    r = c.put("/api/llm/config", json={
+        "providers": [{"name": "新名字", "type": "openai", "model": "m",
+                       "base_url": "https://x/v1", "api_key": "", "prev_name": "老名字"}],
+        "roles": {"learn": "新名字", "review": "新名字"}})
+    assert r.status_code == 200, r.text
+    saved = core.load_json(home / "llm.local.json")
+    assert saved["providers"]["新名字"]["api_key"] == "sk-keep", ("改个名字把密钥弄丢了", saved)
+    assert "prev_name" not in saved["providers"]["新名字"], ("prev_name 不该落盘", saved)
+
+
+@case
+def 用户级配置的备份放在它自己旁边():
+    """备份不该按"当时切着哪个库"散落到各个库的 backup/ 里。"""
+    c, vault, home = llm_scope_client()
+    body = {"providers": [{"name": "qwen", "type": "openai", "model": "qwen-max",
+                           "base_url": "https://x/v1", "api_key": "sk-1"}],
+            "roles": {"learn": "qwen", "review": "qwen"}}
+    c.put("/api/llm/config", json=body)
+    c.put("/api/llm/config", json=body)          # 第二次才会触发备份
+    backups = list((home / "backup").glob("llm-config-*/llm.local.json"))
+    assert backups, f"用户级配置没留备份：{list(home.iterdir())}"
+    assert not (vault / ".knowrary" / "backup").exists(), "备份跑到库里去了"
 
 
 def main() -> None:

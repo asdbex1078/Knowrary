@@ -130,7 +130,7 @@ def devtools_base(profile: Path, timeout: float = 60.0) -> str:
 def make_vault(tmp: Path) -> Path:
     vault = tmp / "vault"
     (vault / ".knowrary").mkdir(parents=True)
-    (vault / "relation-types.json").write_text((REPO / "relation-types.json").read_text("utf-8"), "utf-8")
+    (vault / "relation-types.json").write_text((REPO / "seed" / "relation-types.json").read_text("utf-8"), "utf-8")
     for rel, text in FILES.items():
         path = vault / rel
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -2766,7 +2766,10 @@ def main() -> None:
     with tempfile.TemporaryDirectory(prefix="knowrary-e2e-") as tmpdir:
         tmp = Path(tmpdir)
         vault = make_vault(tmp)
-        env = {**os.environ, "KNOWRARY_VAULT": str(vault)}
+        env = {**os.environ, "KNOWRARY_VAULT": str(vault),
+               # 用户级配置（模型密钥、复习开关）也钉到临时目录：
+               # 自测起的服务不许碰开发者自己的 ~/.knowrary
+               "KNOWRARY_HOME": str(tmp / "home")}
         server = subprocess.Popen([str(REPO / ".venv" / "bin" / "python"), "-m", "uvicorn", "server.app:app",
                                    "--host", "127.0.0.1", "--port", str(port), "--app-dir", str(REPO)],
                                   env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)

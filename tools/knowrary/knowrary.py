@@ -18,6 +18,7 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -571,7 +572,7 @@ def cmd_article(args: argparse.Namespace) -> None:
     if args.show_prompt:
         print(prompt)
         return
-    cfg, _ = llm_backend.load_config(vault)
+    cfg, _ = llm_backend.load_config()
     name, provider = llm_backend.resolve_provider(cfg, "learn", args.llm)
     model = args.model or provider.get("model") or "默认模型"
     print(f"图谱 {len(index['nodes'])} 个节点，文章 {len(article)} 字，待认领的清单点 {len(points)} 个，"
@@ -657,11 +658,12 @@ def cmd_projects(args: argparse.Namespace) -> None:
 
 def cmd_llm(args: argparse.Namespace) -> None:
     vault = Path(args.vault).resolve()
-    cfg, path = llm_backend.load_config(vault)
+    cfg, path = llm_backend.load_config()
     print(llm_backend.describe(cfg, path))
     if path is None:
-        example = vault / ".knowrary" / llm_backend.EXAMPLE_NAME
-        print(f"提示：复制 {example} 到 {llm_backend.config_path(vault)} 后编辑，即可切换 provider / 模型")
+        print(f"提示：在网页「设置 → 模型」里配最省事；要手写就复制 "
+              f"{core.user_dir() / llm_backend.EXAMPLE_NAME} 到 {llm_backend.config_path()} 后编辑。"
+              f"**配置跟人不跟库**：这一份所有知识库共用")
     if args.action == "list":
         return
     # 只取真正的角色，`_说明` 那类注释键不算——否则会拿一整段说明去当 provider 名
@@ -715,7 +717,7 @@ def add_data_parsers(sub: argparse._SubParsersAction) -> None:
     v.set_defaults(fn=cmd_vault)
 
     i = sub.add_parser("index", help="全量重建 .knowrary/index.json")
-    i.add_argument("--vault", required=True)
+    i.add_argument("--vault", default=None, help=VAULT_HELP)
     i.add_argument("--out", help="输出路径，默认 <vault>/.knowrary/index.json")
     i.add_argument("--stdout", action="store_true", help="只打印 index JSON，不写盘")
     i.add_argument("--force", action="store_true", help="内容未变化也重写文件")
@@ -725,7 +727,7 @@ def add_data_parsers(sub: argparse._SubParsersAction) -> None:
 
     y = sub.add_parser("layout", help="初始布局生成 / 引用校验")
     y.add_argument("action", choices=["init", "check"], nargs="?", default="check")
-    y.add_argument("--vault", required=True)
+    y.add_argument("--vault", default=None, help=VAULT_HELP)
     y.add_argument("--layout", help="项目 id：查那个项目的画布；不给就是全局图")
     y.add_argument("--by", choices=["dir", "layer"], default="dir",
                    help="init 时二级分组按什么分：dir=nodes/ 子目录（默认），layer=抽象层")
@@ -734,19 +736,19 @@ def add_data_parsers(sub: argparse._SubParsersAction) -> None:
     y.set_defaults(fn=cmd_layout)
 
     c = sub.add_parser("check", help="按规范校验 vault")
-    c.add_argument("vault")
+    c.add_argument("vault", nargs="?", default=None, help=VAULT_HELP)
     c.add_argument("--max-warn", type=int, default=40)
     c.set_defaults(fn=cmd_check)
 
     r = sub.add_parser("review", help="到期复习列表 / 记一次复习")
     r.add_argument("action", choices=["due", "done"], nargs="?", default="due")
     r.add_argument("node", nargs="?", help="review done 的节点 id")
-    r.add_argument("--vault", required=True)
+    r.add_argument("--vault", default=None, help=VAULT_HELP)
     r.add_argument("--max-warn", type=int, default=20)
     r.set_defaults(fn=cmd_review)
 
     g = sub.add_parser("digest", help="图谱欠账清单（Inbox / 草稿 / 待复习 / 桥 / 连边建议 / 重复）")
-    g.add_argument("--vault", required=True)
+    g.add_argument("--vault", default=None, help=VAULT_HELP)
     g.add_argument("--top", type=int, default=5, help="每类最多列几条")
     g.set_defaults(fn=cmd_digest)
 
@@ -755,7 +757,7 @@ def add_llm_parsers(sub: argparse._SubParsersAction) -> None:
     """LLM 链路命令：文章拆节点、上下文、写入、配置。"""
     a = sub.add_parser("article", help="文章 → 节点（LLM）")
     a.add_argument("article")
-    a.add_argument("--vault", required=True)
+    a.add_argument("--vault", default=None, help=VAULT_HELP)
     a.add_argument("--field", required=True, help="这批节点的顶层领域")
     a.add_argument("--folder", help="写入 nodes/ 下的子目录，默认同 field")
     a.add_argument("--project", help="项目 id：把该项目清单里还没建的点给模型认领")
@@ -766,14 +768,14 @@ def add_llm_parsers(sub: argparse._SubParsersAction) -> None:
     a.set_defaults(fn=cmd_article)
 
     x = sub.add_parser("context", help="输出类型表 / 可链 id / 相关节点（供 skill 使用）")
-    x.add_argument("--vault", required=True)
+    x.add_argument("--vault", default=None, help=VAULT_HELP)
     x.add_argument("--article", help="文章路径，用于筛选相关节点")
     x.add_argument("--field", help="导入目标领域：给了文章时，该领域的节点 id 也会列进可链子集")
     x.set_defaults(fn=cmd_context)
 
     p = sub.add_parser("apply", help="把方案 JSON 校验后写入 vault（供 skill 使用）")
     p.add_argument("plan")
-    p.add_argument("--vault", required=True)
+    p.add_argument("--vault", default=None, help=VAULT_HELP)
     p.add_argument("--field", required=True)
     p.add_argument("--folder")
     p.add_argument("--source", help="写入 frontmatter source 字段，如文章名")
@@ -782,19 +784,52 @@ def add_llm_parsers(sub: argparse._SubParsersAction) -> None:
 
     pj = sub.add_parser("projects", help="plans.json → projects.json 迁移")
     pj.add_argument("action", choices=["migrate"], nargs="?", default="migrate")
-    pj.add_argument("--vault", required=True)
+    pj.add_argument("--vault", default=None, help=VAULT_HELP)
     pj.add_argument("--dry-run", action="store_true", help="只打印迁成什么样，不写盘")
     pj.add_argument("--force", action="store_true", help="projects.json 已存在也覆盖")
     pj.set_defaults(fn=cmd_projects)
 
     l = sub.add_parser("llm", help="查看 / 测试 LLM 配置")
     l.add_argument("action", choices=["list", "test", "probe"], nargs="?", default="list")
-    l.add_argument("--vault", required=True)
+    l.add_argument("--vault", default=None, help=VAULT_HELP)
     l.add_argument("--llm", help="只测试这个 provider（默认测试各角色用到的）")
     l.add_argument("--model")
     l.add_argument("--pad-chars", type=int, default=20000,
                    help="probe 用多长的上下文把静默期撑起来（默认 2 万字，约等于出事那轮的量级）")
     l.set_defaults(fn=cmd_llm)
+
+
+VAULT_HELP = "知识库目录；不给就用 KNOWRARY_VAULT，再不给就用设置页选中的那个（~/.knowrary/config.json）"
+
+
+def default_vault() -> str | None:
+    """CLI 和界面共用同一份"当前库"。
+
+    优先级与服务端一致（`server/vaults.current_vault`）：环境变量 > 用户级配置。
+    这里**不导入 server**——tools/knowrary 要能脱离服务单独跑，为这一个字段拉进
+    FastAPI 那一坨依赖不值得；两边读的是同一个文件，格式变了也就一行的事。
+    """
+    env = os.environ.get("KNOWRARY_VAULT")
+    if env:
+        return env
+    home = Path(os.environ.get("KNOWRARY_HOME") or Path.home() / ".knowrary").expanduser()
+    try:
+        doc = json.loads((home / "config.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    current = doc.get("current") if isinstance(doc, dict) else None
+    return current if isinstance(current, str) and current else None
+
+
+def resolve_vault(args: argparse.Namespace) -> None:
+    """没写 --vault 就用当前库；一个都没有时说清怎么办，而不是甩一句 argparse 用法。"""
+    if not hasattr(args, "vault") or args.vault:
+        return
+    picked = default_vault()
+    if not picked:
+        raise SystemExit("没有指定知识库：加 --vault <目录>，或先在网页「设置 → 知识库」里选一个"
+                         "（也可以设环境变量 KNOWRARY_VAULT）")
+    args.vault = picked
 
 
 def main() -> None:
@@ -803,6 +838,7 @@ def main() -> None:
     add_data_parsers(sub)
     add_llm_parsers(sub)
     args = ap.parse_args()
+    resolve_vault(args)
     args.fn(args)
 
 

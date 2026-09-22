@@ -16,7 +16,7 @@ from .index import INDEX_SCHEMA_VERSION, IndexResult, build_index, content_hash,
 from .layout import (CELL_H, LAYOUT_SCHEMA_VERSION, NODE_H, NODE_W, build_compare_layout, build_initial_layout, build_project_layout, empty_layout,
                      find_orphans, layout_path, stamp)
 from .mdio import (NODE_DIRS, RE_ID_OK, RE_LINK, RE_REL_HEADER, dump_frontmatter, first_paragraph, json_safe,
-                   load_json, read, split_frontmatter, strip_md, walk_md, write, write_json_atomic,
+                   load_json, read, split_frontmatter, strip_md, user_dir, walk_md, write, write_json_atomic,
                    yaml_scalar)
 from .parser import (AGGREGATE_TYPES, LAYERS, OFF_CANVAS_TYPES, UNLAYERED, Node, digest_of,
                      is_aggregate, load_node, load_vault, validate_frontmatter)
@@ -90,5 +90,5 @@ __all__ = [
     "dump_frontmatter", "first_paragraph", "index_path", "json_safe", "load_json", "load_node",
     "load_previous", "load_relation_types", "load_vault", "normalize_direction", "parse_relations", "read",
     "split_frontmatter", "strip_md", "validate_frontmatter", "validate_index", "walk_md", "write",
-    "write_json_atomic", "yaml_scalar",
+    "user_dir", "write_json_atomic", "yaml_scalar",
 ]

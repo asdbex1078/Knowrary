@@ -1,14 +1,13 @@
 """路径解析与 core 注入。
 
-vault 默认是仓库根目录（本仓库自身就是 Obsidian vault），可用环境变量
-`KNOWRARY_VAULT` 覆盖（自测就是靠它指到临时 vault）。
+vault 由 `vaults` 模块选定（环境变量 `KNOWRARY_VAULT` > 用户级配置 `~/.knowrary/config.json`）。
+**这个仓库自己不再是 vault**：2026-09-22 起知识库是另一个目录，由人在设置页挑。
 
 阶段 1 的 `tools/knowrary/core` 是零第三方依赖的普通包，这里把它的父目录塞进
 sys.path 后按 `core` 导入——服务层与 CLI 共用同一套解析，不复制第二份实现。
 """
 from __future__ import annotations
 
-import os
 import sys
 from pathlib import Path
 
@@ -23,8 +22,13 @@ import core  # noqa: E402  （必须先注入 sys.path）
 
 
 def vault_path() -> Path:
-    """当前 vault。每次调用都读环境变量，方便测试里切换。"""
-    return Path(os.environ.get("KNOWRARY_VAULT", str(REPO))).resolve()
+    """当前 vault。每次调用都现算（环境变量 > 用户级配置），方便测试里切换。
+
+    选库的规则全在 `vaults` 里，这里只做转发——`vaults` 反过来要用本模块的 `REPO` 与
+    `core`，所以这个 import 必须留在函数体内，放到模块头会成环。
+    """
+    from . import vaults
+    return vaults.current_vault()
 
 
 DEFAULT_LAYOUT = "layout"

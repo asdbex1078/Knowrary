@@ -31,6 +31,8 @@ import uuid
 import urllib.request
 from pathlib import Path
 
+import core
+
 CONFIG_NAME = "llm.local.json"
 EXAMPLE_NAME = "llm.example.json"
 ROLES = ("learn", "review")
@@ -61,14 +63,20 @@ class LLMTransient(SystemExit):
 
 # ---------------------------------------------------------------- 配置
 
-def config_path(vault: Path) -> Path:
+def config_path() -> Path:
+    """**模型配置只有一份**：`~/.knowrary/llm.local.json`（`KNOWRARY_LLM_CONFIG` 可覆盖）。
+
+    2026-09-22 起不再有"库级配置"。一个人有好几个库（自己的、别人的参考库、示例库），
+    密钥绑在库上就得切一次配一次；参考库和示例库里更不该出现密钥。
+    库里留的只有**数据**（摆位、项目、复习记录、关系类型表），配置全在这儿。
+    """
     env = os.environ.get("KNOWRARY_LLM_CONFIG")
-    return Path(env).expanduser() if env else vault / ".knowrary" / CONFIG_NAME
+    return Path(env).expanduser() if env else core.user_dir() / CONFIG_NAME
 
 
-def load_config(vault: Path) -> tuple[dict, Path | None]:
-    """返回 (配置, 来源路径)；没有配置文件时返回 (默认配置, None)。"""
-    path = config_path(vault)
+def load_config() -> tuple[dict, Path | None]:
+    """返回 (配置, 来源路径)；还没配过时返回 (默认配置, None)——零配置走 `claude -p`。"""
+    path = config_path()
     if not path.exists():
         return json.loads(json.dumps(DEFAULT_CONFIG)), None
     try:

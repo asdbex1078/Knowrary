@@ -1,0 +1,112 @@
+{
+  "schema_version": 2,
+  "revision": 1,
+  "updated_at": "2026-09-22T08:35:24Z",
+  "viewport": {
+    "zoom": 0.8,
+    "cx": 0.0,
+    "cy": 0.0
+  },
+  "groups": {
+    "g-网络": {
+      "name": "网络",
+      "x": 0.0,
+      "y": 0.0,
+      "w": 1104.0,
+      "h": 396.0,
+      "parent": null,
+      "collapsed": false,
+      "pinned": null,
+      "color": "#eef2f8"
+    },
+    "g-网络--_stubs": {
+      "name": "_stubs",
+      "x": 832.0,
+      "y": 44.0,
+      "w": 248.0,
+      "h": 128.0,
+      "parent": "g-网络",
+      "collapsed": false,
+      "pinned": null,
+      "color": null
+    }
+  },
+  "nodes": {
+    "http": {
+      "x": 48.0,
+      "y": 88.0,
+      "w": 196.0,
+      "h": 64.0,
+      "group": "g-网络",
+      "state": "final"
+    },
+    "http-1-1": {
+      "x": 288.0,
+      "y": 88.0,
+      "w": 196.0,
+      "h": 64.0,
+      "group": "g-网络",
+      "state": "final"
+    },
+    "http-2": {
+      "x": 528.0,
+      "y": 88.0,
+      "w": 196.0,
+      "h": 64.0,
+      "group": "g-网络",
+      "state": "final"
+    },
+    "http-3": {
+      "x": 48.0,
+      "y": 188.0,
+      "w": 196.0,
+      "h": 64.0,
+      "group": "g-网络",
+      "state": "final"
+    },
+    "quic": {
+      "x": 288.0,
+      "y": 188.0,
+      "w": 196.0,
+      "h": 64.0,
+      "group": "g-网络",
+      "state": "final"
+    },
+    "tcp": {
+      "x": 528.0,
+      "y": 188.0,
+      "w": 196.0,
+      "h": 64.0,
+      "group": "g-网络",
+      "state": "final"
+    },
+    "udp": {
+      "x": 48.0,
+      "y": 288.0,
+      "w": 196.0,
+      "h": 64.0,
+      "group": "g-网络",
+      "state": "final"
+    },
+    "网络": {
+      "x": 288.0,
+      "y": 288.0,
+      "w": 196.0,
+      "h": 64.0,
+      "group": "g-网络",
+      "state": "final"
+    },
+    "head-of-line-blocking": {
+      "x": 856.0,
+      "y": 88.0,
+      "w": 196.0,
+      "h": 64.0,
+      "group": "g-网络--_stubs",
+      "state": "final"
+    }
+  },
+  "refs": [],
+  "notes": [],
+  "images": [],
+  "edges": {}
+}

@@ -19,18 +19,30 @@ node_modules/
 *.log
 .env
 
-# Knowrary：本地 LLM 配置（含密钥），模板是 .knowrary/llm.example.json
+# ---------------------------------------------------------------------------
+# Knowrary：这个仓库只有程序，知识库是另一个目录
+#
+# 2026-09-22 拆分：nodes/ fields/ assets/ harness/ .knowrary/ .obsidian/ 和
+# relation-types.json 全部迁到 https://github.com/asdbex1078/HunDun（历史一并抽走）。
+# 程序读哪个库，由 ~/.knowrary/config.json 决定（设置 → 知识库），出厂种子在 seed/。
+#
+# 下面这几条是**护栏**：万一在仓库目录里顺手初始化了一个库，别让它悄悄进代码仓库。
+# ---------------------------------------------------------------------------
+/nodes/
+/fields/
+/assets/
+/harness/
+/.obsidian/
+/.knowrary/
+/relation-types.json
+
+# 示例库是个**真库**，人可以切过去随便改，所以它的内容要入库——
+# 复习记录、错题本、那篇待导入的素材都是示例的一部分（它自己不带 .gitignore，
+# 建新库时由 seed/ 那份负责挡流水）。只有这份派生缓存不必进来。
+/examples/sample-vault/.knowrary/index.json
+
+# LLM 配置含密钥，绝不入库（模板在 seed/.knowrary/llm.example.json）
 *.local.json
-
-# Obsidian（vault = 仓库根目录）
-.obsidian/workspace*.json
-.obsidian/cache
-
-# Knowrary：写回前快照不进版本库
-.knowrary/backup/
-
-# Knowrary：index.json 是可重建的派生缓存（knowrary index 随时重建）
-.knowrary/index.json
 
 # Day-Info：推送凭证（PAT / Deploy Key），绝不入库
 .secrets/

@@ -1,0 +1,50 @@
+# 这个知识库的 .gitignore（由 Knowrary 初始化时铺下，可以自己改）
+#
+# 分界是「成果 vs 流水」：手工摆位、项目清单、教练侧写丢了要重做，值得进版本库当备份；
+# 我问过什么、花了多少钱、哪道题答错了，是过程不是知识——尤其在公开仓库里，进了历史就收不回来。
+#
+# **注意：.gitignore 管不住已经被跟踪的文件。** 往下面加规则时必须同时跑一次：
+#     git rm -r --cached <路径>      # 只从索引移除，磁盘上的文件不动
+# 然后 `git ls-files .knowrary/` 复核，确认它真的不在跟踪列表里了。
+
+# 配置全在 ~/.knowrary/（模型与密钥、复习开关、教练侧写）——库里只有数据。
+# 这条是护栏：万一有人手工往库里放了带密钥的文件，别让它进版本库
+*.local.json
+
+# 教练侧写写的是「我是谁、要什么口气」。它**跟着这个库走**（一个库一份，不会互相覆盖），
+# 但默认不入库——公开的库不该把自我介绍带出去。模板是 .knowrary/coach.example.md，
+# 照着抄一份成 coach.md 就生效；想分享就把下面两行删掉
+.knowrary/coach.md
+.knowrary/coaches/
+
+# 可重建的派生缓存（knowrary index 随时重建）
+.knowrary/index.json
+
+# 写回 Markdown 前的快照
+.knowrary/backup/
+
+# 对话留档是过程不是知识，按月分文件，找旧对话用 grep
+.knowrary/chat/
+
+# 调用量与花费
+.knowrary/llm-usage.json
+
+# 诊断流水：什么时候报了什么错
+.knowrary/issues.jsonl
+
+# 答题与复习流水：答错了什么、什么时候复习的
+.knowrary/quiz-log.json
+.knowrary/review-log.json
+.knowrary/question-pool.json
+
+# 对话续接缓存与会话表：可丢的缓存，不是真值
+.knowrary/cards.jsonl
+.knowrary/turns.json
+.knowrary/cli-sessions.json
+
+# Obsidian 的窗口状态
+.obsidian/workspace*.json
+.obsidian/cache
+
+# OS
+.DS_Store

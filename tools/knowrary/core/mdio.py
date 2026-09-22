@@ -56,6 +56,16 @@ def load_json(p: Path) -> dict:
     return json.loads(read(p))
 
 
+def user_dir() -> Path:
+    """用户级配置目录 `~/.knowrary`（`KNOWRARY_HOME` 可覆盖，自测靠它不碰真实的家目录）。
+
+    **配置跟人，数据跟库**：一个人会有好几个知识库（自己的、别人的参考库、示例库），
+    "我用哪个模型、要不要考我、我是谁"这些换个库不该重来一遍，所以它们在这儿；
+    摆位、项目、复习记录、关系类型表是库的内容，留在库里。
+    """
+    return Path(os.environ.get("KNOWRARY_HOME") or Path.home() / ".knowrary").expanduser()
+
+
 def write_json_atomic(p: Path, data: dict) -> None:
     """临时文件 + rename 原子写：崩溃或并发读都不会看到半个 JSON。"""
     p.parent.mkdir(parents=True, exist_ok=True)

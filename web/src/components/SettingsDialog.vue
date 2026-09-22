@@ -26,11 +26,19 @@ const props = defineProps({
   // 于是「测试」静悄悄 return、「保存配置」报「保存接口不可用」。
   saveLlm: { type: Function, default: null },
   testLlm: { type: Function, default: null },
+  // 知识库：这几个读写的是用户级配置，不属于任何一个库。名字全用单个小写词，
+  // 免得再撞上 `saveLLM` 那种 camelize 对不上的坑（见上面那条注释）。
+  vault: { type: Object, default: null },
+  browseVault: { type: Function, default: null },
+  pickVault: { type: Function, default: null },
+  startVault: { type: Function, default: null },
+  forgetVault: { type: Function, default: null },
 })
 const emit = defineEmits(['close', 'set', 'toggle-snap', 'toggle-avoid', 'toggle-lod',
                           'toggle-aggregate', 'toggle-map', 'toggle-theme'])
 
 const TABS = [
+  { id: 'vault', name: '知识库', icon: 'folder', where: '这台机器上的选择，不属于任何一个库' },
   { id: 'review', name: '学习与复习', icon: 'rotate', where: '跟着 vault 走，换台机器也一样' },
   { id: 'canvas', name: '画布', icon: 'map', where: '只存在这台机器上' },
   { id: 'look', name: '外观', icon: 'sun', where: '只存在这台机器上' },
@@ -51,7 +59,7 @@ const ROLE_NAMES = ['learn', 'review']
 
 function copyConfig(config) {
   if (!config) return { providers: [], roles: {} }
-  const providers = (config.providers || []).map((p) => ({ ...p, api_key: '' }))
+  const providers = (config.providers || []).map((p) => ({ ...p, api_key: '', prev_name: undefined }))
   const sourceRoles = config.roles || {}
   const fallback = providers[0]?.name || ''
   return { providers, roles: Object.fromEntries(ROLE_NAMES.map((role) => [role, sourceRoles[role] || fallback])) }
@@ -116,6 +124,9 @@ async function saveProvider() {
   const next = { ...editor.value }
   const providers = draft.value.providers.slice()
   const oldName = editorIndex.value < 0 ? '' : providers[editorIndex.value]?.name
+  // 改名时把旧名字一起交上去：服务端保留密钥是按名字找旧记录的，不说清就找不到，
+  // 密钥会静默消失（api_key 留空本意是"别动它"）。
+  if (oldName && oldName !== next.name) next.prev_name = oldName
   if (editorIndex.value < 0) providers.push(next)
   else providers.splice(editorIndex.value, 1, next)
   const saved = await saveModels(providers, renameInRoles(draft.value.roles, oldName, next.name))
@@ -151,10 +162,67 @@ async function saveModels(providers = draft.value.providers, roles = draft.value
   catch (err) { error.value = err.body?.detail || err.message; return null }
 }
 
+// ---------------------------------------------------------------- 知识库
+const picker = ref(null)          // 目录选择器的当前一页；null = 没打开
+const withSample = ref(false)     // 新建库时顺带铺一份示例内容
+const vaultBusy = ref(false)
+const vaultError = ref('')
+const STATUS_TEXT = {
+  vault: '已经是知识库',
+  empty: '空目录，可以初始化成新库',
+  occupied: '目录里有别的东西——换一个空目录，免得往别人的工程里撒文件',
+  program: '这是 Knowrary 程序自己的目录，不能当知识库——知识库要另挑一个地方',
+  missing: '目录不存在',
+}
+
+async function openPicker(path = null) {
+  vaultError.value = ''
+  if (!props.browseVault) { vaultError.value = '浏览接口不可用'; return }
+  vaultBusy.value = true
+  try { picker.value = await props.browseVault(path) }
+  catch (err) { vaultError.value = err.body?.detail || err.message }
+  finally { vaultBusy.value = false }
+}
+
+/** 选定当前这一层目录：已经是库就直接切过去，空目录先初始化再切。 */
+async function useHere() {
+  const here = picker.value
+  if (!here || (here.status !== 'vault' && here.status !== 'empty')) return
+  if (here.status === 'vault') await run(props.pickVault, here.path)
+  else await run(props.startVault, here.path, withSample.value)
+}
+
+async function switchTo(path) {
+  await run(props.pickVault, path)
+}
+
+/** 切库会换掉整张图、项目、对话，前端没有一处状态还作数——所以成功后整页重载。 */
+async function run(action, path, sample = false) {
+  vaultError.value = ''
+  if (!action) { vaultError.value = '切换接口不可用'; return }
+  vaultBusy.value = true
+  try {
+    await action(path, sample)     // 成功即整页重载（App 那侧做），下面这行基本走不到
+    picker.value = null
+  } catch (err) {
+    vaultError.value = err.body?.detail || err.message
+  } finally {
+    vaultBusy.value = false
+  }
+}
+
+async function forget(path) {
+  vaultError.value = ''
+  if (!props.forgetVault) return
+  try { await props.forgetVault(path) }
+  catch (err) { vaultError.value = err.body?.detail || err.message }
+}
+
 function onKey(ev) {
   if (ev.key !== 'Escape') return
   ev.stopPropagation()
   if (editor.value) closeEditor()
+  else if (picker.value) picker.value = null
   else emit('close')
 }
 onMounted(() => document.addEventListener('keydown', onKey, true))
@@ -183,7 +251,42 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onKey, true))
         </header>
 
         <div class="set-body">
-          <template v-if="tab === 'review'">
+          <template v-if="tab === 'vault'">
+            <div class="vault-now">
+              <span class="sub">当前知识库</span>
+              <b v-if="vault?.current">{{ vault.current.path }}</b>
+              <b v-else class="vault-none">还没有选择——挑一个目录开始</b>
+            </div>
+            <p v-if="vault?.pinned" class="model-error">
+              当前库被环境变量 <code>KNOWRARY_VAULT</code> 钉住了，<b>在这里切换不会生效</b>——
+              它的优先级高于这份选择。去掉这个变量（或用 <code>./server/dev.sh</code> 重起服务）再来。
+            </p>
+
+            <div class="model-head">
+              <div><b>最近使用</b><span class="sub">切过去之后整页会重新加载——图、项目、对话都跟着库走。</span></div>
+              <button class="btn tiny" type="button" :disabled="vaultBusy || vault?.pinned"
+                      :title="vault?.pinned ? '被 KNOWRARY_VAULT 钉住了，切了也不生效' : '选一个目录当知识库'"
+                      @click="openPicker()">
+                <Icon name="folder" :size="13" />选择目录…
+              </button>
+            </div>
+            <div v-if="!vault?.recent?.length" class="empty-hint">还没有用过别的库。</div>
+            <div v-for="item in vault?.recent || []" :key="item.path" class="model-list-row">
+              <div class="model-list-name"><b>{{ item.name }}</b><span>{{ item.path }}</span></div>
+              <div class="model-list-actions">
+                <button class="btn tiny" type="button"
+                        :disabled="vaultBusy || vault?.pinned || item.status !== 'vault'"
+                        :title="vault?.pinned ? '被 KNOWRARY_VAULT 钉住了，切了也不生效'
+                          : item.status === 'vault' ? '切换到这个库' : STATUS_TEXT[item.status]"
+                        @click="switchTo(item.path)">切换</button>
+                <button class="icon-btn ghost danger" type="button" title="从列表里移除（不会删目录）"
+                        @click="forget(item.path)"><Icon name="x" :size="14" /></button>
+              </div>
+            </div>
+            <p v-if="vaultError" class="model-error">{{ vaultError }}</p>
+          </template>
+
+          <template v-else-if="tab === 'review'">
             <label class="switch-row">
               <input type="checkbox" :checked="settings.review_enabled"
                      @change="emit('set', { review_enabled: !settings.review_enabled })" />
@@ -271,10 +374,59 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onKey, true))
               <select v-model="draft.roles[role]" aria-label="role provider"><option v-for="provider in draft.providers" :key="provider.name" :value="provider.name">{{ provider.name || '未命名' }}</option></select>
             </div>
             <p v-if="error" class="model-error">{{ error }}</p>
+            <p class="field-hint model-scope">
+              配置存在 <code>{{ llmConfig?.path || '~/.knowrary/llm.local.json' }}</code>，
+              <b>所有知识库共用</b>——换一个库不用重配。密钥只写进这个文件，不会进任何知识库。
+            </p>
             <div class="model-actions"><button class="btn primary" type="button" :disabled="llmSaving" @click="saveModels()"><Icon name="save" :size="14" />{{ llmSaving ? '保存中…' : '保存配置' }}</button></div>
           </template>
         </div>
       </section>
+    </div>
+
+    <div v-if="picker" class="model-editor-mask" @click.self="picker = null">
+      <div class="model-editor vault-picker" role="dialog" aria-label="选择知识库目录">
+        <header class="model-editor-head">
+          <div><b>选择目录</b><span class="dim">{{ picker.path }}</span></div>
+          <button class="icon-btn ghost tiny" title="关闭" @click="picker = null"><Icon name="x" :size="14" /></button>
+        </header>
+        <div class="vault-roots">
+          <button v-for="root in picker.roots || []" :key="root.path" class="btn tiny" type="button"
+                  :disabled="vaultBusy || picker.path === root.path" :title="root.path"
+                  @click="openPicker(root.path)">
+            <Icon :name="root.name === '家目录' ? 'home' : 'folder'" :size="12" />{{ root.name }}
+          </button>
+        </div>
+        <div class="model-editor-body vault-list">
+          <button class="vault-row up" type="button" :disabled="!picker.parent || vaultBusy"
+                  @click="openPicker(picker.parent)">
+            <Icon name="arrowLeft" :size="14" /><span class="vault-name">上一级</span>
+          </button>
+          <div v-if="!picker.entries.length" class="empty-hint">这层没有子目录。</div>
+          <button v-for="entry in picker.entries" :key="entry.path" class="vault-row" type="button"
+                  :disabled="vaultBusy" @click="openPicker(entry.path)">
+            <Icon name="folder" :size="14" />
+            <span class="vault-name">{{ entry.name }}</span>
+            <span class="vault-flag" :class="entry.status">{{ entry.status === 'vault' ? '已是库'
+              : entry.status === 'empty' ? '空' : entry.status === 'program' ? '程序本身' : '有内容' }}</span>
+          </button>
+        </div>
+        <label v-if="picker.status === 'empty'" class="switch-row vault-sample">
+          <input v-model="withSample" type="checkbox" />
+          <span class="check"><Icon name="check" :size="11" :width="2.6" /></span>
+          <span class="label">放一份示例内容
+            <span class="sub">9 个节点讲 HTTP 三代演进，覆盖全部 5 类关系，带一张摆好的图和一个学习项目。
+              空库里没东西可点，看不出这程序在干什么；不想要随时整片删掉</span></span>
+        </label>
+        <footer class="model-editor-foot vault-foot">
+          <span class="dim">{{ STATUS_TEXT[picker.status] }}</span>
+          <button class="btn primary" type="button"
+                  :disabled="vaultBusy || (picker.status !== 'vault' && picker.status !== 'empty')"
+                  @click="useHere">
+            <Icon name="check" :size="14" />{{ picker.status === 'vault' ? '使用这个库' : '选定并初始化' }}
+          </button>
+        </footer>
+      </div>
     </div>
 
     <div v-if="editor" class="model-editor-mask" @click.self="closeEditor">

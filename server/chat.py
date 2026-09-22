@@ -1231,23 +1231,29 @@ def _is_failed(row: dict) -> bool:
 
 # ---------------------------------------------------------------- 编排
 
-COACH_FILE = "coach.md"            # 全局侧写
+COACH_FILE = "coach.md"            # 全局侧写，在 <库>/.knowrary/（一个库一份，默认不入库）
 COACH_DIR = "coaches"              # 项目级：.knowrary/coaches/<项目 id>.md
 
 
 def _me_brief(vault: Path, project: str | None) -> str:
-    """"我是谁、要什么口气、笔记怎么写"——**人可以改的那部分，放在 vault 里，不在代码里**。
+    """"我是谁、要什么口气、笔记怎么写"——**人可以改的那部分，不在代码里**。
 
     分界是故意的：`prompts/chat*.md` 是**程序行为**（工具协议、纪律、卡片规则），
-    改了要跟代码一起测；`.knowrary/coach.md` 是**你的数据**，随便改，坏了也只影响口气。
+    改了要跟代码一起测；侧写是**你的数据**，随便改，坏了也只影响口气。
     这是"md 是真值源、程序是程序"那条纪律的延伸。
+
+    **侧写跟库不跟人**（`<库>/.knowrary/coach.md`）。模型、复习开关这些配置是用户级的，
+    唯独它留在库里：一个库一份，各不覆盖——切到别人的参考库，读到的该是那个库的口气，
+    而不是把自己的那份盖上去。项目级 `coaches/<项目 id>.md` 本来就在库里，两者放一起才一致。
+    **默认不入库**（`seed/.gitignore` 里挡着）：它写的是"我是谁"，公开的库不该把它带出去。
 
     **每次现读，不缓存**：你会在服务跑着的时候改它，改完下一句话就该生效。
     项目级接在全局之后——后面的话语气更近，自然覆盖前面的。
     """
     parts = []
-    for path in (vault / ".knowrary" / COACH_FILE,
-                 (vault / ".knowrary" / COACH_DIR / f"{project}.md") if project else None):
+    for label, path in ((f".knowrary/{COACH_FILE}", vault / ".knowrary" / COACH_FILE),
+                        (f".knowrary/{COACH_DIR}/{project}.md",
+                         (vault / ".knowrary" / COACH_DIR / f"{project}.md") if project else None)):
         if path is None or not path.exists():
             continue
         try:
@@ -1255,7 +1261,7 @@ def _me_brief(vault: Path, project: str | None) -> str:
         except OSError:
             continue
         if text:
-            parts.append(f"（来自 `.knowrary/{path.relative_to(vault / '.knowrary')}`）\n{text}")
+            parts.append(f"（来自 `{label}`）\n{text}")
     if project:
         pr = (core.load_projects(vault).get("projects") or {}).get(project) or {}
         hints = [ls.get("coach") for ls in core.lists_of(pr) if (ls.get("coach") or "").strip()]
@@ -1263,7 +1269,7 @@ def _me_brief(vault: Path, project: str | None) -> str:
             parts.append("这个项目的教练方向：" + "、".join(dict.fromkeys(hints)))
     return "\n\n".join(parts) or (
         f"（还没写。想让我知道点什么——你是谁、要什么口气、笔记想长成什么样——"
-        f"就写进 `.knowrary/{COACH_FILE}`；某个项目单独的规矩写 "
+        f"就写进 `.knowrary/{COACH_FILE}`（这个库自己的一份）；某个项目单独的规矩写 "
         f"`.knowrary/{COACH_DIR}/<项目 id>.md`，它会盖过全局那份。）")
 
 
@@ -1315,7 +1321,7 @@ def tools_of(stance: str | None, vault: Path) -> tuple[str, ...]:
     见 `_system_prompt`），白名单里没有，说明书上就不会出现。
     """
     tools = stance_of(stance)["tools"]
-    if core.review_in_chat(vault):
+    if core.review_in_chat():
         return tools
     return tuple(t for t in tools if t not in REVIEW_TOOLS)
 
@@ -1396,7 +1402,7 @@ def _system_prompt(vault: Path, stance: str | None, project: str | None = None) 
             .replace("{{me}}", _me_brief(vault, project))
             .replace("{{stance_intro}}", intro.strip())
             .replace("{{stance_rules}}", rules.strip() or "（没有额外规矩）"))
-    return _apply_review_switch(text, core.review_in_chat(vault), core.review_on(vault))
+    return _apply_review_switch(text, core.review_in_chat(), core.review_on())
 
 
 SNAP_HEAD = "## 我的图谱现在是什么样"

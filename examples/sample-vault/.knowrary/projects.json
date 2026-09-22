@@ -1,0 +1,110 @@
+{
+  "schema_version": 2,
+  "revision": 1,
+  "updated_at": "2026-09-22T08:36:06Z",
+  "projects": {
+    "http-evolution": {
+      "name": "搞懂 HTTP 的三代演进",
+      "created": null,
+      "field": "网络",
+      "level": "会用",
+      "weekly_hours": 4,
+      "daily_quota": 2,
+      "legacy_id": null,
+      "lists": [
+        {
+          "kind": "学习",
+          "name": "主线",
+          "goal": "能说清 HTTP/2 和 HTTP/3 各自解决了什么，以及为什么非要换掉 TCP",
+          "coach": "",
+          "field": "网络",
+          "target_date": null,
+          "stages": [
+            {
+              "name": "先把底下两层摸清",
+              "deadline": null,
+              "points": [
+                {
+                  "id": "tcp",
+                  "name": "TCP",
+                  "why": "有序交付是后面所有麻烦的根源",
+                  "load": "中",
+                  "layer": "系统软件",
+                  "year": 1974
+                },
+                {
+                  "id": "udp",
+                  "name": "UDP",
+                  "why": "它的「什么都不做」正是 QUIC 的立足点",
+                  "load": "轻",
+                  "layer": "系统软件",
+                  "year": 1980
+                }
+              ]
+            },
+            {
+              "name": "三代协议顺一遍",
+              "deadline": null,
+              "points": [
+                {
+                  "id": "http",
+                  "name": "HTTP",
+                  "why": "先分清「语义」和「传输」两半",
+                  "load": "轻",
+                  "layer": "系统软件",
+                  "year": null
+                },
+                {
+                  "id": "http-1-1",
+                  "name": "HTTP/1.1",
+                  "why": "队头阻塞从这里开始",
+                  "load": "中",
+                  "layer": "系统软件",
+                  "year": 1997
+                },
+                {
+                  "id": "http-2",
+                  "name": "HTTP/2",
+                  "why": "只解决了一半，另一半掉进了 TCP",
+                  "load": "中",
+                  "layer": "系统软件",
+                  "year": 2015
+                },
+                {
+                  "id": "http-3",
+                  "name": "HTTP/3",
+                  "why": "换掉传输层才算真解决",
+                  "load": "重",
+                  "layer": "系统软件",
+                  "year": 2022
+                }
+              ]
+            },
+            {
+              "name": "补上那个还没写的点",
+              "deadline": null,
+              "points": [
+                {
+                  "id": "quic",
+                  "name": "QUIC",
+                  "why": "流、加密、连接迁移三件事收进一层",
+                  "load": "重",
+                  "layer": "系统软件",
+                  "year": 2021
+                },
+                {
+                  "id": "head-of-line-blocking",
+                  "name": "队头阻塞",
+                  "why": "现在还是个 stub，正好拿它练手怎么把空壳写成节点",
+                  "load": "中",
+                  "layer": "系统软件",
+                  "year": null
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

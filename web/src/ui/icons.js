@@ -57,6 +57,8 @@ export const ICONS = {
   unfold: ['m7 4 5 5 5-5', 'm7 20 5-5 5 5', 'M3 12h18'],
   map: ['m9 3-6 3v15l6-3 6 3 6-3V3l-6 3z', 'M9 3v15', 'M15 6v15'],
   pin: ['M12 17v5', 'M9 3h6l-1 6 3 3v2H7v-2l3-3z'],
+  folder: ['M3 7a2 2 0 0 1 2-2h4l2 2.5h8a2 2 0 0 1 2 2V18a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z'],
+  home: ['m3 10.5 9-7 9 7', 'M5 9.5V20h14V9.5', 'M10 20v-6h4v6'],
 }
 
 export const ICON_NAMES = Object.keys(ICONS)

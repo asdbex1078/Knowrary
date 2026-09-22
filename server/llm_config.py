@@ -10,6 +10,7 @@ import llm_backend
 
 NAME_RE = re.compile(r"^[^\s/\\:]+$")
 EDITABLE_KEYS = ("type", "model", "base_url", "api_key", "max_tokens", "temperature")
+PREV_NAME = "prev_name"      # 改名时前端带上的旧名字，用来把密钥认回来（不落盘）
 REQUIRED_ROLES = ("learn", "review")
 
 
@@ -21,9 +22,9 @@ def _real_keys(section: dict) -> list[str]:
     return [str(k) for k in section if not str(k).startswith("_")]
 
 
-def _source(vault: Path) -> tuple[dict, Path | None]:
+def _source() -> tuple[dict, Path | None]:
     try:
-        return llm_backend.load_config(vault)
+        return llm_backend.load_config()
     except llm_backend.LLMConfigError as exc:
         raise LLMConfigRejected(str(exc)) from exc
 
@@ -35,11 +36,12 @@ def _provider_read(name: str, provider: dict) -> dict:
             "max_tokens": provider.get("max_tokens"), "temperature": provider.get("temperature")}
 
 
-def read(vault: Path) -> dict:
-    cfg, path = _source(vault)
+def read() -> dict:
+    """模型配置**只有一份**，所有知识库共用，所以这里不再需要知道当前是哪个库。"""
+    cfg, path = _source()
     providers = cfg.get("providers") or {}
     roles = cfg.get("roles") or {}
-    return {"path": str(path) if path else None, "exists": bool(path and path.exists()),
+    return {"path": str(path or llm_backend.config_path()), "exists": bool(path and path.exists()),
             "providers": [_provider_read(name, providers[name]) for name in _real_keys(providers)],
             "roles": {name: roles[name] for name in _real_keys(roles)},
             "required_roles": list(REQUIRED_ROLES), "provider_types": list(llm_backend.TYPES)}
@@ -51,8 +53,8 @@ def _validate_name(name: str, label: str) -> str:
     return name.strip()
 
 
-def _build(vault: Path, payload: dict) -> dict:
-    old, _ = _source(vault)
+def _build(payload: dict) -> dict:
+    old, _ = _source()
     old_providers = old.get("providers") or {}
     rows = payload.get("providers")
     roles = payload.get("roles")
@@ -72,7 +74,11 @@ def _build(vault: Path, payload: dict) -> dict:
             raise LLMConfigRejected(f"provider `{name}` 的类型不受支持")
         if kind == "openai" and not str(row.get("base_url") or "").strip():
             raise LLMConfigRejected(f"provider `{name}` 缺少 base_url")
-        old_row = old_providers.get(name) if isinstance(old_providers.get(name), dict) else {}
+        # 密钥留空表示"保持原值"，而原值要按**旧名字**去找：只按新名字找的话，
+        # 改一次名字密钥就静默消失（2026-09-22 真把一份线上密钥冲掉了）。
+        prev = row.get(PREV_NAME) or name
+        old_row = next((old_providers[k] for k in (name, prev)
+                        if isinstance(old_providers.get(k), dict)), {})
         provider = {k: old_row[k] for k in old_row if str(k).startswith("_")}
         for key in EDITABLE_KEYS:
             if key not in row:
@@ -101,19 +107,20 @@ def _build(vault: Path, payload: dict) -> dict:
     return cfg
 
 
-def build_test_config(vault: Path, provider: dict) -> dict:
+def build_test_config(provider: dict) -> dict:
     """把单个未保存 provider 合成临时配置，复用保存时的密钥保留规则。"""
     name = provider.get("name")
-    return _build(vault, {"providers": [provider], "roles": {"test": name}})
+    return _build({"providers": [provider], "roles": {"test": name}})
 
 
-def write(vault: Path, payload: dict) -> dict:
-    cfg = _build(vault, payload)
-    path = llm_backend.config_path(vault)
+def write(payload: dict) -> dict:
+    cfg = _build(payload)
+    path = llm_backend.config_path()
     if path.exists():
         stamp = dt.datetime.now().strftime("%Y%m%d-%H%M%S")
-        backup = vault / ".knowrary" / "backup" / f"llm-config-{stamp}" / path.name
+        # 备份放在配置文件自己旁边：用户级那份不该按"当时切着哪个库"散落到各个库里
+        backup = path.parent / "backup" / f"llm-config-{stamp}" / path.name
         backup.parent.mkdir(parents=True, exist_ok=True)
         backup.write_bytes(path.read_bytes())
     core.write_json_atomic(path, cfg)
-    return read(vault)
+    return read()

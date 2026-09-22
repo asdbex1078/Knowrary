@@ -154,6 +154,25 @@ export const postMerge = (body) => request('/api/merge', {
 
 /** 模型调用账本：今天 / 累计 / 分功能 + 最近明细。只读。 */
 export const fetchUsage = () => request('/api/llm/usage')
+// —— 知识库（vault）——
+// 这几个接口读写的是**用户级配置**（~/.knowrary/config.json），不属于任何一个库：
+// 「当前用哪个库」不可能存在库里边。切换成功后整页重载——画布、项目、对话全是库作用域的状态。
+export const fetchVault = () => request('/api/vault')
+export const browseVault = (path) =>
+  request(`/api/vault/browse${path ? `?path=${encodeURIComponent(path)}` : ''}`)
+export const initVault = (path, sample = false) => request('/api/vault/init', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ path, sample }),
+})
+export const putVault = (path) => request('/api/vault/current', {
+  method: 'PUT',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ path }),
+})
+export const forgetVault = (path) =>
+  request(`/api/vault/recent?path=${encodeURIComponent(path)}`, { method: 'DELETE' })
+
 // 设置：只放"后端也要读"的开关（复习要不要出现）。看图偏好仍在 localStorage。
 export const fetchSettings = () => request('/api/settings')
 export const putSettings = (patch) => request('/api/settings', {

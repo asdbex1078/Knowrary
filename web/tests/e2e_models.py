@@ -224,8 +224,10 @@ async def run(api: str, cdp: str, stub: str, results: list) -> None:
         await scenarios(page, api, stub, results)
 
 
-def write_config(vault: Path, stub: str) -> None:
-    (vault / ".knowrary" / "llm.local.json").write_text(json.dumps({
+def write_config(home: Path, stub: str) -> None:
+    """模型配置是**用户级**的（~/.knowrary/llm.local.json），不在库里——所以写到 home。"""
+    home.mkdir(parents=True, exist_ok=True)
+    (home / "llm.local.json").write_text(json.dumps({
         "_说明": "注释行：读写都要原样留着",
         "providers": {
             "claude-cli": {"_说明": "兜底", "type": "claude-cli"},
@@ -251,8 +253,11 @@ def main() -> None:
     with tempfile.TemporaryDirectory(prefix="knowrary-e2e-models-") as tmpdir:
         tmp = Path(tmpdir)
         vault = E.make_vault(tmp)
-        write_config(vault, stub)
-        env = {**os.environ, "KNOWRARY_VAULT": str(vault)}
+        write_config(tmp / "home", stub)
+        env = {**os.environ, "KNOWRARY_VAULT": str(vault),
+               # 用户级配置（模型密钥、复习开关）也钉到临时目录：
+               # 自测起的服务不许碰开发者自己的 ~/.knowrary
+               "KNOWRARY_HOME": str(tmp / "home")}
         server = subprocess.Popen([str(REPO / ".venv" / "bin" / "python"), "-m", "uvicorn", "server.app:app",
                                    "--host", "127.0.0.1", "--port", str(port), "--app-dir", str(REPO)],
                                   env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)

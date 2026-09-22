@@ -1,41 +1,82 @@
 # Knowrary
 
-**Knowrary = know + library**，我的个人知识库：学习笔记、认知图谱，以及后续的 agent 能力与分享输出。这个仓库同时是一个 Obsidian vault：用 Obsidian 直接打开仓库根目录。
+**Knowrary = know + library**：一个在本机跑的个人知识图谱程序。你的笔记是一堆普通的 Markdown，
+它把这些 md 渲染成可拖动的结构图，再往上长出出题与复习、把文章拆成节点、跟教练对话这些事。
 
-## ⚠️ 先配 LLM（每个人自己的模型和密钥，不在仓库里）
+**程序和知识库是两个目录**（2026-09-22 拆分）。这个仓库里只有程序；知识库（vault）是另一个目录，
+第一次启动时你自己挑。我自己那份在 **[HunDun](https://github.com/asdbex1078/HunDun)** —— clone 下来
+可以当参考库看，但它是**只读参考**：想自己写，新建一个属于你的库。
 
-调用大模型的功能（`knowrary article`、后续的审核 / 分组 / 去重）读的是 **`.knowrary/llm.local.json`**。这个文件被 `.gitignore` 忽略（规则 `*.local.json`），仓库里只有模板：
+## 快速开始
 
 ```bash
-cp .knowrary/llm.example.json .knowrary/llm.local.json   # 然后编辑：填模型名、密钥或 env:变量名
-python3 tools/knowrary/knowrary.py llm list --vault .      # 看当前配置
-python3 tools/knowrary/knowrary.py llm test --vault .      # 连通性测试（每个角色用到的 provider 各问一句）
-python3 tools/knowrary/knowrary.py llm probe --vault .     # 能不能等：静默期被掐时，首字节卡在第几秒
+git clone https://github.com/asdbex1078/Knowrary.git && cd Knowrary
+python3 -m venv .venv && .venv/bin/pip install -r server/requirements.txt
+./server/dev.sh                      # 打开 http://127.0.0.1:8765/
+```
+
+**第一次打开先选知识库**：设置 → 知识库 → 选择目录。
+
+- 挑一个**空目录** →「选定并初始化」，程序按规范铺出骨架（`nodes/ fields/ assets/ .knowrary/`）。
+  顺手勾上「放一份示例内容」：9 个节点讲 HTTP 三代演进，覆盖全部 5 类关系，带一张摆好的图和一个学习项目
+  （见 [`examples/`](examples/)）。**空库里什么都点不动**，第一次建议勾上，不想要整片删掉即可。
+- 或者挑一个**已经是库的目录**（比如刚 clone 的 HunDun）直接用。
+- 之后随时切，「最近使用」里点一下就换。环境变量 `KNOWRARY_VAULT` 可临时覆盖，自测和脚本走的就是这条。
+
+**配置跟人，数据跟库**：`~/.knowrary/` 放当前选了哪个库（`config.json`）、模型与密钥
+（`llm.local.json`）、复习开关（`settings.json`）——换一个库这些都不用重来。知识库里只有数据：
+节点、领域总览、图的摆位、项目清单、复习记录、关系类型表。唯一的例外是教练侧写
+（`<库>/.knowrary/coach.md`），它跟库走：切到别人的参考库，该读到那个库的口气。
+
+**再配模型**：设置 → 模型 → 添加模型，填模型名和密钥，点 ▶ 测一下连通，保存。
+不配也能用——默认全部走本机 Claude Code 的 `claude -p`，零配置那条路没断。
+
+## 模型配置的细节
+
+**配置跟人，数据跟库。** 模型与密钥写在 **`~/.knowrary/llm.local.json`**，**所有知识库共用**——
+一个人会有好几个库（自己的、别人的参考库、示例库），配置绑在库上就得切一次配一次，
+参考库和示例库里更不该出现密钥。库里留的只有数据：节点、摆位、项目、复习记录、关系类型表。
+模板是 `~/.knowrary/llm.example.json`（第一次运行时从 `seed/user/` 铺过去）。
+界面上配就够了，下面这些是给不开界面的场景用的：
+
+```bash
+python3 tools/knowrary/knowrary.py llm list                       # 看当前配置（--vault 不给就用当前库）
+python3 tools/knowrary/knowrary.py llm test                       # 连通性测试（每个角色各问一句）
+python3 tools/knowrary/knowrary.py llm probe                      # 能不能等：静默期被掐时，首字节卡在第几秒
 ```
 
 - **provider 三种类型**：`claude-cli`（复用本机 Claude Code 登录，零配置）、`anthropic`（官方 API）、`openai`（OpenAI 兼容协议：OpenAI / DeepSeek / 通义 / Ollama / vLLM 都是它）。
 - **两个角色**：`learn`（对话式教练、文章拆节点、关系抽取）和 `review`（校验、分组判断、去重）。可以指向不同模型，用第二个模型审第一个的产出，减少单一模型的偏差。
-- **工具协议按 provider 能力自动挑，不用你管**：`anthropic` / `openai` 走原生 function calling（schema 约束、可并行）；`claude-cli` 是子进程、没有结构化工具接口，自动退回文本围栏。三种都能对话，**零配置那条路（`claude -p`，不填任何密钥）没断**。判据在 `llm_backend.supports_tools()`。
-- 不建配置文件也能用：默认全部走 `claude -p`。
+- **工具协议按 provider 能力自动挑，不用你管**：`anthropic` / `openai` 走原生 function calling（schema 约束、可并行）；`claude-cli` 是子进程、没有结构化工具接口，自动退回文本围栏。判据在 `llm_backend.supports_tools()`。
 - `knowrary check` 会在任何 `*.local.json` 被 git 跟踪时报错，防止密钥被提交。
-- 前端设置页（页面上配置多个 LLM、指派角色）在计划中，见 `doc/设计文档/第二版设计文档.md` 3.11。
 
 ## 目录
 
+### 这个仓库（程序）
+
 | 目录 | 内容 |
 | --- | --- |
-| `nodes/` | 认知图谱的知识节点，一个知识点一个 md，按领域分子目录（`01-理论基础` … `AI-Agent`，`_stubs` 是待补的空壳） |
+| `server/` | 本地服务（FastAPI）：只读 index、读写 layout、托管前端产物，见其 README |
+| `tools/knowrary/` | CLI 与核心库（解析、索引、布局生成），见其 README |
+| `web/` | 结构视图前端（Vue 3 + Vite + X6）；`web/dist/` 是入库的构建产物，运行期零 Node（**文件名不带 content hash**：Rollup 的 hash 是传递的，改一行就级联换掉几十个文件名，一次小改往 .git 里塞 6MB；缓存失效改由服务端发 `Cache-Control: no-cache` 负责，浏览器照旧缓存、每次拿 ETag 问一句，没变就 304）。`src/canvas/` 是不碰 DOM 的算法（布局、LOD、时间线、菜单内容），`src/composables/` 是按功能抽出来的成块状态（历史/回放/导览、对话），`App.vue` 只做编排 |
+| `seed/` | **出厂种子**，只补不覆盖。`seed/` 是建新库时铺进库里的（关系类型表、教练侧写模板、README、.gitignore）；`seed/user/` 是第一次运行时铺进 `~/.knowrary/` 的（LLM 配置模板 + 一页说明） |
+| `examples/sample-vault/` | 示例库：9 个节点讲 HTTP 三代演进，覆盖全部 5 个关系族，带摆好的图、学习项目、复习记录、错题本和一篇待导入的素材。初始化时勾「放一份示例内容」铺进新库，**也可以直接把它当库切过去随便改**（改了 `git pull` 会冲突，自己权衡） |
+| `doc/` | 规范文档、设计文档、开发实施计划。`doc/设计文档/选型对照/` 是「要不要上 X」的逐条判断（agent 框架 / 向量库 / 数据库 / 测试框架 / LLM SDK / 画布渲染），判据与总表在 `选型判据.md` |
+| `.claude/skills/knowrary-import/` | Claude Code skill：把文章拆成节点存进知识库。**可选的第三个入口**——导入的完整能力在 `knowrary article` 和网页「导入」面板里，没有 Claude Code 一样全功能 |
+
+### 你的知识库（另一个目录）
+
+| 路径 | 内容 |
+| --- | --- |
+| `nodes/` | 知识节点，一个知识点一个 md，按领域分子目录（`_stubs` 是待补的空壳） |
 | `fields/` | 领域总览（每个顶层领域一个文件） |
 | `assets/` | 节点引用的图片 |
-| `.knowrary/coach.md`、`.knowrary/coaches/<项目>.md` | **教练侧写**：我是谁、要什么口气、笔记想长成什么样。项目级接在全局之后（覆盖全局）。**每次现读不缓存**，改完下一句话就生效。它只影响对话的口气与判断——工具协议和纪律在 `tools/knowrary/prompts/`，那是程序行为 |
-| `.knowrary/` | 图谱的机器数据：`llm.example.json`（LLM 配置模板，本地副本 `llm.local.json` 不入库）、`index.json`（解析索引，`knowrary index` 生成，不入库）、`layout.json`（结构视图的位置 / 分组 / 折叠状态 / 贴图 / 边拐点）、`review-log.json`（复习调度：间隔序号 / 下次到期 / 忘记次数）、`quiz-log.json`（答题事件流，错题本从它聚合）、`projects.json`（**项目**：一组 node_id 的选集 + N 份清单，清单分学习 / 面试 / 领域三种口径，带目标日期与负荷档；每周投入与每日配额在项目上。允许指向图里还没有的节点；进度与时间账不存，现算）、`chat/<项目>/YYYY-MM.jsonl`（对话留档，不入库；没绑项目的落 `_scratch/`）——这几份和 layout 一样属于你的数据，入库、`imports/`（每次导入的方案）、`MIGRATION-REPORT.md` |
 | `relation-types.json` | 关系类型表：5 个族，具体类型可增长 |
-| `tools/knowrary/` | CLI 与核心库（解析、索引、布局生成），见其 README |
-| `server/` | 本地服务（FastAPI）：只读 index、读写 layout、托管前端产物，见其 README |
-| `web/` | 结构视图前端（Vue 3 + Vite + X6）；`web/dist/` 是入库的构建产物，运行期零 Node（**文件名不带 content hash**：Rollup 的 hash 是传递的，改一行就级联换掉几十个文件名，一次小改往 .git 里塞 6MB；缓存失效改由服务端发 `Cache-Control: no-cache` 负责，浏览器照旧缓存、每次拿 ETag 问一句，没变就 304）。`src/canvas/` 是不碰 DOM 的算法（布局、LOD、时间线、菜单内容），`src/composables/` 是按功能抽出来的成块状态（历史/回放/导览、对话），`App.vue` 只做编排 |
-| `.claude/skills/knowrary-import/` | Claude Code skill：把文章拆成节点存进 Knowrary。**可选的第三个入口**——导入的完整能力在 `knowrary article` 和网页「导入」面板里，没有 Claude Code 一样全功能 |
-| `doc/` | 规范文档、设计文档、开发实施计划。`doc/设计文档/选型对照/` 是「要不要上 X」的逐条判断（agent 框架 / 向量库 / 数据库 / 测试框架 / LLM SDK / 画布渲染），判据与总表在 `选型判据.md` |
-| `harness/`、`llm/` | 学习笔记原文（不是图谱节点，导入图谱靠 knowrary-import） |
+| `.knowrary/coach.md`、`.knowrary/coaches/<项目>.md` | **教练侧写**：我是谁、要什么口气、笔记想长成什么样。**跟着这个库走**——一个库一份，切到别人的参考库该读到那个库的口气，而不是把自己那份盖上去；项目级接在全局之后（覆盖全局）。**每次现读不缓存**，改完下一句话就生效。它只影响对话的口气与判断——工具协议和纪律在 `tools/knowrary/prompts/`，那是程序行为。模板是 `coach.example.md`，真身默认 gitignore（那写的是你自己，不是知识） |
+| `.knowrary/` | 图谱的机器数据。**入库的是成果**：`layout.json`（结构视图的位置 / 分组 / 折叠状态 / 贴图 / 边拐点）、`layouts/<项目>.json`（项目画布）、`projects.json`（**项目**：一组 node_id 的选集 + N 份清单，清单分学习 / 面试 / 领域三种口径，带目标日期与负荷档；每周投入与每日配额在项目上。允许指向图里还没有的节点；进度与时间账不存，现算）、`settings.json`、`imports/`（每次导入的方案）。**不入库的是流水与缓存**：`llm.local.json`（密钥）、`index.json`（解析索引，`knowrary index` 随时重建）、`review-log.json` / `quiz-log.json` / `question-pool.json`（复习与答题）、`llm-usage.json`（花费）、`chat/<项目>/YYYY-MM.jsonl`（对话留档，没绑项目的落 `_scratch/`）、`issues.jsonl`（诊断）、`backup/`（写回前快照） |
+
+> 这一栏的规则写在 `seed/.gitignore` 里，建库时会铺进去。**成果丢了要重做，值得进版本库；
+> 流水进了公开历史就收不回来**——我自己在这上面栽过一次（见本仓库 `.gitignore` 里的那段注释）。
 
 ## 节点约定（摘要，全文见 `doc/规范文档/Markdown文档规范.md`）
 
@@ -125,22 +166,27 @@ python3 tools/knowrary/knowrary.py llm probe --vault .     # 能不能等：静�
 #   改关系/改摘要 → 先预览 diff → 确认才写回 md（自动备份到 .knowrary/backup/）
 #   历史视图 tab：X 轴年份、泳道按所选时间线的子分组分，被激活关系是金色流动虚线，滑块按年回放（不改结构布局）
 #   视图切换下拉里有「3D 总览」，或直接开 http://127.0.0.1:8765/3d/
-python3 tools/knowrary/knowrary.py index --vault .             # 重建 .knowrary/index.json（结构视图/服务的数据源）
-python3 tools/knowrary/knowrary.py layout init --vault . --by layer --force   # 顶层按主题、二级按抽象层重排（会重排位置，便签/贴图/拐点保留）
-python3 tools/knowrary/knowrary.py layout check --vault .      # 布局引用校验：孤立记录 / Inbox 统计
-python3 tools/knowrary/knowrary.py layout check --vault . --layout <项目>   # 查某个项目画布（含幽灵占位数）
-python3 tools/knowrary/knowrary.py check .                     # 按规范校验全部节点（含密钥泄露检查）
-python3 tools/knowrary/knowrary.py projects migrate --vault . --dry-run   # 旧 plans.json → projects.json（先看迁成什么样）
-python3 tools/knowrary/knowrary.py review due --vault .        # 今天该复习什么；review done <id> 记一次复习
-python3 tools/knowrary/knowrary.py digest --vault .            # 欠账清单：Inbox / 草稿 / 待复习 / 桥 / 连边建议 / 重复 / 方向矛盾
-#   出题与交卷在画布的「学习」面板里（走 LLM 的 review 角色；没配 llm.local.json 就用 claude -p）
-.venv/bin/python tools/knowrary/tests/run.py                   # core 自测（114 个用例；要 .venv，有两条跨到服务层）
+python3 tools/knowrary/knowrary.py index --vault <你的库>             # 重建 .knowrary/index.json（结构视图/服务的数据源）
+python3 tools/knowrary/knowrary.py layout init --vault <你的库> --by layer --force   # 顶层按主题、二级按抽象层重排（会重排位置，便签/贴图/拐点保留）
+python3 tools/knowrary/knowrary.py layout check --vault <你的库>      # 布局引用校验：孤立记录 / Inbox 统计
+python3 tools/knowrary/knowrary.py layout check --vault <你的库> --layout <项目>   # 查某个项目画布（含幽灵占位数）
+python3 tools/knowrary/knowrary.py check <你的库>                     # 按规范校验全部节点（含密钥泄露检查）
+python3 tools/knowrary/knowrary.py projects migrate --vault <你的库> --dry-run   # 旧 plans.json → projects.json（先看迁成什么样）
+python3 tools/knowrary/knowrary.py review due --vault <你的库>        # 今天该复习什么；review done <id> 记一次复习
+python3 tools/knowrary/knowrary.py digest --vault <你的库>            # 欠账清单：Inbox / 草稿 / 待复习 / 桥 / 连边建议 / 重复 / 方向矛盾
+#   出题与交卷在画布的「学习」面板里（走 LLM 的 review 角色；没配模型就用 claude -p）
+.venv/bin/python tools/knowrary/tests/run.py                   # core 自测（134 个用例；要 .venv，有两条跨到服务层）
 node web/tests/unit.mjs                                        # 前端纯函数自测（零依赖，不用测试框架，36 个用例）
-.venv/bin/python server/tests/run.py                           # 服务层自测（233 个用例）
-.venv/bin/python web/tests/e2e_canvas.py                       # 画布端到端自测（真无头 Chrome 拖拽 → 落盘，临时 vault，不碰你的布局，249 个用例）
+.venv/bin/python server/tests/run.py                           # 服务层自测（245 个用例）
+.venv/bin/python web/tests/e2e_canvas.py                       # 画布端到端自测（真无头 Chrome 拖拽 → 落盘，临时 vault，不碰你的布局，259 个用例）
 .venv/bin/python web/tests/e2e_models.py                       # 设置→模型端到端自测（真点「测试连接 / 保存」，假 OpenAI 端点，10 个用例）
+.venv/bin/python web/tests/e2e_vault.py                        # 设置→知识库端到端自测（真的选目录、初始化、切库、整页重载，19 个用例）
 cd web && npm run dev                                          # 改前端（5173，/api 代理到 8765）；改完 npm run build 提交 dist
-python3 tools/knowrary/knowrary.py article <文章.md> --vault . --field <领域> [--project <项目 id>] [--dry-run] [--llm <provider>]   # 无人值守：文章 → 节点
+python3 tools/knowrary/knowrary.py article <文章.md> --vault <你的库> --field <领域> [--project <项目 id>] [--dry-run] [--llm <provider>]   # 无人值守：文章 → 节点
 #   和网页「导入」面板同一套：同一份提示词、同一个长度闸、同一套认领 / 撞脸 / 孤立判定、同一份 JSON 容错
 # 在 Claude Code 里（可选，装了才有）：/knowrary-import <文章路径>  或  "把这篇文章融入我的图谱"
+#
+# --vault 不给也行：**CLI 和界面共用同一份「当前库」**——先看环境变量 KNOWRARY_VAULT，
+# 再看设置页选中的那个（~/.knowrary/config.json）。两个都没有才会要你把路径写出来。
+# 服务端同理：没选库时接口一律回 409，界面据此把人送进「设置 → 知识库」
 ```

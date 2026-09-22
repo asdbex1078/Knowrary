@@ -18,7 +18,7 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import (assets, chat as chat_svc, compare as compare_svc, curation, importing,
-               projects as projects_svc, summarize as summarize_svc, years as years_svc)
+               projects as projects_svc, summarize as summarize_svc, vaults, years as years_svc)
 from .contracts import (CalendarRead, ChangeResult, ChangeSet, ChatRequest, CoachToday, FileDiff, ImportProposal,
                         ImportProposeRequest, ImportRequest, ImportResult, SourceText, SourcesRead, SummarizeRequest, SummaryDraft,
                         InboxRead,
@@ -30,7 +30,8 @@ from .contracts import (CalendarRead, ChangeResult, ChangeSet, ChatRequest, Coac
                         RenameRequest, RenameResult, ReviewDone, ReviewRequest, SettingsPatch,
                         SettingsRead, SuggestRequest, LLMConfigRead, LLMConfigWrite, LLMConfigTest,
                         LLMConfigTestRead,
-                        SuggestResult, UsageRead, YearProposal, YearProposeRequest,
+                        SuggestResult, UsageRead, VaultBrowse, VaultPick, VaultRead,
+                        YearProposal, YearProposeRequest,
                         CompareProposal, CompareProposeRequest)
 from .index_service import current_index, invalidate
 from .llm_call import LLMFailed
@@ -66,6 +67,21 @@ def llm_failed(request: Request, exc: LLMFailed) -> JSONResponse:
     它是 SSE，已经开始往外吐字节了，只能在流里发一个 `error` 事件。
     """
     return JSONResponse(status_code=502, content={"detail": str(exc)})
+
+
+@app.exception_handler(vaults.NoVaultSelected)
+def _no_vault(_request, exc: vaults.NoVaultSelected) -> JSONResponse:
+    """一个库都还没选 → 409。前端见到这个码就把人送进「设置 → 知识库」。
+
+    不用 404/422：那两个是"你要的东西没有"和"你给的参数不对"，而这里是
+    **程序还没被指向任何数据**，是一个需要人做一次选择才能继续的状态。
+    """
+    return JSONResponse(status_code=409, content={"detail": str(exc), "need_vault": True})
+
+
+@app.exception_handler(vaults.VaultRejected)
+def _vault_rejected(_request, exc: vaults.VaultRejected) -> JSONResponse:
+    return JSONResponse(status_code=422, content={"detail": str(exc)})
 
 
 @app.get("/api/health")
@@ -406,24 +422,58 @@ def post_chat_tidied(body: dict) -> dict:
     return {"session": body.get("session"), "tidied": mark or None}
 
 
+@app.get("/api/vault", response_model=VaultRead)
+def get_vault() -> VaultRead:
+    """当前知识库与最近用过的几个。这份状态在用户级配置里，不属于任何 vault。"""
+    return VaultRead(**vaults.read())
+
+
+@app.get("/api/vault/browse", response_model=VaultBrowse)
+def browse_vault(path: str | None = None) -> VaultBrowse:
+    """列子目录，给前端画文件夹选择器。只许在家目录里逛（越界一律弹回家目录）。"""
+    return VaultBrowse(**vaults.browse(path))
+
+
+@app.post("/api/vault/init", response_model=VaultRead)
+def init_vault(req: VaultPick) -> VaultRead:
+    """把一个空目录建成知识库并切过去。已经是库就直接切，不覆盖任何数据。"""
+    target = vaults.init(Path(req.path), sample=req.sample)
+    vaults.switch(target)
+    return VaultRead(**vaults.read())
+
+
+@app.put("/api/vault/current", response_model=VaultRead)
+def switch_vault(req: VaultPick) -> VaultRead:
+    """切换当前知识库。只接受已经是库的目录——要新建走 init。"""
+    vaults.switch(Path(req.path))
+    return VaultRead(**vaults.read())
+
+
+@app.delete("/api/vault/recent", response_model=VaultRead)
+def forget_vault(path: str) -> VaultRead:
+    """把一条从「最近使用」里去掉。只动列表，磁盘上的库一个字节都不碰。"""
+    vaults.forget(Path(path))
+    return VaultRead(**vaults.read())
+
+
 @app.get("/api/settings", response_model=SettingsRead)
 def get_settings() -> SettingsRead:
     """偏好设置。文件不在就返回默认（全开）——新 vault 该有完整体验。"""
-    return SettingsRead(**core.load_settings(vault_path()))
+    return SettingsRead(**core.load_settings())
 
 
 @app.put("/api/settings", response_model=SettingsRead)
 def put_settings(req: SettingsPatch) -> SettingsRead:
     """改设置。合并写回，只认契约里登记过的开关。"""
     patch = {k: v for k, v in req.model_dump().items() if v is not None}
-    return SettingsRead(**core.save_settings(vault_path(), patch))
+    return SettingsRead(**core.save_settings(patch))
 
 
 @app.get("/api/llm/config", response_model=LLMConfigRead)
 def get_llm_config() -> LLMConfigRead:
     """读取脱敏后的 LLM 配置，API key 只返回是否存在。"""
     try:
-        return LLMConfigRead(**llm_config.read(vault_path()))
+        return LLMConfigRead(**llm_config.read())
     except llm_config.LLMConfigRejected as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
@@ -432,7 +482,7 @@ def get_llm_config() -> LLMConfigRead:
 def put_llm_config(req: LLMConfigWrite) -> LLMConfigRead:
     """校验并原子保存结构化 LLM 配置，旧文件先备份。"""
     try:
-        return LLMConfigRead(**llm_config.write(vault_path(), req.model_dump()))
+        return LLMConfigRead(**llm_config.write(req.model_dump()))
     except llm_config.LLMConfigRejected as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except llm_backend.LLMConfigError as exc:
@@ -445,7 +495,7 @@ def test_llm_config(req: LLMConfigTest) -> LLMConfigTestRead:
     try:
         provider = req.provider
         name = provider.get("name")
-        cfg = llm_config.build_test_config(vault_path(), provider)
+        cfg = llm_config.build_test_config(provider)
         _, selected = llm_backend.resolve_provider(cfg, "test", name)
         text, used = llm_backend.ask_detailed(
             "只回复 OK，不要添加其它文字。", selected)
@@ -478,7 +528,7 @@ def get_llm_usage() -> UsageRead:
 def _llm_config(vault):
     from .paths import core as _c  # noqa: F401  确保 sys.path 已注入
     import llm_backend
-    return llm_backend.load_config(vault)
+    return llm_backend.load_config()
 
 
 def _reports_cost(cfg: dict, roles: dict) -> bool:

@@ -36,7 +36,7 @@ def ask(vault: Path, role: str, prompt: str, op: str = "?") -> str:
     所有 LLM 调用都从这里过，所以记账放这一处就够了——包括失败的那些：
     调用失败照样烧了时间、也可能已经计费，账本上不能没有它。
     """
-    cfg, _ = llm_backend.load_config(vault)
+    cfg, _ = llm_backend.load_config()
     name, provider = llm_backend.resolve_provider(cfg, role)
     started = time.monotonic()
     row = {"op": op, "role": role, "provider": name, "model": provider.get("model")}
@@ -66,7 +66,7 @@ def chat(vault: Path, role: str, messages: list[dict], tools: list[dict] | None 
     # 放在这里而不是让 llm_backend 自己找路径——**vault 在哪只有服务层知道**，
     # 而 llm_backend 是 CLI 也在用的下层，不该反过来依赖服务层的目录约定。
     llm_backend.use_session_store(vault / ".knowrary" / "cli-sessions.json")
-    cfg, _ = llm_backend.load_config(vault)
+    cfg, _ = llm_backend.load_config()
     name, provider = llm_backend.resolve_provider(cfg, role)
     started = time.monotonic()
     row = {"op": op, "role": role, "provider": name, "model": provider.get("model")}
