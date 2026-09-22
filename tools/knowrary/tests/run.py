@@ -1646,10 +1646,90 @@ def 迁成流派之后旧的画布条目要报出来():
     off = core.off_canvas(index, layout)
     assert [o["id"] for o in off] == ["某派"], off
     assert off[0]["type"] == "流派", off[0]
+    assert off[0]["where"] == "", "全局图那条的 where 是空串"
     # 草稿那一项要把它摘掉：它不该在画布上，催「该定稿了」没有意义
     import datetime as dt
-    assert core.drafts(layout, dt.date.today(), {"某派"}) == [], "不该上图的不算草稿"
-    assert [d["id"] for d in core.drafts(layout, dt.date.today())] == ["某派"], "不传 skip 时照旧"
+    assert core.drafts(layout, dt.date.today(), {("", "某派")}) == [], "不该上图的不算草稿"
+    got = core.drafts(layout, dt.date.today())
+    assert [(d["id"], d["where"]) for d in got] == [("某派", "")], "不传 skip 时照旧"
+
+
+@case
+def 项目画布上的流派也要报出来():
+    """**这条诊断原先只看全局 layout，项目画布是另一套文件，没人查。**
+
+    于是全局那 4 个清干净之后，`ai.json` 上还摆着 `符号主义` / `连接主义`——
+    人在项目图里看得见，Digest 里一片干净（2026-09-22 实盘核出来的）。
+
+    同一个点在两张图上就报两条：layout 是按图存的，要清也得分别清。
+    对比组的画布不在扫描范围内——那张图上摆的就是它的成员，「不该上图」对它不成立，
+    所以 `project_layouts` 只认 projects.json 登记过的 id，不 glob 整个目录。
+    """
+    vault = make_vault({
+        "nodes/x/知识点.md": node_md("知识点", field="测试"),
+        "fields/流派/某派.md": (
+            "---\nname: 某派\nfield: 测试\ntype: 流派\nstart_year: 1990\n"
+            "desc: 某派\n---\n# 某派\n\n## 关系\n- 包含:: [[知识点]]\n- 包含:: [[乙]]\n"),
+        "nodes/x/乙.md": node_md("乙", field="测试"),
+    })
+    index = core.build_index(vault).data
+    core.save_projects(vault, {"projects": {"pj": {"id": "pj", "name": "项目", "field": "测试", "lists": []}}})
+    box = {"x": 0, "y": 0, "w": 196, "h": 64, "group": None, "state": "final"}
+    core.write_json_atomic(core.layout_path(vault, "pj"), {
+        "schema_version": 2, "revision": 1, "groups": {}, "nodes": {"某派": dict(box), "乙": dict(box)}})
+    # 对比组那张画布就摆在同一个目录里，不该被扫进来
+    core.write_json_atomic(core.layout_path(vault, "cmp-某组"), {
+        "schema_version": 2, "revision": 1, "groups": {}, "nodes": {"某派": dict(box)}})
+
+    got = core.project_layouts(vault)
+    assert list(got) == ["pj"], f"只认登记过的项目画布，实际 {list(got)}"
+
+    # 全局图上干净，项目画布上有一个
+    clean = {"schema_version": 2, "revision": 1, "groups": {}, "nodes": {"知识点": dict(box)}}
+    off = core.off_canvas(index, clean, got)
+    assert [(o["id"], o["where"]) for o in off] == [("某派", "pj")], off
+
+    # 两张图上都有就报两条，各带各的 where
+    dirty = {**clean, "nodes": {**clean["nodes"], "某派": dict(box)}}
+    off2 = core.off_canvas(index, dirty, got)
+    assert [(o["id"], o["where"]) for o in off2] == [("某派", ""), ("某派", "pj")], off2
+
+    # **连带的坑**：skip 必须按 `(where, id)` 配对。项目画布上那个「某派」是该清的越界项，
+    # 主图上这个同名的「某派」是个真草稿——只按 id 跳会把后者一起吞掉。
+    import datetime as dt
+    draftly = {**clean, "nodes": {**clean["nodes"], "某派": {**box, "state": "draft"}}}
+    skip = {(o["where"], o["id"]) for o in core.off_canvas(index, draftly, got)}
+    assert skip == {("", "某派"), ("pj", "某派")}, skip
+    kept = core.drafts(draftly, dt.date.today(), {("pj", "某派")})
+    assert [(d["id"], d["where"]) for d in kept] == [("某派", "")], "只跳项目那条，主图的草稿要留着"
+
+
+@case
+def 项目画布上的草稿也要报出来():
+    """和 `off_canvas` 当时那个盲区是同一个病：这张清单原先只看全局 layout。
+
+    实盘上 `ai.json` 挂着 2 个草稿（`n-gram语言模型` / `DeepSeek-V3`），
+    放了多久都没人提（2026-09-22 核出来的）。
+
+    「按层归位」那个按钮只管主图（`curation.regroup` 走的是 `load_pair`，
+    只加载全局 layout），所以项目画布那几条要标出来源，别让人点了没反应还以为坏了。
+    """
+    vault = make_vault({"nodes/x/甲.md": node_md("甲", field="测试"),
+                        "nodes/x/乙.md": node_md("乙", field="测试")})
+    core.save_projects(vault, {"projects": {"pj": {"id": "pj", "name": "项目", "field": "测试", "lists": []}}})
+    old = (_dt.date.today() - _dt.timedelta(days=30)).isoformat()
+    draft = {"x": 0, "y": 0, "w": 196, "h": 64, "group": None, "state": "draft", "placedAt": old}
+    core.write_json_atomic(core.layout_path(vault, "pj"), {
+        "schema_version": 2, "revision": 1, "groups": {}, "nodes": {"乙": dict(draft)}})
+    glob_layout = {"schema_version": 2, "revision": 1, "groups": {}, "nodes": {"甲": dict(draft)}}
+
+    got = core.drafts(glob_layout, _dt.date.today(), None, core.project_layouts(vault))
+    assert [(d["id"], d["where"]) for d in got] == [("甲", ""), ("乙", "pj")], got
+    assert all(d["stale"] for d in got), "放了 30 天，两条都该标 stale"
+
+    # 不传 projects 就还是只看全局：老调用方不受影响
+    only = core.drafts(glob_layout, _dt.date.today())
+    assert [d["id"] for d in only] == ["甲"], only
 
 
 @case

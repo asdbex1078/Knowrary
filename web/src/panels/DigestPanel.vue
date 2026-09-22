@@ -44,14 +44,16 @@ const total = () => {
             <button class="btn subtle tiny" :class="{ tail: !digest.counts.stale_drafts }"
                     :disabled="busy"
                     title="把落在领域大框里的草稿挪进它那一层的泳道（硬件 / 系统软件 / AI应用…）。
-只动草稿，只往已有的泳道里挪；节点没填 layer 的先去检查器里补上"
+只动草稿，只往已有的泳道里挪；节点没填 layer 的先去检查器里补上。
+**只管主图**：项目画布不画分组框，那边的草稿不在这一下的范围里"
                     @click="emit('regroup')">
               <Icon name="layers" :size="13" />按层归位
             </button>
           </div>
           <ul>
-            <li v-for="d in digest.drafts" :key="d.id" class="edge-row">
+            <li v-for="d in digest.drafts" :key="`${d.where || ''}/${d.id}`" class="edge-row">
               <span class="to link" :class="{ 'warn-text': d.stale }" @click="emit('goto', d.id)">{{ d.id }}</span>
+              <span v-if="d.where" class="dim" style="font-size: 11px">项目「{{ d.where }}」</span>
               <span class="yr">{{ d.days ?? '?' }} 天</span>
             </li>
           </ul>
@@ -250,14 +252,16 @@ const total = () => {
             <span class="count">{{ digest.counts.off_canvas }}</span>
           </div>
           <p class="dim" style="font-size: 11.5px; margin-bottom: 6px">
-            对比组 / 流派 / 领域线**不上全局画布**（主图已经够挤了），
+            对比组 / 流派 / 领域线**不上画布**（主图已经够挤了），
             但把一个知识点改成这些类型之后，画布上那份旧条目没人清 ——
             <b>改 md 不动画布</b>，这条分界是对的，代价就是这一类。
+            <b>项目画布也一起报</b>：它是另一套文件，全局那份清干净了不代表项目图上也没了。
           </p>
           <ul>
-            <li v-for="o in digest.off_canvas" :key="o.id" class="card" style="padding: 8px 10px">
+            <li v-for="o in digest.off_canvas" :key="`${o.where || ''}/${o.id}`" class="card" style="padding: 8px 10px">
               <span class="link" @click="emit('goto', o.id)">{{ o.name }}</span>
-              <span class="dim" style="font-size: 11.5px"> · {{ o.type }} —— 还占着主图的位置</span>
+              <span class="dim" style="font-size: 11.5px">
+                · {{ o.type }} —— 还占着{{ o.where ? `项目「${o.where}」画布` : '主图' }}的位置</span>
             </li>
           </ul>
         </section>

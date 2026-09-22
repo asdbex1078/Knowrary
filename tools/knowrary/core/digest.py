@@ -10,9 +10,12 @@ from collections import Counter, defaultdict
 from difflib import SequenceMatcher
 
 from .compare import gaps as compare_gaps
+from .layout import layout_path
+from .mdio import load_json
 from .parser import OFF_CANVAS_TYPES
 from .placement import by_field_and_layer, inbox_ids
 from .issues import summary as issues_summary
+from .projects import load_projects
 from .review import due_nodes, load_log
 
 DRAFT_STALE_DAYS = 7        # 草稿放这么多天还没定稿就提醒
@@ -36,19 +39,29 @@ def _age_days(value, today: dt.date) -> int | None:
         return None
 
 
-def drafts(layout: dict, today: dt.date, skip: set[str] | None = None) -> list[dict]:
-    """画布上还挂着 draft 的点。
+def drafts(layout: dict, today: dt.date, skip: set[tuple[str, str]] | None = None,
+           projects: dict[str, dict] | None = None) -> list[dict]:
+    """画布上还挂着 draft 的点。带 `where`：空串是全局图，否则是项目 id。
 
     `skip` 是「压根不该在画布上」的那些（见 off_canvas）——
     对它们说「草稿放了 N 天该定稿了」是句没意义的催促，该做的是把它们从画布上清掉。
+    **按 `(where, id)` 配对**，不是光看 id：同一个名字可能在主图上是个真草稿、
+    在某张项目画布上是个该清掉的越界项，只按 id 跳会把前者一起吞掉。
+
+    `projects` 和 `off_canvas` 那个参数是同一份东西（见 `project_layouts`）。
+    **项目画布上的草稿也得报**：2026-09-22 实盘上 `ai.json` 挂着 2 个
+    （`n-gram语言模型` / `DeepSeek-V3`），而这张清单原先只看全局 layout，
+    于是它们放了多久都没人提——和 `off_canvas` 当时那个盲区是同一个病。
     """
     out = []
-    for nid, n in sorted(layout.get("nodes", {}).items()):
-        if n.get("state") != "draft" or (skip and nid in skip):
-            continue
-        age = _age_days(n.get("placedAt"), today)
-        out.append({"id": nid, "group": n.get("group"), "placedAt": n.get("placedAt"),
-                    "days": age, "stale": age is not None and age >= DRAFT_STALE_DAYS})
+    for where, doc in [("", layout)] + sorted((projects or {}).items()):
+        for nid, n in sorted((doc.get("nodes") or {}).items()):
+            if n.get("state") != "draft" or (skip and (where, nid) in skip):
+                continue
+            age = _age_days(n.get("placedAt"), today)
+            out.append({"id": nid, "where": where, "group": n.get("group"),
+                        "placedAt": n.get("placedAt"), "days": age,
+                        "stale": age is not None and age >= DRAFT_STALE_DAYS})
     return out
 
 
@@ -301,26 +314,59 @@ def _top_group(gid: str | None, groups: dict) -> str | None:
     return None
 
 
-def off_canvas(index: dict, layout: dict) -> list[dict]:
-    """不该上全局画布、却还摆在上面的点（对比组 / 流派 / 领域线）。
+def project_layouts(vault) -> dict[str, dict]:
+    """读全部项目画布：`{项目 id: layout}`。读不动的那份跳过，不让它挡住整张 Digest。
+
+    **只认 projects.json 里登记过的 id**，不 glob 整个 `layouts/` 目录——
+    对比组的画布也住在那儿（`build_compare_layout`），而那张图另说（见 `off_canvas`）。
+    """
+    out: dict[str, dict] = {}
+    for pid in (load_projects(vault).get("projects") or {}):
+        path = layout_path(vault, pid)
+        if not path.exists():
+            continue
+        try:
+            doc = load_json(path)
+        except (ValueError, OSError):      # 手改坏了一份不该让整张 Digest 打不开
+            continue
+        if isinstance(doc, dict):
+            out[pid] = doc
+    return out
+
+
+def off_canvas(index: dict, layout: dict, projects: dict[str, dict] | None = None) -> list[dict]:
+    """不该上画布、却还摆在上面的点（对比组 / 流派 / 领域线）。
 
     **改 md 不动画布，这条分界是对的**（否则手工摆位会被一次改 frontmatter 冲掉），
-    代价就是这一类：把一个知识点改成 `type: 流派` 之后它该从主图上消失，
+    代价就是这一类：把一个知识点改成 `type: 流派` 之后它该从图上消失，
     而 `OFF_CANVAS_TYPES` 只在**布局生成**时跳过，已经摆上去的那份没人清。
 
     实盘上撞到 4 个：`CISC` / `RISC` / `符号主义` / `连接主义` 迁成流派之后
     还在主图上占着位置，而且 `符号主义` / `连接主义` 那两个还挂在草稿列表里
     ——「草稿放了 N 天该定稿了」，但它们压根就不该在那儿。
+
+    `projects` 是项目画布（`{项目 id: layout}`，见 `project_layouts`）。
+    **项目画布必须一起扫**：它们是另一套文件，这条诊断原先只看全局那份，
+    于是全局清干净之后，项目画布上的同一类残留没有任何地方会提。
+    2026-09-22 实盘核出来的：全局那 4 个早清了，`ai.json` 上还摆着
+    `符号主义` / `连接主义`——用户在项目图里看得见，Digest 里一片干净。
+
+    **对比组画布不在扫描范围内**：那张图上摆的就是它的成员，
+    「不该上图」对它不成立——所以这里只认 projects.json 登记过的画布。
+
+    每项带 `where`：空串是全局图，否则是项目 id。同一个点在两张图上就报两条，
+    因为要清也得分别清（layout 是按图存的）。
     """
     types = OFF_CANVAS_TYPES
     by_id = {n["id"]: n for n in index["nodes"]}
     out = []
-    for nid, place in sorted((layout.get("nodes") or {}).items()):
-        node = by_id.get(nid)
-        if not node or node.get("type") not in types:
-            continue
-        out.append({"id": nid, "type": node.get("type"),
-                    "name": node.get("name") or nid, "group": place.get("group")})
+    for where, doc in [("", layout)] + sorted((projects or {}).items()):
+        for nid, place in sorted((doc.get("nodes") or {}).items()):
+            node = by_id.get(nid)
+            if not node or node.get("type") not in types:
+                continue
+            out.append({"id": nid, "type": node.get("type"), "where": where,
+                        "name": node.get("name") or nid, "group": place.get("group")})
     return out[:MAX_ITEMS]
 
 
@@ -423,8 +469,11 @@ def build_digest(vault, index: dict, layout: dict, today: dt.date | None = None)
     today = today or dt.date.today()
     log = load_log(vault)
     inbox = inbox_ids(index, layout)
-    off_list = off_canvas(index, layout)
-    draft_list = drafts(layout, today, {o["id"] for o in off_list})
+    # 一次读盘两处用：off_canvas 和 drafts 看的是同一批项目画布
+    proj = project_layouts(vault)
+    off_list = off_canvas(index, layout, proj)
+    # skip 按 `(where, id)` 配对：只按 id 跳，会把主图上一个同名的真草稿一起吞掉
+    draft_list = drafts(layout, today, {(o["where"], o["id"]) for o in off_list}, proj)
     due = due_nodes(index, log, today)
     stubs = [n["id"] for n in index["nodes"] if n.get("stub")]
     cycles = [w for w in index.get("warnings", []) if w.get("code") == "relation_cycle"]

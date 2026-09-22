@@ -396,7 +396,9 @@ def cmd_digest(args: argparse.Namespace) -> None:
     for nid in d["inbox"][:n]:
         print(f"  · Inbox：{nid}")
     for item in d["drafts"][:n]:
-        print(f"  · 草稿：{item['id']}（放了 {item['days']} 天{'，该定稿了' if item['stale'] else ''}）")
+        where = f"，在项目「{item['where']}」的画布上" if item.get("where") else ""
+        print(f"  · 草稿：{item['id']}（放了 {item['days']} 天"
+              f"{'，该定稿了' if item['stale'] else ''}{where}）")
     for item in d["due"][:n]:
         print(f"  · 待复习：{item['id']}（逾期 {item['overdue_days']} 天）")
     for b in d["bridges"][:n]:
@@ -414,7 +416,8 @@ def cmd_digest(args: argparse.Namespace) -> None:
         alone = "（两端都还是孤点）" if h["lonely"] == 2 else "（有一端是孤点）" if h["lonely"] else ""
         print(f"  · 连边建议：{h['source']} {h['relation']} → {h['target']}{alone} — {h['reason']}")
     for o in d["off_canvas"][:n]:
-        print(f"  ⚠ 不该上图：{o['id']}（{o['type']}）还摆在全局画布上 —— "
+        where = f"项目「{o['where']}」的画布" if o.get("where") else "全局画布"
+        print(f"  ⚠ 不该上图：{o['id']}（{o['type']}）还摆在{where}上 —— "
               f"改 md 不动画布，所以迁类型之后这份旧条目没人清")
     for sq in d["squatted"][:n]:
         who = "、".join(f"{v['id']}（{v['group']}）" for v in sq["victims"][:3])
