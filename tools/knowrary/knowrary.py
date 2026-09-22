@@ -662,23 +662,45 @@ def cmd_llm(args: argparse.Namespace) -> None:
     if path is None:
         example = vault / ".knowrary" / llm_backend.EXAMPLE_NAME
         print(f"提示：复制 {example} 到 {llm_backend.config_path(vault)} 后编辑，即可切换 provider / 模型")
-    if args.action != "test":
+    if args.action == "list":
         return
     # 只取真正的角色，`_说明` 那类注释键不算——否则会拿一整段说明去当 provider 名
     roles = {r: n for r, n in cfg["roles"].items() if not str(r).startswith("_")}
     targets = [args.llm] if args.llm else sorted(set(roles.values()))
-    failed = 0
-    for name in targets:
-        _, provider = llm_backend.resolve_provider(cfg, "learn", name)
-        try:
-            reply = llm_backend.ping(provider, args.model)
-            ok = "OK" in reply.upper()
-            print(f"  {'✓' if ok else '⚠'} {name}: {reply[:80]!r}")
-            failed += 0 if ok else 1
-        except SystemExit as e:
-            failed += 1
-            print(f"  ✗ {name}: {e}")
+    run = _probe_one if args.action == "probe" else _ping_one
+    failed = sum(run(name, llm_backend.resolve_provider(cfg, "learn", name)[1], args)
+                 for name in targets)
     sys.exit(1 if failed else 0)
+
+
+def _ping_one(name: str, provider: dict, args: argparse.Namespace) -> int:
+    """通不通：一个极短的请求，要求模型只回 OK。返回 1 = 这个 provider 没过。"""
+    try:
+        reply = llm_backend.ping(provider, args.model)
+    except SystemExit as e:
+        print(f"  ✗ {name}: {e}")
+        return 1
+    ok = "OK" in reply.upper()
+    print(f"  {'✓' if ok else '⚠'} {name}: {reply[:80]!r}")
+    return 0 if ok else 1
+
+
+def _probe_one(name: str, provider: dict, args: argparse.Namespace) -> int:
+    """能不能等：发一个要想很久的请求，看首字节几秒、断在第几秒。
+
+    `test` 测不出 2026-09-21 那类故障——断的不是连通性，是模型静默思考期间连接被掐，
+    短请求永远碰不到那堵墙。**首字节那个数是重点**：它卡在一个整数附近（60 秒之类），
+    就说明路径上某一跳有空闲超时，跟模型本身没关系。
+    """
+    row = llm_backend.probe(provider, args.model, args.pad_chars)
+    first = f"{row['first_byte']:.1f}s" if row["first_byte"] is not None else "一个字都没到"
+    if row["ok"]:
+        print(f"  ✓ {name}（{row['model']}）：首字节 {first}，读完 {row['total']:.1f}s，"
+              f"{row['chars']} 字")
+        return 0
+    print(f"  ✗ {name}（{row['model']}）：第 {row['total']:.1f} 秒断了，首字节 {first}"
+          f"\n      {row['error']}")
+    return 1
 
 
 # ---------------------------------------------------------------- CLI
@@ -766,10 +788,12 @@ def add_llm_parsers(sub: argparse._SubParsersAction) -> None:
     pj.set_defaults(fn=cmd_projects)
 
     l = sub.add_parser("llm", help="查看 / 测试 LLM 配置")
-    l.add_argument("action", choices=["list", "test"], nargs="?", default="list")
+    l.add_argument("action", choices=["list", "test", "probe"], nargs="?", default="list")
     l.add_argument("--vault", required=True)
     l.add_argument("--llm", help="只测试这个 provider（默认测试各角色用到的）")
     l.add_argument("--model")
+    l.add_argument("--pad-chars", type=int, default=20000,
+                   help="probe 用多长的上下文把静默期撑起来（默认 2 万字，约等于出事那轮的量级）")
     l.set_defaults(fn=cmd_llm)
 
 

@@ -10,6 +10,7 @@
 cp .knowrary/llm.example.json .knowrary/llm.local.json   # 然后编辑：填模型名、密钥或 env:变量名
 python3 tools/knowrary/knowrary.py llm list --vault .      # 看当前配置
 python3 tools/knowrary/knowrary.py llm test --vault .      # 连通性测试（每个角色用到的 provider 各问一句）
+python3 tools/knowrary/knowrary.py llm probe --vault .     # 能不能等：静默期被掐时，首字节卡在第几秒
 ```
 
 - **provider 三种类型**：`claude-cli`（复用本机 Claude Code 登录，零配置）、`anthropic`（官方 API）、`openai`（OpenAI 兼容协议：OpenAI / DeepSeek / 通义 / Ollama / vLLM 都是它）。

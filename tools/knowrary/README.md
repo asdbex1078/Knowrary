@@ -42,6 +42,7 @@ python3 $KG article <文章> --vault <vault> --field <领域> [--dry-run] [--llm
 # 4. LLM 配置：<vault>/.knowrary/llm.local.json（gitignore 忽略 *.local.json），模板 <vault>/.knowrary/llm.example.json
 python3 $KG llm list --vault <vault>            # 看 provider / 角色
 python3 $KG llm test --vault <vault> [--llm x]  # 连通性测试；退出码非 0 表示有 provider 不通
+python3 $KG llm probe --vault <vault> [--llm x] # 能不能等：发一个要想很久的请求，量首字节 / 断在第几秒
 #    provider 类型：claude-cli（复用 Claude Code 登录）/ anthropic / openai（OpenAI 兼容：DeepSeek、通义、Ollama…）
 #    角色：learn（对话 + 拆节点）/ review（审核）；api_key 可写 env:VAR 引用环境变量；环境变量 KNOWRARY_LLM_CONFIG 可改配置路径
 #    工具协议自动挑：anthropic / openai 走原生 function calling，claude-cli 退回文本围栏（它没有结构化工具接口）

@@ -2581,6 +2581,46 @@ def 配置错和4xx一次都不重试():
         backend._post_json = real
 
 
+@case
+def probe_断掉时要报出第几秒断的而且只发一次():
+    """`llm test` 那条路测不出 2026-09-21 那类故障：断的不是连通性，是模型静默思考
+    期间连接被掐，而 `ping` 的请求太短，永远碰不到那堵墙。
+
+    **probe 不重试**（走 `_chat_once`）：重试会把几次尝试的耗时叠成一个数，
+    而这里要看的恰恰是单次在第几秒断——那个数卡在 60 秒附近就说明是空闲超时。
+    """
+    import llm_backend as backend
+
+    base, hits, srv = _dead_upstream(["drop"])
+    try:
+        row = backend.probe(_openai_provider(base), pad_chars=100)
+    finally:
+        srv.close()
+    assert row["ok"] is False, row
+    assert row["first_byte"] is None and row["chars"] == 0, ("一个字都没到才对", row)
+    # 具体是 RemoteDisconnected 还是 ConnectionResetError，取决于对方在收请求的哪一刻撒手
+    # （请求体越长越容易撞上后者）。契约是**连接层的失败一律收成带 url 的那一条**。
+    assert row["error"].startswith("LLMTransient: LLM 连接失败"), row["error"]
+    assert base in row["error"], row["error"]
+    assert row["total"] >= 0, row
+    assert hits == ["drop"], (hits, "probe 重试了——那就量不出单次在第几秒断")
+
+
+@case
+def probe_正常回流要量得出首字节():
+    import llm_backend as backend
+
+    base, hits, srv = _dead_upstream(["sse"])
+    try:
+        row = backend.probe(_openai_provider(base), pad_chars=100)
+    finally:
+        srv.close()
+    assert row["ok"] is True, row
+    assert row["first_byte"] is not None and row["first_byte"] <= row["total"], row
+    assert row["chars"] >= 1, row
+    assert len(hits) == 1, hits
+
+
 # ---------------------------------------------------------------- 执行
 
 def main() -> None:

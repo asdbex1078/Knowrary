@@ -384,6 +384,47 @@ def ping(provider: dict, model_override: str | None = None) -> str:
     return ask("只回复两个大写字母：OK", provider, model_override).strip()
 
 
+# probe 用的那道题：**必须逼它先想再开口**，静默期才撑得起来。
+# 边想边说的模型第一个字很快就来了，那样量到的首字节没有意义。
+PROBE_ASK = ("不要边想边说。先在心里把下面这道题完整推演一遍，每一步都确认站得住，"
+             "然后一次性输出结论。\n\n"
+             "题目：把「从统计计数到神经网络」这条线上的关键转折按时间排好，"
+             "并说明每一次转折到底解决了上一代的哪个具体缺陷。")
+PROBE_PAD = "背景资料，与上面的问题无关，仅用于撑长上下文。"
+
+
+def probe(provider: dict, model_override: str | None = None, pad_chars: int = 20000) -> dict:
+    """发一个"要想很久"的请求，量清楚这条链路在第几秒、断在哪一类。
+
+    **和 `ping()` 的分工**：`ping` 问"通不通"（一个极短的请求），`probe` 问"能不能等"。
+    2026-09-21 那次故障 `ping` 是测不出来的——断的不是连通性，是模型静默思考期间连接
+    被掐（`RemoteDisconnected`：一个响应字节都没到），而短请求永远碰不到那堵墙。
+    两次失败一次 63 秒、一次 190 秒（= 三次尝试各 63 秒），指向路径上某一跳的 60 秒
+    空闲超时——中转站的网关，或者本机代理的节点。probe 就是用来把这个数量出来的。
+
+    **只发一次，不重试**（走 `_chat_once` 而不是 `chat`）：重试会把几次尝试的耗时叠成
+    一个数，而这里要看的恰恰是单次在第几秒断。
+    """
+    pad = PROBE_PAD * max(1, pad_chars // len(PROBE_PAD))
+    marks: dict = {"chars": 0}
+    t0 = time.monotonic()
+
+    def on_delta(piece: str) -> None:
+        marks.setdefault("first", time.monotonic() - t0)
+        marks["chars"] += len(piece)
+
+    row = {"model": model_override or provider.get("model"), "first_byte": None, "chars": 0}
+    try:
+        text, _calls, usage = _chat_once([{"role": "user", "content": pad + "\n\n" + PROBE_ASK}],
+                                         provider, model_override, on_delta, None, None)
+    except SystemExit as exc:
+        return {**row, "ok": False, "total": time.monotonic() - t0,
+                "first_byte": marks.get("first"), "chars": marks["chars"],
+                "error": f"{type(exc).__name__}: {exc}"}
+    return {**row, "ok": True, "total": time.monotonic() - t0, "first_byte": marks.get("first"),
+            "chars": marks["chars"] or len(text), "model": usage.get("model") or row["model"]}
+
+
 
 # ---------------------------------------------------------------- 多轮对话 + 工具协议
 #
