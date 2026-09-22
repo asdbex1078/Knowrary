@@ -858,11 +858,16 @@ class UsageBucket(Strict):
     cache_read_tokens: int = 0
     cache_write_tokens: int = 0
     cache_ratio: float | None = None   # 读 ÷ 写。没写过缓存就是 None（不适用），不是 0
+    cache_hit_rate: float | None = None  # 命中 ÷ 输入。写过缓存的口径拿不到这个数（见 core/usage._hit_rate）
 
 
 class CacheWorst(Strict):
+    """今天最难看的那个 op。**按 `CacheHealth.kind` 那一个指标评出来的**，
+    另一个字段必然是 None——两套口径的数字没有可比性，不能混在一起排名。"""
+
     op: str
-    ratio: float
+    ratio: float | None = None
+    hit_rate: float | None = None
     calls: int
 
 
@@ -870,11 +875,18 @@ class CacheHealth(Strict):
     """缓存到底有没有命中——**唯一能在线上回答这件事的数**。
 
     缓存失效不报错、答案也全对，测试够不着真实 API，所以只能靠账本上这个比值盯着。
+
+    **指标随 provider 口径换**（`kind`）：报缓存写入的（claude-cli / anthropic）看读写比，
+    只报命中数的（OpenAI 兼容）看命中率。写死一个的后果是换完 provider 这盏灯就熄了——
+    2026-09-21 换到千问那天，读写比整天 `—`、`ok` 恒为真，既不会红也不会绿。
     """
 
+    kind: str = "none"                 # 今天该看哪个指标，**值就是字段名**：ratio / hit_rate / none
     ratio: float | None = None         # **今天**多轮对话的读写比（不是总账：累计桶只加不减，红了就再也不会绿）
+    hit_rate: float | None = None      # 命中 ÷ 输入。OpenAI 兼容那一路只有这个数
     worst: CacheWorst | None = None    # 今天多轮对话里最难看的那个 op
-    healthy: float = 3.0               # 低于它就该查了（健康的多轮循环在 5-10×）
+    healthy: float = 3.0               # 读写比低于它就该查了（健康的多轮循环在 5-10×）
+    healthy_hit: float = 0.6           # 命中率低于它就该查了（前缀只增不改时该有 80%+）
     window: str = ""                   # 这个比值算的是哪一天（本地日期）
     calls: int = 0                     # 这一天有几次多轮调用；太少就别急着信这个数
     ok: bool = True

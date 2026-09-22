@@ -468,7 +468,11 @@ def get_llm_usage() -> UsageRead:
     # 两边都不存对方的数，接口现拼（同日历那条纪律：派生，不落第二份）。
     return UsageRead(**data, roles=roles, provider="、".join(sorted(set(roles.values()))),
                      cards=core.card_stats(vault, data["date"]),
-                     cost_known=bool(data["totals"]["cost_usd"]) or _reports_cost(cfg, roles))
+                     # **只看当前角色指向谁**。原来还 or 了一句 `totals.cost_usd 非零`，
+                     # 于是换到不报价的 provider 之后，账本里那些历史金额会把这个开关顶成真，
+                     # 页面继续摆 $ ——今天花了多少显示成 $0.00、每张落地的卡 ≈ $0.00。
+                     # 那不是"今天没花钱"，是这个 provider 压根不报价（2026-09-21 千问）。
+                     cost_known=_reports_cost(cfg, roles))
 
 
 def _llm_config(vault):

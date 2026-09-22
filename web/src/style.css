@@ -1261,6 +1261,8 @@ kbd.key {
 .usage-row .op { min-width: 96px; color: var(--text-2); }
 .usage-row .tail { margin-left: auto; color: var(--text-3); }
 .usage-row.bad .op { color: var(--warn-text, #b4432c); }
+/* 是哪个模型打的这一笔。换 provider 那天全靠它认人，所以宁可截断也要留一列 */
+.usage-row .mdl { max-width: 118px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .rename-row { font-size: 12.5px; line-height: 1.9; }
 .rename-row b { font-size: 14px; margin-right: 4px; }
 .pool-row { display: flex; gap: 5px; margin-top: 12px; }

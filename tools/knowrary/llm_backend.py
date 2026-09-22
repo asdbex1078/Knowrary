@@ -280,13 +280,26 @@ def _ask_openai(prompt: str, provider: dict, model: str) -> tuple[str, dict]:
         text = data["choices"][0]["message"]["content"]
     except (KeyError, IndexError, TypeError):
         raise SystemExit("OpenAI 兼容接口返回格式异常：\n" + json.dumps(data, ensure_ascii=False)[:800])
-    raw = data.get("usage") or {}
+    return text, _openai_usage(data.get("usage") or {}, data.get("model") or model)
+
+
+def _openai_usage(raw: dict, model: str) -> dict:
+    """OpenAI 兼容口径的用量。**这一路没有"写了多少缓存"那一列**——
+
+    兼容接口只回 `prompt_tokens_details.cached_tokens`（这一次命中了多少），
+    百炼 / DeepSeek 这类隐式缓存的写入既不上报也不单独计费，于是 `cache_write_tokens`
+    恒为 0。那是口径如此，不是没缓存：判有没有吃到缓存要看 `cache_read ÷ input`，
+    别用读写比（那是 anthropic 那一路的指标，在这里永远除不出来）。
+
+    三条路都从这里过：`_ask_openai`、`_chat_openai` 的流式与非流式分支。
+    原来非流式那支直接还一张空表，token 全丢账——账本上那长得和"没命中"一模一样。
+    """
     u = empty_usage()
-    u["model"] = data.get("model") or model
+    u["model"] = model
     u["input_tokens"] = int(raw.get("prompt_tokens") or 0)
     u["output_tokens"] = int(raw.get("completion_tokens") or 0)
     u["cache_read_tokens"] = int((raw.get("prompt_tokens_details") or {}).get("cached_tokens") or 0)
-    return text, u
+    return u
 
 
 def _post_json(url: str, headers: dict, payload: dict) -> dict:
@@ -922,7 +935,8 @@ def _chat_openai(messages: list[dict], provider: dict, model: str, on_delta,
         calls = [{"id": c.get("id") or "", "name": (c.get("function") or {}).get("name") or "",
                   "args": _loads_args((c.get("function") or {}).get("arguments"))}
                  for c in (msg.get("tool_calls") or [])]
-        return msg.get("content") or "", calls, empty_usage()
+        return (msg.get("content") or "", calls,
+                _openai_usage(data.get("usage") or {}, data.get("model") or model))
 
     payload["stream_options"] = {"include_usage": True}   # 不要它就拿不到这轮的 token 数
     parts, usage = [], empty_usage()
@@ -945,9 +959,7 @@ def _chat_openai(messages: list[dict], provider: dict, model: str, on_delta,
                 row["json"] += fn.get("arguments") or ""
         raw = data.get("usage") or {}
         if raw:
-            usage["input_tokens"] = int(raw.get("prompt_tokens") or 0)
-            usage["output_tokens"] = int(raw.get("completion_tokens") or 0)
-            usage["cache_read_tokens"] = int((raw.get("prompt_tokens_details") or {}).get("cached_tokens") or 0)
+            usage = _openai_usage(raw, data.get("model") or model)
     return "".join(parts), _finish_calls(pending), usage
 
 
