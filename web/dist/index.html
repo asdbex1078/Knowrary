@@ -4,6 +4,13 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Knowrary · 结构视图</title>
+    <script>
+      // 主题要在**样式表生效之前**定好，否则默认深色时会先闪一屏白。
+      // 这一句故意写在这儿而不是打包进 bundle：bundle 是在 CSS 之后才跑的。
+      try {
+        document.documentElement.dataset.theme = localStorage.getItem('knowrary-theme') || 'dark'
+      } catch (e) { document.documentElement.dataset.theme = 'dark' }
+    </script>
     <script type="module" crossorigin src="./assets/index.js"></script>
     <link rel="stylesheet" crossorigin href="./assets/index.css">
   </head>

@@ -41,8 +41,9 @@ const TABS = [
   { id: 'vault', name: '知识库', icon: 'folder', where: '这台机器上的选择，不属于任何一个库' },
   { id: 'review', name: '学习与复习', icon: 'rotate', where: '跟着 vault 走，换台机器也一样' },
   { id: 'audit', name: '写入审核', icon: 'checklist', where: '跟着 vault 走，换台机器也一样' },
-  { id: 'canvas', name: '画布', icon: 'map', where: '只存在这台机器上' },
-  { id: 'look', name: '外观', icon: 'sun', where: '只存在这台机器上' },
+  // 画布和外观合成一栏：两边都是 localStorage、都是"这台机器上怎么看图"，
+  // 而「外观」里只有一个深色主题开关——一个开关不值得单开一栏，点进去只会觉得空。
+  { id: 'canvas', name: '画布与外观', icon: 'map', where: '只存在这台机器上' },
   { id: 'models', name: '模型', icon: 'cube', where: '跟着 vault 走' },
 ]
 const tab = ref('review')
@@ -373,13 +374,10 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onKey, true))
               <span class="check"><Icon name="check" :size="11" :width="2.6" /></span>
               <span class="label">小地图<span class="sub">右下角那块缩略图</span></span>
             </label>
-          </template>
-
-          <template v-else-if="tab === 'look'">
             <label class="switch-row">
               <input type="checkbox" :checked="theme === 'dark'" @change="emit('toggle-theme')" />
               <span class="check"><Icon name="check" :size="11" :width="2.6" /></span>
-              <span class="label">深色主题<span class="sub">跟着这台机器，不进 vault</span></span>
+              <span class="label">深色主题<span class="sub">和上面几个一样，只跟着这台机器，不进 vault</span></span>
             </label>
           </template>
 

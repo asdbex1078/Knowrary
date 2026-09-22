@@ -122,12 +122,38 @@ const compareData = ref(null)
 const compareBusy = ref(false)
 const compareFill = ref(null)      // 补一轮的提议（CompareProposal），null = 没开
 const compareFilling = ref(false)
-const autoLod = ref(true)                // 缩小自动折叠成簇卡片（设计文档 3.7）
+/**
+ * 「画布与外观」那一栏的**出厂默认**：别人 clone 下来第一眼看到的样子。
+ *
+ * 这几项都只存这台机器的 localStorage（换台机器本来就该各看各的），所以"我的库里
+ * 调好的"传不出去——**要让别人也开箱即用，只能改这张表**。改这里就改了所有新装的人。
+ *
+ * 值是"开着更好"还是"关着更好"的判断，写在各自那行后面。
+ */
+const VIEW_DEFAULTS = {
+  snap: true,        // 拖动出参考线、松手贴 8px 网格：手摆的图能横平竖直，代价只是少一点自由
+  avoid: false,      // 连线绕开卡片：**默认关**。它把线全掰成直角，是另一种观感，让人自己挑
+  lod: true,         // 缩小自动折叠成簇：一屏几百个点必须靠它，关掉就是一团麻
+  aggregate: true,   // 跨组边聚合成一束：193 条散线 → 60 条组内 + 16 束跨组
+  map: true,         // 右下角小地图
+  theme: 'dark',     // 这张图是深色底更耐看：满屏彩色圆点和线，浅色底上一片刺眼
+}
+
+/** 读一个本机偏好：没存过就用出厂默认。存的是 '1' / '0'，别用 JSON.parse 兜圈子。 */
+function pref(key, fallback) {
+  const raw = localStorage.getItem(`knowrary-${key}`)
+  return raw === null ? fallback : raw !== '0'
+}
+
+/** 记一个本机偏好。**每个开关都要记**——面板上摆着的开关刷新就回弹，比没有这个开关更糟。 */
+function savePref(key, on) {
+  try { localStorage.setItem(`knowrary-${key}`, on ? '1' : '0') } catch { /* 无痕模式 */ }
+}
+
+const autoLod = ref(pref('lod', VIEW_DEFAULTS.lod))      // 缩小自动折叠成簇卡片（设计文档 3.7）
 // 对齐线 + 落点吸附：和主题、小地图一样是"这台机器上怎么摆图"的偏好，不进 layout.json
-const snap = ref(localStorage.getItem('knowrary-snap') !== '0')
-// 连线绕开卡片：默认不开，它会把线掰成直角，是另一种观感
-// 默认**开**：线被卡片盖住是实打实看不见信息，直角走线只是观感问题
-const avoidNodes = ref(localStorage.getItem('knowrary-avoid') !== '0')
+const snap = ref(pref('snap', VIEW_DEFAULTS.snap))
+const avoidNodes = ref(pref('avoid', VIEW_DEFAULTS.avoid))
 // 项目画布上把「一跳外部邻居」也借过来画（GPU 前面的 CPU）。
 // **默认关，而且不记在本机**：项目图的本分是专心，周边是"想看一眼"时才要的东西。
 // 不持久化还顺手绕开一个已知问题——首屏 render() 跑在 refreshPlans() 回来之前，
@@ -138,8 +164,11 @@ const focusGroup = ref(null)             // 聚焦的域：点簇卡片进入，
 const search = ref('')                   // 顶栏搜索词
 let panorama = null                      // 进入聚焦前的视口，退出时还原
 const collapsedIds = shallowRef(new Set())
-const theme = ref(localStorage.getItem('knowrary-theme') || 'light')
-const aggregate = ref(true)              // 跨分组边默认聚合成「分组→分组 (n)」
+const theme = ref(localStorage.getItem('knowrary-theme') || VIEW_DEFAULTS.theme)
+// **进场先上主题再挂组件**：onMounted 才设的话，深色默认下会先闪一屏白。
+// index.html 里还有一份更早的（CSS 之前就跑），这里是兜底——两处都改才不闪。
+document.documentElement.dataset.theme = theme.value
+const aggregate = ref(pref('aggregate', VIEW_DEFAULTS.aggregate))   // 跨分组边聚合成「分组→分组 (n)」
 const expanded = ref(new Set())          // 被点开看明细的分组对
 const preview = shallowRef(null)         // 换布局的预览态：{ serverLayout, result }，未落盘
 const history = createHistory()
@@ -203,7 +232,7 @@ watch(relating, (v) => { if (!v) relatePreset.value = null })
 const creating = shallowRef(null)        // 新建知识点对话框：{ at, group }
 const writeNonce = ref(0)                // ++ 一次 = 让检查器展开正文编辑框
 const neighbor = ref(null)               // 只看这个节点和它的直接邻居
-const showMap = ref(localStorage.getItem('knowrary-map') !== '0')
+const showMap = ref(pref('map', VIEW_DEFAULTS.map))
 
 // —— 界面状态：左侧工具窗口、右侧检查器、浮层提示、帮助 ——
 const panel = ref('')                    // '' | inbox | plans | study | digest | assets | timeline
@@ -1898,7 +1927,7 @@ function snapped({ x, y }) {
 
 function toggleSnap() {
   snap.value = !snap.value
-  localStorage.setItem('knowrary-snap', snap.value ? '1' : '0')
+  savePref('snap', snap.value)
   setSnap(graph.value, snap.value)
   setBanner(snap.value ? '对齐已开：拖动时出参考线，松手贴到 8px 网格'
     : '对齐已关：位置完全按手放的地方存', 'success')
@@ -1906,10 +1935,27 @@ function toggleSnap() {
 
 function toggleAvoid() {
   avoidNodes.value = !avoidNodes.value
-  localStorage.setItem('knowrary-avoid', avoidNodes.value ? '1' : '0')
+  savePref('avoid', avoidNodes.value)
   render({ view: 'keep' })
   setBanner(avoidNodes.value ? '连线会绕开卡片了（直角走线；手工拐过的边仍然听你的）'
     : '连线恢复直连', 'success')
+}
+
+/**
+ * 自动折叠 / 跨组边聚合：原来只活在内存里，**刷新就弹回默认**。
+ * 面板上摆着一个关不掉的开关，比没有这个开关更糟——它让人以为自己没点对。
+ */
+function toggleLod() {
+  autoLod.value = !autoLod.value
+  savePref('lod', autoLod.value)
+  render()
+}
+
+function toggleAggregate() {
+  aggregate.value = !aggregate.value
+  savePref('aggregate', aggregate.value)
+  expanded.value = new Set()
+  render()
 }
 
 /** 借不借外部邻居。**只活在这一次会话里**，刷新就回到关——理由见 borrowOn 的注释。 */
@@ -1920,7 +1966,7 @@ function toggleBorrow() {
 
 function toggleMap() {
   showMap.value = !showMap.value
-  localStorage.setItem('knowrary-map', showMap.value ? '1' : '0')
+  savePref('map', showMap.value)
   if (showMap.value) syncView()      // 关着的时候视口框没跟着算，开回来先对一次
 }
 
@@ -3364,8 +3410,7 @@ onBeforeUnmount(() => {
                       :forget-vault="forgetVaultEntry"
                       @close="settingsOn = false" @set="saveSettings"
                       @toggle-snap="toggleSnap" @toggle-avoid="toggleAvoid" @toggle-map="toggleMap"
-                      @toggle-lod="autoLod = !autoLod; render()"
-                      @toggle-aggregate="aggregate = !aggregate; expanded = new Set(); render()"
+                      @toggle-lod="toggleLod()" @toggle-aggregate="toggleAggregate()"
                       @toggle-theme="toggleTheme" />
 
       <MorningBrief v-if="briefOn" :today="todayList" @close="briefOn = false"
@@ -3475,8 +3520,7 @@ onBeforeUnmount(() => {
                      :borrow="borrowOn" :project="mode === 'project' && !!currentProject"
                      :layouts="mode === 'project' ? {} : LAYOUTS" :can-undo="canUndo" :can-redo="canRedo" :locked="!!preview"
                      @toggle-family="visible[$event] = !visible[$event]; render()"
-                     @toggle-aggregate="aggregate = !aggregate; expanded = new Set(); render()"
-                     @toggle-lod="autoLod = !autoLod; render()"
+                     @toggle-aggregate="toggleAggregate()" @toggle-lod="toggleLod()"
                      @toggle-snap="toggleSnap" @toggle-avoid="toggleAvoid" @toggle-borrow="toggleBorrow"
                      @pick-layout="runLayout" @add-note="addNote" @add-image="panel = 'assets'"
                      @undo="undo" @redo="redo" />
