@@ -24,6 +24,11 @@ DEFAULTS = {
     "review_in_chat": True,     # 教练会不会考我 / 催我。**和总闸分开**，见 review_in_chat()
     "review_brief": True,       # 晨间简报
     "review_marks": True,       # 画布上的到期金点、活动栏「今日」角标
+    # 写入审核。**这两个是唯一默认关的开关**，因为它给每次内容写入加一次模型调用和几秒等待——
+    # 「默认全开」那条是对不花钱的功能说的。注意它和上面四个 `review_` 不是一回事：
+    # 那四个是**复习**（间隔重复），这个是 LLM 的 **review 角色**给写入把关。
+    "audit_enabled": False,        # 开：正文类写入先过一遍 review 角色，出结论和建议
+    "audit_force_allowed": True,   # 允许「仍然写入」——模型也会看走眼，不给后门就只能整套关掉
 }
 
 
@@ -63,6 +68,21 @@ def save_settings(patch: dict) -> dict:
             doc[key] = value
     write_json_atomic(settings_path(), doc)
     return doc
+
+
+def audit_on() -> bool:
+    """写入前要不要过一遍 review 角色。
+
+    **关掉它不等于什么都不查**：确定性那一段（未登记类型、正文死链、空摘要、孤点……）
+    照常跑、照常在卡上显示，只是不挡路。关开关的人要的是"别拦我"，不是"别告诉我"；
+    而且今天写得进去的东西，不该因为多了一个默认开关明天就写不进去。
+    """
+    return bool(load_settings().get("audit_enabled"))
+
+
+def audit_force_allowed() -> bool:
+    """审核没通过时还准不准「仍然写入」。关掉 = 挡下就是挡下。"""
+    return bool(load_settings().get("audit_force_allowed"))
 
 
 def review_on() -> bool:

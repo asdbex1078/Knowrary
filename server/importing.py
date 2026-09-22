@@ -13,7 +13,7 @@ from pathlib import Path
 
 import os
 
-from . import curation
+from . import audit, curation
 from .contracts import (FileDiff, ImportClaim, ImportProposal, ImportProposeRequest, ImportRequest, ImportResult,
                         PendingEdge, SourceFile, SourceText, SourcesRead)
 from .index_service import current_index, invalidate
@@ -58,8 +58,13 @@ def run(vault: Path, req: ImportRequest) -> ImportResult:
     pending = [PendingEdge(**{k: v for k, v in p.items() if k in PendingEdge.model_fields}) for p in tr.pending]
     base = dict(files=files, pending=pending, warnings=tr.warnings, counts=tr.counts(), summary=tr.summary)
     if req.dry_run:
-        return ImportResult(applied=False, index_revision=index["revision"], **base)
+        return ImportResult(applied=False, index_revision=index["revision"],
+                            audit=audit.preview(vault, index, edits), **base)
 
+    # 导入走的是同一条闸：一篇文章拆出来的新节点正是最该被审的那批内容
+    report = audit.gate(vault, index, edits, tr.changes, req.force)
+    if report.blocked:
+        return ImportResult(applied=False, index_revision=index["revision"], audit=report, **base)
     snapshot = core.commit(vault, edits) if edits else ""
     origin = {"source": target.source, "imported_at": target.date}
     if tr.pending:
@@ -71,7 +76,7 @@ def run(vault: Path, req: ImportRequest) -> ImportResult:
         core.add_home(vault, lonely, home, origin)
     log = _archive(vault, plan, tr, target)
     invalidate(vault)
-    return ImportResult(applied=True, backup=snapshot or None, log=log,
+    return ImportResult(applied=True, backup=snapshot or None, log=log, audit=report,
                         index_revision=current_index(vault)["revision"], **base)
 
 

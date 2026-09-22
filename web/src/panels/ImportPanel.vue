@@ -44,6 +44,7 @@ const renames = ref({})         // {模型给的 id: 清单 id}
 const promote = ref(new Set())  // 要直接写的待审边 key
 const openBodies = ref(new Set())
 const stale = ref(false)        // 改过了、diff 还是旧的
+const blocked = ref(null)       // 写入审核挡下来的那份结论（AuditReport）
 
 // 批量队列：{ key, name, kind: 'vault' | 'file' | 'paste', path?, text?, status, error? }
 // status: waiting → proposing → review → done | skipped | failed
@@ -151,9 +152,10 @@ function skip(key) {
 
 function msgOf(err) { return err?.body?.detail?.message || err?.body?.detail || err?.message || '未知错误' }
 
-function reqBody(dryRun) {
+function reqBody(dryRun, force = false) {
   return { plan: plan.value, field: field.value.trim(), source: source.value.trim(), folder: folder.value.trim() || null,
-           base_revision: props.revision, dry_run: dryRun, renames: renames.value, promote: [...promote.value] }
+           base_revision: props.revision, dry_run: dryRun, renames: renames.value, promote: [...promote.value],
+           ...(force ? { force: true } : {}) }
 }
 
 /** 单篇：编辑框里的这一篇直接拆。队列里有东西时也能用，但拆完得先处理完它才会起队列。 */
@@ -204,13 +206,21 @@ function togglePromote(e) {
 function toggleBody(id) {
   const next = new Set(openBodies.value); next.has(id) ? next.delete(id) : next.add(id); openBodies.value = next
 }
-function touch() { stale.value = true }
+function touch() { stale.value = true; blocked.value = null }
 
-async function apply() {
+async function apply(force = false) {
   if (!plan.value) return
   working.value = true; error.value = ''
+  blocked.value = null
   try {
-    const res = await postImport(reqBody(false))
+    const res = await postImport(reqBody(false, force))
+    // 审核挡下：**200 + applied:false**，不是错误码。卡上把结论摆出来，人改完再写，
+    // 或者点「仍然写入」——一篇长文重拆一次要好几秒，不该逼人从头来过。
+    if (res.applied === false && res.audit?.verdict === 'block') {
+      blocked.value = res.audit
+      proposal.value = { ...proposal.value, preview: res }
+      return
+    }
     const stubs = new Set((plan.value.stubs || []).map((s) => s.id))
     const born = nodes.value.map((n) => shownId(n.id)).filter((id) => !stubs.has(id))
     const claimed = born.filter((id) => (proposal.value.claims || []).some((c) => c.node_id === id)
@@ -218,6 +228,7 @@ async function apply() {
     emit('applied', { result: res, born, claimed, enriched: enrich.value.map((e) => e.existing) })
     proposal.value = { ...proposal.value, preview: res, applied: true }
   } catch (err) { error.value = `写入失败：${msgOf(err)}`; return } finally { working.value = false }
+  if (blocked.value) return         // 挡下了：停在这一篇，别推进队列
   if (current.value) {
     // 队列里的一篇写完了：记成 done，**这时**才起下一篇（严格串行）。
     // 放在 finally 之后：runNext 的守卫看 working，写入那一下还没收尾就起下一篇会被挡回去
@@ -395,9 +406,27 @@ function reset() {
           </label>
         </div>
 
+        <!-- 写入审核挡下：这里不是错误，是"先改再写"。每条都带依据和改法 -->
+        <div v-if="blocked" class="imp-block imp-audit">
+          <div class="imp-block-head"><Icon name="checklist" :size="13" />审核没通过{{ blocked.summary ? `：${blocked.summary}` : '' }}</div>
+          <div v-for="(it, i) in blocked.issues.filter((x) => x.level === 'block')" :key="i"
+               class="dim" style="font-size: 12px; line-height: 1.7">
+            · <b>{{ it.message }}</b>
+            <span v-if="it.why">（依据：{{ it.why }}）</span>
+            <span v-if="it.fix" style="color: var(--ok, #2f7d52)">→ {{ it.fix }}</span>
+          </div>
+        </div>
+
         <details v-if="preview.warnings.length" class="imp-block">
           <summary class="imp-block-head">{{ preview.warnings.length }} 条提醒</summary>
           <div v-for="(w, i) in preview.warnings" :key="i" class="dim" style="font-size: 12px">· {{ w }}</div>
+        </details>
+
+        <details v-if="(preview.audit?.issues || []).length && !blocked" class="imp-block">
+          <summary class="imp-block-head">{{ preview.audit.issues.length }} 条写入检查</summary>
+          <div v-for="(it, i) in preview.audit.issues" :key="i" class="dim" style="font-size: 12px; line-height: 1.7">
+            · {{ it.message }}<span v-if="it.fix"> —— {{ it.fix }}</span>
+          </div>
         </details>
 
         <pre v-for="f in preview.files" :key="f.path" class="cc-diff"><b>{{ f.path }}</b>
@@ -405,7 +434,9 @@ function reset() {
 
         <div v-if="!proposal.applied" class="cc-acts">
           <button class="btn subtle tiny" :disabled="!canRun" @click="recompute"><Icon name="refresh" :size="12" />重算 diff</button>
-          <button class="btn primary tiny" :disabled="!canRun" @click="apply"><Icon name="check" :size="13" />写入</button>
+          <button class="btn primary tiny" :disabled="!canRun" @click="apply()"><Icon name="check" :size="13" />写入</button>
+          <button v-if="blocked" class="btn subtle tiny" :disabled="!canRun" @click="apply(true)"
+                  title="审核看走眼了：跳过模型那一段直接写（会记进 issues.jsonl）">仍然写入</button>
           <span class="dim" style="font-size: 11px">写前自动备份；待审边记进 pending.json</span>
         </div>
         <p v-else class="dim" style="font-size: 11.5px">

@@ -473,6 +473,84 @@ def 写回后仍然可解析且索引更新():
     assert again.data["stats"]["errors"] == 0, again.data["errors"]
 
 
+# ---------------------------------------------------------------- 写入审核第一段（不调模型）
+
+AUDIT_BODY = "这一段写得足够长，够过 THIN_BODY 那道线。" * 6
+
+
+def audit_vault():
+    """最小的库：甲、乙已经在图里，用来当"已存在的 id"和撞名的对照。"""
+    return build({"nodes/甲.md": node_md("甲", extra="id: 甲\n", rels="- 部件:: [[乙]]\n"),
+                  "nodes/乙.md": node_md("乙", extra="id: 乙\n")})
+
+
+def new_node(nid: str, *, body: str = "", desc: str = "摘要") -> dict:
+    return {"type": "create_node", "source": nid, "body": body,
+            "fields": {"name": nid, "field": "测试", "desc": desc}}
+
+
+def audit_of(vault, result, changes):
+    return core.audit_precheck(vault, result.data, core.plan(vault, changes, result.data))
+
+
+@case
+def 审核第一段_新节点太薄又没关系时报出来():
+    vault, r = audit_vault()
+    issues = audit_of(vault, r, [new_node("丙")])
+    assert {i["code"] for i in issues} == {"thin_body", "no_relation"}, issues
+    assert all(i["level"] == "warn" for i in issues), "这一层只提醒不硬拦，挡不挡是开关和人的事"
+    assert all(i["fix"] for i in issues), "每条都要说怎么改，不然只是骂人"
+
+
+@case
+def 审核第一段_写够了又连了边就一条都不报():
+    vault, r = audit_vault()
+    issues = audit_of(vault, r, [new_node("丙", body=AUDIT_BODY),
+                                 {"type": "add_edge", "source": "丙", "relation": "依赖", "target": "甲"}])
+    assert issues == [], issues
+
+
+@case
+def 审核第一段_未登记的关系类型要报():
+    """`writer.plan` 压根不查类型在不在表里——写进去只在索引里留一条 warning，写的人看不见。"""
+    vault, r = audit_vault()
+    edits = core.plan(vault, [{"type": "add_edge", "source": "甲", "relation": "相关", "target": "乙"}], r.data)
+    edits[0].after = edits[0].after.replace("- 相关:: [[乙]]", "- 疑似:: [[乙]]")
+    issues = core.audit_precheck(vault, r.data, edits)
+    assert [i["code"] for i in issues] == ["unknown_type"], issues
+    assert "疑似" in issues[0]["message"]
+
+
+@case
+def 审核第一段_正文链到不存在的id报死链_同批新建的不算():
+    vault, r = audit_vault()
+    changes = [new_node("丙", body=AUDIT_BODY + "顺带提一下 [[丁]] 和 [[戊]]。"),
+               {"type": "add_edge", "source": "丙", "relation": "依赖", "target": "甲"},
+               new_node("丁", body=AUDIT_BODY),
+               {"type": "add_edge", "source": "丁", "relation": "依赖", "target": "甲"}]
+    dead = [i for i in audit_of(vault, r, changes) if i["code"] == "dead_link"]
+    # 丁 在同一批里建出来，链它不算死链——否则一篇文章拆出来的点互链会刷满整张卡
+    assert len(dead) == 1 and "戊" in dead[0]["message"], dead
+
+
+@case
+def 审核第一段_改老文件不翻旧账():
+    """老节点正文薄是欠账清单的事；改它一行关系时不该被翻出来。"""
+    vault, r = build({"nodes/甲.md": node_md("甲", extra="id: 甲\n", body="短"),
+                      "nodes/乙.md": node_md("乙", extra="id: 乙\n")})
+    issues = audit_of(vault, r, [{"type": "add_edge", "source": "甲", "relation": "相关", "target": "乙"}])
+    assert issues == [], issues
+
+
+@case
+def 审核第一段_名字撞车要提醒():
+    vault, r = build({"nodes/MHA机制.md": node_md("MHA机制", extra="id: MHA机制\n")})
+    issues = audit_of(vault, r, [new_node("MHA机", body=AUDIT_BODY),
+                                 {"type": "add_edge", "source": "MHA机", "relation": "相关",
+                                  "target": "MHA机制"}])
+    assert [i["code"] for i in issues] == ["near_miss"], issues
+
+
 # ---------------------------------------------------------------- 阶段 4：复习 / 放置 / Digest
 
 import datetime as _dt  # noqa: E402  （只有阶段 4 用例需要）

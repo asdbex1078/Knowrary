@@ -4042,6 +4042,207 @@ def chat_面试口径改不动清单():
         next(e for e in sse_events(r) if e["type"] == "tool")["summary"]
 
 
+# ---------------------------------------------------------------- 写入审核（三层闸）
+
+AUDIT_LONG = "这一段写得足够长，够过 THIN_BODY 那道线。" * 6
+
+
+def stub_audit(payload: str):
+    """把审核那一次调用换成固定回答：审核链路要能离线测。"""
+    from server import audit as audit_mod
+    original = audit_mod.ask
+    audit_mod.ask = lambda vault, role, prompt, op="?": payload
+    return original
+
+
+def restore_audit(original) -> None:
+    from server import audit as audit_mod
+    audit_mod.ask = original
+
+
+def new_node_changes(nid: str = "新点", *, body: str = AUDIT_LONG, edge: bool = True) -> list[dict]:
+    out = [{"type": "create_node", "source": nid, "body": body,
+            "fields": {"name": nid, "field": "测试", "desc": "摘要"}}]
+    if edge:
+        out.append({"type": "add_edge", "source": nid, "relation": "依赖", "target": "a"})
+    return out
+
+
+def write_changes(c, changes, **extra):
+    rev = c.get("/api/index").json()["revision"]
+    return c.post("/api/changes", json={"base_revision": rev, "changes": changes,
+                                        "dry_run": False, **extra})
+
+
+@case
+def audit_默认关着时不问模型但确定性检查照跑():
+    """开关关掉 ≠ 什么都不查。关的人要的是"别拦我"，不是"别告诉我"。"""
+    c, vault, _ = with_inbox_node()
+    called = []
+    original = stub_audit("不该被调用")
+    from server import audit as audit_mod
+    audit_mod.ask = lambda *a, **k: called.append(1) or "{}"
+    try:
+        r = write_changes(c, new_node_changes(body="太短", edge=False))
+        assert r.status_code == 200 and r.json()["applied"] is True, r.text
+        report = r.json()["audit"]
+        assert called == [], "开关关着还问了模型"
+        assert report["checked"] is False and report["verdict"] == "pass"
+        assert {i["code"] for i in report["issues"]} == {"thin_body", "no_relation"}, report["issues"]
+    finally:
+        restore_audit(original)
+
+
+@case
+def audit_预览阶段只跑第一段():
+    """改一行摘要就重算一次 diff，每次都烧一次调用没道理。"""
+    c, vault, _ = with_inbox_node()
+    c.put("/api/settings", json={"audit_enabled": True})
+    called = []
+    original = stub_audit("{}")
+    from server import audit as audit_mod
+    audit_mod.ask = lambda *a, **k: called.append(1) or "{}"
+    try:
+        rev = c.get("/api/index").json()["revision"]
+        r = c.post("/api/changes", json={"base_revision": rev, "changes": new_node_changes(body="太短"),
+                                         "dry_run": True})
+        assert r.status_code == 200, r.text
+        assert called == [], "预览阶段不该问模型"
+        assert r.json()["audit"]["issues"], "但确定性检查的结果要摆在卡上"
+    finally:
+        restore_audit(original)
+        c.put("/api/settings", json={"audit_enabled": False})
+
+
+@case
+def audit_开着时挡下不落盘_但返回200把理由带回来():
+    c, vault, _ = with_inbox_node()
+    c.put("/api/settings", json={"audit_enabled": True})
+    before = md_digest(vault)
+    original = stub_audit(json.dumps({"verdict": "block", "summary": "年份写错了",
+        "issues": [{"path": "nodes/新点.md", "severity": "block", "what": "Transformer 不是 2018 年",
+                    "why": "论文 2017 年发表", "fix": "改成 2017"}]}, ensure_ascii=False))
+    try:
+        r = write_changes(c, new_node_changes())
+        assert r.status_code == 200, "挡下是正常结局，不是 HTTP 错误——抛 4xx 前端只剩一句红字"
+        data = r.json()
+        assert data["applied"] is False and data["audit"]["verdict"] == "block", data["audit"]
+        assert data["audit"]["issues"][0]["why"], "挡下必须给依据"
+        assert data["files"], "diff 照样要带回去，人要对着它改"
+        assert md_digest(vault) == before, "挡下了还写盘"
+    finally:
+        restore_audit(original)
+        c.put("/api/settings", json={"audit_enabled": False})
+
+
+@case
+def audit_强制写入跳过模型但留痕():
+    c, vault, _ = with_inbox_node()
+    c.put("/api/settings", json={"audit_enabled": True})
+    called = []
+    original = stub_audit("{}")
+    from server import audit as audit_mod
+    audit_mod.ask = lambda *a, **k: called.append(1) or "{}"
+    try:
+        r = write_changes(c, new_node_changes(), force=True)
+        assert r.status_code == 200 and r.json()["applied"] is True, r.text
+        assert called == [], "强制写入还问模型 = 白花一次钱"
+        assert r.json()["audit"]["forced"] is True
+        issues = core.load_issues(vault)
+        assert any(i["kind"] == "audit" for i in issues), "强制写入必须留证据，否则开关就是摆设"
+    finally:
+        restore_audit(original)
+        c.put("/api/settings", json={"audit_enabled": False})
+
+
+@case
+def audit_关掉强制入口之后强制写入被拒():
+    c, vault, _ = with_inbox_node()
+    c.put("/api/settings", json={"audit_enabled": True, "audit_force_allowed": False})
+    before = md_digest(vault)
+    try:
+        r = write_changes(c, new_node_changes(), force=True)
+        assert r.status_code == 422, r.text
+        assert md_digest(vault) == before
+    finally:
+        c.put("/api/settings", json={"audit_enabled": False, "audit_force_allowed": True})
+
+
+@case
+def audit_只动关系不问模型():
+    """每加一条边都卡几秒的话，两天之内这个开关就会被关掉。"""
+    c, vault, _ = with_inbox_node()
+    c.put("/api/settings", json={"audit_enabled": True})
+    called = []
+    original = stub_audit("{}")
+    from server import audit as audit_mod
+    audit_mod.ask = lambda *a, **k: called.append(1) or "{}"
+    try:
+        r = write_changes(c, [{"type": "add_edge", "source": "a", "relation": "相关", "target": "b"}])
+        assert r.status_code == 200 and r.json()["applied"] is True, r.text
+        assert called == [], "只改关系也问模型"
+        assert r.json()["audit"]["checked"] is False
+    finally:
+        restore_audit(original)
+        c.put("/api/settings", json={"audit_enabled": False})
+
+
+@case
+def audit_模型抽风时放行并说出来():
+    """挡下意味着"模型不回话 = 你写不了东西"，那是把可用性押在一次网络请求上。"""
+    c, vault, _ = with_inbox_node()
+    c.put("/api/settings", json={"audit_enabled": True})
+    original = stub_audit("今天不太想审。")
+    try:
+        r = write_changes(c, new_node_changes())
+        assert r.status_code == 200 and r.json()["applied"] is True, r.text
+        assert r.json()["audit"]["model_failed"] is True, r.json()["audit"]
+    finally:
+        restore_audit(original)
+        c.put("/api/settings", json={"audit_enabled": False})
+
+
+@case
+def audit_说挡下却给不出问题的降成提醒():
+    """一句"我觉得不太对"就能把人挡在门外，而人连改哪儿都不知道。"""
+    c, vault, _ = with_inbox_node()
+    c.put("/api/settings", json={"audit_enabled": True})
+    original = stub_audit(json.dumps({"verdict": "block", "summary": "感觉不太对", "issues": []},
+                                     ensure_ascii=False))
+    try:
+        r = write_changes(c, new_node_changes())
+        assert r.json()["applied"] is True, "没有依据的挡不作数"
+        assert r.json()["audit"]["verdict"] == "pass", r.json()["audit"]
+    finally:
+        restore_audit(original)
+        c.put("/api/settings", json={"audit_enabled": False})
+
+
+@case
+def audit_开关是设置里的一对且默认关():
+    got = client()[0].get("/api/settings").json()
+    assert got["audit_enabled"] is False, "它给每次写入加一次调用和几秒等待，该由人明确打开"
+    assert got["audit_force_allowed"] is True, "不给后门，人只会把整套关掉"
+
+
+@case
+def settings_契约和开关全集不许漂移():
+    """DEFAULTS 里加了开关、契约上忘了加 → `/api/settings` 直接 500。
+
+    2026-09-22 真炸过一次：audit 那两个开关先进了 core.DEFAULTS，SettingsRead 还没跟上，
+    于是**读设置和改设置一起挂**——设置页一点就是红字，跟点的是哪个开关毫无关系。
+    契约默认 extra="forbid"，这种漏加不会被静默丢掉，但也只在点下去的那一刻才炸，
+    所以把两张表在这里对一遍：加开关只动 DEFAULTS 那句话，靠这条用例兑现。
+    """
+    from server.contracts import SettingsPatch, SettingsRead
+    from server.paths import core as core_mod
+    keys = set(core_mod.SETTINGS_DEFAULTS)
+    assert set(SettingsRead.model_fields) == keys | {"schema_version"}, "读契约和开关全集对不上"
+    assert set(SettingsPatch.model_fields) == keys, "改契约和开关全集对不上"
+    got = client()[0].get("/api/settings").json()
+    assert set(got) == keys | {"schema_version"}, got
+
+
 @case
 def settings_教练别考我和今日面板复习是两个开关():
     """复盘之后拆的（§11.1）：原来只有一个总闸，"别在聊天里考我"只能靠关总闸达成，

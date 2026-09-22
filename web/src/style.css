@@ -1631,6 +1631,10 @@ kbd.key {
 .imp-node textarea { width: 100%; margin-top: 6px; font: inherit; font-size: 12px; line-height: 1.5; padding: 6px;
   border-radius: 6px; border: 1px solid var(--line); background: var(--surface); color: var(--text); }
 .imp-block { margin: 6px 0 8px; }
+/* 审核挡下的那块：红边框，但**不是报错样式**——它要人读完再改，不是让人关掉 */
+.imp-audit { border: 1px solid var(--danger, #d9534f); border-radius: 9px; padding: 8px 10px; }
+.imp-audit .imp-block-head { display: flex; align-items: center; gap: 5px; }
+
 .imp-block-head { font-size: 11.5px; font-weight: 600; color: var(--text-2); margin-bottom: 3px; cursor: default; }
 .imp-pending { cursor: pointer; }
 .imp-pending i { color: var(--text-3); font-style: normal; margin: 0 4px; }

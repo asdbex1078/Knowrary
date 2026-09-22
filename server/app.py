@@ -17,7 +17,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import (assets, chat as chat_svc, compare as compare_svc, copying, curation, importing,
+from . import (assets, audit, chat as chat_svc, compare as compare_svc, copying, curation, importing,
                projects as projects_svc, summarize as summarize_svc, vaults, years as years_svc)
 from .contracts import (CalendarRead, ChangeResult, ChangeSet, ChatRequest, CoachToday, FileDiff, ImportProposal,
                         ImportProposeRequest, ImportRequest, ImportResult, SourceText, SourcesRead, SummarizeRequest, SummaryDraft,
@@ -759,12 +759,21 @@ def post_changes(changeset: ChangeSet) -> ChangeResult:
 
     files = [FileDiff(path=e.rel, notes=e.notes, diff=curation.diff_of(e)) for e in edits]
     if changeset.dry_run:
-        return ChangeResult(applied=False, files=files, index_revision=index["revision"])
+        # 预览只跑确定性那一段：改一行摘要就重算一次 diff，每次都问模型没道理
+        return ChangeResult(applied=False, files=files, index_revision=index["revision"],
+                            audit=audit.preview(vault, index, edits))
+    if changeset.force and not core.audit_force_allowed():
+        raise HTTPException(status_code=422, detail="「仍然写入」在设置里被关掉了：先改审核意见，或去设置里打开它")
+    report = audit.gate(vault, index, edits, payload, changeset.force)
+    if report.blocked:
+        # **不是 HTTP 错误**：审核挡下是这条链路的正常结局之一，卡片要把结论和建议摆出来，
+        # 人看完可以改、也可以「仍然写入」。抛 4xx 的话前端只剩一句红字。
+        return ChangeResult(applied=False, files=files, index_revision=index["revision"], audit=report)
     snapshot = core.commit(vault, edits)
     invalidate(vault)                      # md 变了，索引缓存作废
     core.card_applied(vault, changeset.card or "")     # 采纳率的分子：**只在真落盘之后记**
     return ChangeResult(applied=True, files=files, backup=snapshot or None,
-                        index_revision=current_index(vault)["revision"])
+                        index_revision=current_index(vault)["revision"], audit=report)
 
 
 @app.post("/api/import", response_model=ImportResult)

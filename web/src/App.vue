@@ -22,6 +22,7 @@ import QuizDialog from './components/QuizDialog.vue'
 import UsageDialog from './components/UsageDialog.vue'
 import RenameDialog from './components/RenameDialog.vue'
 import MergeDialog from './components/MergeDialog.vue'
+import AuditDialog from './components/AuditDialog.vue'
 import YearDialog from './components/YearDialog.vue'
 import GroupBar from './components/GroupBar.vue'
 import MiniMap from './components/MiniMap.vue'
@@ -225,7 +226,11 @@ const briefOn = ref(false)
 // 画布 / 外观那些仍旧各自记在 localStorage——它们是"这台机器上怎么看图"。
 // 先给默认值（全开）：接口还没回来的那一瞬间不该先闪一下"关着"的样子。
 const settings = ref({ review_enabled: true, review_in_chat: true, review_brief: true,
-                       review_marks: true })
+                       review_marks: true, audit_enabled: false, audit_force_allowed: true })
+// 审核挡下来的那一次：{ report, retry }。retry 是**调用方给的闭包**，因为"写入"往往
+// 不只是写文件（还要落位、补清单、推留档游标），强制写入得把那一整套重跑一遍。
+const auditBlock = shallowRef(null)
+const auditBusy = ref(false)
 const settingsOn = ref(false)
 const llmConfig = ref(null)
 const vault = ref(null)
@@ -2048,26 +2053,39 @@ async function previewChanges() {
  * 不会覆盖掉人手写的东西。digest 对不上时仍然 409，但 detail 是一句话而不是带
  * current_revision 的对象——那种不重试，原样报给人看。
  */
-async function writeChanges(changes, { dryRun = false, card = '' } = {}) {
+async function writeChanges(changes, { dryRun = false, card = '', force = false } = {}) {
   // card = 这次写入来自哪张卡。**只在真写入时带**——dry_run 不是采纳，
   // 带上去会让采纳率虚高（卡上改一次摘要就重算一次 diff）
-  const body = { base_revision: indexRevision.value, dry_run: dryRun, changes,
+  const body = { base_revision: indexRevision.value, dry_run: dryRun, changes, ...(force ? { force: true } : {}),
                  ...(card && !dryRun ? { card } : {}) }
   try {
-    return await postChanges(body)
+    return blocked(await postChanges(body))
   } catch (err) {
     const current = err.status === 409 ? err.body?.detail?.current_revision : null
     if (!current) throw err
     const fresh = await fetchIndex()
     indexDoc.value = fresh
     indexRevision.value = fresh.revision
-    return postChanges({ ...body, base_revision: fresh.revision })
+    return blocked(await postChanges({ ...body, base_revision: fresh.revision }))
   }
 }
 
-async function applyChanges() {
+/**
+ * 审核挡下来的响应是 **200 + applied:false**，不是错误码——卡片要把结论和建议摆出来。
+ * 这里统一翻成一个带 `audit` 的异常，调用方看见它就把弹窗打开、别再报"写回成功"。
+ */
+function blocked(res) {
+  if (res?.applied === false && res?.audit?.verdict === 'block') {
+    const err = new Error('审核没通过')
+    err.audit = res.audit
+    throw err
+  }
+  return res
+}
+
+async function applyChanges(force = false) {
   try {
-    const res = await writeChanges(pending.value)
+    const res = await writeChanges(pending.value, { force })
     pending.value = []
     changePreview.value = null
     const id = detail.value?.id
@@ -2075,6 +2093,7 @@ async function applyChanges() {
     if (id) await loadDetail(id)
     setBanner(`已写回 ${res.files.length} 个文件，原文备份在 ${res.backup}`, 'success')
   } catch (err) {
+    if (err.audit) { auditBlock.value = { report: err.audit, retry: () => applyChanges(true) }; return }
     setBanner(`写回失败：${err.body?.detail?.message || err.body?.detail || err.message}`, 'error')
   }
 }
@@ -2538,10 +2557,10 @@ async function previewChatCard({ card, i, j }) {
 }
 
 /** 变更卡上的「写入」：走的仍然是 /api/changes 这唯一入口，和详情面板一模一样。 */
-async function applyChatCard({ card, i, j }) {
+async function applyChatCard({ card, i, j }, force = false) {
   chatBusy.value = true
   try {
-    const res = await writeChanges(card.changes, { card: card.card_id })
+    const res = await writeChanges(card.changes, { card: card.card_id, force })
     // 卡上改过的话 diff 是旧的：换成真写下去的那份，留档里看到的就是落盘的样子
     Object.assign(chatLog.value[i].cards[j], { applied: true, editing: false, stale: false, files: res.files })
     await load()
@@ -2558,9 +2577,26 @@ async function applyChatCard({ card, i, j }) {
     setBanner(`已写回 ${res.files.length} 个文件${born.length ? `，${born.length} 个新点已落到画布上（草稿）` : ''}，`
               + `原文备份在 ${res.backup}`, 'success')
   } catch (err) {
+    if (err.audit) {
+      auditBlock.value = { report: err.audit, retry: () => applyChatCard({ card, i, j }, true) }
+      return
+    }
     setBanner(`写回失败：${err.body?.detail?.message || err.body?.detail || err.message}`, 'error')
   } finally {
     chatBusy.value = false
+  }
+}
+
+/** 弹窗上的「仍然写入」：把调用方那一整套重跑一遍，只是这次带 force。 */
+async function forceWrite() {
+  const again = auditBlock.value?.retry
+  if (!again) return
+  auditBusy.value = true
+  try {
+    auditBlock.value = null
+    await again()
+  } finally {
+    auditBusy.value = false
   }
 }
 
@@ -3513,7 +3549,7 @@ onBeforeUnmount(() => {
                  @rename="openRename"
                  @finalize="finalize" @retype-edge="retypeEdge"
                  @remove-edge="removeEdge" @add-edge="addEdgeDraft" @drop-change="dropChange"
-                 @preview-changes="previewChanges" @apply-changes="applyChanges"
+                 @preview-changes="previewChanges" @apply-changes="applyChanges()"
                  @clear-changes="pending = []; changePreview = null"
                  @suggest="fetchSuggestions(selected?.id)" @dismiss-suggestion="dismissSuggestion"
                  :write-nonce="writeNonce" @save-body="saveBody" />
@@ -3544,6 +3580,10 @@ onBeforeUnmount(() => {
                        @close="compareFill = null; compareFilling = false" />
     <YearDialog v-if="yearsOpen" :proposal="yearProposal" :busy="yearsBusy"
                 @apply="applyYears" @goto="gotoNode" @close="yearsOpen = false" />
+
+    <AuditDialog v-if="auditBlock" :report="auditBlock.report" :busy="auditBusy"
+                 :force-allowed="settings.audit_force_allowed !== false"
+                 @force="forceWrite" @close="auditBlock = null" />
 
     <MergeDialog v-if="merging" :pair="merging" :impact="mergeImpact" :busy="mergeBusy"
                  @preview="previewMerge" @apply="applyMerge" @swap="swapMerge"

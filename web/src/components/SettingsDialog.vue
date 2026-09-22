@@ -40,6 +40,7 @@ const emit = defineEmits(['close', 'set', 'toggle-snap', 'toggle-avoid', 'toggle
 const TABS = [
   { id: 'vault', name: '知识库', icon: 'folder', where: '这台机器上的选择，不属于任何一个库' },
   { id: 'review', name: '学习与复习', icon: 'rotate', where: '跟着 vault 走，换台机器也一样' },
+  { id: 'audit', name: '写入审核', icon: 'checklist', where: '跟着 vault 走，换台机器也一样' },
   { id: 'canvas', name: '画布', icon: 'map', where: '只存在这台机器上' },
   { id: 'look', name: '外观', icon: 'sun', where: '只存在这台机器上' },
   { id: 'models', name: '模型', icon: 'cube', where: '跟着 vault 走' },
@@ -315,6 +316,35 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onKey, true))
               <span class="check"><Icon name="check" :size="11" :width="2.6" /></span>
               <span class="label">到期标记<span class="sub">画布上的金色小圆点、活动栏「今日」的角标</span></span>
             </label>
+          </template>
+
+          <template v-else-if="tab === 'audit'">
+            <p class="dim" style="font-size: 12.5px; line-height: 1.7; margin: 0 0 12px">
+              往 md 里写内容之前，先让 <b>review 角色</b>看一眼对不对。
+              <br>注意这里的 review 是<b>审校</b>，和上一栏的「复习」不是一回事。
+            </p>
+            <label class="switch-row">
+              <input type="checkbox" :checked="settings.audit_enabled"
+                     @change="emit('set', { audit_enabled: !settings.audit_enabled })" />
+              <span class="check"><Icon name="check" :size="11" :width="2.6" /></span>
+              <span class="label">写入前过一遍审核
+                <span class="sub">只审<b>正文类</b>写入（新建节点、补正文、重写正文）——加一条边、改一个年份不审，
+                  否则每点一下都卡几秒。每次审核 = 一次 review 角色调用</span></span>
+            </label>
+            <label class="switch-row" :class="{ muted: !settings.audit_enabled }">
+              <input type="checkbox" :disabled="!settings.audit_enabled"
+                     :checked="settings.audit_force_allowed"
+                     @change="emit('set', { audit_force_allowed: !settings.audit_force_allowed })" />
+              <span class="check"><Icon name="check" :size="11" :width="2.6" /></span>
+              <span class="label">允许「仍然写入」
+                <span class="sub">模型也会看走眼。不留这个后门，你迟早把整套审核关掉——那就一条都不查了。
+                  每次强制写入都会记进 <code>.knowrary/issues.jsonl</code></span></span>
+            </label>
+            <p class="dim" style="font-size: 11.5px; line-height: 1.7; margin-top: 14px">
+              <b>关掉它不等于什么都不查。</b>未登记的关系类型、正文里指不到的
+              <code>[[链接]]</code>、正文太薄、新点一条边都没有、名字和已有节点撞车——
+              这些是算出来的，不花钱也不用等，<b>照常查、照常显示在卡片上，只是不拦路</b>。
+            </p>
           </template>
 
           <template v-else-if="tab === 'canvas'">

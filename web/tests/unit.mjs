@@ -535,20 +535,40 @@ function vueFiles(dir) {
   })
 }
 
-test('@click 绑到带默认参数的函数上，必须写成 fn()', () => {
+/** 形参列表里的第一个（按括号深度切，`{ a = 1 }` 里的逗号不算分隔）。 */
+function firstParam(params) {
+  let depth = 0
+  for (let i = 0; i < params.length; i += 1) {
+    const ch = params[i]
+    if ('([{'.includes(ch)) depth += 1
+    else if (')]}'.includes(ch)) depth -= 1
+    else if (ch === ',' && depth === 0) return params.slice(0, i)
+  }
+  return params
+}
+
+test('事件绑到带默认参数的函数上，必须写成 fn()', () => {
   // `@click="saveModels"` 编译成 `onClick: saveModels`，点一下 MouseEvent 就成了第一个实参，
   // 把 `providers = draft.providers` 那个默认值顶掉——「保存配置」当场报「至少保留一个 provider」。
   // 带默认值的形参等于在说"调用方不传"，所以这一类一律要求模板里自己加括号。
+  //
+  // **不只 @click**：自定义事件同样会把 emit 的载荷塞进第一个形参。
+  // `@apply-changes="applyChanges"` 碰上哪天 Inspector 改成 `emit('apply-changes', x)`，
+  // `force` 就悄悄变成真——审核当场被绕过，而且不报任何错。
   const src = fileURLToPath(new URL('../src', import.meta.url))
   const bad = []
   for (const file of vueFiles(src)) {
     const text = readFileSync(file, 'utf8')
-    for (const [, name] of text.matchAll(/@click(?:\.\w+)*="([A-Za-z_$][\w$]*)"/g)) {
+    for (const [, ev, name] of text.matchAll(/@([a-z][\w.-]*)="([A-Za-z_$][\w$]*)"/g)) {
       const sig = text.match(new RegExp(`\\b(?:async\\s+)?function\\s+${name}\\s*\\(([^)]*)\\)`))
-      if (sig && sig[1].includes('=')) bad.push(`${file.slice(src.length + 1)}: @click="${name}" → ${name}(${sig[1]})`)
+      // **只看第一个形参**：事件载荷落在它身上。后面的形参有默认值是正常写法
+      // （`applyChatCard({ card, i, j }, force = false)` 就该这么写），一并报会全是噪音。
+      if (sig && firstParam(sig[1]).includes('=')) {
+        bad.push(`${file.slice(src.length + 1)}: @${ev}="${name}" → ${name}(${sig[1]})`)
+      }
     }
   }
-  assert.deepEqual(bad, [], `这些 @click 会把 MouseEvent 当第一个参数塞进去：\n${bad.join('\n')}`)
+  assert.deepEqual(bad, [], `这些绑定会把事件载荷当第一个参数塞进去：\n${bad.join('\n')}`)
 })
 
 // ---------------------------------------------------------------- 跑

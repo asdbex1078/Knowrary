@@ -240,6 +240,9 @@ class ChangeSet(Strict):
     dry_run: bool = True               # 默认只预览；确认后再发一次 dry_run=false
     card: str | None = None            # 这次写入来自哪张卡（对话里提的）。面板手动改就不带，
     """采纳率的分子靠它。没有它，服务端只知道"有人写了一次"，分不出是卡片还是面板操作。"""
+    force: bool = False                # 审核挡下之后仍然写入
+    """模型也会看走眼，不给这个后门，人只会把整套审核关掉——那就一条都不查了。
+    每次强制都记进 issues.jsonl：「审核被绕过了多少次」必须留得下证据。"""
 
 
 class FileDiff(Strict):
@@ -265,6 +268,7 @@ class ImportRequest(Strict):
     promote: list[str] = Field(default_factory=list)        # 要直接写入的待审边 key（源->目标#类型）
     # 跨库复制用：方案里每个节点自带 field 时按它落，不统一压成 `field` 那一个领域
     keep_field: bool = False
+    force: bool = False                # 审核挡下之后仍然写入（同 ChangeSet.force）
 
 
 class ImportResult(Strict):
@@ -277,6 +281,7 @@ class ImportResult(Strict):
     backup: str | None = None
     log: str | None = None             # 落盘后方案存档（vault 相对路径）
     index_revision: int = 0
+    audit: AuditReport | None = None   # 写入审核的结论（预览时只有确定性那一段）
 
 
 class ImportProposeRequest(Strict):
@@ -333,11 +338,38 @@ class PendingEdge(Strict):
     confidence: float
 
 
+class AuditIssue(Strict):
+    """审核报的一条。`code` 是确定性检查的码（unknown_type / dead_link…），模型报的一律是 `llm`。"""
+
+    level: str                         # block | warn
+    code: str
+    path: str = ""
+    message: str
+    why: str = ""                      # 模型的依据。确定性那段不需要——码本身就是依据
+    fix: str = ""
+
+
+class AuditReport(Strict):
+    """写入审核的结论。**它永远带着第一段（确定性检查）的结果**，哪怕开关是关的。"""
+
+    checked: bool = False              # 第二段（模型）到底跑没跑
+    verdict: str = "pass"              # pass | warn | block
+    summary: str = ""
+    issues: list[AuditIssue] = Field(default_factory=list)
+    forced: bool = False               # 这一次是强制写入
+    model_failed: bool = False         # 模型抽风或调用失败：放行，但要说出来
+
+    @property
+    def blocked(self) -> bool:
+        return self.verdict == "block"
+
+
 class ChangeResult(Strict):
     applied: bool
     files: list[FileDiff] = Field(default_factory=list)
     backup: str | None = None          # 写回前的原文快照目录
     index_revision: int = 0
+    audit: AuditReport | None = None   # 预览时也带：卡片上先把确定性检查的结果摆出来
 
 
 # ---------------------------------------------------------------- Inbox / 放置 / Digest / 复习（阶段 4）
@@ -907,6 +939,10 @@ class SettingsRead(Strict):
     review_in_chat: bool = True        # 教练会不会考我 / 催我。总闸关了它一律当关
     review_brief: bool = True          # 晨间简报
     review_marks: bool = True          # 画布到期金点、活动栏「今日」角标
+    # 写入审核。**和上面四个不是一回事**：那四个是复习（间隔重复），这两个是 LLM 的
+    # review 角色给写入把关。唯一默认关的两个开关——它给每次内容写入加一次调用和几秒等待。
+    audit_enabled: bool = False
+    audit_force_allowed: bool = True
 
 
 class SettingsPatch(Strict):
@@ -916,6 +952,8 @@ class SettingsPatch(Strict):
     review_in_chat: bool | None = None
     review_brief: bool | None = None
     review_marks: bool | None = None
+    audit_enabled: bool | None = None
+    audit_force_allowed: bool | None = None
 
 
 class CopySource(Strict):
