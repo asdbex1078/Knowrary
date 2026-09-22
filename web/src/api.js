@@ -161,6 +161,12 @@ export const putSettings = (patch) => request('/api/settings', {
   headers: { 'Content-Type': 'application/json' },
   body: JSON.stringify(patch),
 })
+export const fetchLLMConfig = () => request('/api/llm/config')
+export const putLLMConfig = (config) => request('/api/llm/config', {
+  method: 'PUT',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify(config),
+})
 
 // —— 阶段 10 / 一期：今日清单 + 项目 ——
 /** 今天可以动手的事，按固定优先级排。纯排序，不调 LLM。 */

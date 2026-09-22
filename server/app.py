@@ -28,14 +28,17 @@ from .contracts import (CalendarRead, ChangeResult, ChangeSet, ChatRequest, Coac
                         PlaceResult, ProjectsRead, ProjectsSaved, ProjectsWrite, QuizDiagnoseRequest,
                         QuizDiagnosis, QuizGradeRequest, QuizGraded, QuizRequest, QuizSet, RenameImpact,
                         RenameRequest, RenameResult, ReviewDone, ReviewRequest, SettingsPatch,
-                        SettingsRead, SuggestRequest,
+                        SettingsRead, SuggestRequest, LLMConfigRead, LLMConfigWrite,
                         SuggestResult, UsageRead, YearProposal, YearProposeRequest,
                         CompareProposal, CompareProposeRequest)
 from .index_service import current_index, invalidate
 from .llm_call import LLMFailed
+from . import llm_config
 from .layout_store import (LayoutBroken, PatchRejected, RevisionConflict, apply_patch, find_orphans,
                            load_or_init)
 from .paths import DEFAULT_LAYOUT, WEB_DIST, core, vault_path
+
+import llm_backend  # noqa: E402  (paths 注入工具模块路径)
 
 log = logging.getLogger(__name__)
 
@@ -415,6 +418,26 @@ def put_settings(req: SettingsPatch) -> SettingsRead:
     return SettingsRead(**core.save_settings(vault_path(), patch))
 
 
+@app.get("/api/llm/config", response_model=LLMConfigRead)
+def get_llm_config() -> LLMConfigRead:
+    """读取脱敏后的 LLM 配置，API key 只返回是否存在。"""
+    try:
+        return LLMConfigRead(**llm_config.read(vault_path()))
+    except llm_config.LLMConfigRejected as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.put("/api/llm/config", response_model=LLMConfigRead)
+def put_llm_config(req: LLMConfigWrite) -> LLMConfigRead:
+    """校验并原子保存结构化 LLM 配置，旧文件先备份。"""
+    try:
+        return LLMConfigRead(**llm_config.write(vault_path(), req.model_dump()))
+    except llm_config.LLMConfigRejected as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except llm_backend.LLMConfigError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
 @app.get("/api/llm/usage", response_model=UsageRead)
 def get_llm_usage() -> UsageRead:
     """模型调用账本：今天 / 累计 / 分功能 + 最近几十条明细。只读。"""
@@ -708,5 +731,3 @@ def _mount_web() -> None:
 
 
 _mount_web()
-
-

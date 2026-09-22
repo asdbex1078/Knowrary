@@ -1,7 +1,7 @@
 <script setup>
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, shallowRef, watch } from 'vue'
 import {
-  fetchSettings, putSettings, fetchCalendar, fetchCompareGroups, fetchCompareTable, postCompareFill, fetchDigest, postSyncToGlobal, fetchDue, fetchProjects, putProjects, postPlanPropose, fetchToday, fetchUsage, postMerge, postRename, postQuiz, postQuizDiagnose, postQuizGrade, fetchOpenQuiz, dropOpenQuiz, postRegroup, fetchIndex, fetchInbox, fetchLayout, fetchNode,
+  fetchSettings, putSettings, fetchLLMConfig, putLLMConfig, fetchCalendar, fetchCompareGroups, fetchCompareTable, postCompareFill, fetchDigest, postSyncToGlobal, fetchDue, fetchProjects, putProjects, postPlanPropose, fetchToday, fetchUsage, postMerge, postRename, postQuiz, postQuizDiagnose, postQuizGrade, fetchOpenQuiz, dropOpenQuiz, postRegroup, fetchIndex, fetchInbox, fetchLayout, fetchNode,
   patchLayout, postChanges, postPlace, postReview, postSuggest, postSummarize, postYearsPropose,
 } from './api.js'
 import AppHeader from './components/AppHeader.vue'
@@ -223,6 +223,8 @@ const briefOn = ref(false)
 const settings = ref({ review_enabled: true, review_in_chat: true, review_brief: true,
                        review_marks: true })
 const settingsOn = ref(false)
+const llmConfig = ref(null)
+const llmSaving = ref(false)
 const reviewOn = computed(() => !!settings.value.review_enabled)
 const reviewMarks = computed(() => reviewOn.value && settings.value.review_marks !== false)
 
@@ -449,7 +451,7 @@ const {
   chatLog, chatBusy, chatSessions, chatSession, chatTidied, chatStance, chatFocus,
   graphPane, chatFresh,
   setStance, toggleGraphPane, loadChatHistory, renameSession,
-  newChatSession, pickChatSession, sendChat, advanceTidied, stopChat,
+  newChatSession, pickChatSession, sendChat, advanceTidied, stopChat, retryChat,
 } = useChat({
   graph, currentProject,
   setBanner: (...a) => setBanner(...a),
@@ -3024,6 +3026,29 @@ async function loadSettings() {
   try { settings.value = await fetchSettings() } catch { /* 保持默认 */ }
 }
 
+async function loadLLMConfig() {
+  try { llmConfig.value = await fetchLLMConfig() } catch (err) {
+    setBanner(`模型配置读取失败：${err.message}`, 'error')
+  }
+}
+
+async function saveLLMConfig(config) {
+  llmSaving.value = true
+  try {
+    llmConfig.value = await putLLMConfig(config)
+    setBanner('模型配置已保存', 'success')
+  } catch (err) {
+    setBanner(`模型配置没存上：${err.body?.detail || err.message}`, 'error')
+  } finally {
+    llmSaving.value = false
+  }
+}
+
+async function openSettings() {
+  settingsOn.value = true
+  await loadLLMConfig()
+}
+
 /** 改设置：先落盘再按新值刷新受影响的东西。
  *
  * **不做乐观更新**：这几个开关会改变教练的系统提示词（服务端拼），
@@ -3212,19 +3237,19 @@ onBeforeUnmount(() => {
     <AppHeader ref="headerEl" :mode="mode" :hits="searchHits" :status="status" :status-text="statusText"
                :theme="theme" :busy="placing"
                :projects="plansDoc?.projects || {}" :project="currentProject"
-               @switch-mode="switchMode" @switch-project="switchProject" @settings="settingsOn = true"
+               @switch-mode="switchMode" @switch-project="switchProject" @settings="openSettings"
                @search="search = $event" @goto="gotoNode"
                @toggle-theme="toggleTheme" @reload="reload" @rebuild="rebuildGraph('手动重建')"
                @help="showHelp = true" />
 
     <div class="workbench">
-      <SettingsDialog v-if="settingsOn" :settings="settings" :snap="snap" :avoid-nodes="avoidNodes"
+      <SettingsDialog v-if="settingsOn" :settings="settings" :llm-config="llmConfig" :llm-saving="llmSaving" :snap="snap" :avoid-nodes="avoidNodes"
                       :auto-lod="autoLod" :aggregate="aggregate" :show-map="showMap" :theme="theme"
                       @close="settingsOn = false" @set="saveSettings"
                       @toggle-snap="toggleSnap" @toggle-avoid="toggleAvoid" @toggle-map="toggleMap"
                       @toggle-lod="autoLod = !autoLod; render()"
                       @toggle-aggregate="aggregate = !aggregate; expanded = new Set(); render()"
-                      @toggle-theme="toggleTheme" />
+                      @toggle-theme="toggleTheme" @save-llm="saveLLMConfig" />
 
       <MorningBrief v-if="briefOn" :today="todayList" @close="briefOn = false"
                     @start="briefStart" @quiz="briefOn = false; startQuiz($event)" />
@@ -3281,7 +3306,8 @@ onBeforeUnmount(() => {
                   :sessions="chatSessions" :session="chatSession" :focus="chatFocus"
                   :stance="chatStance" @stance="setStance"
                   :graph-open="graphPane" :tidied="chatTidied" :fresh="chatFresh"
-                  @send="sendChat" @stop="stopChat" @apply="applyChatCard" @preview="previewChatCard"
+                  @send="sendChat" @stop="stopChat" @retry="retryChat"
+                  @apply="applyChatCard" @preview="previewChatCard"
                   @apply-project="applyProjectCard" @apply-points="applyPointsCard"
                   @apply-list-edit="applyListEditCard" @goto="gotoNode"
                   @new-session="newChatSession" @pick-session="pickChatSession" @rename-session="renameSession"

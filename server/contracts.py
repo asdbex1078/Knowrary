@@ -904,6 +904,34 @@ class SettingsPatch(Strict):
     review_marks: bool | None = None
 
 
+class LLMProviderRead(Strict):
+    """脱敏后的模型 provider；真实 api_key 永远不从服务端返回。"""
+
+    name: str
+    type: Literal["claude-cli", "anthropic", "openai"]
+    model: str | None = None
+    base_url: str | None = None
+    api_key_set: bool = False
+    max_tokens: int | None = None
+    temperature: float | None = None
+
+
+class LLMConfigRead(Strict):
+    path: str | None = None
+    exists: bool = False
+    providers: list[LLMProviderRead] = Field(default_factory=list)
+    roles: dict[str, str] = Field(default_factory=dict)
+    required_roles: list[str] = Field(default_factory=lambda: ["learn", "review"])
+    provider_types: list[str] = Field(default_factory=lambda: ["claude-cli", "anthropic", "openai"])
+
+
+class LLMConfigWrite(Strict):
+    """设置页提交的结构化 LLM 配置。api_key 留空表示保留已有密钥。"""
+
+    providers: list[dict[str, Any]] = Field(default_factory=list)
+    roles: dict[str, str] = Field(default_factory=dict)
+
+
 class UsageRead(Strict):
     date: str
     today: UsageBucket

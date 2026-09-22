@@ -623,6 +623,27 @@ select:disabled { cursor: not-allowed; opacity: .5; }
 .set-main header .dim { font-size: 11.5px; color: var(--text-3); }
 .set-main header .icon-btn { margin-left: auto; }
 .set-body { padding: 10px 8px; overflow: auto; }
+.model-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 4px 8px 8px; }
+.model-head b { display: block; font-size: 12px; }
+.model-head .sub { display: block; margin-top: 3px; font-size: 11px; color: var(--text-3); }
+.roles-head { margin-top: 14px; border-top: 1px solid var(--line); padding-top: 14px; }
+.model-row { display: flex; gap: 6px; align-items: flex-start; padding: 8px; margin-bottom: 6px; border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--surface-2); }
+.model-grid { flex: 1; min-width: 0; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; }
+.model-grid label, .role-row { display: flex; flex-direction: column; gap: 3px; font-size: 10.5px; color: var(--text-3); }
+.model-grid input, .model-grid select, .role-row input, .role-row select { width: 100%; min-width: 0; box-sizing: border-box; padding: 5px 7px; font: inherit; font-size: 12px; color: var(--text); background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-xs); }
+.model-row > .icon-btn { margin-top: 17px; flex: none; }
+.role-row { flex-direction: row; align-items: center; padding: 5px 8px; margin-bottom: 5px; }
+.role-row input { flex: 1; }
+.role-row select { flex: 1.4; }
+.role-row .icon-btn { flex: none; }
+.empty-hint { padding: 12px 8px; color: var(--text-3); font-size: 12px; }
+.model-error { margin: 8px; padding: 7px 9px; color: var(--danger); background: var(--danger-soft); border-radius: var(--r-xs); font-size: 12px; }
+.model-actions { display: flex; justify-content: flex-end; padding: 10px 8px 4px; }
+@media (max-width: 620px) {
+  .set-dialog { width: calc(100vw - 20px); height: min(620px, calc(100vh - 32px)); }
+  .set-nav { width: 112px; }
+  .model-grid { grid-template-columns: 1fr; }
+}
 /* 总闸关掉时，下面两个子开关连同说明一起压暗——它们此刻不起作用，但留着能看见"还有这两项" */
 .switch-row.muted { opacity: .45; cursor: default; }
 .switch-row.muted:hover { background: transparent; }
@@ -1243,6 +1264,13 @@ kbd.key {
   white-space: pre-wrap; word-break: break-word; background: var(--bg-2); color: var(--text-1);
 }
 .msg.user .bubble { background: var(--accent-soft); color: var(--accent-text); }
+/* 没答成的那一轮：半截正文压暗、左边一道红杠，和答完的回答一眼分得开 */
+.msg .bubble.broken { opacity: 0.72; border-left: 2px solid var(--danger); border-radius: 4px 11px 11px 4px; }
+.msg .bubble.broken-note {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 6px;
+  background: var(--danger-soft); color: var(--danger); font-size: 11.5px;
+}
+.msg .bubble.broken-note .dim { word-break: break-all; }
 .msg .caret { opacity: 0.55; animation: kg-blink 1s steps(2) infinite; }
 @keyframes kg-blink { 50% { opacity: 0; } }
 .tool-line {
