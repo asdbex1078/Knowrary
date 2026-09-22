@@ -60,6 +60,7 @@ python3 tools/knowrary/knowrary.py llm probe                      # 能不能等
 | `tools/knowrary/` | CLI 与核心库（解析、索引、布局生成），见其 README |
 | `web/` | 结构视图前端（Vue 3 + Vite + X6）；`web/dist/` 是入库的构建产物，运行期零 Node（**文件名不带 content hash**：Rollup 的 hash 是传递的，改一行就级联换掉几十个文件名，一次小改往 .git 里塞 6MB；缓存失效改由服务端发 `Cache-Control: no-cache` 负责，浏览器照旧缓存、每次拿 ETag 问一句，没变就 304）。`src/canvas/` 是不碰 DOM 的算法（布局、LOD、时间线、菜单内容），`src/composables/` 是按功能抽出来的成块状态（历史/回放/导览、对话），`App.vue` 只做编排 |
 | `seed/` | **出厂种子**，只补不覆盖。`seed/` 是建新库时铺进库里的（关系类型表、教练侧写模板、README、.gitignore）；`seed/user/` 是第一次运行时铺进 `~/.knowrary/` 的（LLM 配置模板 + 一页说明） |
+| `examples/day-info/` | 案例：一个每天自己跑、把外部信息收进知识库、每周汇成周报的小系统。只留脚本与定时任务提示词，数据在库那边 |
 | `examples/sample-vault/` | 示例库：9 个节点讲 HTTP 三代演进，覆盖全部 5 个关系族，带摆好的图、学习项目、复习记录、错题本和一篇待导入的素材。初始化时勾「放一份示例内容」铺进新库，**也可以直接把它当库切过去随便改**（改了 `git pull` 会冲突，自己权衡） |
 | `doc/` | 规范文档、设计文档、开发实施计划。`doc/设计文档/选型对照/` 是「要不要上 X」的逐条判断（agent 框架 / 向量库 / 数据库 / 测试框架 / LLM SDK / 画布渲染），判据与总表在 `选型判据.md` |
 | `.claude/skills/knowrary-import/` | Claude Code skill：把文章拆成节点存进知识库。**可选的第三个入口**——导入的完整能力在 `knowrary article` 和网页「导入」面板里，没有 Claude Code 一样全功能 |

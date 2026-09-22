@@ -6,7 +6,7 @@
 #
 # 环境变量：
 #   TECHDOC_BRANCH   目标分支，默认 main
-#   TECHDOC_RETRIES  推送重试次数，默认 6（本机 SSH 经代理有 ~37% 抖动，见 day-info/scripts/publish.sh）
+#   TECHDOC_RETRIES  推送重试次数，默认 6（本机 SSH 经代理有 ~37% 抖动，见 examples/day-info/scripts/publish.sh）
 #   TECHDOC_NO_PUSH  设为 1 则只建本地提交、不推送
 #
 # 设计要点：
