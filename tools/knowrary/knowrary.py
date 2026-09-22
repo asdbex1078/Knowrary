@@ -7,7 +7,7 @@
   context  输出类型表 / 全部 id / 与文章相关的节点（供 knowrary-import skill 使用）
   apply    把方案 JSON 校验后写入 vault（供 knowrary-import skill 使用）
   article  无人值守版：脚本自己调 LLM 把文章拆成节点并写入（提示词在 prompts/article.md）
-  llm      查看 / 测试 LLM 配置（.knowrary/llm.local.json，见 llm.example.json）
+  llm      查看 / 测试 LLM 配置（~/.knowrary/llm.local.json，见同目录 llm.example.json）
 
 零第三方依赖（有 pyyaml 时用它解析 frontmatter，没有则用内置的简易解析）。
 LLM 后端见 llm_backend.py：配置文件里定义多个 provider（claude-cli / anthropic / openai 兼容），

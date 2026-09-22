@@ -14,12 +14,15 @@ description: 把一篇文章 / 一段笔记 / 一次学习心得拆成知识节�
 
 ## 固定路径
 
-- 迁移/校验脚本：`/Users/moka/IdeaProjects/Knowrary/tools/knowrary/knowrary.py`
-- 规范原文：`/Users/moka/IdeaProjects/Knowrary/doc/规范文档/Markdown文档规范.md`
-- 提示词全文（拆分原则与输出 JSON 结构）：`/Users/moka/IdeaProjects/Knowrary/tools/knowrary/prompts/article.md`
-- 默认 vault：**不再是仓库根目录**（2026-09-22 程序与知识库拆分）。不写 `--vault` 时，脚本自己
-  按「环境变量 `KNOWRARY_VAULT` → 设置页选中的库（`~/.knowrary/config.json` 的 `current`）」解析；
-  用户那份是 `/Users/moka/IdeaProjects/HunDun`。节点在 `nodes/`，领域总览在 `fields/`，
+**下面全是仓库内相对路径，基准是本仓库根目录**——这是项目级 skill，触发时的工作目录就是它，
+命令直接敲即可。万一不在（用户 cd 去了子目录），先回到仓库根再跑，别去拼绝对路径。
+
+- 迁移/校验脚本：`tools/knowrary/knowrary.py`
+- 规范原文：`doc/规范文档/Markdown文档规范.md`
+- 提示词全文（拆分原则与输出 JSON 结构）：`tools/knowrary/prompts/article.md`
+- 默认 vault：**不是仓库目录**（2026-09-22 程序与知识库拆分）。不写 `--vault` 时，脚本自己
+  按「环境变量 `KNOWRARY_VAULT` → 设置页选中的库（`~/.knowrary/config.json` 的 `current`）」解析，
+  所以**这里不写死任何一个库的路径**。节点在 `nodes/`，领域总览在 `fields/`，
   解析器只扫这两个目录。**拿不准就先跑一句 `knowrary.py check` 看它认的是哪个库**，别猜
 
 ## 流程
@@ -27,7 +30,7 @@ description: 把一篇文章 / 一段笔记 / 一次学习心得拆成知识节�
 1. **确认输入**：文章路径（或用户直接贴的文本，先写到 scratchpad 一个 .md）、目标 vault、`field`（顶层领域，如 `计算机体系结构` / `AI-Agent` / `JVM`）。field 用户没说就从文章主题判断并在结果里说明。
 2. **拿上下文**（不要自己遍历 vault）：
    ```bash
-   python3 /Users/moka/IdeaProjects/Knowrary/tools/knowrary/knowrary.py context --vault <vault> --article <文章> --field <领域>
+   python3 tools/knowrary/knowrary.py context --vault <vault> --article <文章> --field <领域>
    ```
    输出三段：可用关系类型、可链接的已有节点 id（不是全量：只有与文章相关的、它们一跳的邻居、
    和 `--field` 领域下的节点，封顶 200 个）、与文章最相关的已有节点及其边。
@@ -43,11 +46,11 @@ description: 把一篇文章 / 一段笔记 / 一次学习心得拆成知识节�
    - `year` 只在有明确年代且值得进历史视图时填，不猜。
 4. **先 dry-run 给用户看**：
    ```bash
-   python3 /Users/moka/IdeaProjects/Knowrary/tools/knowrary/knowrary.py apply plan.json --vault <vault> --field <field> --source "<文章名>" --dry-run
+   python3 tools/knowrary/knowrary.py apply plan.json --vault <vault> --field <field> --source "<文章名>" --dry-run
    ```
    脚本把方案翻成变更集（新建节点 / 补充老节点 / 待审边），校验 id、目标、类型，然后打印**每个文件的 diff**（新文件给全文，老节点给 unified diff）。把摘要（新建几个、补充了哪些老节点、直接写入几条边、几条待审、被丢弃的边）讲给用户，补充老节点的 diff 要让用户看过。
 5. **用户确认后**去掉 `--dry-run` 写入：落盘前自动备份；待审边记进 `.knowrary/pending.json`；方案与变更集存档到 `<vault>/.knowrary/imports/`。
-6. **校验**：`python3 /Users/moka/IdeaProjects/Knowrary/tools/knowrary/knowrary.py check <vault>`，错误必须为 0；警告（未登记类型、演化边缺 year）如实汇报。
+6. **校验**：`python3 tools/knowrary/knowrary.py check <vault>`，错误必须为 0；警告（未登记类型、演化边缺 year）如实汇报。
 7. 待审边不要替用户拍板：列出来即可，审核入口在网页端（后续阶段）。
 
 ## 不做的事

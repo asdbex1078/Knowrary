@@ -18,7 +18,7 @@ description: 把「向 AI 请教某个技术概念」的对话沉淀成一篇能
 
 ## 固定路径
 
-- 发布脚本：`/Users/moka/IdeaProjects/Knowrary/tools/tech-doc/publish-doc.sh`
+- 发布脚本：`tools/tech-doc/publish-doc.sh`（**仓库内相对路径**，基准是本仓库根目录，也就是本 skill 触发时的工作目录；脚本自己会 cd 到仓库根，不必拼绝对路径）
 - 目标分支：**main**（`TECHDOC_BRANCH` 可覆盖）
 - 目标位置：`doc/技术文档/<领域>/<主题>.md`
   - **领域取 Knowrary vault 里 `field` 的值**，不是随手起的分类。现有领域只有两个：
@@ -142,7 +142,7 @@ confidence: 需核实   # 已核实 / 需核实（含未经查证的具体数字
 ### 6. 发布
 
 ```bash
-bash /Users/moka/IdeaProjects/Knowrary/tools/tech-doc/publish-doc.sh \
+bash tools/tech-doc/publish-doc.sh \
   "<scratchpad 里的草稿路径>" \
   "doc/技术文档/LLM/注意力机制-从MHA到MLA.md" \
   "docs: 注意力机制从 MHA 到 MLA 的演进"

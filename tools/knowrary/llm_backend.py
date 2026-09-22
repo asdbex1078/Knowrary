@@ -1,6 +1,6 @@
 """Knowrary · LLM 后端（配置文件驱动：多 provider、按角色选用）
 
-配置文件：<vault>/.knowrary/llm.local.json（gitignore 忽略 *.local.json），模板见 llm.example.json。
+配置文件：`~/.knowrary/llm.local.json`（用户级，所有知识库共用；模板见同目录 llm.example.json）。
 环境变量 KNOWRARY_LLM_CONFIG 可指向别处。没有配置文件时退回 `claude -p`（复用 Claude Code 登录）。
 
 {

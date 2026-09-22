@@ -71,13 +71,13 @@ if fn is None:
 
 ```bash
 # 读：拿上下文（可用关系类型 / 可链 id 子集 / 相关节点，封顶 200 个）
-python3 /Users/moka/.../knowrary.py context --vault <vault> --article <文章> --field <领域>
+python3 tools/knowrary/knowrary.py context --vault <vault> --article <文章> --field <领域>
 
 # 预览：方案 JSON → 变更集 → 每个文件的 diff
-python3 /Users/moka/.../knowrary.py apply plan.json --vault <vault> --field <f> --dry-run
+python3 tools/knowrary/knowrary.py apply plan.json --vault <vault> --field <f> --dry-run
 
 # 写：去掉 --dry-run，落盘前自动备份
-python3 /Users/moka/.../knowrary.py apply plan.json --vault <vault> --field <f>
+python3 tools/knowrary/knowrary.py apply plan.json --vault <vault> --field <f>
 ```
 
 **一个读工具、一个预览工具、一个写工具，外加一份讲清楚怎么用的说明书。**
@@ -88,14 +88,19 @@ python3 /Users/moka/.../knowrary.py apply plan.json --vault <vault> --field <f>
 
 | | 现在 | MCP |
 |---|---|---|
-| 工具怎么被发现 | SKILL.md 里写死 `python3 /Users/moka/IdeaProjects/Knowrary/tools/knowrary/knowrary.py` | `tools/list` |
+| 工具怎么被发现 | SKILL.md 里写死一行 `python3 tools/knowrary/knowrary.py` | `tools/list` |
 | 参数长什么样 | 散文描述 + `--flag`，模型照着拼命令行 | JSON Schema |
 | 结果怎么回来 | stdout 文本，模型自己读 | 结构化 content |
-| 换台机器 | **改 SKILL.md 里四处绝对路径** | 改一行配置 |
+| 换台机器 | ~~改 SKILL.md 里四处绝对路径~~ **2026-09-22 已消**：全改成仓库相对路径，clone 到哪都跑 | 改一行配置 |
 | 换个客户端 | **重写一份 skill** | 不用改 |
 
-**最后两行是全部理由。** 现在这套的隐含前提是"用的人是我、机器是这台、客户端是 Claude Code"——
-三条全成立时它一点毛病没有，**任何一条不成立就得重写**。
+**原本最后两行是全部理由**：隐含前提是"用的人是我、机器是这台、客户端是 Claude Code"，
+三条全成立时它一点毛病没有，任何一条不成立就得重写。
+
+**2026-09-22 划掉了"机器是这台"那条**——skill 里四处绝对路径全换成仓库相对路径
+（项目级 skill 触发时的工作目录就是仓库根），别人 clone 下来不用改一个字。
+这不是做了 MCP，只是把最便宜的那一半好处先拿了：**换机器不用改，换客户端还是得重写**。
+剩下的理由只剩最后一行，也正因为只剩一行，这一跳更不着急——见 §5 触发线。
 
 ### 3.2 §9 已经点过名
 
@@ -162,11 +167,12 @@ CLI 和网页**（三个入口共用一条流水线，skill 降级成可选的�
 **出现第二个客户端。** 具体讲，满足任一条：
 
 1. 想在 Claude Code 之外的 agent 客户端里用（Cursor、别人的 CLI、自己写的脚本）；
-2. 换了台机器，发现 SKILL.md 里四处绝对路径都要改；
-3. **别人真的来用这个仓库**——这是开源那条线上迟早要撞的，
-   因为 skill 里写死的是 `/Users/moka/IdeaProjects/Knowrary`。
+2. ~~换了台机器，发现 SKILL.md 里四处绝对路径都要改~~——**这条 2026-09-22 已经拆掉引信**：
+   路径全改成仓库相对，换机器、换目录都不用动 skill，所以它不再会先触发；
+3. **别人真的来用这个仓库**——这是开源那条线上迟早要撞的：路径问题虽然没了，
+   但 skill 只在 Claude Code 里存在，换个客户端还是得重写一份。
 
-第 3 条最可能先到。2026-09-20 那天两件事（原生 tool use、导入入口拉平）都是冲着
+第 3 条最可能先到（第 2 条已经不会再来敲门了）。2026-09-20 那天两件事（原生 tool use、导入入口拉平）都是冲着
 "开源之后别人怎么用"去的，**MCP 是同一条线上还没做的那一段**。
 
 ---
