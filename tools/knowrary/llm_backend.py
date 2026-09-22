@@ -19,11 +19,13 @@ anthropic / openai 走原生 tool use；claude-cli 是子进程、没有结构�
 from __future__ import annotations
 
 import hashlib
+import http.client
 import importlib.util
 import json
 import os
 import re
 import subprocess
+import time
 import urllib.error
 import uuid
 import urllib.request
@@ -39,10 +41,22 @@ DEFAULT_CONFIG = {
     "roles": {"learn": "claude-cli", "review": "claude-cli"},
 }
 TIMEOUT = 900
+RETRY_WAITS = (1.0, 3.0)                 # 连接类失败重试两次，之间等这么久
+RETRY_STATUS = frozenset({408, 425, 429, 500, 502, 503, 504})
 
 
 class LLMConfigError(SystemExit):
     pass
+
+
+class LLMTransient(SystemExit):
+    """这一次没通，但**再试一次多半就通**：连接被掐、读到一半断、429 / 5xx。
+
+    单列一类是为了让重试有个准确的判据。按报错文案去猜"这是不是网络问题"迟早猜错，
+    而把配置错、4xx 也重试一遍，只是把同一个错再犯两遍、白等四秒。
+    仍然继承 `SystemExit`：CLI 那侧的行为一个字没变，服务侧照旧在 `llm_call` 里
+    换成 `LLMFailed`，顺带盖上角色 / provider / 模型的前缀。
+    """
 
 
 # ---------------------------------------------------------------- 配置
@@ -169,9 +183,34 @@ def ask(prompt: str, provider: dict, model_override: str | None = None) -> str:
     return ask_detailed(prompt, provider, model_override)[0]
 
 
+def _retrying(run, spoke: dict | None = None):
+    """连接类失败（`LLMTransient`）自动重试——**但只在这一次一个字都还没吐出来时**。
+
+    已经吐了一半再重来，屏幕上那半截和重试后的正文会叠在一起（除非再约一个"清屏"事件），
+    而且能吐字说明请求真的到了模型那边，多半不是抖动，重来一次八成还是同样的地方断。
+    所以流式那条路把"吐没吐过字"记在 `spoke` 里，由它一票否决重试。
+
+    非瞬时的错误（配置错、4xx、模型拒绝）一次都不重试，直接抛。
+    """
+    for wait in RETRY_WAITS + (None,):
+        try:
+            return run()
+        except LLMTransient:
+            if wait is None or (spoke or {}).get("n"):
+                raise
+            time.sleep(wait)
+
+
 def ask_detailed(prompt: str, provider: dict,
                  model_override: str | None = None) -> tuple[str, dict]:
-    """问一次，连用量一起返回。`ask()` 是它的薄壳，老调用方不受影响。"""
+    """问一次，连用量一起返回。`ask()` 是它的薄壳，老调用方不受影响。
+
+    单轮不流式，一个字都没往外吐过，所以连接抖了直接重试是安全的。
+    """
+    return _retrying(lambda: _ask_once(prompt, provider, model_override))
+
+
+def _ask_once(prompt: str, provider: dict, model_override: str | None) -> tuple[str, dict]:
     model = model_override or provider.get("model")
     kind = provider["type"]
     if kind == "claude-cli":
@@ -245,10 +284,14 @@ def _ask_anthropic_sdk(prompt: str, api_key: str, base: str, model: str, max_tok
     import anthropic
 
     client = anthropic.Anthropic(api_key=api_key, base_url=base)
-    with client.messages.stream(
-        model=model, max_tokens=max_tokens, messages=[{"role": "user", "content": prompt}]
-    ) as stream:
-        msg = stream.get_final_message()
+    try:
+        with client.messages.stream(
+            model=model, max_tokens=max_tokens, messages=[{"role": "user", "content": prompt}]
+        ) as stream:
+            msg = stream.get_final_message()
+    except (anthropic.APIConnectionError, anthropic.RateLimitError,
+            anthropic.InternalServerError) as exc:     # SDK 的连接错误不是 OSError，接不住
+        raise LLMTransient(f"LLM 连接失败（{base}）：{type(exc).__name__}: {exc}") from None
     if msg.stop_reason == "refusal":
         raise SystemExit("模型拒绝了这次请求")
     text = "".join(b.text for b in msg.content if b.type == "text")
@@ -312,10 +355,28 @@ def _post_json(url: str, headers: dict, payload: dict) -> dict:
         with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:
             return json.loads(resp.read().decode("utf-8"))
     except urllib.error.HTTPError as e:
-        detail = e.read().decode("utf-8", "replace")[:800]
-        raise SystemExit(f"LLM 请求失败 HTTP {e.code}（{url}）：\n{detail}")
-    except urllib.error.URLError as e:
-        raise SystemExit(f"LLM 连接失败（{url}）：{e.reason}")
+        raise _http_failed(url, e)
+    except (OSError, http.client.HTTPException) as e:      # URLError 也是 OSError
+        raise _conn_failed(url, e)
+
+
+def _http_failed(url: str, e: urllib.error.HTTPError) -> SystemExit:
+    detail = e.read().decode("utf-8", "replace")[:800]
+    msg = f"LLM 请求失败 HTTP {e.code}（{url}）：\n{detail}"
+    return LLMTransient(msg) if e.code in RETRY_STATUS else SystemExit(msg)
+
+
+def _conn_failed(url: str, exc: BaseException) -> SystemExit:
+    """连接层的失败，一律收成这一条带 url 的报错。
+
+    **为什么不能只接 `URLError`**：urllib 只在"发请求"那一步把 OSError 包成 URLError，
+    等响应时对方断开，`getresponse()` 抛的是原样的 `http.client.RemoteDisconnected`
+    （`ConnectionResetError` 的子类，不是 URLError）。只接 URLError 的话它会一路裸奔到
+    出错流水里——url、角色、provider、模型全丢，事后只剩一句 "Remote end closed
+    connection without response"，连是哪个 provider 断的都看不出来（2026-09-21 那次）。
+    """
+    reason = getattr(exc, "reason", None) or exc
+    return LLMTransient(f"LLM 连接失败（{url}）：{type(exc).__name__}: {reason}")
 
 
 def ping(provider: dict, model_override: str | None = None) -> str:
@@ -376,7 +437,23 @@ def chat(messages: list[dict], provider: dict, model_override: str | None = None
 
     和 `ask()` 的关系：`ask()` 是单轮、无工具的，出题 / 拆计划那类"一问一答"用它就够。
     要能追问、能调工具才走这里。
+
+    连接抖了会自动重试（`_retrying`），**但只在这一次还没吐过字的时候**——
+    吐了一半再重来，屏幕上会出现两截叠在一起的正文。
     """
+    spoke = {"n": 0}
+
+    def relay(piece):            # 记一笔"这一步已经吐过字"：重试要看它
+        spoke["n"] += 1
+        on_delta(piece)
+
+    return _retrying(lambda: _chat_once(messages, provider, model_override,
+                                        relay if on_delta else None, tools, session), spoke)
+
+
+def _chat_once(messages: list[dict], provider: dict, model_override: str | None,
+               on_delta, tools: list[dict] | None,
+               session: str | None) -> tuple[str, list[dict], dict]:
     model = model_override or provider.get("model")
     kind = provider["type"]
     if kind == "claude-cli":
@@ -995,7 +1072,6 @@ def _sse(url: str, headers: dict, payload: dict):
                     except json.JSONDecodeError:
                         continue
     except urllib.error.HTTPError as e:
-        detail = e.read().decode("utf-8", "replace")[:800]
-        raise SystemExit(f"LLM 请求失败 HTTP {e.code}（{url}）：\n{detail}")
-    except urllib.error.URLError as e:
-        raise SystemExit(f"LLM 连接失败（{url}）：{e.reason}")
+        raise _http_failed(url, e)
+    except (OSError, http.client.HTTPException) as e:      # 流读到一半断，抛的也是这一类
+        raise _conn_failed(url, e)

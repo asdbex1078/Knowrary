@@ -2429,6 +2429,158 @@ def 速查_写在关系段后面要报出来而且不许在前面再建一节():
         assert "挪到" in str(exc), exc
 
 
+# ---------------------------------------------------------------- 传输层：上游断开与重试
+
+def _dead_upstream(plan: list[str]):
+    """起一个本地假上游，按 `plan` 一条条决定这次连接怎么对待请求。
+
+    `"drop"` = 收完请求一个字节都不回就断（**这正是 2026-09-21 那次**：上游等了 63 秒
+    直接关连接，没有状态行、没有错误正文）；`"sse"` = 正常回一小段 SSE。
+    返回 `(base_url, 已接过几次连接的计数器)`；用完 `close()`。
+    """
+    import socket
+    import threading
+
+    srv = socket.socket()
+    srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    srv.bind(("127.0.0.1", 0))
+    srv.listen(8)
+    hits = []
+
+    def serve():
+        while True:
+            try:
+                conn, _ = srv.accept()
+            except OSError:
+                return
+            with conn:
+                buf = b""
+                while b"\r\n\r\n" not in buf:
+                    chunk = conn.recv(65536)
+                    if not chunk:
+                        break
+                    buf += chunk
+                how = plan[len(hits)] if len(hits) < len(plan) else plan[-1]
+                hits.append(how)
+                if how == "sse":
+                    body = ('data: {"choices":[{"delta":{"content":"\u55e8"}}]}\n\n'
+                            "data: [DONE]\n\n").encode()
+                    conn.sendall(b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n"
+                                 b"Connection: close\r\nContent-Length: "
+                                 + str(len(body)).encode() + b"\r\n\r\n" + body)
+
+    threading.Thread(target=serve, daemon=True).start()
+    return f"http://127.0.0.1:{srv.getsockname()[1]}", hits, srv
+
+
+def _openai_provider(base: str) -> dict:
+    return {"type": "openai", "model": "测试模型", "base_url": base + "/v1", "api_key": "none"}
+
+
+@case
+def 上游断开时报错要带得上url而不是一句裸英文():
+    """urllib 只在"发请求"那一步把 OSError 包成 `URLError`；**等响应时对方断开，
+    `getresponse()` 抛的是原样的 `http.client.RemoteDisconnected`**（ConnectionResetError
+    的子类，不是 URLError）。只接 URLError 的写法会让它一路裸奔到出错流水，
+    url / 角色 / provider 全丢——2026-09-21 那条记录最后只剩一句英文，
+    连是哪个 provider 断的都看不出来。
+    """
+    import llm_backend as backend
+
+    base, hits, srv = _dead_upstream(["drop"])
+    waits = backend.RETRY_WAITS
+    backend.RETRY_WAITS = (0.0, 0.0)          # 重试逻辑另一条用例验，这里只看报错长什么样
+    try:
+        backend.chat([{"role": "user", "content": "在吗"}], _openai_provider(base))
+        raise AssertionError("上游断开了却没报错")
+    except SystemExit as exc:
+        assert isinstance(exc, backend.LLMTransient), type(exc)
+        assert "chat/completions" in str(exc), (str(exc), "报错里没有 url，事后查不出是谁断的")
+        assert "连接失败" in str(exc), str(exc)
+    finally:
+        backend.RETRY_WAITS = waits
+        srv.close()
+
+
+@case
+def 一个字都没吐就断掉要自动重试():
+    """纯网络抖动不该让整轮作废：这一轮前面可能已经烧掉了两次成功的工具调用。"""
+    import llm_backend as backend
+
+    base, hits, srv = _dead_upstream(["drop", "sse"])
+    waits = backend.RETRY_WAITS
+    backend.RETRY_WAITS = (0.0, 0.0)
+    got = []
+    try:
+        text, calls, _ = backend.chat([{"role": "user", "content": "在吗"}],
+                                      _openai_provider(base), on_delta=got.append)
+        assert text == "嗨", (text, hits)
+        assert len(hits) == 2, (hits, "没重试，或者重试了不止一次")
+        assert got == ["嗨"], got
+    finally:
+        backend.RETRY_WAITS = waits
+        srv.close()
+
+
+@case
+def 已经吐过字再断就不重试():
+    """吐了一半再重来，屏幕上会出现两截叠在一起的正文——除非再约一个"清屏"事件。
+
+    而且能吐字说明请求真的到了模型那边，多半不是抖动，重来一次八成还是同样的地方断。
+    这种交给人按「重试这一轮」，不自动烧第二份钱。
+    """
+    import llm_backend as backend
+
+    base, hits, srv = _dead_upstream(["half"])
+    waits = backend.RETRY_WAITS
+    backend.RETRY_WAITS = (0.0, 0.0)
+    got = []
+
+    real_sse = backend._sse
+
+    def half(url, headers, payload):
+        """吐一段正文，然后在流中间断开——半截 SSE 最真实的样子。"""
+        yield "", {"choices": [{"delta": {"content": "我先说半"}}]}
+        raise backend._conn_failed(url, ConnectionResetError("Remote end closed connection"))
+
+    backend._sse = half
+    try:
+        backend.chat([{"role": "user", "content": "在吗"}], _openai_provider(base),
+                     on_delta=got.append)
+        raise AssertionError("断在半路却没报错")
+    except SystemExit:
+        assert got == ["我先说半"], got
+    finally:
+        backend._sse = real_sse
+        backend.RETRY_WAITS = waits
+        srv.close()
+
+
+@case
+def 配置错和4xx一次都不重试():
+    """重试只对"再试一次可能就通"的那类有意义。把 400 也重试一遍，
+    只是把同一个错犯三次、白等四秒——而且每一次都可能真的计费。"""
+    import llm_backend as backend
+
+    tries = []
+
+    def boom(url, headers, payload):
+        tries.append(url)
+        raise SystemExit("LLM 请求失败 HTTP 400（…）：参数写错了")
+
+    real = backend._post_json
+    backend._post_json = boom
+    try:
+        backend.chat([{"role": "user", "content": "在吗"}],
+                     _openai_provider("http://127.0.0.1:1"))
+        raise AssertionError("400 却没报错")
+    except SystemExit as exc:
+        assert not isinstance(exc, backend.LLMTransient), exc
+        assert len(tries) == 1, (tries, "4xx 也被重试了")
+    finally:
+        backend._post_json = real
+
+
 # ---------------------------------------------------------------- 执行
 
 def main() -> None:
