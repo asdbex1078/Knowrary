@@ -101,6 +101,12 @@ def _build(vault: Path, payload: dict) -> dict:
     return cfg
 
 
+def build_test_config(vault: Path, provider: dict) -> dict:
+    """把单个未保存 provider 合成临时配置，复用保存时的密钥保留规则。"""
+    name = provider.get("name")
+    return _build(vault, {"providers": [provider], "roles": {"test": name}})
+
+
 def write(vault: Path, payload: dict) -> dict:
     cfg = _build(vault, payload)
     path = llm_backend.config_path(vault)

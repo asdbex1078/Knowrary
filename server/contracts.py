@@ -932,6 +932,16 @@ class LLMConfigWrite(Strict):
     roles: dict[str, str] = Field(default_factory=dict)
 
 
+class LLMConfigTest(Strict):
+    provider: dict[str, Any] = Field(default_factory=dict)
+
+
+class LLMConfigTestRead(Strict):
+    ok: bool = True
+    model: str | None = None
+    message: str
+
+
 class UsageRead(Strict):
     date: str
     today: UsageBucket

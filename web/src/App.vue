@@ -1,7 +1,7 @@
 <script setup>
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, shallowRef, watch } from 'vue'
 import {
-  fetchSettings, putSettings, fetchLLMConfig, putLLMConfig, fetchCalendar, fetchCompareGroups, fetchCompareTable, postCompareFill, fetchDigest, postSyncToGlobal, fetchDue, fetchProjects, putProjects, postPlanPropose, fetchToday, fetchUsage, postMerge, postRename, postQuiz, postQuizDiagnose, postQuizGrade, fetchOpenQuiz, dropOpenQuiz, postRegroup, fetchIndex, fetchInbox, fetchLayout, fetchNode,
+  fetchSettings, putSettings, fetchLLMConfig, putLLMConfig, testLLMConfig as postLLMConfigTest, fetchCalendar, fetchCompareGroups, fetchCompareTable, postCompareFill, fetchDigest, postSyncToGlobal, fetchDue, fetchProjects, putProjects, postPlanPropose, fetchToday, fetchUsage, postMerge, postRename, postQuiz, postQuizDiagnose, postQuizGrade, fetchOpenQuiz, dropOpenQuiz, postRegroup, fetchIndex, fetchInbox, fetchLayout, fetchNode,
   patchLayout, postChanges, postPlace, postReview, postSuggest, postSummarize, postYearsPropose,
 } from './api.js'
 import AppHeader from './components/AppHeader.vue'
@@ -3044,6 +3044,15 @@ async function saveLLMConfig(config) {
   }
 }
 
+async function testLLMConfig(provider) {
+  try {
+    return await postLLMConfigTest(provider)
+  } catch (err) {
+    setBanner(`模型测试失败：${err.body?.detail || err.message}`, 'error')
+    throw err
+  }
+}
+
 async function openSettings() {
   settingsOn.value = true
   await loadLLMConfig()
@@ -3243,13 +3252,13 @@ onBeforeUnmount(() => {
                @help="showHelp = true" />
 
     <div class="workbench">
-      <SettingsDialog v-if="settingsOn" :settings="settings" :llm-config="llmConfig" :llm-saving="llmSaving" :snap="snap" :avoid-nodes="avoidNodes"
+      <SettingsDialog v-if="settingsOn" :settings="settings" :llm-config="llmConfig" :llm-saving="llmSaving" :save-llm="saveLLMConfig" :test-llm="testLLMConfig" :snap="snap" :avoid-nodes="avoidNodes"
                       :auto-lod="autoLod" :aggregate="aggregate" :show-map="showMap" :theme="theme"
                       @close="settingsOn = false" @set="saveSettings"
                       @toggle-snap="toggleSnap" @toggle-avoid="toggleAvoid" @toggle-map="toggleMap"
                       @toggle-lod="autoLod = !autoLod; render()"
                       @toggle-aggregate="aggregate = !aggregate; expanded = new Set(); render()"
-                      @toggle-theme="toggleTheme" @save-llm="saveLLMConfig" />
+                      @toggle-theme="toggleTheme" />
 
       <MorningBrief v-if="briefOn" :today="todayList" @close="briefOn = false"
                     @start="briefStart" @quiz="briefOn = false; startQuiz($event)" />

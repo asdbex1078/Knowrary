@@ -28,7 +28,8 @@ from .contracts import (CalendarRead, ChangeResult, ChangeSet, ChatRequest, Coac
                         PlaceResult, ProjectsRead, ProjectsSaved, ProjectsWrite, QuizDiagnoseRequest,
                         QuizDiagnosis, QuizGradeRequest, QuizGraded, QuizRequest, QuizSet, RenameImpact,
                         RenameRequest, RenameResult, ReviewDone, ReviewRequest, SettingsPatch,
-                        SettingsRead, SuggestRequest, LLMConfigRead, LLMConfigWrite,
+                        SettingsRead, SuggestRequest, LLMConfigRead, LLMConfigWrite, LLMConfigTest,
+                        LLMConfigTestRead,
                         SuggestResult, UsageRead, YearProposal, YearProposeRequest,
                         CompareProposal, CompareProposeRequest)
 from .index_service import current_index, invalidate
@@ -436,6 +437,24 @@ def put_llm_config(req: LLMConfigWrite) -> LLMConfigRead:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except llm_backend.LLMConfigError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.post("/api/llm/config/test", response_model=LLMConfigTestRead)
+def test_llm_config(req: LLMConfigTest) -> LLMConfigTestRead:
+    """用临时配置发一个最小请求，不写入配置文件。"""
+    try:
+        provider = req.provider
+        name = provider.get("name")
+        cfg = llm_config.build_test_config(vault_path(), provider)
+        _, selected = llm_backend.resolve_provider(cfg, "test", name)
+        text, used = llm_backend.ask_detailed(
+            "只回复 OK，不要添加其它文字。", selected)
+        return LLMConfigTestRead(ok=True, model=used.get("model") or selected.get("model"),
+                                 message=(text or "已收到响应").strip()[:120])
+    except (llm_config.LLMConfigRejected, llm_backend.LLMConfigError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except BaseException as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
 @app.get("/api/llm/usage", response_model=UsageRead)

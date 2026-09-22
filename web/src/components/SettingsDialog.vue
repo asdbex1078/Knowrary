@@ -21,6 +21,8 @@ const props = defineProps({
   theme: { type: String, default: 'light' },
   llmConfig: { type: Object, default: null },
   llmSaving: { type: Boolean, default: false },
+  saveLLM: { type: Function, default: null },
+  testLLM: { type: Function, default: null },
 })
 const emit = defineEmits(['close', 'set', 'toggle-snap', 'toggle-avoid', 'toggle-lod',
                           'toggle-aggregate', 'toggle-map', 'toggle-theme', 'save-llm'])
@@ -34,6 +36,11 @@ const TABS = [
 const tab = ref('review')
 const draft = ref({ providers: [], roles: {} })
 const error = ref('')
+const editor = ref(null)
+const editorIndex = ref(-1)
+const testBusy = ref(false)
+const testMessage = ref('')
+const testError = ref('')
 
 function copyConfig(config) {
   if (!config) return { providers: [], roles: {} }
@@ -44,7 +51,48 @@ watch(() => props.llmConfig, (config) => { draft.value = copyConfig(config) }, {
 
 function addProvider() {
   const n = `provider-${draft.value.providers.length + 1}`
-  draft.value.providers.push({ name: n, type: 'openai', model: '', base_url: '', api_key: '' })
+  editorIndex.value = -1
+  editor.value = { name: n, type: 'openai', model: '', base_url: '', api_key: '', max_tokens: null, temperature: null }
+  testMessage.value = ''
+  testError.value = ''
+}
+function editProvider(index) {
+  editorIndex.value = index
+  editor.value = { ...draft.value.providers[index], api_key: '' }
+  testMessage.value = ''
+  testError.value = ''
+}
+function closeEditor() {
+  if (!testBusy.value) editor.value = null
+}
+function validateProvider(provider) {
+  if (!provider.name?.trim()) return '请填写 provider 名称'
+  if (!provider.model?.trim() && provider.type !== 'claude-cli') return '请填写模型名称'
+  if (provider.type === 'openai' && !provider.base_url?.trim()) return 'OpenAI 兼容类型需要 Base URL'
+  return ''
+}
+async function testProvider(provider = editor.value) {
+  testMessage.value = ''
+  testError.value = validateProvider(provider)
+  if (testError.value || !props.testLLM) return
+  testBusy.value = true
+  try {
+    const result = await props.testLLM({ ...provider })
+    testMessage.value = `连接成功：${result.message || '已收到响应'}`
+  } catch (err) {
+    testError.value = err.body?.detail || err.message
+  } finally {
+    testBusy.value = false
+  }
+}
+async function saveProvider() {
+  error.value = validateProvider(editor.value)
+  if (error.value) return
+  const next = { ...editor.value }
+  if (editorIndex.value < 0) draft.value.providers.push(next)
+  else draft.value.providers.splice(editorIndex.value, 1, next)
+  editor.value = null
+  await saveModels()
 }
 function removeProvider(index) {
   const name = draft.value.providers[index]?.name
@@ -73,14 +121,21 @@ function renameRole(oldName, event) {
   draft.value.roles[name] = draft.value.roles[oldName]
   delete draft.value.roles[oldName]
 }
-function saveModels() {
+async function saveModels() {
   error.value = ''
   if (!draft.value.providers.length) { error.value = '至少保留一个 provider'; return }
   if (Object.values(draft.value.roles).some((name) => !name)) { error.value = '每个 role 都要选择 provider'; return }
-  emit('save-llm', { providers: draft.value.providers, roles: draft.value.roles })
+  if (!props.saveLLM) return
+  try { await props.saveLLM({ providers: draft.value.providers, roles: draft.value.roles }) }
+  catch (err) { error.value = err.body?.detail || err.message }
 }
 
-function onKey(ev) { if (ev.key === 'Escape') { ev.stopPropagation(); emit('close') } }
+function onKey(ev) {
+  if (ev.key !== 'Escape') return
+  ev.stopPropagation()
+  if (editor.value) closeEditor()
+  else emit('close')
+}
 onMounted(() => document.addEventListener('keydown', onKey, true))
 onBeforeUnmount(() => document.removeEventListener('keydown', onKey, true))
 </script>
@@ -176,31 +231,45 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onKey, true))
 
           <template v-else>
             <div class="model-head">
-              <div><b>Providers</b><span class="sub">角色会从这里选择模型。API Key 只写入本地配置，不会回显。</span></div>
-              <button class="btn tiny" type="button" @click="addProvider"><Icon name="plus" :size="13" />新增</button>
+              <div><b>模型</b><span class="sub">列表只显示模型名；密钥只在编辑时写入，不会回显。</span></div>
+              <button class="btn tiny" type="button" @click="addProvider"><Icon name="plus" :size="13" />添加模型</button>
             </div>
             <div v-if="!draft.providers.length" class="empty-hint">还没有 provider，先新增一个。</div>
-            <div v-for="(provider, i) in draft.providers" :key="i" class="model-row">
-              <div class="model-grid">
-                <label>名称<input v-model.trim="provider.name" placeholder="例如 openai" /></label>
-                <label>类型<select v-model="provider.type"><option v-for="type in (llmConfig?.provider_types || ['claude-cli', 'anthropic', 'openai'])" :key="type" :value="type">{{ type }}</option></select></label>
-                <label>模型<input v-model.trim="provider.model" placeholder="可留空使用默认" /></label>
-                <label v-if="provider.type === 'openai'">Base URL<input v-model.trim="provider.base_url" placeholder="https://.../v1" /></label>
-                <label>API Key<input v-model="provider.api_key" type="password" :placeholder="provider.api_key_set ? '已设置，留空保持不变' : 'env:变量名 或明文'" /></label>
+            <div v-for="(provider, i) in draft.providers" :key="i" class="model-list-row">
+              <div class="model-list-name"><b>{{ provider.model || provider.name }}</b><span>{{ provider.type }} · {{ provider.name }}</span></div>
+              <div class="model-list-actions">
+                <button class="icon-btn ghost" type="button" title="测试模型" :disabled="testBusy" @click="testProvider(provider)"><Icon name="play" :size="14" /></button>
+                <button class="icon-btn ghost" type="button" title="编辑模型" @click="editProvider(i)"><Icon name="pencil" :size="14" /></button>
+                <button class="icon-btn ghost danger" type="button" title="删除模型" @click="removeProvider(i)"><Icon name="trash" :size="14" /></button>
               </div>
-              <button class="icon-btn ghost danger" type="button" title="删除 provider" @click="removeProvider(i)"><Icon name="trash" :size="14" /></button>
             </div>
-            <div class="model-head roles-head"><div><b>Roles</b><span class="sub">固定角色用于聊天与复习，也可以增加自定义角色。</span></div><button class="btn tiny" type="button" @click="addRole"><Icon name="plus" :size="13" />新增</button></div>
+            <div class="model-head roles-head"><div><b>Roles</b><span class="sub">固定角色用于聊天与复习，也可以增加自定义角色。</span></div><button class="btn tiny" type="button" @click="addRole"><Icon name="plus" :size="13" />新增角色</button></div>
             <div v-for="(providerName, role) in draft.roles" :key="role" class="role-row">
               <input :value="role" :readonly="['learn', 'review'].includes(role)" aria-label="role 名称" @change="renameRole(role, $event)" />
               <select v-model="draft.roles[role]" aria-label="role provider"><option v-for="provider in draft.providers" :key="provider.name" :value="provider.name">{{ provider.name || '未命名' }}</option></select>
               <button class="icon-btn ghost danger" type="button" title="删除 role" :disabled="['learn', 'review'].includes(role)" @click="removeRole(role)"><Icon name="trash" :size="14" /></button>
             </div>
             <p v-if="error" class="model-error">{{ error }}</p>
-            <div class="model-actions"><button class="btn primary" type="button" :disabled="llmSaving" @click="saveModels"><Icon name="save" :size="14" />{{ llmSaving ? '保存中…' : '保存模型配置' }}</button></div>
+            <div class="model-actions"><button class="btn primary" type="button" :disabled="llmSaving" @click="saveModels"><Icon name="save" :size="14" />{{ llmSaving ? '保存中…' : '保存配置' }}</button></div>
           </template>
         </div>
       </section>
+    </div>
+
+    <div v-if="editor" class="model-editor-mask" @click.self="closeEditor">
+      <div class="model-editor" role="dialog" aria-label="模型详情">
+        <header class="model-editor-head"><div><b>{{ editorIndex < 0 ? '添加模型' : '编辑模型' }}</b><span class="dim">连接测试不会保存配置</span></div><button class="icon-btn ghost tiny" title="关闭" @click="closeEditor"><Icon name="x" :size="14" /></button></header>
+        <div class="model-editor-body">
+          <label>Provider 名称<input v-model.trim="editor.name" placeholder="例如 openai" /></label>
+          <label>类型<select v-model="editor.type"><option v-for="type in (llmConfig?.provider_types || ['claude-cli', 'anthropic', 'openai'])" :key="type" :value="type">{{ type }}</option></select></label>
+          <label>模型名称<input v-model.trim="editor.model" placeholder="例如 gpt-4o / qwen-plus" /></label>
+          <label v-if="editor.type === 'openai'">Base URL<input v-model.trim="editor.base_url" placeholder="https://api.openai.com/v1" /></label>
+          <label>API Key<input v-model="editor.api_key" type="password" :placeholder="editor.api_key_set ? '已设置，留空保持不变' : 'env:变量名 或明文'" /><span class="field-hint">已有密钥不会回显；留空会保留原值。</span></label>
+          <div class="model-advanced"><label>最大 tokens<input v-model.number="editor.max_tokens" type="number" min="1" placeholder="默认" /></label><label>Temperature<input v-model.number="editor.temperature" type="number" min="0" max="2" step="0.1" placeholder="默认" /></label></div>
+          <p v-if="testError" class="model-error">{{ testError }}</p><p v-if="testMessage" class="model-success">{{ testMessage }}</p>
+        </div>
+        <footer class="model-editor-foot"><button class="btn subtle" type="button" :disabled="testBusy" @click="testProvider()"><Icon name="play" :size="14" />{{ testBusy ? '测试中…' : '测试连接' }}</button><span></span><button class="btn" type="button" :disabled="testBusy || llmSaving" @click="closeEditor">取消</button><button class="btn primary" type="button" :disabled="testBusy || llmSaving" @click="saveProvider"><Icon name="save" :size="14" />保存</button></footer>
+      </div>
     </div>
   </div>
 </template>

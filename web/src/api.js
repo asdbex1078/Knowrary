@@ -167,6 +167,11 @@ export const putLLMConfig = (config) => request('/api/llm/config', {
   headers: { 'Content-Type': 'application/json' },
   body: JSON.stringify(config),
 })
+export const testLLMConfig = (provider) => request('/api/llm/config/test', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ provider }),
+})
 
 // —— 阶段 10 / 一期：今日清单 + 项目 ——
 /** 今天可以动手的事，按固定优先级排。纯排序，不调 LLM。 */
