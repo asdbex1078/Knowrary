@@ -3032,13 +3032,17 @@ async function loadLLMConfig() {
   }
 }
 
+/** 存模型配置。**要把存完的那份回给调用方**：设置页的编辑器靠这个返回值判断"存住了没有"，
+ *  返回 undefined 的话它会当成失败——弹窗不关、也不报错，可东西其实已经落盘了。 */
 async function saveLLMConfig(config) {
   llmSaving.value = true
   try {
     llmConfig.value = await putLLMConfig(config)
     setBanner('模型配置已保存', 'success')
+    return llmConfig.value
   } catch (err) {
     setBanner(`模型配置没存上：${err.body?.detail || err.message}`, 'error')
+    throw err
   } finally {
     llmSaving.value = false
   }

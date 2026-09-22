@@ -1,11 +1,11 @@
 {
   "schema_version": 2,
-  "revision": 197,
-  "updated_at": "2026-09-20T11:41:03Z",
+  "revision": 221,
+  "updated_at": "2026-09-22T02:57:28Z",
   "viewport": {
     "zoom": 0.577,
-    "cx": 325.0,
-    "cy": 309.0
+    "cx": 861.0,
+    "cy": 385.0
   },
   "groups": {},
   "nodes": {
@@ -105,8 +105,8 @@
       "w": 196.0,
       "h": 64.0,
       "group": null,
-      "state": "ghost",
-      "placedAt": null,
+      "state": "draft",
+      "placedAt": "2026-09-21",
       "anchor": null
     },
     "词袋模型": {
@@ -170,8 +170,8 @@
       "anchor": null
     },
     "Transformer": {
-      "x": 72.0,
-      "y": 492.0,
+      "x": 8.0,
+      "y": 496.0,
       "w": 196.0,
       "h": 64.0,
       "group": null,
@@ -200,8 +200,8 @@
       "anchor": null
     },
     "MHA": {
-      "x": 792.0,
-      "y": 504.0,
+      "x": 752.0,
+      "y": 272.0,
       "w": 196.0,
       "h": 64.0,
       "group": null,
@@ -210,8 +210,8 @@
       "anchor": null
     },
     "KV-Cache": {
-      "x": 72.0,
-      "y": 592.0,
+      "x": -64.0,
+      "y": 664.0,
       "w": 196.0,
       "h": 64.0,
       "group": null,
@@ -220,8 +220,8 @@
       "anchor": null
     },
     "MQA": {
-      "x": 304.0,
-      "y": 496.0,
+      "x": 384.0,
+      "y": 568.0,
       "w": 196.0,
       "h": 64.0,
       "group": null,
@@ -240,8 +240,8 @@
       "anchor": null
     },
     "MLA": {
-      "x": 792.0,
-      "y": 592.0,
+      "x": 312.0,
+      "y": 480.0,
       "w": 196.0,
       "h": 64.0,
       "group": null,
@@ -320,7 +320,7 @@
       "anchor": null
     },
     "连接主义": {
-      "x": -296.0,
+      "x": -224.0,
       "y": 432.0,
       "w": 176.0,
       "h": 52.0,
@@ -357,6 +357,16 @@
       "group": null,
       "state": "final",
       "placedAt": "2026-09-18",
+      "anchor": null
+    },
+    "DeepSeek-V3": {
+      "x": -486.0,
+      "y": 558.0,
+      "w": 176.0,
+      "h": 52.0,
+      "group": null,
+      "state": "draft",
+      "placedAt": "2026-09-21",
       "anchor": null
     }
   },

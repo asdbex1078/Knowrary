@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
-  "revision": 21,
-  "updated_at": "2026-09-18T09:47:05Z",
+  "revision": 23,
+  "updated_at": "2026-09-21T13:08:37Z",
   "projects": {
     "transformer": {
       "name": "Transformer",
@@ -766,6 +766,14 @@
                   "name": "Perceptrons",
                   "why": "1969 单层感知机的天花板，连接主义寒冬的触发点",
                   "load": "轻",
+                  "layer": "",
+                  "year": null
+                },
+                {
+                  "id": "DeepSeek-V3",
+                  "name": "DeepSeek-V3",
+                  "why": "聊出来的",
+                  "load": "中",
                   "layer": "",
                   "year": null
                 }

@@ -135,9 +135,10 @@ python3 tools/knowrary/knowrary.py review due --vault .        # 今天该复习
 python3 tools/knowrary/knowrary.py digest --vault .            # 欠账清单：Inbox / 草稿 / 待复习 / 桥 / 连边建议 / 重复 / 方向矛盾
 #   出题与交卷在画布的「学习」面板里（走 LLM 的 review 角色；没配 llm.local.json 就用 claude -p）
 .venv/bin/python tools/knowrary/tests/run.py                   # core 自测（114 个用例；要 .venv，有两条跨到服务层）
-node web/tests/unit.mjs                                        # 前端纯函数自测（零依赖，不用测试框架，23 个用例）
-.venv/bin/python server/tests/run.py                           # 服务层自测（219 个用例）
+node web/tests/unit.mjs                                        # 前端纯函数自测（零依赖，不用测试框架，36 个用例）
+.venv/bin/python server/tests/run.py                           # 服务层自测（233 个用例）
 .venv/bin/python web/tests/e2e_canvas.py                       # 画布端到端自测（真无头 Chrome 拖拽 → 落盘，临时 vault，不碰你的布局，249 个用例）
+.venv/bin/python web/tests/e2e_models.py                       # 设置→模型端到端自测（真点「测试连接 / 保存」，假 OpenAI 端点，10 个用例）
 cd web && npm run dev                                          # 改前端（5173，/api 代理到 8765）；改完 npm run build 提交 dist
 python3 tools/knowrary/knowrary.py article <文章.md> --vault . --field <领域> [--project <项目 id>] [--dry-run] [--llm <provider>]   # 无人值守：文章 → 节点
 #   和网页「导入」面板同一套：同一份提示词、同一个长度闸、同一套认领 / 撞脸 / 孤立判定、同一份 JSON 容错

@@ -90,7 +90,7 @@ def _build(vault: Path, payload: dict) -> dict:
     for role, provider in roles.items():
         role = _validate_name(role, "role")
         if not isinstance(provider, str) or provider not in providers:
-            raise LLMConfigRejected(f"角色 `{role}` 指向不存在的 provider")
+            raise LLMConfigRejected(f"角色 `{role}` 指向不存在的 provider `{provider}`")
         clean_roles[role] = provider
     for role in REQUIRED_ROLES:
         clean_roles.setdefault(role, next(iter(providers)))

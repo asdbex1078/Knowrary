@@ -635,6 +635,7 @@ select:disabled { cursor: not-allowed; opacity: .5; }
 .role-row { flex-direction: row; align-items: center; padding: 5px 8px; margin-bottom: 5px; }
 .role-row input { flex: 1; }
 .role-row select { flex: 1.4; }
+.role-name { flex: 1; color: var(--text); font-size: 12px; }
 .role-row .icon-btn { flex: none; }
 .empty-hint { padding: 12px 8px; color: var(--text-3); font-size: 12px; }
 .model-error { margin: 8px; padding: 7px 9px; color: var(--danger); background: var(--danger-soft); border-radius: var(--r-xs); font-size: 12px; }
@@ -647,19 +648,20 @@ select:disabled { cursor: not-allowed; opacity: .5; }
 .model-list-name span { margin-top: 2px; font-size: 10.5px; color: var(--text-3); }
 .model-list-actions { display: flex; gap: 1px; }
 .model-editor-mask { position: fixed; inset: 0; z-index: 130; display: grid; place-items: center; padding: 16px; background: rgba(16, 20, 28, .32); backdrop-filter: blur(2px); }
-.model-editor { width: min(430px, 100%); max-height: min(680px, 92vh); overflow: hidden; background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-lg); box-shadow: var(--sh-3); }
-.model-editor-head { display: flex; align-items: center; gap: 10px; padding: 13px 14px; border-bottom: 1px solid var(--line); }
+.model-editor { display: flex; flex-direction: column;
+  width: min(430px, 100%); max-height: min(680px, 92vh); overflow: hidden; background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-lg); box-shadow: var(--sh-3); }
+.model-editor-head { flex: none; display: flex; align-items: center; gap: 10px; padding: 13px 14px; border-bottom: 1px solid var(--line); }
 .model-editor-head b, .model-editor-head .dim { display: block; }
 .model-editor-head b { font-size: 13px; }
 .model-editor-head .dim { margin-top: 3px; font-size: 11px; color: var(--text-3); }
 .model-editor-head .icon-btn { margin-left: auto; }
-.model-editor-body { display: grid; gap: 11px; padding: 14px; overflow: auto; }
+.model-editor-body { flex: 1; min-height: 0; display: grid; align-content: start; gap: 11px; padding: 14px; overflow: auto; }
 .model-editor-body > label, .model-advanced label { display: grid; gap: 4px; font-size: 11px; color: var(--text-3); }
 .model-editor-body input, .model-editor-body select { box-sizing: border-box; width: 100%; padding: 7px 8px; font: inherit; font-size: 12.5px; color: var(--text); background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-xs); }
 .model-editor-body input:focus, .model-editor-body select:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-ring); }
 .field-hint { font-size: 10.5px; color: var(--text-3); }
 .model-advanced { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
-.model-editor-foot { display: flex; align-items: center; gap: 7px; padding: 10px 14px; border-top: 1px solid var(--line); }
+.model-editor-foot { flex: none; display: flex; align-items: center; gap: 7px; padding: 10px 14px; border-top: 1px solid var(--line); }
 .model-editor-foot > span { flex: 1; }
 .model-success { margin: 0; padding: 7px 9px; color: var(--ok, #287d4c); background: color-mix(in srgb, var(--ok, #287d4c) 12%, transparent); border-radius: var(--r-xs); font-size: 11.5px; }
 @media (max-width: 620px) {
@@ -1260,9 +1262,9 @@ kbd.key {
   border-top: 1px solid var(--line); }
 .usage-row .op { min-width: 96px; color: var(--text-2); }
 .usage-row .tail { margin-left: auto; color: var(--text-3); }
-.usage-row.bad .op { color: var(--warn-text, #b4432c); }
 /* 是哪个模型打的这一笔。换 provider 那天全靠它认人，所以宁可截断也要留一列 */
 .usage-row .mdl { max-width: 118px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.usage-row.bad .op { color: var(--warn-text, #b4432c); }
 .rename-row { font-size: 12.5px; line-height: 1.9; }
 .rename-row b { font-size: 14px; margin-right: 4px; }
 .pool-row { display: flex; gap: 5px; margin-top: 12px; }

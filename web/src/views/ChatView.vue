@@ -27,7 +27,7 @@ import { parseDiff } from '../ui/diff.js'
 
 const props = defineProps({
   busy: { type: Boolean, default: false },
-  messages: { type: Array, default: () => [] },   // [{ role, content, trace?, cards?, streaming? }]
+  messages: { type: Array, default: () => [] },   // [{ role, content, trace?, cards?, streaming?, failed? }]
   stance: { type: String, default: '教练' },
   sessions: { type: Array, default: () => [] },   // 从留档聚合出来的会话列表
   session: { type: String, default: '' },
@@ -36,7 +36,7 @@ const props = defineProps({
   tidied: { type: Object, default: null },        // 梳理游标：{ upto, turns, at }，没梳理过是 null
   fresh: { type: Number, default: 0 },            // 游标之后还有几条没梳理
 })
-const emit = defineEmits(['send', 'stop', 'apply', 'preview', 'apply-project', 'apply-points',
+const emit = defineEmits(['send', 'stop', 'retry', 'apply', 'preview', 'apply-project', 'apply-points',
                           'apply-list-edit', 'goto',
                           'new-session', 'pick-session', 'drop-focus', 'toggle-graph', 'stance',
                           'rename-session', 'close'])
@@ -254,12 +254,26 @@ function onKey(e) {
           </details>
 
           <!-- 模型那边渲染成图文（Markdown + mermaid 画的图）；我自己说的话按原样显示 -->
-          <div v-if="m.content" class="bubble">
+          <div v-if="m.content" class="bubble" :class="{ broken: m.failed }">
             <Markdown v-if="m.role === 'assistant'" :text="m.content" />
             <template v-else>{{ m.content }}</template>
             <span v-if="m.streaming" class="caret">▍</span>
           </div>
-          <div v-else-if="m.streaming" class="bubble dim">想一下…</div>
+          <!-- 等得久了就把秒数抬出来（服务端的心跳事件带回来的）。
+               模型想一分钟和连接已经死了，屏幕上本来长得一模一样 -->
+          <div v-else-if="m.streaming" class="bubble dim">
+            {{ m.waited >= 10 ? `还在等模型…（已等 ${m.waited} 秒）` : '想一下…' }}
+          </div>
+
+          <!-- 没答成：单独一块摆出来。上面那半截和一段正常回答长得一样，
+               不标的话只会以为模型就答了这么点。它也不会再被当上下文发回模型 -->
+          <div v-if="m.failed" class="bubble broken-note">
+            <div><Icon name="warn" :size="13" />这一轮没答成{{ m.content ? '，上面是断掉前收到的半截' : '' }}</div>
+            <div v-if="m.error" class="dim">{{ m.error }}</div>
+            <button class="btn tiny" :disabled="busy" @click="emit('retry')">
+              <Icon name="refresh" :size="13" />重试这一轮
+            </button>
+          </div>
 
 
           <!-- 讲完一段问的那个检验问题：已经攒进题库，以后按遗忘曲线抽查 -->

@@ -11,11 +11,15 @@
  * 名字就是断言本身，失败时把实际值打出来。
  */
 import assert from 'node:assert/strict'
+import { readdirSync, readFileSync } from 'node:fs'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { blankMenu, buildMenu, edgeMenu, groupMenu, nodeMenu } from '../src/canvas/menus.js'
 import { ancestors, computeCollapsed } from '../src/canvas/lod.js'
 import { timelineOptions, bandCurve, buildTimeline, BY_SCHOOL, BY_DOMAIN }
   from '../src/canvas/timeline.js'
 import { level, weekColumns } from '../src/panels/heat.js'
+import { forModel } from '../src/composables/useChat.js'
 import { localISO, todayISO } from '../src/today.js'
 
 const CASES = []
@@ -348,6 +352,130 @@ test('跨多条线的点：真身落在声明的主道上，影子在别的道',
   assert.equal(plan.placed.get('T@早线').lane, '早线', '另一条道上是影子')
   assert.equal(plan.placed.get('T@早线').shadow, true)
   assert.ok(!plan.placed.has('T@晚线'), '主道上不该再多一个影子')
+})
+
+// ---------------------------------------------------------------- 对话：哪几条该发给模型
+
+test('没答成的那一轮不喂回模型', () => {
+  // 断线时收到的半截话留在屏幕上是有用的，但它不是"模型答过的一轮"：
+  // 发回去模型会当成自己上次就是这么答的接着往下编，而服务端留档里记的是"（这一轮没答成：…）"
+  const log = [
+    { role: 'user', content: '聊一下 n-gram' },
+    { role: 'assistant', content: '我先查一下……', failed: true, error: '连接失败' },
+    { role: 'user', content: '再试一次' },
+    { role: 'assistant', content: '好的' },
+  ]
+  assert.deepEqual(forModel(log).map((m) => m.content),
+                   ['聊一下 n-gram', '再试一次', '好的'])
+})
+
+test('刷新后从留档读回来的那一轮同样摘掉', () => {
+  // 留档行里正文就是记号本身，服务端读回来时标了 failed（server/chat.py 的 _is_failed）
+  const log = [
+    { role: 'user', content: '在吗', failed: false },
+    { role: 'assistant', content: '', error: '（这一轮没答成：连接失败）', failed: true },
+  ]
+  assert.deepEqual(forModel(log).map((m) => m.role), ['user'])
+})
+
+test('正常的空回复照旧不发，但我说的话一个都不少', () => {
+  const log = [{ role: 'user', content: '在吗' }, { role: 'assistant', content: '' }]
+  assert.deepEqual(forModel(log).map((m) => m.role), ['user'])
+})
+
+// ---------------------------------------------------------------- 模板：props 名字要对得上
+
+const camelize = (s) => s.replace(/-(\w)/g, (_, c) => c.toUpperCase())
+/** defineProps({...}) 里**第一层**的键名。
+ *  `default: () => ({})` 里也有 `})`，所以只能数括号，不能用非贪婪正则去够那个收尾。 */
+function declaredProps(text) {
+  const at = text.indexOf('defineProps({')
+  if (at < 0) return null
+  const body = text.slice(text.indexOf('{', at))
+  let flat = '', depth = 0, quote = ''
+  for (let i = 0; i < body.length; i++) {
+    const c = body[i]
+    if (quote) { if (c === quote && body[i - 1] !== '\\') quote = ''; continue }
+    if (c === '"' || c === "'" || c === '`') { quote = c; continue }
+    if (c === '/' && body[i + 1] === '/') { i = body.indexOf('\n', i); if (i < 0) break; continue }
+    if ('{(['.includes(c)) { depth++; continue }
+    if ('})]'.includes(c)) { depth--; if (!depth) break; continue }
+    if (depth === 1) flat += c
+  }
+  const names = [...flat.matchAll(/(?:^|,)\s*([A-Za-z_$][\w$]*)\s*:/g)].map((x) => x[1])
+  return names.length ? new Set(names) : null
+}
+/** 取 `<Tag ...>` 开标签里的那段属性文本（属性值里可能有 `>`，所以要按引号走）。 */
+function openTags(text, tag) {
+  const out = []
+  const re = new RegExp(`<${tag}(?=[\\s/>])`, 'g')
+  for (let m = re.exec(text); m; m = re.exec(text)) {
+    let i = m.index + m[0].length, quote = ''
+    for (; i < text.length; i++) {
+      const c = text[i]
+      if (quote) { if (c === quote) quote = '' } else if (c === '"' || c === "'") quote = c
+      else if (c === '>') break
+    }
+    out.push(text.slice(m.index + m[0].length, i))
+  }
+  return out
+}
+// 这些是落到根元素上的普通属性 / 指令，不是 props，别拿去和 defineProps 对
+const NOT_A_PROP = new Set(['class', 'style', 'id', 'key', 'ref', 'title', 'is', 'slot',
+                            'name', 'disabled', 'placeholder', 'type', 'value', 'tabindex', 'role'])
+
+test('父组件传的每个 prop，子组件都要真的收得到', () => {
+  // `:save-llm` 会被 camelize 成 `saveLlm`。子组件声明成 `saveLLM` 就永远对不上，
+  // 拿到的是 default（null），编译不报错、lint 不报错——只有点那个按钮才发现它是哑的。
+  const src = fileURLToPath(new URL('../src', import.meta.url))
+  const props = new Map()
+  for (const file of vueFiles(src)) props.set(file, declaredProps(readFileSync(file, 'utf8')))
+  const bad = []
+  for (const file of vueFiles(src)) {
+    const text = readFileSync(file, 'utf8')
+    for (const [, tag, rel] of text.matchAll(/import\s+(\w+)\s+from\s+'([^']+\.vue)'/g)) {
+      const known = props.get(join(dirname(file), rel))
+      if (!known) continue
+      for (const chunk of openTags(text, tag)) {
+        const attrs = [...chunk.matchAll(/(?:^|\s)(?::|v-bind:)([\w.-]+)=/g)].map((m) => m[1])
+        for (const raw of attrs) {
+          const attr = raw.split('.')[0]
+          if (NOT_A_PROP.has(attr) || /^(data-|aria-|v-|@)/.test(attr)) continue
+          if (!known.has(camelize(attr))) {
+            bad.push(`${file.slice(src.length + 1)} 里的 <${tag} :${attr}> → 子组件声明里没有 \`${camelize(attr)}\``)
+          }
+        }
+      }
+    }
+  }
+  assert.deepEqual(bad, [], `这些 prop 传过去会变成 default：\n${bad.join('\n')}`)
+})
+
+// ---------------------------------------------------------------- 模板：别把事件当参数喂进去
+
+/** 递归收 .vue 文件。测试里只走这一处，没必要引 glob。 */
+function vueFiles(dir) {
+  return readdirSync(dir, { withFileTypes: true }).flatMap((e) => {
+    const full = join(dir, e.name)
+    if (e.isDirectory()) return vueFiles(full)
+    return e.name.endsWith('.vue') ? [full] : []
+  })
+}
+
+test('@click 绑到带默认参数的函数上，必须写成 fn()', () => {
+  // `@click="saveModels"` 编译成 `onClick: saveModels`，点一下 MouseEvent 就成了第一个实参，
+  // 把 `providers = draft.providers` 那个默认值顶掉——「保存配置」当场报「至少保留一个 provider」。
+  // 带默认值的形参等于在说"调用方不传"，所以这一类一律要求模板里自己加括号。
+  const src = fileURLToPath(new URL('../src', import.meta.url))
+  const bad = []
+  for (const file of vueFiles(src)) {
+    const text = readFileSync(file, 'utf8')
+    for (const [, name] of text.matchAll(/@click(?:\.\w+)*="([A-Za-z_$][\w$]*)"/g)) {
+      const sig = text.match(new RegExp(`\\b(?:async\\s+)?function\\s+${name}\\s*\\(([^)]*)\\)`))
+      if (sig && sig[1].includes('=')) bad.push(`${file.slice(src.length + 1)}: @click="${name}" → ${name}(${sig[1]})`)
+    }
+  }
+  assert.deepEqual(bad, [], `这些 @click 会把 MouseEvent 当第一个参数塞进去：\n${bad.join('\n')}`)
 })
 
 // ---------------------------------------------------------------- 跑

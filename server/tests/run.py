@@ -5284,6 +5284,101 @@ def llm_围栏那条路的会话在工具往返之间要续得上():
     assert seen[1]["sent"] - seen[1]["start"] == 1, (seen, "续上了却还在重发前面几条")
 
 
+# ---------------------------------------------------------------- 设置页：模型配置
+
+LLM_CFG = {
+    "_说明": "本机配置的注释行，读写都要原样留着",
+    "providers": {
+        "claude-cli": {"_说明": "兜底", "type": "claude-cli"},
+        "bailian": {"type": "openai", "model": "qwen-plus",
+                    "base_url": "https://dash/v1", "api_key": "sk-old", "max_tokens": 16000},
+    },
+    "roles": {"_说明": "注释", "learn": "bailian", "review": "bailian"},
+}
+
+
+def llm_client() -> tuple[TestClient, Path]:
+    c, vault = client()
+    core.write_json_atomic(vault / ".knowrary" / "llm.local.json", json.loads(json.dumps(LLM_CFG)))
+    return c, vault
+
+
+@case
+def 新增的provider还没保存就能先测一把():
+    """设置页「添加模型」里点测试连接：配置文件一个字都不许动，密钥用输入框里现填的那个。"""
+    import llm_backend
+    real = llm_backend.ask_detailed
+    seen = {}
+    llm_backend.ask_detailed = lambda prompt, provider, m=None: (
+        seen.update(provider) or ("OK", {"model": provider.get("model")}))
+    c, vault = llm_client()
+    before = (vault / ".knowrary" / "llm.local.json").read_text("utf-8")
+    try:
+        r = c.post("/api/llm/config/test", json={"provider": {
+            "name": "qwen3-plus", "type": "openai", "model": "qwen3-plus",
+            "base_url": "https://dash/v1", "api_key": "sk-new",
+            "max_tokens": None, "temperature": None}})
+    finally:
+        llm_backend.ask_detailed = real
+    assert r.status_code == 200, r.text
+    assert r.json()["model"] == "qwen3-plus", r.text
+    assert seen.get("api_key") == "sk-new", (seen, "测的不是输入框里那把钥匙")
+    assert (vault / ".knowrary" / "llm.local.json").read_text("utf-8") == before, "测试写了配置文件"
+
+
+@case
+def 编辑已有provider时留空的密钥不算清空():
+    """列表回显时 api_key 一律是空串（后端从不回显），拿它去测必须落回老密钥。"""
+    import llm_backend
+    real = llm_backend.ask_detailed
+    seen = {}
+    llm_backend.ask_detailed = lambda prompt, provider, m=None: (
+        seen.update(provider) or ("OK", {"model": provider.get("model")}))
+    c, _ = llm_client()
+    row = [p for p in c.get("/api/llm/config").json()["providers"] if p["name"] == "bailian"][0]
+    assert row["api_key_set"] is True and "api_key" not in row, row
+    try:
+        r = c.post("/api/llm/config/test", json={"provider": dict(row, api_key="")})
+    finally:
+        llm_backend.ask_detailed = real
+    assert r.status_code == 200, r.text
+    assert seen.get("api_key") == "sk-old", (seen, "留空被当成清空，等于拿空钥匙去连")
+
+
+@case
+def 保存新增的provider不碰别人的密钥和注释():
+    c, vault = llm_client()
+    draft = [dict(p, api_key="") for p in c.get("/api/llm/config").json()["providers"]]
+    draft.append({"name": "qwen3-plus", "type": "openai", "model": "qwen3-plus",
+                  "base_url": "https://dash/v1", "api_key": "sk-new",
+                  "max_tokens": None, "temperature": None})
+    r = c.put("/api/llm/config", json={"providers": draft,
+                                       "roles": {"learn": "bailian", "review": "bailian"}})
+    assert r.status_code == 200, r.text
+    assert [p["name"] for p in r.json()["providers"]] == ["claude-cli", "bailian", "qwen3-plus"]
+    saved = json.loads((vault / ".knowrary" / "llm.local.json").read_text("utf-8"))
+    assert saved["providers"]["bailian"]["api_key"] == "sk-old", "别人的密钥被空串洗掉了"
+    assert saved["providers"]["qwen3-plus"]["api_key"] == "sk-new", saved
+    assert saved["_说明"] == LLM_CFG["_说明"] and "_说明" in saved["roles"], "注释行被吃了"
+    assert (vault / ".knowrary" / "backup").exists(), "改配置前没留备份"
+
+
+@case
+def 改名之后roles要跟着指过去():
+    """前端改名时会把 roles 一起迁走；迁漏了服务端就该明确打回，而不是默默存一份指空的配置。"""
+    c, _ = llm_client()
+    draft = [dict(p, api_key="") for p in c.get("/api/llm/config").json()["providers"]]
+    draft[1]["name"] = "bailian-2"
+    stale = c.put("/api/llm/config", json={"providers": draft,
+                                           "roles": {"learn": "bailian", "review": "bailian"}})
+    assert stale.status_code == 422, stale.text
+    assert "`bailian`" in stale.json()["detail"], (stale.text, "报错没点名是哪个 provider 没了")
+    ok = c.put("/api/llm/config", json={"providers": draft,
+                                        "roles": {"learn": "bailian-2", "review": "bailian-2"}})
+    assert ok.status_code == 200, ok.text
+    assert ok.json()["roles"] == {"learn": "bailian-2", "review": "bailian-2"}, ok.text
+
+
 def main() -> None:
     keyword = sys.argv[1] if len(sys.argv) > 1 else ""
     picked = [c for c in CASES if keyword in c.__name__]

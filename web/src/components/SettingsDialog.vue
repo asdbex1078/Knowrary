@@ -21,11 +21,14 @@ const props = defineProps({
   theme: { type: String, default: 'light' },
   llmConfig: { type: Object, default: null },
   llmSaving: { type: Boolean, default: false },
-  saveLLM: { type: Function, default: null },
-  testLLM: { type: Function, default: null },
+  // 名字只能这么拼：模板上写的是 `:save-llm`，Vue 把它 camelize 成 `saveLlm`。
+  // 声明成 `saveLLM` 的话永远对不上，props 里拿到的是 default null——
+  // 于是「测试」静悄悄 return、「保存配置」报「保存接口不可用」。
+  saveLlm: { type: Function, default: null },
+  testLlm: { type: Function, default: null },
 })
 const emit = defineEmits(['close', 'set', 'toggle-snap', 'toggle-avoid', 'toggle-lod',
-                          'toggle-aggregate', 'toggle-map', 'toggle-theme', 'save-llm'])
+                          'toggle-aggregate', 'toggle-map', 'toggle-theme'])
 
 const TABS = [
   { id: 'review', name: '学习与复习', icon: 'rotate', where: '跟着 vault 走，换台机器也一样' },
@@ -41,11 +44,17 @@ const editorIndex = ref(-1)
 const testBusy = ref(false)
 const testMessage = ref('')
 const testError = ref('')
+const listTesting = ref('')
+const listTestMessage = ref('')
+const listTestError = ref('')
+const ROLE_NAMES = ['learn', 'review']
 
 function copyConfig(config) {
   if (!config) return { providers: [], roles: {} }
-  return { providers: (config.providers || []).map((p) => ({ ...p, api_key: '' })),
-           roles: { ...(config.roles || {}) } }
+  const providers = (config.providers || []).map((p) => ({ ...p, api_key: '' }))
+  const sourceRoles = config.roles || {}
+  const fallback = providers[0]?.name || ''
+  return { providers, roles: Object.fromEntries(ROLE_NAMES.map((role) => [role, sourceRoles[role] || fallback])) }
 }
 watch(() => props.llmConfig, (config) => { draft.value = copyConfig(config) }, { immediate: true })
 
@@ -55,12 +64,14 @@ function addProvider() {
   editor.value = { name: n, type: 'openai', model: '', base_url: '', api_key: '', max_tokens: null, temperature: null }
   testMessage.value = ''
   testError.value = ''
+  error.value = ''
 }
 function editProvider(index) {
   editorIndex.value = index
   editor.value = { ...draft.value.providers[index], api_key: '' }
   testMessage.value = ''
   testError.value = ''
+  error.value = ''
 }
 function closeEditor() {
   if (!testBusy.value) editor.value = null
@@ -71,63 +82,73 @@ function validateProvider(provider) {
   if (provider.type === 'openai' && !provider.base_url?.trim()) return 'OpenAI 兼容类型需要 Base URL'
   return ''
 }
-async function testProvider(provider = editor.value) {
-  testMessage.value = ''
-  testError.value = validateProvider(provider)
-  if (testError.value || !props.testLLM) return
-  testBusy.value = true
+async function testProvider(provider = null) {
+  const target = provider || editor.value
+  const listMode = Boolean(provider)
+  const targetError = validateProvider(target)
+  if (listMode) {
+    listTestMessage.value = ''
+    listTestError.value = targetError
+    if (targetError || !props.testLlm) return
+    listTesting.value = target.name
+  } else {
+    testMessage.value = ''
+    testError.value = targetError
+    if (targetError || !props.testLlm) return
+    testBusy.value = true
+  }
   try {
-    const result = await props.testLLM({ ...provider })
-    testMessage.value = `连接成功：${result.message || '已收到响应'}`
+    const result = await props.testLlm({ ...target })
+    if (listMode) listTestMessage.value = `连接成功：${result.message || '已收到响应'}`
+    else testMessage.value = `连接成功：${result.message || '已收到响应'}`
   } catch (err) {
-    testError.value = err.body?.detail || err.message
+    if (listMode) listTestError.value = err.body?.detail || err.message
+    else testError.value = err.body?.detail || err.message
   } finally {
-    testBusy.value = false
+    if (listMode) listTesting.value = ''
+    else testBusy.value = false
   }
 }
 async function saveProvider() {
-  error.value = validateProvider(editor.value)
-  if (error.value) return
+  const validationError = validateProvider(editor.value)
+  error.value = validationError
+  if (validationError) return
   const next = { ...editor.value }
-  if (editorIndex.value < 0) draft.value.providers.push(next)
-  else draft.value.providers.splice(editorIndex.value, 1, next)
+  const providers = draft.value.providers.slice()
+  const oldName = editorIndex.value < 0 ? '' : providers[editorIndex.value]?.name
+  if (editorIndex.value < 0) providers.push(next)
+  else providers.splice(editorIndex.value, 1, next)
+  const saved = await saveModels(providers, renameInRoles(draft.value.roles, oldName, next.name))
+  if (!saved) return
+  draft.value = copyConfig(saved)
   editor.value = null
-  await saveModels()
 }
 function removeProvider(index) {
   const name = draft.value.providers[index]?.name
   draft.value.providers.splice(index, 1)
-  Object.keys(draft.value.roles).forEach((role) => {
-    if (draft.value.roles[role] === name) delete draft.value.roles[role]
+  const fallback = draft.value.providers[0]?.name || ''
+  ROLE_NAMES.forEach((role) => {
+    if (draft.value.roles[role] === name) draft.value.roles[role] = fallback
   })
 }
-function addRole() {
-  const base = 'custom'
-  let name = base
-  let i = 2
-  while (draft.value.roles[name]) name = `${base}-${i++}`
-  draft.value.roles[name] = draft.value.providers[0]?.name || ''
+/** 改名等于换了一个 provider：roles 还指着旧名字，服务端会以「角色 X 指向不存在的 provider」打回。 */
+function renameInRoles(roles, oldName, newName) {
+  if (!oldName || oldName === newName) return roles
+  return Object.fromEntries(Object.entries(roles).map(([role, name]) =>
+    [role, name === oldName ? newName : name]))
 }
-function removeRole(name) {
-  if (['learn', 'review'].includes(name)) return
-  delete draft.value.roles[name]
+function ensureRoles(roles, providers) {
+  const fallback = providers[0]?.name || ''
+  return Object.fromEntries(ROLE_NAMES.map((role) => [role, roles[role] || fallback]))
 }
-function renameRole(oldName, event) {
-  const name = event.target.value.trim()
-  if (!name || name === oldName || draft.value.roles[name]) {
-    event.target.value = oldName
-    return
-  }
-  draft.value.roles[name] = draft.value.roles[oldName]
-  delete draft.value.roles[oldName]
-}
-async function saveModels() {
+async function saveModels(providers = draft.value.providers, roles = draft.value.roles) {
   error.value = ''
-  if (!draft.value.providers.length) { error.value = '至少保留一个 provider'; return }
-  if (Object.values(draft.value.roles).some((name) => !name)) { error.value = '每个 role 都要选择 provider'; return }
-  if (!props.saveLLM) return
-  try { await props.saveLLM({ providers: draft.value.providers, roles: draft.value.roles }) }
-  catch (err) { error.value = err.body?.detail || err.message }
+  if (!providers.length) { error.value = '至少保留一个 provider'; return null }
+  const nextRoles = ensureRoles(roles, providers)
+  if (Object.values(nextRoles).some((name) => !name)) { error.value = '每个 role 都要选择 provider'; return null }
+  if (!props.saveLlm) { error.value = '保存接口不可用'; return null }
+  try { return await props.saveLlm({ providers, roles: nextRoles }) }
+  catch (err) { error.value = err.body?.detail || err.message; return null }
 }
 
 function onKey(ev) {
@@ -236,21 +257,21 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onKey, true))
             </div>
             <div v-if="!draft.providers.length" class="empty-hint">还没有 provider，先新增一个。</div>
             <div v-for="(provider, i) in draft.providers" :key="i" class="model-list-row">
-              <div class="model-list-name"><b>{{ provider.model || provider.name }}</b><span>{{ provider.type }} · {{ provider.name }}</span></div>
+              <div class="model-list-name"><b>{{ provider.model || provider.name }}</b><span>{{ provider.type }}</span></div>
               <div class="model-list-actions">
-                <button class="icon-btn ghost" type="button" title="测试模型" :disabled="testBusy" @click="testProvider(provider)"><Icon name="play" :size="14" /></button>
+                <button class="icon-btn ghost" type="button" :title="listTesting === provider.name ? '测试中…' : '测试模型'" :disabled="Boolean(listTesting)" @click="testProvider(provider)"><Icon name="play" :size="14" /></button>
                 <button class="icon-btn ghost" type="button" title="编辑模型" @click="editProvider(i)"><Icon name="pencil" :size="14" /></button>
                 <button class="icon-btn ghost danger" type="button" title="删除模型" @click="removeProvider(i)"><Icon name="trash" :size="14" /></button>
               </div>
             </div>
-            <div class="model-head roles-head"><div><b>Roles</b><span class="sub">固定角色用于聊天与复习，也可以增加自定义角色。</span></div><button class="btn tiny" type="button" @click="addRole"><Icon name="plus" :size="13" />新增角色</button></div>
-            <div v-for="(providerName, role) in draft.roles" :key="role" class="role-row">
-              <input :value="role" :readonly="['learn', 'review'].includes(role)" aria-label="role 名称" @change="renameRole(role, $event)" />
+            <p v-if="listTestError" class="model-error">{{ listTestError }}</p><p v-if="listTestMessage" class="model-success">{{ listTestMessage }}</p>
+            <div class="model-head roles-head"><div><b>Roles</b><span class="sub">固定角色用于聊天与复习。</span></div></div>
+            <div v-for="role in ROLE_NAMES" :key="role" class="role-row">
+              <span class="role-name">{{ role }}</span>
               <select v-model="draft.roles[role]" aria-label="role provider"><option v-for="provider in draft.providers" :key="provider.name" :value="provider.name">{{ provider.name || '未命名' }}</option></select>
-              <button class="icon-btn ghost danger" type="button" title="删除 role" :disabled="['learn', 'review'].includes(role)" @click="removeRole(role)"><Icon name="trash" :size="14" /></button>
             </div>
             <p v-if="error" class="model-error">{{ error }}</p>
-            <div class="model-actions"><button class="btn primary" type="button" :disabled="llmSaving" @click="saveModels"><Icon name="save" :size="14" />{{ llmSaving ? '保存中…' : '保存配置' }}</button></div>
+            <div class="model-actions"><button class="btn primary" type="button" :disabled="llmSaving" @click="saveModels()"><Icon name="save" :size="14" />{{ llmSaving ? '保存中…' : '保存配置' }}</button></div>
           </template>
         </div>
       </section>
@@ -267,6 +288,8 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onKey, true))
           <label>API Key<input v-model="editor.api_key" type="password" :placeholder="editor.api_key_set ? '已设置，留空保持不变' : 'env:变量名 或明文'" /><span class="field-hint">已有密钥不会回显；留空会保留原值。</span></label>
           <div class="model-advanced"><label>最大 tokens<input v-model.number="editor.max_tokens" type="number" min="1" placeholder="默认" /></label><label>Temperature<input v-model.number="editor.temperature" type="number" min="0" max="2" step="0.1" placeholder="默认" /></label></div>
           <p v-if="testError" class="model-error">{{ testError }}</p><p v-if="testMessage" class="model-success">{{ testMessage }}</p>
+          <!-- 保存被服务端打回时，报错得落在人正看着的这一层：外面那条压在蒙层底下，等于没说 -->
+          <p v-if="error" class="model-error">{{ error }}</p>
         </div>
         <footer class="model-editor-foot"><button class="btn subtle" type="button" :disabled="testBusy" @click="testProvider()"><Icon name="play" :size="14" />{{ testBusy ? '测试中…' : '测试连接' }}</button><span></span><button class="btn" type="button" :disabled="testBusy || llmSaving" @click="closeEditor">取消</button><button class="btn primary" type="button" :disabled="testBusy || llmSaving" @click="saveProvider"><Icon name="save" :size="14" />保存</button></footer>
       </div>

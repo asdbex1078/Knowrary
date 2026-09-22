@@ -1,3 +1,8 @@
 {"ts": "2026-09-21T11:22:58+08:00", "kind": "write", "where": "/api/changes", "message": "节点 id `Logic Theorist` 不合法（不能为空，也不能含 / \\ : * ? \" < > | 和空白）"}
 {"ts": "2026-09-21T11:23:17+08:00", "kind": "write", "where": "/api/changes", "message": "节点 id `Logic Theorist` 不合法（不能为空，也不能含 / \\ : * ? \" < > | 和空白）"}
 {"ts": "2026-09-21T11:23:44+08:00", "kind": "write", "where": "/api/changes", "message": "文件名要和 id 一致（id 默认取文件名）：Logic Theorist.md ≠ LogicTheorist.md"}
+{"ts": "2026-09-21T19:47:33+08:00", "kind": "llm", "where": "chat", "message": "Remote end closed connection without response", "stance": "教练"}
+{"ts": "2026-09-21T20:37:37+08:00", "kind": "llm", "where": "chat", "message": "[learn 角色 · provider `openai` · 模型 gpt-5.5] LLM 连接失败（https://api.linkapi.ai/v1/chat/completions）：RemoteDisconnected: Remote end closed connection without response", "stance": "教练"}
+{"ts": "2026-09-21T20:50:43+08:00", "kind": "llm", "where": "chat", "message": "/Users/moka/IdeaProjects/Knowrary/.knowrary/llm.local.json: provider `bailian` 的 type 必须是 claude-cli/anthropic/openai", "stance": "教练"}
+{"ts": "2026-09-21T20:51:13+08:00", "kind": "llm", "where": "chat", "message": "/Users/moka/IdeaProjects/Knowrary/.knowrary/llm.local.json: provider `bailian` 的 type 必须是 claude-cli/anthropic/openai", "stance": "教练"}
+{"ts": "2026-09-21T20:51:54+08:00", "kind": "llm", "where": "chat", "message": "/Users/moka/IdeaProjects/Knowrary/.knowrary/llm.local.json: provider `bailian` 的 type 必须是 claude-cli/anthropic/openai", "stance": "教练"}
