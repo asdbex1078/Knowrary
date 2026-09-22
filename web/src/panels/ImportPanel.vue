@@ -26,7 +26,7 @@ const props = defineProps({
   revision: { type: Number, default: 0 },           // index revision，写入时做乐观锁
   busy: { type: Boolean, default: false },          // 上层正在落位 / 刷新
 })
-const emit = defineEmits(['applied', 'close', 'goto', 'error'])
+const emit = defineEmits(['applied', 'close', 'goto', 'error', 'copy'])
 
 const TABS = [{ id: 'paste', label: '粘贴' }, { id: 'vault', label: '仓库里的文件' }, { id: 'file', label: '本地文件' }]
 const tab = ref('paste')
@@ -237,6 +237,9 @@ function reset() {
   <Drawer side="left" title="导入" icon="file" storage-key="import" :default-width="420" :max="720" expandable
           @close="emit('close')">
     <template #head-actions>
+      <!-- 抄别人库里现成的点，和"把文章拆成点"是同一件事的两个来源，所以入口摆在一起 -->
+      <button class="btn tiny" type="button" title="从别的知识库抄现成的知识点（带正文和关系）"
+              @click="emit('copy')"><Icon name="copy" :size="13" />从别的库抄…</button>
       <span v-if="project" class="chip accent" :title="'在项目下导入：清单里没建的点会作为待认领给模型看'">{{ projectName || project }}</span>
       <span v-else class="chip">全局</span>
     </template>

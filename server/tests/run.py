@@ -5402,6 +5402,149 @@ def 改名之后roles要跟着指过去():
     assert ok.json()["roles"] == {"learn": "bailian-2", "review": "bailian-2"}, ok.text
 
 
+# ---------------------------------------------------------------- 跨库复制
+
+COPY_SRC = {
+    "nodes/网络/quic.md": node_md("QUIC", field="网络",
+                                  extra="year: 2021\nlayer: 系统软件\ntags:\n  - 示例\n",
+                                  rels="- 基于:: [[udp]] — 借它的什么都不做\n- 相关:: [[队头阻塞]]"),
+    "nodes/网络/udp.md": node_md("UDP", field="网络", extra="year: 1980\n"),
+    "nodes/网络/tcp.md": node_md("TCP", field="网络", rels="- 对比:: [[udp]]"),
+}
+
+
+def copy_pair() -> tuple[TestClient, Path, Path]:
+    """一个源库（别人的参考库）+ 一个目标库（我自己的），当前库是目标库。"""
+    from server import vaults
+    base = tmp_dir("knowrary-copy-")
+    src = base / "参考库"
+    (src / ".knowrary").mkdir(parents=True)
+    (src / "relation-types.json").write_text((REPO / "seed" / "relation-types.json").read_text("utf-8"), "utf-8")
+    for rel, text in COPY_SRC.items():
+        core.write(src / rel, text)
+    target = base / "我的库"
+    target.mkdir()
+    home = tmp_dir("knowrary-copyhome-")
+    os.environ["KNOWRARY_HOME"] = str(home)
+    os.environ.pop("KNOWRARY_VAULT", None)
+    vaults.init(target)
+    vaults.save({"schema_version": 1, "current": str(target), "recent": [str(target), str(src)]})
+    index_service.invalidate()
+    return TestClient(app), src, target
+
+
+@case
+def 跨库复制把正文和关系一起抄过来():
+    """抄来的点落在固定的收件箱目录，但 **field 保留源库的**——
+    压平成一个领域的话，抄 8 个点回来会挤成一坨，以后往各领域搬还得重新判断。"""
+    c, src, target = copy_pair()
+    r = c.post("/api/copy", json={"source": str(src), "ids": ["quic"], "dry_run": False})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["applied"] is True and body["picked"] == 1, body
+    md = (target / "nodes" / "_抄来的" / "quic.md").read_text("utf-8")
+    assert "field: 网络" in md, ("领域没保留", md[:200])
+    assert "year: 2021" in md and "layer: 系统软件" in md, ("frontmatter 掉字段了", md[:200])
+    assert "source: 抄自 参考库" in md and f"learned: {dt.date.today().isoformat()}" in md, md[:200]
+    assert "- 基于:: [[udp]]" in md and "借它的什么都不做" in md, ("关系连说明一起抄", md)
+    assert body["log"].startswith(".knowrary/imports/"), body["log"]
+
+
+@case
+def 指向没抄的点要补壳而不是丢边():
+    """丢掉边等于悄悄削掉知识结构，事后根本不知道缺了什么。"""
+    c, src, target = copy_pair()
+    c.post("/api/copy", json={"source": str(src), "ids": ["quic"], "dry_run": False})
+    assert (target / "nodes" / "_stubs" / "udp.md").exists(), "udp 没抄也没补壳"
+    assert (target / "nodes" / "_stubs" / "队头阻塞.md").exists(), "源库里根本没有的目标也该补壳"
+    stub = (target / "nodes" / "_stubs" / "udp.md").read_text("utf-8")
+    assert "status: stub" in stub and "参考库" in stub, ("壳里要写清它从哪来", stub)
+
+
+@case
+def 勾上邻居就真把一跳抄过来():
+    c, src, target = copy_pair()
+    body = c.post("/api/copy", json={"source": str(src), "ids": ["quic"],
+                                     "with_neighbors": True, "dry_run": False}).json()
+    assert body["picked"] == 2, ("quic 一跳内有 udp", body["picked"])
+    md = (target / "nodes" / "_抄来的" / "udp.md").read_text("utf-8")
+    assert "year: 1980" in md, ("邻居要抄成完整节点，不是壳", md[:200])
+    assert not (target / "nodes" / "_stubs" / "udp.md").exists(), "既然抄了完整的，就不该再有壳"
+
+
+@case
+def 连到目标库已有同id的点要进待审():
+    """**同 id 不等于同概念**，跨库尤其：你库里的「Agent」和我库里的「Agent」很可能不是一回事。"""
+    c, src, target = copy_pair()
+    core.write(target / "nodes/网络/udp.md",
+               node_md("UDP", field="网络", extra="desc: 我自己写的 UDP\n"))
+    index_service.invalidate()
+    body = c.post("/api/copy", json={"source": str(src), "ids": ["quic"], "dry_run": False}).json()
+    assert [(p["source"], p["relation"], p["target"]) for p in body["pending"]] == [("quic", "基于", "udp")], body["pending"]
+    md = (target / "nodes" / "_抄来的" / "quic.md").read_text("utf-8")
+    assert "[[udp]]" not in md, ("待审的边不该直接写进关系段", md)
+    mine = (target / "nodes/网络/udp.md").read_text("utf-8")
+    assert "我自己写的 UDP" in mine, "把人家自己的节点覆盖了"
+
+
+@case
+def 重复抄同一个点不覆盖只提醒():
+    c, src, target = copy_pair()
+    c.post("/api/copy", json={"source": str(src), "ids": ["quic"], "dry_run": False})
+    core.write(target / "nodes/_抄来的/quic.md",
+               (target / "nodes/_抄来的/quic.md").read_text("utf-8") + "\n我后来补的一段\n")
+    index_service.invalidate()
+    body = c.post("/api/copy", json={"source": str(src), "ids": ["quic"], "dry_run": False}).json()
+    assert not body["files"], ("不该有写入", body["files"])
+    assert any("已存在" in w for w in body["warnings"]), body["warnings"]
+    assert "我后来补的一段" in (target / "nodes/_抄来的/quic.md").read_text("utf-8"), "把我补的内容冲掉了"
+
+
+@case
+def 站在参考库里也能往外推():
+    """两个方向共用一条接口：从别处拉（不给 target）、往别处推（给 target）。
+    看别人的库时看到好东西，直接抄进自己的库，不用先切过去。"""
+    from server import vaults
+    c, src, target = copy_pair()
+    vaults.switch(src)                     # 现在站在参考库里
+    index_service.invalidate()
+    body = c.post("/api/copy", json={"source": str(src), "target": str(target),
+                                     "ids": ["quic"], "dry_run": False}).json()
+    assert body["applied"] is True, body
+    assert body["target_vault"] == str(target), body
+    assert (target / "nodes" / "_抄来的" / "quic.md").exists(), "没写进目标库"
+    assert not (src / "nodes" / "_抄来的").exists(), "把参考库自己也写脏了"
+    outsider = tmp_dir("knowrary-outsider2-")
+    (outsider / ".knowrary").mkdir()
+    bad = c.post("/api/copy", json={"source": str(src), "target": str(outsider), "ids": ["quic"]})
+    assert bad.status_code == 422, ("写入方也得在放行名单里", bad.text)
+
+
+@case
+def 只能从认识的库里抄():
+    """这条链路会读另一个目录里的 md，放行名单和目录浏览是同一套，不许传任意路径。"""
+    c, src, target = copy_pair()
+    outsider = tmp_dir("knowrary-outsider-")
+    (outsider / ".knowrary").mkdir()
+    r = c.post("/api/copy", json={"source": str(outsider), "ids": ["x"]})
+    assert r.status_code == 422 and "不在可选的知识库里" in r.json()["detail"], r.text
+    same = c.post("/api/copy", json={"source": str(target), "ids": ["quic"]})
+    assert same.status_code == 422 and "同一个" in same.json()["detail"], same.text
+
+
+@case
+def 源库清单能搜能排():
+    c, src, target = copy_pair()
+    rows = c.get("/api/copy/sources").json()
+    assert {r["name"] for r in rows} == {"我的库", "参考库"}, rows
+    assert next(r for r in rows if r["name"] == "我的库")["current"] is True, rows
+    assert next(r for r in rows if r["name"] == "参考库")["nodes"] >= 3, rows
+    cat = c.get("/api/copy/catalog", params={"source": str(src), "q": "ud"}).json()
+    assert [n["id"] for n in cat["nodes"]] == ["udp"], cat
+    full = c.get("/api/copy/catalog", params={"source": str(src)}).json()
+    assert full["nodes"][0]["degree"] >= full["nodes"][-1]["degree"], ("该按度数排", full["nodes"])
+
+
 # ---------------------------------------------------------------- 知识库（vault）选择
 
 def tmp_dir(prefix: str) -> Path:

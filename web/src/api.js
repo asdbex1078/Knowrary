@@ -173,6 +173,18 @@ export const putVault = (path) => request('/api/vault/current', {
 export const forgetVault = (path) =>
   request(`/api/vault/recent?path=${encodeURIComponent(path)}`, { method: 'DELETE' })
 
+// —— 跨库复制 ——
+// 两个方向共用一条接口：不给 target 就是抄进当前库（从别处拉），
+// 给了就是往那个库推（站在参考库里看到好东西，抄进自己的库）。
+export const fetchCopySources = () => request('/api/copy/sources')
+export const fetchCopyCatalog = (source, q = '') =>
+  request(`/api/copy/catalog?source=${encodeURIComponent(source)}&q=${encodeURIComponent(q)}`)
+export const postCopy = (body) => request('/api/copy', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify(body),
+})
+
 // 设置：只放"后端也要读"的开关（复习要不要出现）。看图偏好仍在 localStorage。
 export const fetchSettings = () => request('/api/settings')
 export const putSettings = (patch) => request('/api/settings', {

@@ -263,6 +263,8 @@ class ImportRequest(Strict):
     dry_run: bool = True
     renames: dict[str, str] = Field(default_factory=dict)   # {模型给的 id: 改成的 id}，认领幽灵用
     promote: list[str] = Field(default_factory=list)        # 要直接写入的待审边 key（源->目标#类型）
+    # 跨库复制用：方案里每个节点自带 field 时按它落，不统一压成 `field` 那一个领域
+    keep_field: bool = False
 
 
 class ImportResult(Strict):
@@ -914,6 +916,51 @@ class SettingsPatch(Strict):
     review_in_chat: bool | None = None
     review_brief: bool | None = None
     review_marks: bool | None = None
+
+
+class CopySource(Strict):
+    """可以当源库的一个知识库。"""
+
+    path: str
+    name: str
+    nodes: int = 0
+    current: bool = False
+
+
+class CopyCatalogRow(Strict):
+    id: str
+    name: str
+    field: str = ""
+    desc: str = ""
+    status: str = ""
+    degree: int = 0
+
+
+class CopyCatalog(Strict):
+    vault: str
+    total: int = 0
+    nodes: list[CopyCatalogRow] = Field(default_factory=list)
+
+
+class CopyRequest(Strict):
+    """跨库复制：从 `source` 抄 `ids` 这几个点进当前库。
+
+    后半程走的是导入那条通道（同一份写回、同一份存档），所以结果长得和 ImportResult 一样。
+    """
+
+    source: str                                    # 源库目录
+    target: str | None = None                      # 写进哪个库；不给就是当前库
+    ids: list[str] = Field(default_factory=list)
+    with_neighbors: bool = False                   # 把直接相连的邻居也真抄过来（默认只落 stub）
+    dry_run: bool = True
+    renames: dict[str, str] = Field(default_factory=dict)
+
+
+class CopyResult(ImportResult):
+    source_vault: str = ""
+    target_vault: str = ""
+    picked: int = 0
+    stubs: int = 0
 
 
 class VaultEntry(Strict):

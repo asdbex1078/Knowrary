@@ -1,0 +1,97 @@
+{
+  "schema_version": 2,
+  "revision": 3,
+  "updated_at": "2026-09-22T09:50:40Z",
+  "viewport": {
+    "zoom": 1.0,
+    "cx": 556.0,
+    "cy": 245.0
+  },
+  "groups": {},
+  "nodes": {
+    "tcp": {
+      "x": 80.0,
+      "y": 80.0,
+      "w": 196.0,
+      "h": 64.0,
+      "group": null,
+      "state": "final",
+      "placedAt": null,
+      "anchor": null
+    },
+    "udp": {
+      "x": 80.0,
+      "y": 180.0,
+      "w": 196.0,
+      "h": 64.0,
+      "group": null,
+      "state": "final",
+      "placedAt": null,
+      "anchor": null
+    },
+    "http": {
+      "x": 400.0,
+      "y": 80.0,
+      "w": 196.0,
+      "h": 64.0,
+      "group": null,
+      "state": "final",
+      "placedAt": null,
+      "anchor": null
+    },
+    "http-1-1": {
+      "x": 400.0,
+      "y": 180.0,
+      "w": 196.0,
+      "h": 64.0,
+      "group": null,
+      "state": "final",
+      "placedAt": null,
+      "anchor": null
+    },
+    "http-2": {
+      "x": 400.0,
+      "y": 280.0,
+      "w": 196.0,
+      "h": 64.0,
+      "group": null,
+      "state": "final",
+      "placedAt": null,
+      "anchor": null
+    },
+    "http-3": {
+      "x": 400.0,
+      "y": 380.0,
+      "w": 196.0,
+      "h": 64.0,
+      "group": null,
+      "state": "final",
+      "placedAt": null,
+      "anchor": null
+    },
+    "quic": {
+      "x": 720.0,
+      "y": 80.0,
+      "w": 196.0,
+      "h": 64.0,
+      "group": null,
+      "state": "final",
+      "placedAt": null,
+      "anchor": null
+    },
+    "head-of-line-blocking": {
+      "x": 720.0,
+      "y": 180.0,
+      "w": 196.0,
+      "h": 64.0,
+      "group": null,
+      "state": "final",
+      "placedAt": null,
+      "anchor": null
+    }
+  },
+  "refs": [],
+  "notes": [],
+  "images": [],
+  "edges": {}
+}

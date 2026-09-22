@@ -43,6 +43,11 @@ export function nodeMenu(id, ctx) {
     items.unshift({ id: 'summarize-selected', label: `把选中的 ${picked.length} 个点概括为一个节点…`,
                     icon: 'layers', hint: '写 md' }, { sep: true })
   }
+  // 抄到别的库：看别人的参考库时看到有用的点，直接抄进自己的库，不用先切过去
+  const copyCount = picked.length >= 2 && picked.includes(id) ? picked.length : 1
+  items.push({ id: 'copy-to-vault', icon: 'copy',
+               label: copyCount > 1 ? `把选中的 ${copyCount} 个点抄到别的库…` : '抄到别的库…',
+               hint: '带关系' })
   if (place?.state === 'draft') items.push({ id: 'finalize', label: '定稿', icon: 'check' })
   else if (place) items.push({ id: 'draft', label: '标记为草稿（待关联）', icon: 'pencil' })
   if (ctx.dueIds.has(id)) items.push({ id: 'review', label: '复习过了', icon: 'rotate' })

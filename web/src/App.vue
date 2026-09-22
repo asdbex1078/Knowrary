@@ -2,7 +2,8 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, shallowRef, watch } from 'vue'
 import {
   fetchSettings, putSettings, fetchLLMConfig, putLLMConfig, testLLMConfig as postLLMConfigTest,
-  fetchVault, browseVault, initVault, putVault, forgetVault, fetchCalendar, fetchCompareGroups, fetchCompareTable, postCompareFill, fetchDigest, postSyncToGlobal, fetchDue, fetchProjects, putProjects, postPlanPropose, fetchToday, fetchUsage, postMerge, postRename, postQuiz, postQuizDiagnose, postQuizGrade, fetchOpenQuiz, dropOpenQuiz, postRegroup, fetchIndex, fetchInbox, fetchLayout, fetchNode,
+  fetchVault, browseVault, initVault, putVault, forgetVault,
+  fetchCopySources, fetchCopyCatalog, postCopy, fetchCalendar, fetchCompareGroups, fetchCompareTable, postCompareFill, fetchDigest, postSyncToGlobal, fetchDue, fetchProjects, putProjects, postPlanPropose, fetchToday, fetchUsage, postMerge, postRename, postQuiz, postQuizDiagnose, postQuizGrade, fetchOpenQuiz, dropOpenQuiz, postRegroup, fetchIndex, fetchInbox, fetchLayout, fetchNode,
   patchLayout, postChanges, postPlace, postReview, postSuggest, postSummarize, postYearsPropose,
 } from './api.js'
 import AppHeader from './components/AppHeader.vue'
@@ -35,6 +36,7 @@ import StatsPanel from './panels/StatsPanel.vue'
 import ChatView from './views/ChatView.vue'
 import MorningBrief from './components/MorningBrief.vue'
 import SettingsDialog from './components/SettingsDialog.vue'
+import CopyDialog from './components/CopyDialog.vue'
 import ProjectsPanel from './panels/ProjectsPanel.vue'
 import ImagePicker from './panels/ImagePicker.vue'
 import TimelinePanel from './panels/TimelinePanel.vue'
@@ -226,6 +228,7 @@ const settings = ref({ review_enabled: true, review_in_chat: true, review_brief:
 const settingsOn = ref(false)
 const llmConfig = ref(null)
 const vault = ref(null)
+const copyState = ref(null)   // 抄知识点对话框：{sources, from, to, preset}
 const llmSaving = ref(false)
 const reviewOn = computed(() => !!settings.value.review_enabled)
 const reviewMarks = computed(() => reviewOn.value && settings.value.review_marks !== false)
@@ -1171,6 +1174,7 @@ const MENU_ACTIONS = {
   dissolve: (gid) => dissolveGroup(gid),
   summarize: (gid, at) => summarizeGroup(gid, at),
   'summarize-selected': (_id, at) => summarizeSelected(selectedNodeIds(), at),
+  'copy-to-vault': (id) => openCopy(pickedOr(id)),
   ...Object.fromEntries(Object.keys(GROUP_LAYOUTS).map(
     (kind) => [`inner-${kind}`, (gid) => runGroupLayout(gid, kind)])),
   'exit-focus': () => exitGroup(),
@@ -3064,6 +3068,39 @@ async function openSettings() {
   await Promise.all([loadLLMConfig(), loadVault()])
 }
 
+/** 右键那个点在选中集里就抄整批，否则只抄它自己。 */
+function pickedOr(id) {
+  const picked = selectedNodeIds()
+  return picked.includes(id) ? picked : [id]
+}
+
+/** 打开「抄知识点」。`preset` 有值＝站在源库里往外推，没值＝从别的库往当前库拉。 */
+async function openCopy(preset = []) {
+  let sources = []
+  try { sources = await fetchCopySources() } catch (err) {
+    setBanner(`读不到可选的知识库：${err.body?.detail || err.message}`, 'error')
+    return
+  }
+  const here = sources.find((s) => s.current)?.path || ''
+  const other = sources.find((s) => !s.current)?.path || ''
+  if (sources.length < 2) {
+    setBanner('只有一个知识库，没得抄——先在「设置 → 知识库」里加一个（比如 clone 别人的库）', 'info')
+    return
+  }
+  copyState.value = preset.length
+    ? { sources, from: here, to: other, preset }        // 往外推：从当前库抄给别人
+    : { sources, from: other, to: here, preset: [] }    // 往里拉：从别的库抄进当前库
+}
+
+async function onCopied(result) {
+  const into = result.target_vault === vault.value?.current?.path
+  setBanner(`抄好了：${result.picked} 个点、${result.stubs} 个壳`
+            + (result.pending?.length ? `，${result.pending.length} 条边进了待审` : '')
+            + (into ? '' : '（写在另一个库里，切过去才看得到）'), 'success')
+  copyState.value = null
+  if (into) await load()          // 抄进当前库 → 索引和图都得重读；抄给别的库则与这边无关
+}
+
 async function loadVault() {
   try { vault.value = await fetchVault() } catch (err) {
     setBanner(`知识库列表读取失败：${err.message}`, 'error')
@@ -3276,6 +3313,8 @@ onBeforeUnmount(() => {
                @help="showHelp = true" />
 
     <div class="workbench">
+      <CopyDialog v-if="copyState" v-bind="copyState" :load-catalog="fetchCopyCatalog" :submit="postCopy"
+                  @close="copyState = null" @done="onCopied" />
       <SettingsDialog v-if="settingsOn" :settings="settings" :llm-config="llmConfig" :llm-saving="llmSaving" :save-llm="saveLLMConfig" :test-llm="testLLMConfig" :snap="snap" :avoid-nodes="avoidNodes"
                       :auto-lod="autoLod" :aggregate="aggregate" :show-map="showMap" :theme="theme"
                       :vault="vault" :browse-vault="browseVault"
@@ -3301,7 +3340,7 @@ onBeforeUnmount(() => {
       <ImportPanel v-else-if="panel === 'import'" class="study" :fields="fieldNames" :project="currentProject"
                    :project-name="plansDoc?.projects?.[currentProject]?.name || ''" :project-field="projectField()"
                    :revision="indexDoc?.revision || 0" :busy="status === 'saving'"
-                   @applied="onImported" @goto="gotoNode" @close="panel = ''" />
+                   @applied="onImported" @goto="gotoNode" @copy="openCopy()" @close="panel = ''" />
       <ProjectsPanel v-else-if="panel === 'plans'" class="study" :doc="plansDoc" :progress="plansProgress"
                      :schedules="plansSchedules" :fields="fieldNames" :project="currentProject"
                      :busy="plansBusy" :proposal="planProposal" :proposing="planProposing"

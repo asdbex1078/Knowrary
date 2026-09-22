@@ -17,7 +17,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import (assets, chat as chat_svc, compare as compare_svc, curation, importing,
+from . import (assets, chat as chat_svc, compare as compare_svc, copying, curation, importing,
                projects as projects_svc, summarize as summarize_svc, vaults, years as years_svc)
 from .contracts import (CalendarRead, ChangeResult, ChangeSet, ChatRequest, CoachToday, FileDiff, ImportProposal,
                         ImportProposeRequest, ImportRequest, ImportResult, SourceText, SourcesRead, SummarizeRequest, SummaryDraft,
@@ -31,6 +31,7 @@ from .contracts import (CalendarRead, ChangeResult, ChangeSet, ChatRequest, Coac
                         SettingsRead, SuggestRequest, LLMConfigRead, LLMConfigWrite, LLMConfigTest,
                         LLMConfigTestRead,
                         SuggestResult, UsageRead, VaultBrowse, VaultPick, VaultRead,
+                        CopyCatalog, CopyRequest, CopyResult, CopySource,
                         YearProposal, YearProposeRequest,
                         CompareProposal, CompareProposeRequest)
 from .index_service import current_index, invalidate
@@ -420,6 +421,48 @@ def post_chat_tidied(body: dict) -> dict:
     except chat_svc.ChatRejected as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"session": body.get("session"), "tidied": mark or None}
+
+
+@app.exception_handler(copying.CopyRejected)
+def _copy_rejected(_request, exc: copying.CopyRejected) -> JSONResponse:
+    return JSONResponse(status_code=422, content={"detail": str(exc)})
+
+
+@app.get("/api/copy/sources", response_model=list[CopySource])
+def copy_sources() -> list[CopySource]:
+    """能从哪些库抄：当前库 + 最近用过的。**不许传任意路径进来**——
+    这条链路会读另一个目录里的 md，放行名单和目录浏览是同一套。"""
+    here = vault_path()
+    out = []
+    for path in copying.known_vaults():
+        try:
+            count = len([n for n in current_index(path)["nodes"] if not n.get("virtual")])
+        except Exception:                      # 库坏了不该让整个下拉框打不开
+            count = 0
+        out.append(CopySource(path=str(path), name=path.name, nodes=count, current=path == here))
+    return out
+
+
+@app.get("/api/copy/catalog", response_model=CopyCatalog)
+def copy_catalog(source: str, q: str = "", limit: int = 200) -> CopyCatalog:
+    """列源库的节点，给「从别的库抽」那一侧挑。只读。"""
+    return CopyCatalog(**copying.catalog(copying.resolve_source(source), q, max(1, min(limit, 500))))
+
+
+@app.post("/api/copy", response_model=CopyResult)
+def copy_nodes(req: CopyRequest) -> CopyResult:
+    """把选中的点抄进一个库。不给 `target` 就是当前库（从别处拉）；
+    给了就是往别的库推（站在参考库里看到好东西，抄进自己的库）。
+    dry_run=true 只预览 diff，false 才落盘。"""
+    try:
+        return CopyResult(**copying.run(vault_path(), req.source, req.ids,
+                                        with_neighbors=req.with_neighbors,
+                                        dry_run=req.dry_run, renames=req.renames,
+                                        target_raw=req.target))
+    except importing.StaleIndex as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except importing.ImportRejected as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 @app.get("/api/vault", response_model=VaultRead)

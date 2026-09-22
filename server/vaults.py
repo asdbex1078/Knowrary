@@ -281,6 +281,8 @@ def _copy_tree(src_root: Path, target: Path) -> None:
         return
     for src in sorted(p for p in src_root.rglob("*") if p.is_file()):
         rel = src.relative_to(src_root)
+        if rel.parts and rel.parts[0] == "user":     # seed/user/ 是铺给 ~/.knowrary 的，不进库
+            continue
         if rel.as_posix() == ".knowrary/index.json":      # 派生缓存，重建一次就有
             continue
         dst = target / rel

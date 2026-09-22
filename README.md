@@ -75,6 +75,29 @@ python3 tools/knowrary/knowrary.py llm probe                      # 能不能等
 | `.knowrary/coach.md`、`.knowrary/coaches/<项目>.md` | **教练侧写**：我是谁、要什么口气、笔记想长成什么样。**跟着这个库走**——一个库一份，切到别人的参考库该读到那个库的口气，而不是把自己那份盖上去；项目级接在全局之后（覆盖全局）。**每次现读不缓存**，改完下一句话就生效。它只影响对话的口气与判断——工具协议和纪律在 `tools/knowrary/prompts/`，那是程序行为。模板是 `coach.example.md`，真身默认 gitignore（那写的是你自己，不是知识） |
 | `.knowrary/` | 图谱的机器数据。**入库的是成果**：`layout.json`（结构视图的位置 / 分组 / 折叠状态 / 贴图 / 边拐点）、`layouts/<项目>.json`（项目画布）、`projects.json`（**项目**：一组 node_id 的选集 + N 份清单，清单分学习 / 面试 / 领域三种口径，带目标日期与负荷档；每周投入与每日配额在项目上。允许指向图里还没有的节点；进度与时间账不存，现算）、`settings.json`、`imports/`（每次导入的方案）。**不入库的是流水与缓存**：`llm.local.json`（密钥）、`index.json`（解析索引，`knowrary index` 随时重建）、`review-log.json` / `quiz-log.json` / `question-pool.json`（复习与答题）、`llm-usage.json`（花费）、`chat/<项目>/YYYY-MM.jsonl`（对话留档，没绑项目的落 `_scratch/`）、`issues.jsonl`（诊断）、`backup/`（写回前快照） |
 
+### 从别人的库里抄知识点
+
+参考库（比如 [HunDun](https://github.com/asdbex1078/HunDun)）的正确用法是**只读着看，看到有用的抄走**——
+直接在别人的库里学习，下次 `git pull` 必冲突。两个入口，同一个对话框：
+
+- 画布上右键一个点（或框选几个）→「抄到别的库…」：站在参考库里往外推
+- 「导入」面板 →「从别的库抄…」：站在自己库里从别处拉
+
+抄过来的东西：正文、frontmatter（`year` / `layer` / `tags` 一起）、**关系连年份和说明**。
+落在 `nodes/_抄来的/`（一眼看得出哪些是抄的），但 `field` 保留源库的值——
+压平成一个领域的话，抄 8 个点回来会挤成一坨。复习进度从今天重新开始：别人学过不等于你学过。
+
+关系分三种处理，这是最要紧的一处：
+
+| 边的形态 | 怎么办 | 为什么 |
+| --- | --- | --- |
+| 两端都抄过来了 | 原样带走 | 无歧义 |
+| 指向**没抄**的点 | 自动补一个 stub | 丢掉边等于悄悄削掉知识结构，而且事后不知道缺了什么。勾「把邻居也带上」则改成真抄一跳 |
+| 指向目标库**已有同 id** 的点 | 进待审（`pending.json`），不直接连 | **同 id 不等于同概念**，跨库尤其：你库里的「Agent」和我库里的「Agent」很可能不是一回事 |
+
+同 id 已存在的节点一律**跳过不覆盖**，只给一条警告——抄东西不该悄悄改掉你自己写的。
+源库只能是当前库或「最近使用」里的库（这条链路会读另一个目录里的 md，放行名单和目录浏览同一套）。
+
 > 这一栏的规则写在 `seed/.gitignore` 里，建库时会铺进去。**成果丢了要重做，值得进版本库；
 > 流水进了公开历史就收不回来**——我自己在这上面栽过一次（见本仓库 `.gitignore` 里的那段注释）。
 
@@ -177,10 +200,11 @@ python3 tools/knowrary/knowrary.py digest --vault <你的库>            # 欠�
 #   出题与交卷在画布的「学习」面板里（走 LLM 的 review 角色；没配模型就用 claude -p）
 .venv/bin/python tools/knowrary/tests/run.py                   # core 自测（134 个用例；要 .venv，有两条跨到服务层）
 node web/tests/unit.mjs                                        # 前端纯函数自测（零依赖，不用测试框架，36 个用例）
-.venv/bin/python server/tests/run.py                           # 服务层自测（245 个用例）
+.venv/bin/python server/tests/run.py                           # 服务层自测（264 个用例）
 .venv/bin/python web/tests/e2e_canvas.py                       # 画布端到端自测（真无头 Chrome 拖拽 → 落盘，临时 vault，不碰你的布局，259 个用例）
 .venv/bin/python web/tests/e2e_models.py                       # 设置→模型端到端自测（真点「测试连接 / 保存」，假 OpenAI 端点，10 个用例）
 .venv/bin/python web/tests/e2e_vault.py                        # 设置→知识库端到端自测（真的选目录、初始化、切库、整页重载，19 个用例）
+.venv/bin/python web/tests/e2e_copy.py                         # 跨库抄知识点端到端自测（真右键、真写进另一个库，10 个用例）
 cd web && npm run dev                                          # 改前端（5173，/api 代理到 8765）；改完 npm run build 提交 dist
 python3 tools/knowrary/knowrary.py article <文章.md> --vault <你的库> --field <领域> [--project <项目 id>] [--dry-run] [--llm <provider>]   # 无人值守：文章 → 节点
 #   和网页「导入」面板同一套：同一份提示词、同一个长度闸、同一套认领 / 撞脸 / 孤立判定、同一份 JSON 容错

@@ -41,7 +41,8 @@ def run(vault: Path, req: ImportRequest) -> ImportResult:
     index = current_index(vault)
     if req.base_revision is not None and req.base_revision != index["revision"]:
         raise StaleIndex(index["revision"])
-    target = core.ImportTarget(req.field.strip(), req.source.strip(), (req.folder or "").strip() or None)
+    target = core.ImportTarget(req.field.strip(), req.source.strip(), (req.folder or "").strip() or None,
+                               keep_field=req.keep_field)
     # 先提升再改名：卡上待审边的 key 是按**卡上显示的 id** 拼的，改名之后就对不上了
     plan = core.promote_in_plan(req.plan, req.promote)
     for old_id, new_id in req.renames.items():

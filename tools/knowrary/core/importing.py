@@ -46,12 +46,19 @@ class Translation:
 
 @dataclass
 class ImportTarget:
-    """一次导入的落点：算哪个领域、放哪个子目录、来源标记。"""
+    """一次导入的落点：算哪个领域、放哪个子目录、来源标记。
+
+    `keep_field` 给**跨库复制**用：抄来的节点统一落在一个收件箱目录（`folder`），
+    但 frontmatter 里的 `field` 保留它在源库的领域——目录只是收纳，`field` 决定它
+    在图上归到哪一组。压平成同一个领域的话，抄 8 个点回来会挤成一坨，
+    以后往各领域搬文件时还得重新判断每个点属于哪儿。
+    """
 
     field_name: str
     source: str
     folder: str | None = None
     today: str | None = None
+    keep_field: bool = False
 
     @property
     def node_dir(self) -> str:
@@ -126,7 +133,8 @@ def _collect_stubs(plan: dict, nodes: list[dict], existing: dict, out: Translati
 
 
 def _create_node(n: dict, target: ImportTarget, out: Translation) -> dict:
-    fields = {"name": n.get("name") or n["id"], "field": target.field_name,
+    field_name = (n.get("field") if target.keep_field else None) or target.field_name
+    fields = {"name": n.get("name") or n["id"], "field": field_name,
               "desc": n.get("desc") or "待补充", "learned": target.date, "source": target.source}
     for k in ("type", "year", "aliases", "tags", "layer"):
         if n.get(k):
@@ -147,7 +155,8 @@ def _body_without_relations(n: dict, out: Translation) -> str:
 
 
 def _create_stub(s: dict, target: ImportTarget) -> dict:
-    fields = {"name": s.get("name") or s["id"], "field": target.field_name, "status": "stub",
+    field_name = (s.get("field") if target.keep_field else None) or target.field_name
+    fields = {"name": s.get("name") or s["id"], "field": field_name, "status": "stub",
               "desc": s.get("desc") or "待补充", "source": target.source}
     return {"type": "create_node", "source": s["id"], "path": f"{STUB_DIR}/{s['id']}.md",
             "fields": fields, "body": f"> 空壳节点（stub）：{s.get('why', '')}"}
