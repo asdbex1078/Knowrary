@@ -26,6 +26,14 @@ export function stripToolBlocks(text) {
   return text.replace(/```knowrary[\s\S]*?```/g, '').replace(/```knowrary[\s\S]*$/, '').trim()
 }
 
+/** 这一轮发给模型的是哪几条。
+ *  **没答成的那几轮要摘掉**：断线时收到的半截话留在屏幕上是有用的（断点前那段推理常常值钱），
+ *  但喂回去，模型会把它当成"我上一轮就是这么答的"接着往下编，而服务端留档里那一轮记的是
+ *  "（这一轮没答成：…）"——两份记录从这里开始分叉。刷新后从留档读回来的那些同理（带 failed 标）。 */
+export function forModel(msgs) {
+  return msgs.filter((m) => !m.failed && (m.content || m.role === 'user'))
+}
+
 /**
  * @param deps graph / currentProject —— 响应式引用
  *             setBanner / pushToast / onReview —— 提示与"记了一次复习"之后要刷的东西
@@ -33,7 +41,7 @@ export function stripToolBlocks(text) {
 export function useChat(deps) {
   const { graph, currentProject, setBanner, pushToast, onReview } = deps
 
-  const chatLog = ref([])                  // [{ role, content, trace?, cards?, streaming? }]
+  const chatLog = ref([])                  // [{ role, content, trace?, cards?, streaming?, failed? }]
   const chatBusy = ref(false)
   const chatSessions = ref([])             // 会话列表：从留档行聚合出来的，不是一张表
   const chatSession = ref(newSessionId())
@@ -87,6 +95,9 @@ export function useChat(deps) {
       chatSessions.value = list.sessions
       chatLog.value = hist.messages.map((m) => ({
         ...m, cards: [], resumed: true,
+        // 没答成的那一行，正文就是"（这一轮没答成：…）"这句记号本身，不是模型说过的话：
+        // 搬进 error 栏显示，正文留空——留在 content 里它会被当成上一轮的回答再发给模型
+        ...(m.failed ? { content: '', error: m.content } : {}),
         trace: (m.trace || []).map((t) => ({ kind: 'say', text: t })) }))
       // 接着最近那一段聊：服务端不给 session 时返回的就是它，这里把 id 对上
       if (!session && hist.messages.length) chatSession.value = list.sessions[0]?.id || chatSession.value
@@ -152,13 +163,17 @@ export function useChat(deps) {
     chatLog.value = [...chatLog.value, mine]
     // trace = 过程（"我先查一下"、工具调用、工具报错），content = 最终那段答案。
     // 混在一起的话，每次都要在一堆过程里找那几句有营养的——真实使用里最费时间的一点。
+    // failed = 这一轮没答成。**必须单独标出来**：断线时收到的那半截和一段正常回答长得一模一样，
+    // 不标的话，它既会让人以为模型就答了这么点，又会在下一轮被当上下文发回模型——
+    // 而服务端留档里这一轮写的是"（这一轮没答成：…）"，两边就此对不上（2026-09-21 那次）。
     const reply = reactive({ role: 'assistant', content: '', trace: [], cards: [], projects: [],
-                             points: [], listEdits: [], questions: [], streaming: true, ts: '' })
+                             points: [], listEdits: [], questions: [], streaming: true, ts: '',
+                             failed: false, error: '', waited: 0 })
     chatLog.value = [...chatLog.value, reply]
     chatBusy.value = true
     chatAbort = new AbortController()
     // 只把 role/content 发过去：tools / cards 是本地渲染用的，喂回模型只会干扰它
-    const feed = chatLog.value.filter((m) => m.content || m.role === 'user')
+    const feed = forModel(chatLog.value)
     const wire = (opts.tidy ? sinceTidied(feed) : feed)
       .map((m) => ({ role: m.role, content: m.content }))
       .filter((m) => m.content.trim())
@@ -171,6 +186,9 @@ export function useChat(deps) {
           if (reply.content.trim()) { reply.trace.push({ kind: 'say', text: reply.content }); reply.content = '' }
           reply.trace.push({ kind: 'tool', label: TOOL_LABEL[ev.name] || ev.name, summary: ev.summary })
         }
+        // 服务端把「贴成正文的变更集」捞成卡之后发的：这一步的正文整段换掉。
+        // 那段 JSON 已经流过来了，不换的话它会被下一条 tool 事件收进过程折叠区。
+        else if (ev.type === 'replace') reply.content = stripToolBlocks(ev.text || '')
         else if (ev.type === 'card') reply.cards.push({ ...ev.card, applied: false })
         else if (ev.type === 'project') reply.projects.push({ ...ev.project, applied: false })
         else if (ev.type === 'points') reply.points.push({ ...ev.points, applied: false })
@@ -191,10 +209,16 @@ export function useChat(deps) {
             highlightPath(graph.value, new Set(ev.node_ids), new Set())
           }
         }
-        else if (ev.type === 'error') setBanner(`对话失败：${ev.message}`, 'error')
+        // 心跳：模型久不吐字时服务端发的（server/chat.py 的 HEARTBEAT_SEC）。
+        // 内容为零，只用来告诉人"还在等，等了多久"——干等一分钟和挂掉在屏幕上本来长得一样。
+        else if (ev.type === 'ping') reply.waited = ev.waited || 0
+        else if (ev.type === 'error') { fail(reply, ev.message); setBanner(`对话失败：${ev.message}`, 'error') }
       }, chatAbort.signal, currentProject.value || null, chatSession.value, chatStance.value)
     } catch (err) {
-      if (err.name !== 'AbortError') setBanner(`对话失败：${err.body?.detail || err.message}`, 'error')
+      if (err.name !== 'AbortError') {
+        fail(reply, err.body?.detail || err.message)
+        setBanner(`对话失败：${err.body?.detail || err.message}`, 'error')
+      }
     } finally {
       reply.streaming = false
       chatBusy.value = false
@@ -215,12 +239,31 @@ export function useChat(deps) {
     } catch { /* 游标是优化不是真值：推不动只是下次多花一次钱，不该打断写入的成功提示 */ }
   }
 
+  /** 标成"没答成"。半截正文留着（断点前那段推理常常有用），但它从此不算回答：
+   *  界面上单独一块，也不再进发给模型的上下文。 */
+  function fail(reply, message) {
+    reply.failed = true
+    reply.error = String(message || '没答成')
+  }
+
+  /** 「重试这一轮」：把没答成的那一轮（我的问题 + 半截回复）摘掉，原样再问一遍。
+   *  只管人工兜底这一档——纯网络抖动在服务端就重试过了（llm_backend 的 `_retrying`），
+   *  能落到这个按钮上的，都是"已经吐过字才断"或者重试两次仍然不通。 */
+  async function retryChat() {
+    const log = chatLog.value
+    if (chatBusy.value || !log[log.length - 1]?.failed) return
+    const mine = log[log.length - 2]
+    if (mine?.role !== 'user') return
+    chatLog.value = log.slice(0, -2)
+    await sendChat(mine.content)
+  }
+
   function stopChat() { chatAbort?.abort() }
 
   return {
     chatLog, chatBusy, chatSessions, chatSession, chatTidied, chatStance, chatFocus,
     graphPane, chatFresh,
     newSessionId, setStance, toggleGraphPane, loadChatHistory, renameSession,
-    newChatSession, pickChatSession, sinceTidied, sendChat, advanceTidied, stopChat,
+    newChatSession, pickChatSession, sinceTidied, sendChat, advanceTidied, stopChat, retryChat,
   }
 }

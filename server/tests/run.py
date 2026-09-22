@@ -13,6 +13,7 @@ import json
 import os
 import sys
 import tempfile
+import time
 import traceback
 from pathlib import Path
 
@@ -2713,6 +2714,71 @@ def sse_events(resp) -> list[dict]:
 
 
 @case
+def 模型久不吐字要发心跳而不是干等():
+    """2026-09-21 那次：上游等了 63 秒才断，这 63 秒里 SSE 一个字节都没往外发。
+
+    后果有两层：页面上"想一下…"和"已经挂了"长得一模一样；而且但凡中间隔一层反代，
+    空闲超时（nginx 默认 60s）会把连接掐掉，症状和模型挂掉难以分辨。
+    """
+    from server import chat as chat_mod
+
+    c, _ = client({"nodes/组A/a.md": node_md("A")})
+    original, beat = chat_mod.llm_chat, chat_mod.HEARTBEAT_SEC
+    chat_mod.HEARTBEAT_SEC = 0.05
+
+    def slow(vault, role, messages, tools=None, op="chat", on_delta=None, session=None):
+        time.sleep(0.2)                       # 模型在这儿想事情，一个字都没吐
+        if on_delta:
+            on_delta("想好了")
+        return "想好了", [], {}
+
+    chat_mod.llm_chat = slow
+    try:
+        r = c.post("/api/chat", json={"messages": [{"role": "user", "content": "在吗"}]})
+        evs = sse_events(r)
+    finally:
+        chat_mod.llm_chat, chat_mod.HEARTBEAT_SEC = original, beat
+
+    pings = [e for e in evs if e["type"] == "ping"]
+    assert pings, [e["type"] for e in evs]
+    assert all("waited" in e for e in pings), pings          # 界面要拿它显示"已等 N 秒"
+    assert [e for e in evs if e["type"] == "done"], [e["type"] for e in evs]
+
+
+@case
+def 没答成的那一轮读回来要带着记号():
+    """留档里那行"（这一轮没答成：…）"是个记号，不是模型说过的话。
+
+    刷新页面会把留档读回前端接着聊——认不出这个记号，它就成了模型眼里的上一轮回答，
+    下一轮被当上下文原样发回去。前端靠这个 `failed` 标把它摘掉（`forModel`）。
+    """
+    from server import chat as chat_mod
+
+    c, vault = client({"nodes/组A/a.md": node_md("A")})
+    original = chat_mod.llm_chat
+
+    def boom(vault, role, messages, tools=None, op="chat", on_delta=None, session=None):
+        raise SystemExit("[learn 角色 · provider `x`] LLM 连接失败（http://上游/v1）："
+                         "RemoteDisconnected: Remote end closed connection without response")
+
+    chat_mod.llm_chat = boom
+    try:
+        r = c.post("/api/chat", json={"messages": [{"role": "user", "content": "在吗"}],
+                                      "session": "s1"})
+        assert [e for e in sse_events(r) if e["type"] == "error"], sse_events(r)
+    finally:
+        chat_mod.llm_chat = original
+
+    rows = c.get("/api/chat/history", params={"session": "s1"}).json()["messages"]
+    assert rows[-1]["failed"] is True, rows[-1]
+    assert rows[0]["failed"] is False, rows[0]                # 我说的那句不能跟着被摘掉
+    # 出错流水上这一条要能回答"是谁断的"——只剩一句英文的话，事后连 provider 都猜不出来
+    issue = core.load_issues(vault)[-1]
+    assert issue["kind"] == "llm" and "provider" in issue["message"], issue
+    assert "上游" in issue["message"], issue
+
+
+@case
 def web_构建产物带no_cache头且能走304():
     """产物文件名**不带 content hash**（见 web/vite.config.js）：改一行源码只有 index.js 变，
     git 只存那一个 delta，而不是 57 个新文件。代价是"文件换了"没法靠名字告诉浏览器——
@@ -3280,6 +3346,68 @@ def llm_单轮功能的低比值不该报警():
 
     log = {"recent": rows("suggest", 9, 0, 1000) + rows("chat-教练", 2, 1000, 1000)}
     assert usage_mod.cache_health(log)["ok"], "才 2 次调用就报警，噪声"
+
+
+@case
+def llm_换了provider之后缓存那盏灯不能跟着熄():
+    """**指标随 provider 口径换**：只报命中数的那一路（OpenAI 兼容）没有"写"这一列。
+
+    读写比写死在页面上的后果是 2026-09-21 那天：换到千问之后整天显示 `—`、`ok` 恒为真，
+    既不会红也不会绿。一盏不会动的灯等于没有灯——而缓存失效恰恰是**唯一**不报错的故障。
+    """
+    import datetime as _dt
+    from core import usage as usage_mod
+    ts = _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    def rows(op: str, n: int, read: int, inp: int) -> list[dict]:
+        """OpenAI 兼容口径：`cache_write_tokens` 恒为 0，输入全额记在 `input_tokens` 里。"""
+        return [{"op": op, "ts": ts, "ok": True, "input_tokens": inp,
+                 "cache_read_tokens": read, "cache_write_tokens": 0} for _ in range(n)]
+
+    good = usage_mod.cache_health({"recent": rows("chat-教练", 9, 9000, 10000)})
+    assert good["kind"] == "hit_rate", good        # kind 就是字段名，界面直接拿它取值
+    assert good["ratio"] is None, good             # 这一路永远除不出读写比——原来就卡在这
+    assert good["hit_rate"] == 0.9 and good["ok"], good
+
+    bad = usage_mod.cache_health({"recent": rows("chat-教练", 9, 3000, 10000)})
+    assert not bad["ok"], "命中率掉到 30% 了还说健康"
+    assert bad["worst"]["op"] == "chat-教练" and bad["worst"]["hit_rate"] == 0.3, bad["worst"]
+    assert bad["worst"]["ratio"] is None, bad["worst"]   # 两套口径不混排名
+
+    quiet = usage_mod.cache_health({"recent": rows("chat-教练", 2, 0, 10000)})
+    assert quiet["ok"], "才 2 次调用就报警，噪声"
+
+    # 报写入的那一路照旧看读写比：别为了新口径把老的挤掉（混着用的那天两个数都在）
+    cli = usage_mod.cache_health({"recent": [
+        {"op": "chat-教练", "ts": ts, "ok": True, "input_tokens": 2,
+         "cache_read_tokens": 10000, "cache_write_tokens": 1000} for _ in range(9)]})
+    assert cli["kind"] == "ratio" and cli["ratio"] == 10.0, cli
+    assert cli["hit_rate"] is None, cli            # 5000× 那种假数不许出现在契约里
+
+
+@case
+def usage_不报价的provider不该摆出一个0元():
+    """`cost_known` **只看当前角色指向谁**，不看账本里有没有历史金额。
+
+    原来是 `bool(totals.cost_usd) or 报价能力`：换到千问之后，前几天 claude-cli 烧的那 $23
+    会把开关顶成真，于是页面显示"今天 $0.00""每张落地的卡 ≈ $0.00"——
+    那不是今天没花钱，是这个 provider 压根不报价。
+    """
+    c, vault, _ = with_inbox_node()
+    core.write(vault / ".knowrary" / "llm.local.json", json.dumps({
+        "providers": {"bailian": {"type": "openai", "base_url": "http://x/v1", "model": "qwen-plus"}},
+        "roles": {"learn": "bailian", "review": "bailian"}}, ensure_ascii=False))
+    core.record_usage(vault, {"op": "chat", "ok": True, "ms": 10, "cost_usd": 23.0,
+                              "input_tokens": 2, "cache_read_tokens": 100,
+                              "cache_write_tokens": 50})
+    u = c.get("/api/llm/usage").json()
+    assert u["totals"]["cost_usd"] == 23.0, u["totals"]     # 历史金额还在，不许抹
+    assert not u["cost_known"], "不报价的 provider 还在摆 $"
+
+    core.write(vault / ".knowrary" / "llm.local.json", json.dumps({
+        "providers": {"cli": {"type": "claude-cli"}},
+        "roles": {"learn": "cli", "review": "cli"}}, ensure_ascii=False))
+    assert c.get("/api/llm/usage").json()["cost_known"], "claude-cli 会报价，这时该显示"
 
 
 @case
@@ -4544,6 +4672,125 @@ def chat_出错会记进流水():
 
 
 @case
+def chat_把变更贴成正文也要出卡():
+    """模型不调工具、把 `propose_changes` 的参数贴进了正文——服务端代它提卡。
+
+    原生 tool use 那条路上没有围栏回退，正文里的 JSON 没人解析：屏幕上是一段漂亮的 JSON、
+    图谱里什么都没发生，模型自己也收不到「卡已摆在他面前」那句回执，下一轮还会再问一次
+    「要不要发」（2026-09-21 qwen-plus：一轮拖成三轮，同一份参数生成了两遍）。
+    """
+    c, vault, _ = with_inbox_node()
+    change = {"type": "create_node", "source": "e", "path": "nodes/组A/e.md",
+              "fields": {"name": "E", "field": "测试", "desc": "一句话摘要"}, "body": "正文"}
+    pasted = ("现在提一张卡：\n\n```json\n" + json.dumps(change, ensure_ascii=False)
+              + "\n```\n\n要我现在发吗？")
+    original, _ = stub_chat([pasted, "卡摆出来了，等你点写入。"])
+    try:
+        r = c.post("/api/chat", json={"messages": [{"role": "user", "content": "建一下 E"}]})
+    finally:
+        restore_chat(original)
+    evs = sse_events(r)
+    cards = [e for e in evs if e["type"] == "card"]
+    assert len(cards) == 1, [e["type"] for e in evs]
+    assert cards[0]["card"]["changes"][0]["source"] == "e", cards[0]["card"]
+    # 屏幕上那段 JSON 要被换掉：不换的话它会被 tool 事件原样收进过程折叠区
+    repl = [e for e in evs if e["type"] == "replace"]
+    assert repl and "```json" not in repl[0]["text"] and "现在提一张卡" in repl[0]["text"], repl
+    # 留档里也不留 JSON
+    row = json.loads(next((vault / ".knowrary" / "chat").rglob("*.jsonl")).read_text("utf-8")
+                     .strip().splitlines()[-1])
+    assert "```json" not in row["text"], row["text"]
+    # 记一笔："这个模型是不是老不会调工具"得有地方回答
+    issues = core.load_issues(vault)
+    assert any(i["kind"] == "llm" and "贴成了正文" in i["message"] for i in issues), issues
+
+
+@case
+def chat_只是在解释格式的JSON不当成卡():
+    """捞回来的前提是**能过校验**。举例子用的占位 id 在图里不存在，`preview` 会拒，
+    那就当没看见——正文原样留着，别把说明文档变成一张他不敢点的卡。"""
+    c, vault, _ = with_inbox_node()
+    示例 = json.dumps({"type": "append_body", "source": "这个节点不存在", "body": "补一段"},
+                      ensure_ascii=False)
+    乱码 = json.dumps({"foo": 1}, ensure_ascii=False)
+    text = f"格式长这样：\n\n```json\n{示例}\n```\n\n再比如：\n\n```json\n{乱码}\n```\n\n明白了吗？"
+    original, _ = stub_chat([text])
+    try:
+        r = c.post("/api/chat", json={"messages": [{"role": "user", "content": "变更集怎么写"}]})
+    finally:
+        restore_chat(original)
+    evs = sse_events(r)
+    assert not [e for e in evs if e["type"] in ("card", "replace")], [e["type"] for e in evs]
+    done = next(e for e in evs if e["type"] == "done")
+    assert "```json" in done["text"] and "这个节点不存在" in done["text"], done["text"]
+    assert not core.load_issues(vault), core.load_issues(vault)
+
+
+@case
+def chat_贴成正文的项目卡和清单卡也捞得回来():
+    """同一个病不止 `propose_changes` 一处：项目卡、清单卡的参数一样会被贴成正文。
+    一段里同时贴了两种，两张卡都得出来，正文里一段 JSON 都不许剩。"""
+    c, vault, _ = with_inbox_node()
+    _vault_with_list(c)
+    proj = {"id": "nlp", "name": "NLP 方向", "field": "AI", "level": "会用",
+            "lists": [{"kind": "学习", "name": "主线", "goal": "吃透 Transformer"}]}
+    edit = {"project": "ai", "list": "主线", "edits": [{"op": "drop", "id": "符号主义与连接主义"}]}
+    pasted = ("两件事：\n\n```json\n" + json.dumps(proj, ensure_ascii=False)
+              + "\n```\n\n还有\n\n```json\n" + json.dumps(edit, ensure_ascii=False)
+              + "\n```\n\n要发吗？")
+    original, _ = stub_chat([pasted, "两张卡都摆好了。"])
+    try:
+        r = c.post("/api/chat", json={"messages": [{"role": "user", "content": "建 NLP，顺手清清单"}]})
+    finally:
+        restore_chat(original)
+    evs = sse_events(r)
+    assert [e["project"]["id"] for e in evs if e["type"] == "project"] == ["nlp"], \
+        [e["type"] for e in evs]
+    assert [e["list_edit"]["project"] for e in evs if e["type"] == "list_edit"] == ["ai"], \
+        [e["type"] for e in evs]
+    repl = [e for e in evs if e["type"] == "replace"]
+    assert repl and "```json" not in repl[0]["text"] and "两件事" in repl[0]["text"], repl
+    # 仍然只是提议
+    assert c.get("/api/projects").json()["doc"]["projects"].get("nlp") is None, "提议就写进去了"
+
+
+@case
+def chat_指不着东西的清单卡不捞():
+    """第二道闸是「它指的东西真的存在吗」：举例子用的占位项目名过不了 `_resolve_list`。"""
+    c, vault, _ = with_inbox_node()
+    示例 = {"project": "某个项目", "list": "主线", "edits": [{"op": "drop", "id": "某个点"}]}
+    text = "清单卡长这样：\n\n```json\n" + json.dumps(示例, ensure_ascii=False) + "\n```"
+    original, _ = stub_chat([text])
+    try:
+        r = c.post("/api/chat", json={"messages": [{"role": "user", "content": "清单卡怎么写"}]})
+    finally:
+        restore_chat(original)
+    evs = sse_events(r)
+    assert not [e for e in evs if e["type"] in ("list_edit", "replace")], [e["type"] for e in evs]
+    assert "```json" in next(e for e in evs if e["type"] == "done")["text"]
+    assert not core.load_issues(vault), core.load_issues(vault)
+
+
+@case
+def chat_面试档贴了变更也不给捞():
+    """白名单管的是**手段**，不是模型的自觉。面试档没有 `propose_changes`——
+    边考边改图谱等于开卷，捞回来照样不给调。"""
+    c, vault, _ = with_inbox_node()
+    change = {"type": "create_node", "source": "e", "path": "nodes/组A/e.md",
+              "fields": {"name": "E", "field": "测试", "desc": "一句话摘要"}, "body": "正文"}
+    pasted = "顺手记一下：\n\n```json\n" + json.dumps(change, ensure_ascii=False) + "\n```"
+    original, _ = stub_chat([pasted])
+    try:
+        r = c.post("/api/chat", json={"stance": "面试",
+                                      "messages": [{"role": "user", "content": "考我"}]})
+    finally:
+        restore_chat(original)
+    evs = sse_events(r)
+    assert not [e for e in evs if e["type"] in ("card", "replace")], [e["type"] for e in evs]
+    assert not (vault / "nodes/组A/e.md").exists()
+
+
+@case
 def chat_关系类型表要喂给模型():
     """不给表它只能猜类型名：真实对话里写过 `提出者::`，没登记，落弱关联还带警告。
     「发展方向」全靠 `演化` 那一族。"""
@@ -4901,6 +5148,46 @@ def llm_两家的流式工具调用都能跑通一整趟():
     assert usage["input_tokens"] == 9 and usage["output_tokens"] == 2, usage
     fn = sent[0]["tools"][0]
     assert fn["type"] == "function" and fn["function"]["name"] == "search_nodes", fn
+
+
+@case
+def llm_openai兼容那条路的用量三支都要记上():
+    """非流式那支原来直接还一张空表，token 和命中数全丢账。
+
+    丢账的样子和"真的没命中"**一模一样**：都是 0。于是排查缓存时看到的是一条
+    假信号，而这条路不报错、答案也全对，只有账本在骗人。
+
+    顺带钉住 openai 兼容口径的另一半：`cache_write_tokens` 恒为 0 是**接口没有这一列**
+    （隐式缓存不报写入），不是没缓存——判命中要看 `cache_read ÷ input`。
+    """
+    import llm_backend as backend
+    raw = {"prompt_tokens": 1200, "completion_tokens": 40,
+           "prompt_tokens_details": {"cached_tokens": 1024}}
+    original = backend._post_json
+    backend._post_json = lambda url, headers, payload: {
+        "model": "qwen-plus", "usage": raw,
+        "choices": [{"message": {"content": "答完了", "tool_calls": [
+            {"id": "call_1", "function": {"name": "overview", "arguments": "{}"}}]}}]}
+    try:
+        text, calls, usage = backend._chat_openai(
+            [{"role": "user", "content": "我图里有什么"}],
+            {"base_url": "http://x/v1"}, "qwen-plus", None, None)
+    finally:
+        backend._post_json = original
+    assert text == "答完了" and [c["name"] for c in calls] == ["overview"], (text, calls)
+    assert usage["input_tokens"] == 1200 and usage["output_tokens"] == 40, usage
+    assert usage["cache_read_tokens"] == 1024, usage
+    assert usage["cache_write_tokens"] == 0, usage   # 这一路没有"写"这一列
+    assert usage["model"] == "qwen-plus", usage      # 报回来的型号优先于配置里写的
+
+    # 单轮那支（suggest / quiz / 拆计划走的就是它）用同一份解析
+    backend._post_json = lambda url, headers, payload: {
+        "model": "qwen-plus", "usage": raw, "choices": [{"message": {"content": "好"}}]}
+    try:
+        _, single = backend._ask_openai("问一句", {"base_url": "http://x/v1"}, "qwen-plus")
+    finally:
+        backend._post_json = original
+    assert single["cache_read_tokens"] == 1024 and single["input_tokens"] == 1200, single
 
 
 @case

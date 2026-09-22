@@ -24,17 +24,19 @@ import json
 import logging
 import queue
 import re
+import time
 
 from difflib import SequenceMatcher
 import threading
 
 from pathlib import Path
+from typing import get_args
 
 from . import curation, turns
-from .contracts import ChatRequest, QuizRequest
+from .contracts import Change, ChatRequest, QuizRequest
 from .index_service import current_index
 from .levels import fragment as level_fragment
-from .llm_call import chat as llm_chat
+from .llm_call import LLMFailed, chat as llm_chat
 from .paths import core
 from .projects import read as read_projects
 from .quiz import generate as generate_quiz
@@ -50,6 +52,14 @@ MAX_STEPS = 8
 # 字数那道是必须的——20 条里夹着几段长正文，光看条数会把 prompt 撑爆。
 MAX_MESSAGES = 60
 MAX_HISTORY_CHARS = 24000
+# 模型这么多秒不吐字就往 SSE 里发一次心跳。上游想久一点很正常（2026-09-21 那次等了 63 秒），
+# 但这段静默里一个字节都不发的话：页面上看不出是在等还是已经挂了，
+# 而且但凡中间隔一层反代，空闲超时（nginx 默认 60s）会把连接掐掉——症状和模型挂掉一模一样。
+HEARTBEAT_SEC = 10
+# 留档里那两条"这一轮不算数"的记号。**写死成常量、读回来时认它**：
+# 刷新页面会把留档读回前端接着聊，认不出来的话，"没答成"三个字就成了模型眼里的上一轮回答。
+FAILED_MARK = "（这一轮没答成："
+BROKEN_MARK = "（这一轮被我中断了）"
 SEARCH_TOP = 8
 # read_node 的正文预算。**以前是 1200 字，那是个会吃掉笔记的数**：模型拿到的是截断过的原文，
 # 再用 `update_body`（整段替换）写回去，超出那 1200 字的后半截就被抹掉了。
@@ -650,6 +660,74 @@ def _into_list(vault: Path, project: str | None, born: list[str]) -> dict | None
 #
 # §3.4 那条纪律照旧：说明书、schema、白名单是同一份数据。"表里写着能用、调了却说没有"
 # 是最让人发火的那种 bug，两边各写一遍迟早对不上。
+# 清单的形状。`kind` / `load` 这些枚举从 core 取，别在这儿抄第二份。
+LISTS_SCHEMA = {
+    "type": "array",
+    "items": {
+        "type": "object",
+        "properties": {
+            "kind": {"type": "string", "enum": list(core.KINDS), "description": "清单类型"},
+            "name": {"type": "string", "description": "清单名，比如「主线」「字节一面」"},
+            "goal": {"type": "string", "description": "这份清单要达成什么；面试档把 JD 原文放这儿"},
+            "coach": {"type": "string", "description": "面试档的角色，比如「Java 后端开发」"},
+            "field": {"type": "string", "description": "这份清单的领域"},
+            "target_date": {"type": "string", "description": "截止日期，YYYY-MM-DD"},
+        },
+        "required": ["kind", "name"],
+    },
+}
+
+# 清单条目的改动。`op` 三种，`set` 能改的字段就 POINT_FIELDS 那几个。
+EDITS_SCHEMA = {
+    "type": "array",
+    "items": {
+        "type": "object",
+        "properties": {
+            "op": {"type": "string", "enum": list(LIST_OPS),
+                   "description": "rename 换 id / drop 删掉 / set 改字段"},
+            "id": {"type": "string", "description": "清单里现在写着的那个 id"},
+            "to": {"type": "string", "description": "rename：要改成的新 id"},
+            "name": {"type": "string", "description": "set：改显示名"},
+            "why": {"type": "string", "description": "set：为什么要学这一条"},
+            "load": {"type": "string", "enum": list(core.LOADS),
+                     "description": "set：负荷三档，它直接决定时间账"},
+        },
+        "required": ["op", "id"],
+    },
+}
+
+# 八种改动的名字**从契约里取**，不在这儿抄一遍：抄一遍就会有第十种改动只加在一边的那天。
+CHANGE_TYPES = frozenset(get_args(Change.model_fields["type"].annotation))
+
+# `changes` 的形状写进 schema，不是只写在格式说明里。
+# **强模型靠散文说明书能补齐，弱模型没有结构约束就会退化**——2026-09-21 那次 qwen-plus
+# 拿到的是 `{"type": "array", "items": {"type": "object"}}`，一个属性都没有，
+# 于是它把整组变更当正文贴了出来（见 `_salvaged_call`）。
+# 这里只列模型要填的字段，**不是校验**：真正的校验在 `curation.preview`，那儿才看得见图。
+CHANGE_SCHEMA = {
+    "type": "array",
+    "items": {
+        "type": "object",
+        "properties": {
+            "type": {"type": "string", "enum": sorted(CHANGE_TYPES), "description": "哪一种改动"},
+            "source": {"type": "string",
+                       "description": "改哪个节点；create_node 时是新节点 id（= 文件名）"},
+            "path": {"type": "string",
+                     "description": "create_node 的落点 / move_node 的新位置，vault 相对路径"},
+            "target": {"type": "string", "description": "边的另一端"},
+            "relation": {"type": "string", "description": "关系类型，取自关系类型表"},
+            "from_relation": {"type": "string", "description": "update_edge 用它定位原来那条边"},
+            "note": {"type": "string", "description": "边上的注"},
+            "fields": {"type": "object",
+                       "description": "frontmatter：name / field / layer / year / desc / tags"},
+            "body": {"type": "string", "description": "正文；append_body 只给要补的那一段"},
+            "key": {"type": "string", "description": "set_fact：`## 速查` 里的键"},
+            "value": {"type": "string", "description": "set_fact：一句话结论"},
+        },
+        "required": ["type", "source"],
+    },
+}
+
 TOOLS_SPEC: dict[str, dict] = {
     "search_nodes": {
         "doc": "按关键字找节点。**讲任何一个概念之前先搜一下**，看我图里有没有",
@@ -689,7 +767,7 @@ TOOLS_SPEC: dict[str, dict] = {
     },
     "propose_changes": {
         "doc": "提议把学到的东西写进图谱。**只是提议**，会变成一张卡片等我点「写入」",
-        "params": {"changes": (["array", "object"], "变更集，形状见下面的格式说明")},
+        "params": {"changes": (CHANGE_SCHEMA, "变更集，八种改动的形状见下面的格式说明")},
         "required": ["changes"],
     },
     "propose_project": {
@@ -699,7 +777,7 @@ TOOLS_SPEC: dict[str, dict] = {
                    "field": ("string", "顶层领域"),
                    "level": ("string", "学到什么份上：了解 / 会用 / 精通"),
                    "weekly_hours": ("number", "每周投入几小时"),
-                   "lists": (["array", "object"], "要建的清单，形状见下面的格式说明")},
+                   "lists": (LISTS_SCHEMA, "要建的清单，形状见下面的格式说明")},
         "required": ["id", "name", "field", "level"],
     },
     "propose_points": {
@@ -714,7 +792,7 @@ TOOLS_SPEC: dict[str, dict] = {
                 "**看出清单里有错的、重复的、该删的，直接提这张卡**，别让我自己去面板改"),
         "params": {"project": ("string", "项目 id"),
                    "list": ("string", "清单名"),
-                   "edits": (["array", "object"], "要做的改动，形状见下面的格式说明")},
+                   "edits": (EDITS_SCHEMA, "要做的改动，形状见下面的格式说明")},
         "required": ["project", "list", "edits"],
     },
 }
@@ -733,6 +811,8 @@ TOOL_DOC = {name: f"{_param_brief(spec)} | {spec['doc']}" for name, spec in TOOL
 
 
 def _json_type(t) -> dict:
+    if isinstance(t, dict):                       # 写好的 JSON Schema，原样用
+        return dict(t)
     if isinstance(t, list):                       # ("array", 元素类型)
         return {"type": "array", "items": {"type": t[1]}}
     return {"type": t}
@@ -1136,9 +1216,17 @@ def history(vault: Path, project: str | None = None, limit: int = 40,
         newest = rows[-1].get("session") or "legacy"
         rows = [r for r in rows if (r.get("session") or "legacy") == newest]
     # ts 从留档原样带出来：界面靠它判断"这条在梳理游标前还是后"，没有它就只能全量重梳
+    # failed 是**读出来的，不是存出来的**：留档里只有那句记号，这里认回来标上，
+    # 前端才知道刷新之后这一轮不能算回答、也不能再喂给模型。
     return [{"role": r["role"], "content": r["text"], "node_ids": r.get("node_ids") or [],
-             "trace": r.get("trace") or [], "ts": r.get("ts") or ""}
+             "trace": r.get("trace") or [], "ts": r.get("ts") or "",
+             "failed": _is_failed(r)}
             for r in rows][-limit:]
+
+
+def _is_failed(row: dict) -> bool:
+    text = row.get("text") or ""
+    return row.get("role") == "assistant" and (text.startswith(FAILED_MARK) or text == BROKEN_MARK)
 
 
 # ---------------------------------------------------------------- 编排
@@ -1343,6 +1431,66 @@ def strip_tools(text: str) -> str:
     return _TOOL_RE.sub("", text or "").strip()
 
 
+# 正文里的 JSON 块。`json` 标注可有可无——模型贴的时候什么都写得出来。
+_JSON_FENCE_RE = re.compile(r"```(?:json)?\s*(\{.*?\}|\[.*?\])\s*```", re.S)
+
+
+def _looks_like_change(row) -> bool:
+    return (isinstance(row, dict) and row.get("type") in CHANGE_TYPES
+            and isinstance(row.get("source"), str) and bool(row["source"].strip()))
+
+
+def _looks_like_list_edit(row) -> bool:
+    return (isinstance(row, dict) and row.get("op") in LIST_OPS
+            and isinstance(row.get("id"), str) and bool(row["id"].strip()))
+
+
+def _as_changes(data) -> dict | None:
+    """`{"changes": [...]}`、裸数组、或者单独一条改动——三种写法都认。"""
+    rows = data.get("changes") if isinstance(data, dict) and "changes" in data else data
+    rows = rows if isinstance(rows, list) else [rows]
+    return {"changes": rows} if rows and all(_looks_like_change(r) for r in rows) else None
+
+
+def _as_list_edit(data) -> dict | None:
+    if not isinstance(data, dict) or not isinstance(data.get("edits"), list):
+        return None
+    ok = data["edits"] and all(_looks_like_list_edit(e) for e in data["edits"])
+    return data if ok and data.get("project") else None
+
+
+def _as_project(data) -> dict | None:
+    if not isinstance(data, dict) or "changes" in data or "edits" in data:
+        return None
+    need = ("id", "name", "field", "level")     # propose_project 的必填那四个
+    return data if all(isinstance(data.get(k), str) and data[k].strip() for k in need) else None
+
+
+# 认哪几种贴出来的提议。**顺序有讲究**：`_as_changes` 最松（单条改动就算），
+# 放最后会把清单改动也吞进去，所以先让形状更专的两个挑。
+SALVAGE = (("propose_list_edit", _as_list_edit), ("propose_project", _as_project),
+           ("propose_changes", _as_changes))
+
+
+def salvage_proposals(text: str) -> list[tuple[str, dict, tuple[int, int]]]:
+    """把正文里那些「本该是工具调用」的 JSON 块认出来：(工具名, 参数, 在正文里的位置)。
+
+    这里只判形状，不判"该不该建"——那是各自的闸，见 `_salvaged_calls`。
+    """
+    out: list[tuple[str, dict, tuple[int, int]]] = []
+    for m in _JSON_FENCE_RE.finditer(text or ""):
+        try:
+            data = json.loads(m.group(1))
+        except json.JSONDecodeError:
+            continue
+        for name, detect in SALVAGE:
+            args = detect(data)
+            if args is not None:
+                out.append((name, args, m.span()))
+                break
+    return out
+
+
 # 教练每轮末尾问的那个检验问题。用一个轻量围栏标出来，而不是让它调工具——
 # 调工具要多一个来回（多一次计费、多等几秒），而这件事没有任何需要服务端算的东西。
 _CHECK_RE = re.compile(r"```check\s*\n(.*?)```", re.S)
@@ -1400,6 +1548,7 @@ def _stream(vault: Path, messages: list[dict], tools: list[dict], op: str = "cha
     """在后台线程里跑一次 LLM 调用，把增量从队列里取出来往外 yield。
 
     生成器里没法从回调 yield，所以只能用队列过一道。
+    模型久不吐字就 yield 一条 `ping`（`HEARTBEAT_SEC`），让连接和页面都知道这边还活着。
     收尾那条 `_done` 带着 `calls`：模型这一步调了哪几个工具，**结构化地**回来。
     底下用的是原生 tool use 还是文本围栏，由 provider 的能力决定，这里看不见——
     适配关在 `llm_backend` 里，循环只有一条代码路径（见那边的 §多轮对话 + 工具协议）。
@@ -1413,16 +1562,26 @@ def _stream(vault: Path, messages: list[dict], tools: list[dict], op: str = "cha
                 vault, "learn", messages, tools=tools, op=op, on_delta=lambda t: q.put(t),
                 session=session)
         except BaseException as exc:             # SystemExit 是 llm_backend 的报错方式
-            box["error"] = str(exc)
+            # 认不出的异常要把**类名**一起带上：`str()` 对 KeyError、TypeError 这类
+            # 常常只有半个词，进了出错流水就是一条没法回溯的记录。
+            # 模型那侧的报错（LLMFailed / SystemExit）自己已经带足了角色、provider、url。
+            box["error"] = (str(exc) if isinstance(exc, (SystemExit, LLMFailed))
+                            else f"{type(exc).__name__}: {exc}")
         finally:
             q.put(None)
 
     th = threading.Thread(target=work, daemon=True)
     th.start()
+    quiet = time.monotonic()
     while True:
-        piece = q.get()
+        try:
+            piece = q.get(timeout=HEARTBEAT_SEC)
+        except queue.Empty:
+            yield {"type": "ping", "waited": int(time.monotonic() - quiet)}
+            continue
         if piece is None:
             break
+        quiet = time.monotonic()
         yield {"type": "delta", "text": piece}
     th.join()
     if box.get("error"):
@@ -1449,11 +1608,11 @@ def run(vault: Path, req: ChatRequest):
     except ChatRejected:
         raise
     except (GeneratorExit, asyncio.CancelledError):
-        append_log(vault, "assistant", "（这一轮被我中断了）",
+        append_log(vault, "assistant", BROKEN_MARK,
                    project=req.project, session=req.session, stance=req.stance or DEFAULT_STANCE)
         raise
     except BaseException as exc:
-        append_log(vault, "assistant", f"（这一轮没答成：{str(exc)[:200]}）",
+        append_log(vault, "assistant", f"{FAILED_MARK}{str(exc)[:200]}）",
                    project=req.project, session=req.session, stance=req.stance or DEFAULT_STANCE)
         core.record_issue(vault, "llm", str(exc), where="chat",
                           detail={"stance": req.stance or DEFAULT_STANCE})
@@ -1539,6 +1698,69 @@ def _tool_events(name: str, args: dict, result: str, extra: dict):
         yield {"type": "review", "id": extra["id"], "next_due": extra.get("next_due")}
 
 
+def _gate_changes(vault: Path, args: dict) -> bool:
+    try:
+        curation.preview(vault, args["changes"], current_index(vault))
+    except (core.ChangeRejected, core.WriteConflict):
+        return False
+    return True
+
+
+def _gate_project(vault: Path, args: dict) -> bool:
+    return bool(core.ID_OK.match(str(args.get("id") or "")))
+
+
+def _gate_list_edit(vault: Path, args: dict) -> bool:
+    return not isinstance(_resolve_list(vault, args), str)
+
+
+# 每种提议的第二道闸：**它指的东西在我这儿真的存在吗**。举例子用的占位 id 过不了。
+SALVAGE_GATE = {"propose_changes": _gate_changes, "propose_project": _gate_project,
+                "propose_list_edit": _gate_list_edit}
+
+
+def _salvaged_calls(vault: Path, step_text: str, turn: dict) -> tuple[list[dict], str]:
+    """模型把提议类工具的参数贴成了正文——**代它调一次**，别让这一轮静默作废。
+
+    为什么要在服务端兜：原生 tool use 那条路上**没有围栏回退**（见 llm_backend §多轮对话），
+    正文里的 JSON 没有任何人解析。于是屏幕上是一段漂亮的 JSON、图谱里什么都没发生，
+    而模型自己也收不到"卡已经摆在他面前了"那句回执——没有那句话把它推到下一步，
+    它下一轮还会再问一次"要不要发"。2026-09-21 那次 qwen-plus 就是这样把一轮拖成三轮，
+    同一份 3500 字的参数生成了两遍。提示词里早就写着"不许把要不要做丢回来问我"，
+    它照着违反了两次；**靠一句话拦不住的事，得靠链路拦**。
+
+    两道闸：形状（`salvage_proposals`）+ 各自的存在性校验（`SALVAGE_GATE`）。
+    没过的块原样留在正文里——那多半真的只是个例子。真捞错了代价也只是多一张他不点的卡：
+    卡不写盘。白名单照旧管用：面试档没有 `propose_changes`，捞出来也不给调（边考边改等于开卷）。
+
+    变更集的几个块**并成一次调用**（模型爱一张卡一个块，而 `propose_changes` 本来就
+    一张卡装一组改动）；项目卡、清单卡各算各的。
+    """
+    kept: list[tuple[str, dict, tuple[int, int]]] = []
+    for name, args, span in salvage_proposals(step_text):
+        if name in turn["allowed"] and SALVAGE_GATE[name](vault, args):
+            kept.append((name, args, span))
+    if not kept:
+        return [], step_text
+    calls: list[dict] = []
+    changes: list[dict] = []
+    for i, (name, args, _) in enumerate(kept):
+        if name == "propose_changes":
+            changes.extend(args["changes"])
+            continue
+        calls.append({"id": f"salvaged-{i}", "name": name, "args": args})
+    if changes:
+        calls.append({"id": "salvaged-changes", "name": "propose_changes",
+                      "args": {"changes": changes}})
+    rest = step_text
+    for _, _, (a, b) in reversed(kept):
+        rest = rest[:a] + rest[b:]
+    # 记一笔：这事儿不该悄悄发生。"这个模型是不是老不会调工具"只能靠这张表回答。
+    core.record_issue(vault, "llm", f"模型把 {len(kept)} 段提议贴成了正文，服务端代它提了卡",
+                      where="chat", detail={"tools": sorted({c["name"] for c in calls})})
+    return calls, re.sub(r"\n{3,}", "\n\n", rest).strip()
+
+
 def _step_calls(vault: Path, req: ChatRequest, calls: list[dict], turn: dict):
     """跑完这一步的全部工具调用，`yield` 事件，返回要接到消息列表尾巴上的那几条结果。
 
@@ -1622,11 +1844,21 @@ def _run(vault: Path, req: ChatRequest):
         text, calls = "", []
         for ev in _stream(vault, turn["messages"], tools, op=f"chat-{req.stance or DEFAULT_STANCE}",
                           session=llm_session_key(req)):
-            if ev["type"] == "delta":
-                yield ev
+            if ev["type"] in ("delta", "ping"):
+                yield ev                      # ping 原样转给前端：它只是"还活着"，不是内容
             else:
                 text, calls, turn["usage"] = ev["text"], ev["calls"], ev["usage"]
         step_text = strip_tools(text)
+        if not calls:
+            calls, step_text = _salvaged_calls(vault, step_text, turn)
+            if calls:
+                # 转录里也不留那段 JSON：让它在自己的上下文里看见"贴正文没用"，
+                # 否则下一步它会照着上一步的样子再贴一次。
+                text = step_text
+                # 那段 JSON 已经**流到屏幕上**了（delta 是边生成边发的，服务端这会儿才判出来）。
+                # 所以得补一条"这一步的正文整段换成这个"——不然它会被下面那条 tool 事件
+                # 原样收进过程折叠区，人还是看见一大段 JSON。
+                yield {"type": "replace", "text": step_text}
         if not calls:
             # 不再调工具 = 这一段就是答案本身。前面那些"我先查一下""工具挂了"是过程，
             # 拼进正文的话，每次都要在一堆过程里找那几句有营养的（真实使用里最费时间的一点）。
