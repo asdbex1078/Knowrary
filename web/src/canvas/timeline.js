@@ -275,6 +275,74 @@ export function bandCurve(school, scale, peak, right, height) {
  * 二来顺手保证了无环——诊断报告里那 13 处关系环说明图上真的会有反向边，
  * 拿它跑最长路会死循环。
  */
+/**
+ * 血缘只认这三种类型（`源自` 反向折算成它们）。
+ *
+ * **`被激活` 不算血缘。** 它表达的是跨代点燃——GPU 1999 点燃了深度学习 2012——
+ * 两头根本不是同一个东西的前后世。放进来的话，从「注意力机制」出发会顺着
+ * `CUDA 被激活 Transformer` 一路窜到硬件那边去，一条线立刻变成半张图。
+ */
+const LINEAGE_TYPES = new Set(['演化为', '扩展为', '修订'])
+
+/** 演化边的方向：`源自` 是反的（B 源自 A ⇒ A → B），别的顺着写。 */
+function lineageFlow(edges) {
+  const succ = new Map()
+  const pred = new Map()
+  const link = (m, a, b) => m.set(a, (m.get(a) || new Set()).add(b))
+  for (const e of edges) {
+    let [a, b] = [e.source, e.target]
+    if (e.type === '源自') [a, b] = [b, a]
+    else if (!LINEAGE_TYPES.has(e.type)) continue
+    link(succ, a, b)
+    link(pred, b, a)
+  }
+  return { succ, pred }
+}
+
+/**
+ * 一个点的「这条演化线」：**祖先 + 后代 + 直接旁系**。
+ *
+ * 为什么不是整个连通块：连通块会把一整族都拉进来，读起来和没筛一样。
+ * 为什么不只要祖先和后代：那条竖着的线是"这个东西自己怎么来的"，
+ * 而看一支技术线时真正要比的恰恰是**同一代的岔路**——从「注意力机制」往下走，
+ * 只取祖先后代会漏掉 `MHA`（它是 `MQA` 的上游、却不是根的祖先）和 `MLA`
+ * （`MQA` 的同父兄弟），而这两个正是"注意力这一支"的主要内容。
+ *
+ * 所以旁系按三条收：主线各点的**直接上游 / 直接下游**、**同父兄弟**（共享一个直接上游）、
+ * **同子汇流**（共同指向同一个下游）。都只到一跳，再远就又变成整族了。
+ *
+ * @returns {{ core: Set<string>, kin: Set<string> }} core 是主线，kin 是旁系（两者不相交）
+ */
+export function lineageOf(edges, root) {
+  const { succ, pred } = lineageFlow(edges)
+  const walk = (from, m) => {
+    const seen = new Set()
+    const stack = [from]
+    while (stack.length) {
+      for (const next of m.get(stack.pop()) || []) {
+        if (seen.has(next)) continue
+        seen.add(next)
+        stack.push(next)
+      }
+    }
+    return seen
+  }
+  const core = new Set([root, ...walk(root, pred), ...walk(root, succ)])
+  const kin = new Set()
+  for (const id of core) {
+    for (const up of pred.get(id) || []) {
+      kin.add(up)
+      for (const sib of succ.get(up) || []) kin.add(sib)        // 同父兄弟
+    }
+    for (const down of succ.get(id) || []) {
+      kin.add(down)
+      for (const co of pred.get(down) || []) kin.add(co)        // 同子汇流
+    }
+  }
+  for (const id of core) kin.delete(id)
+  return { core, kin }
+}
+
 export function longestChain(nodes, edges) {
   const byId = new Map(nodes.map((n) => [n.id, n]))
   const out = new Map()
@@ -368,7 +436,7 @@ export function activeAt(plan, upto, validity) {
  */
 export function buildTimeline(index, layout, opts = {}) {
   const { timelines = [], families = new Set(['演化']), compact = false, trunk = false,
-          schools = [], homes = {} } = opts
+          schools = [], homes = {}, lineage = null } = opts
   // upto / validity **不参与布局**：它们只决定哪些点画成"已发生"（见 activeAt）。
   // 以前这两个值会把节点整个滤掉，于是 yearScale 只拿可见年份算，
   // 滑块一动整条 X 轴就重新拉伸、泳道行数也跟着变——回放时全图一直在滑在跳。
@@ -376,8 +444,12 @@ export function buildTimeline(index, layout, opts = {}) {
   // 对比组和领域总览同理——它们是「一批知识点的容器」，不是时间轴上的一个事件。
   const lineMode = LINE_MODES.find((m) => timelines.includes(m))
   const bySchool = !!lineMode
+  // 只看某个点那条演化线时，可见集合先按血缘裁一刀，**再**算比例尺和泳道——
+  // 顺序反了的话年宽还是按全图跨度算的，裁完的图仍然挤在一条线上。
+  const lin = lineage ? lineageOf(index.edges, lineage) : null
   const withYear = index.nodes.filter(
-    (n) => !n.virtual && !n.aggregate && typeof n.year === 'number')
+    (n) => !n.virtual && !n.aggregate && typeof n.year === 'number'
+           && (!lin || lin.core.has(n.id) || lin.kin.has(n.id)))
   const laneNames = new Map()
   const kept = []
   for (const node of withYear) {
@@ -395,7 +467,7 @@ export function buildTimeline(index, layout, opts = {}) {
     const ev = index.edges.filter((e) => inGraph.has(e.source) && inGraph.has(e.target))
     const laid = trunkLayout(kept, scale, ev)
     if (laid) return finish(laid.placed, laid.lanes, laid.height, scale, index, kept, withYear,
-                            families, { trunk: laid.chain })
+                            families, { trunk: laid.chain, lineage: linInfo(lin, lineage) })
   }
 
   // **流派只在「按流派」这一档里出现**，不在默认视图里摆一排带子。
@@ -462,11 +534,22 @@ export function buildTimeline(index, layout, opts = {}) {
     y += h + LANE_GAP
   }
 
-  return finish(placed, lanes, y, scale, index, kept, withYear, families, { peak })
+  return finish(placed, lanes, y, scale, index, kept, withYear, families,
+                { peak, lineage: linInfo(lin, lineage) })
 }
 
 /** 两种布局共用的收尾：挑边、算诊断、拼出 plan。 */
+/** 血缘信息随 plan 一起交出去：横幅要报"主线几个、旁系几个"，渲染要把旁系画淡。 */
+function linInfo(lin, root) {
+  return lin ? { root, core: [...lin.core], kin: [...lin.kin] } : null
+}
+
 function finish(placed, lanes, height, scale, index, kept, withYear, families, extra) {
+  // 旁系画淡一档：**主线和旁系必须一眼分得开**，否则"只看这条线"筛完还是一团点。
+  if (extra.lineage) {
+    const kin = new Set(extra.lineage.kin)
+    for (const [id, box] of placed) if (kin.has(box.realId || id)) box.kin = true
+  }
   // **带子也算"在图上"**：流派是 X6 节点（id 就是流派的 node id），所以
   // `CISC --演化为--> RISC`（带↔带）和 `RISC --演化为--> 现代Intel微架构`（带↔点）
   // 都能照常画出来。不把它们算进来的话，一个概念从圆点变成带子就会**悄悄断链**——

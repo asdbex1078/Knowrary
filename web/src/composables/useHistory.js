@@ -12,7 +12,7 @@ import { computed, reactive, ref } from 'vue'
 import {
   buildHistoryCells, buildLineageCells, highlightEdges, markStop, mount, paintHistoryTime,
 } from '../canvas/render.js'
-import { BY_LAYER, LINE_MODES, timelineOptions } from '../canvas/timeline.js'
+import { BY_LAYER, LINE_MODES, lineageOf, timelineOptions } from '../canvas/timeline.js'
 import { fetchSchools } from '../api.js'
 
 export const STEP_MS = 760   // 回放每站停多久。跳的是"有事发生的年份"，不是日历年，所以可以停久一点
@@ -28,8 +28,10 @@ export const TOUR_ZOOM = 0.85
 export function useHistory(deps) {
   const { graph, indexDoc, layoutDoc, zoom, applyingViewport, setBanner, flyTo, cancelFly } = deps
 
+  // lineage：只看某个点那条演化线（null = 看全图）。它是**视图范围**，不是筛选器——
+  // 进去之后比例尺、泳道、主干道全按剩下的这些点重算。
   const hist = reactive({ compact: false, validity: false, upto: null, trunk: false,
-                          演化: true, 依赖: false, 对照: false })
+                          lineage: null, 演化: true, 依赖: false, 对照: false })
   const histPlan = ref(null)
   const linPlan = ref(null)          // 谱系树算出来的那份
   const timelines = ref([])          // 选中的 layout 分组 id（空 = 全部）
@@ -121,7 +123,7 @@ export function useHistory(deps) {
     const g = graph.value
     const cells = buildHistoryCells(indexDoc.value, layoutDoc.value, {
       timelines: timelines.value, families: histFamilies(), compact: hist.compact, trunk: hist.trunk,
-      schools: schools.value, homes: homes.value,
+      schools: schools.value, homes: homes.value, lineage: hist.lineage,
     })
     histPlan.value = cells.plan
     applyingViewport.value = true
@@ -137,7 +139,14 @@ export function useHistory(deps) {
     paintTime()
     paintTour()
     const d = cells.plan.diagnostics
-    const parts = [`${cells.plan.placed.size} 个有 year 的节点 · ${cells.edges.length} 条边`]
+    const lin = cells.plan.lineage
+    const parts = []
+    if (lin) {
+      const shown = (ids) => ids.filter((id) => cells.plan.placed.has(id)).length
+      parts.push(`只看「${nodeName(lin.root)}」这条演化线：`
+                 + `主线 ${shown(lin.core)} + 旁系 ${shown(lin.kin)}（Esc 退出）`)
+    }
+    parts.push(`${cells.plan.placed.size} 个有 year 的节点 · ${cells.edges.length} 条边`)
     if (d.noYear) parts.push(`${d.noYear} 个节点没有 year，不进历史图`)
     if (d.missingYear.length) parts.push(`${d.missingYear.length} 条演化边缺年份（${d.missingYear[0]} …）`)
     setBanner(parts.join('；'), d.missingYear.length ? 'error' : '')
@@ -342,6 +351,55 @@ export function useHistory(deps) {
     renderHistory({ view: 'fit' })
   }
 
+  // —— 只看某个点那条演化线 ——
+  //
+  // 入口是**双击历史图上的圆点**。为什么不是右键菜单：历史视图是只读视图，
+  // `openMenu` 整个被 `writable()` 挡在外面，为一条只读操作放开那道闸不划算。
+  //
+  // 进来自动勾主干道：筛到一条线上还按泳道画，看到的仍是散点——
+  // 这两件事本来就是一件事的两半（F4.6 的"链 ≠ 分类"）。退出时还原原来的勾选状态。
+
+  let trunkBefore = null
+
+  const nodeName = (id) => (indexDoc.value?.nodes || []).find((n) => n.id === id)?.name || id
+
+  /** 这个点值不值得单独看一条线：主线上（有 year 的）至少两个点，否则进去就是一个孤点。 */
+  function lineageSize(id) {
+    if (!indexDoc.value) return { core: 0, kin: 0 }
+    const hasYear = new Set(indexDoc.value.nodes
+      .filter((n) => !n.virtual && !n.aggregate && typeof n.year === 'number').map((n) => n.id))
+    const { core, kin } = lineageOf(indexDoc.value.edges, id)
+    const count = (set) => [...set].filter((x) => hasYear.has(x)).length
+    return { core: count(core), kin: count(kin) }
+  }
+
+  function enterLineage(id) {
+    if (!id || hist.lineage === id) return
+    const { core, kin } = lineageSize(id)
+    if (core < 2) {
+      setBanner(`「${nodeName(id)}」还没有演化关系（源自 / 演化为 / 扩展为 / 修订），`
+                + '没有线可看——先给它连一条', 'error')
+      return
+    }
+    stopPlay()
+    stopTour()
+    if (hist.lineage === null) trunkBefore = hist.trunk
+    hist.lineage = id
+    hist.trunk = true
+    hist.upto = null                 // 换了范围，游标停在旧年份上会让半张图开场就是灰的
+    renderHistory({ view: 'fit' })
+    return { core, kin }
+  }
+
+  function exitLineage() {
+    if (hist.lineage === null) return false
+    hist.lineage = null
+    hist.trunk = trunkBefore ?? false
+    trunkBefore = null
+    renderHistory({ view: 'fit' })
+    return true
+  }
+
   function toggleHistFamily(f) {
     hist[f] = !hist[f]
     renderHistory({ view: 'keep' })
@@ -354,5 +412,6 @@ export function useHistory(deps) {
     histFamilies, renderHistory, renderLineage, paintTime, markHistoryContainer, setUpto,
     togglePlay, setSpeed, stopPlay, evoGap, startTour, tourGo, paintTour, scheduleTour,
     toggleTourAuto, stopTour, toggleTimeline, toggleHistFamily, histActiveIds: activeIds,
+    enterLineage, exitLineage, lineageSize, histLineageName: nodeName,
   }
 }

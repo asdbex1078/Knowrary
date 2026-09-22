@@ -2286,6 +2286,75 @@ async def case_tour(page: Page, ck: Check) -> None:
            out.get("card") is False and out.get("stop") == 0 and out.get("dimmed") == 0, str(out))
 
 
+async def case_one_line(page: Page, ck: Check, vault: Path) -> None:
+    """只看一条演化线：双击圆点 → 祖先 + 后代 + 直接旁系，其余的退出视野。
+
+    临时往 fixture 里加一个 壬(2018)：`壬 源自 丙`，于是它和 庚 是同父兄弟——
+    **旁系这一档只有加了它才验得到**。用完删掉再重载，后面几条用例的点数不受影响。
+    """
+    (vault / "nodes/组B/壬.md").write_text(
+        "---\nname: 壬\nfield: 另一域\ndesc: 壬\nyear: 2018\n---\n# 壬\n\n正文\n\n"
+        "## 关系\n- 源自:: [[丙]] (2018)\n", "utf-8")
+    await menu_click(page, "重新加载")
+    await switch_mode(page, "历史")
+    await wait_render(page, 5, shape="kg-dot")
+    before = ck.layout()["revision"]
+
+    # 双击 庚：它的血缘是 丙(上游) + 它自己，壬 是同父兄弟（旁系）。
+    # 甲 只靠「被激活」连着 丙 —— 跨代点燃不是血缘，它必须消失。
+    await page.ev("""(() => {
+      const el = document.querySelector('[data-cell-id="庚"] circle');
+      const r = el.getBoundingClientRect();
+      el.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, cancelable: true, view: window,
+        clientX: Math.round(r.x + r.width / 2), clientY: Math.round(r.y + r.height / 2) }));
+      return 'ok';
+    })()""")
+    shown = await poll(page, """JSON.stringify([...document.querySelectorAll('[data-shape="kg-dot"]')]
+      .map((e) => e.getAttribute('data-cell-id')).sort())""",
+                       lambda v: v and len(json.loads(v)) == 3, timeout=10)
+    ck.add("只剩这条线上的点（祖先 + 后代 + 直接旁系）",
+           json.loads(shown or "[]") == ["丙", "壬", "庚"], shown or "没筛")
+    ck.add("跨代点燃不算血缘：甲 退出视野", "甲" not in json.loads(shown or "[]"), shown or "")
+
+    look = json.loads(await page.ev("""JSON.stringify({
+      kin: [...document.querySelectorAll('[data-shape="kg-dot"] circle.kg-kin')]
+        .map((e) => e.closest('[data-cell-id]').getAttribute('data-cell-id')),
+      chain: __kg.histPlan?.chain || [],
+      trunk: !!__kg.histPlan?.placed.get('丙')?.trunk,
+      lane: document.querySelector('[data-shape="kg-lane"] text')?.textContent || '' })"""))
+    ck.add("旁系画淡（kg-kin），主线不带", look.get("kin") == ["壬"], str(look.get("kin")))
+    ck.add("进来自动走主干道：主轴是这条线里最长的那串",
+           look.get("chain") == ["丙", "庚"] and look.get("trunk") is True, str(look))
+    ck.add("泳道标题换成主干", "主干" in (look.get("lane") or ""), look.get("lane") or "")
+
+    # 同屏可能压着好几条 toast，要在全部里找，不能只看第一条
+    banner = await poll(page, """JSON.stringify([...document.querySelectorAll('.toast .toast-text')]
+      .map((e) => e.textContent))""", lambda v: v and "只看" in v, timeout=8) or "[]"
+    ck.add("横幅说清在看谁的线、主线几个旁系几个",
+           any("只看「庚」" in t and "主线 2" in t and "旁系 1" in t for t in json.loads(banner)),
+           banner[:140])
+
+    # 面板上那块状态 + 退出口（Esc 之外还要有一个看得见的出口）。
+    # 抽屉可能被前面的用例开着，开着再点一次就关了——所以按当前状态决定点不点。
+    if not await page.ev("!!document.querySelector('.tl-lin')"):
+        await open_rail(page, "时间线")
+    panel = await poll(page, "document.querySelector('.tl-lin')?.textContent.replace(/\\s+/g, ' ') || ''",
+                       lambda v: v and "只看" in v, timeout=8)
+    ck.add("时间线面板上摆出当前这条线", "庚" in (panel or "") and "旁系 1" in (panel or ""),
+           (panel or "")[:80])
+
+    await page.ev("window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))")
+    back = await poll(page, "document.querySelectorAll('[data-shape=\"kg-dot\"]').length",
+                      lambda v: (v or 0) >= 5, timeout=10)
+    ck.add("Esc 退出，整张历史图回来", (back or 0) == 5, f"{back} 个点")
+    ck.add("只看一条线全程不写结构布局", ck.layout()["revision"] == before,
+           f"revision {before} → {ck.layout()['revision']}")
+
+    (vault / "nodes/组B/壬.md").unlink()        # 还原 fixture，后面的用例按 4 个点算
+    await menu_click(page, "重新加载")
+    await wait_render(page, 4, shape="kg-dot")
+
+
 async def right_click(page: Page, cell: str, grab: str = "center") -> str:
     """在某个 cell 上按右键。分组要点标题条，点中间会命中里面的节点。"""
     origin = ("{ x: r.x + 40, y: r.y + 12 }" if grab == "title"
@@ -2736,6 +2805,7 @@ async def scenarios(page: Page, api: str, results: list) -> None:
     await case_chat_card_edit(page, ck, VAULT_HOLDER[0])
     await case_history(page, ck, VAULT_HOLDER[0])
     await case_tour(page, ck)
+    await case_one_line(page, ck, VAULT_HOLDER[0])
     await case_lineage(page, ck)
     await case_stats(page, ck, VAULT_HOLDER[0])
     await case_compare(page, ck, VAULT_HOLDER[0])

@@ -13,8 +13,12 @@ defineProps({
   trunk: { type: Boolean, default: false },
   chain: { type: Array, default: null },      // 主干道模式下算出来的那条链
   layered: { type: String, default: '' },     // 「12/22 已分层」这类提示
+  lineage: { type: String, default: null },   // 正在只看谁那条演化线
+  lineageName: { type: String, default: '' },
+  lineageCount: { type: Object, default: null },   // { core, kin }，都只数画出来的
 })
-const emit = defineEmits(['close', 'toggle', 'select-all', 'toggle-family', 'toggle-trunk'])
+const emit = defineEmits(['close', 'toggle', 'select-all', 'toggle-family', 'toggle-trunk',
+                          'exit-lineage'])
 
 const FAMS = ['演化', '依赖', '对照']
 const BY_LAYER = TL_BY_LAYER
@@ -22,13 +26,37 @@ const BY_SCHOOL = TL_BY_SCHOOL
 const BY_DOMAIN = TL_BY_DOMAIN
 </script>
 
+<style scoped>
+.tl-lin { margin: 10px -4px 0; padding: 9px 10px; border: 1px solid var(--line);
+  border-radius: 9px; background: var(--surface-2); }
+.tl-lin-head { display: flex; align-items: center; gap: 6px; font-size: 12.5px; }
+.tl-lin-head b { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tl-lin p { margin: 5px 0 0; font-size: 11.5px; line-height: 1.55; }
+</style>
+
 <template>
   <Drawer side="left" title="时间线" icon="timeline" storage-key="timeline" :default-width="284"
           @close="emit('close')">
     <template #default>
       <p class="dim" style="font-size: 12.5px; line-height: 1.6">
         按分组切出独立的一条时间线（JVM 史、LLM 史各自成线），可多选叠加。
+        <br><b>双击图上一个点</b>＝只看它那条演化线。
       </p>
+
+      <!-- 正在看某条线：这一块要压在最上面。下面那些分道选项此刻都作用在这条线内部，
+           不说清楚的话，"按领域分道却只有三个点"看起来像图坏了。 -->
+      <div v-if="lineage" class="tl-lin">
+        <div class="tl-lin-head">
+          <Icon name="timeline" :size="14" />
+          <b>只看「{{ lineageName || lineage }}」这条线</b>
+          <button class="icon-btn ghost tiny" title="退出，回到全图（Esc）"
+                  @click="emit('exit-lineage')"><Icon name="x" :size="13" /></button>
+        </div>
+        <p v-if="lineageCount" class="dim">
+          主线 {{ lineageCount.core }} 个 · 旁系 {{ lineageCount.kin }} 个（画淡的那些：
+          同一代的岔路，不在这条直线上）
+        </p>
+      </div>
 
       <label class="switch-row" style="margin: 12px -9px 0">
         <input type="checkbox" :checked="trunk" @change="emit('toggle-trunk')" />

@@ -185,6 +185,7 @@ const {
   renderHistory, renderLineage, paintTime, markHistoryContainer, setUpto,
   togglePlay, setSpeed, stopPlay, evoGap, startTour, tourGo, paintTour, scheduleTour,
   toggleTourAuto, stopTour, toggleTimeline, toggleHistFamily, histActiveIds,
+  enterLineage, exitLineage,
 } = useHistory({
   graph, indexDoc, layoutDoc, zoom, applyingViewport,
   setBanner: (...a) => setBanner(...a),
@@ -982,6 +983,9 @@ function bindEvents(g) {
   g.on('node:dblclick', safe(({ node }) => {
     if (node.shape === 'kg-note') editNote(node.id.slice(5))
     else if (node.shape === 'kg-group') exitGroup()   // 双击域的空白处退回全景
+    // 历史图上双击一个点 = 只看它那条演化线（祖先 + 后代 + 直接旁系）。
+    // 影子点落回真身：合成 id 在索引里查不到，血缘会算成空。
+    else if (node.shape === 'kg-dot') enterLineage(node.getData()?.realId || node.id)
   }))
   g.on('node:resized', safe(({ node }) => {
     if (!ready.value) return
@@ -2977,6 +2981,7 @@ async function redo() {
 function onEscape() {
   if (ctx.value) { ctx.value = null; return }
   if (tour.on) { stopTour(); setBanner(''); return }
+  if (hist.lineage) { exitLineage(); return }
   if (pathHit.value || pathFrom.value) { clearPathHighlight(); return }
   if (relating.value) { relating.value = null; return }
   if (creating.value) { creating.value = null; return }
@@ -3370,7 +3375,13 @@ onBeforeUnmount(() => {
       <TimelinePanel v-else-if="panel === 'timeline'" class="timeline" :options="timelineChoices"
                      :selected="timelines" :layered="layeredHint"
                      :families="hist" :trunk="hist.trunk" :chain="histChain"
+                     :lineage="hist.lineage" :lineage-name="hist.lineage ? describe(hist.lineage)?.name : ''"
+                     :lineage-count="histPlan?.lineage
+                       ? { core: histPlan.lineage.core.filter((x) => histPlan.placed.has(x)).length,
+                           kin: histPlan.lineage.kin.filter((x) => histPlan.placed.has(x)).length }
+                       : null"
                      @toggle="toggleTimeline" @toggle-family="toggleHistFamily"
+                     @exit-lineage="exitLineage()"
                      @toggle-trunk="hist.trunk = !hist.trunk; renderHistory({ view: 'fit' })"
                      @select-all="timelines = []; renderHistory({ view: 'fit' })" @close="panel = ''" />
 

@@ -55,10 +55,10 @@ export function buildHistoryCells(index, layout, options = {}) {
     nodes.push({
       id, shape: 'kg-dot', x: box.x, y: box.y, width: box.w, height: box.h, zIndex: 10,
       attrs: dotAttrs(meta, color, { showName: box.showName !== false, year: box.year,
-                                     schools: mine, shadow: !!box.shadow }),
+                                     schools: mine, shadow: !!box.shadow, kin: !!box.kin }),
       data: { kind: 'node', group: group || null, field: meta?.field || null,
               name: meta?.name || id, year: box.year, shadow: !!box.shadow, realId: real,
-              schools: mine.map((s) => s.id) },
+              kin: !!box.kin, schools: mine.map((s) => s.id) },
     })
   }
   // 时间游标：位置由 paintHistoryTime 每次挪，这里只负责把它建出来

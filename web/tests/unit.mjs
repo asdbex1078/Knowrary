@@ -16,7 +16,7 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { blankMenu, buildMenu, edgeMenu, groupMenu, nodeMenu } from '../src/canvas/menus.js'
 import { ancestors, computeCollapsed } from '../src/canvas/lod.js'
-import { timelineOptions, bandCurve, buildTimeline, BY_SCHOOL, BY_DOMAIN }
+import { timelineOptions, bandCurve, buildTimeline, lineageOf, BY_SCHOOL, BY_DOMAIN }
   from '../src/canvas/timeline.js'
 import { level, weekColumns } from '../src/panels/heat.js'
 import { forModel } from '../src/composables/useChat.js'
@@ -245,6 +245,79 @@ test('热力等级：复习一次也要点亮，模型调用不算学习量', ()
   assert.equal(level({ built: 0, reviews: 1, answers: 0 }), 1, '只复习了一次就该亮')
   assert.equal(level({ built: 1, reviews: 0, answers: 0 }), 2)
   assert.equal(level({ built: 4, reviews: 0, answers: 0 }), 4)
+})
+
+// ---------------------------------------------------------------- 只看一条演化线
+
+/**
+ * 注意力那一支的真实形状（实盘 2026-09-22）：
+ *
+ *   CTC → 注意力机制 → Transformer → BERT / ViT / Whisper / KV-Cache
+ *                       MHA → MQA → GQA          MHA → MLA
+ *
+ * 要点全在这张图里：`MHA` 是 `MQA` 的上游但不是根的祖先，`MLA` 是 `MQA` 的同父兄弟，
+ * 而 `CUDA 被激活 Transformer` 是跨代点燃、不该把硬件那边拉进来。
+ */
+function attentionGraph() {
+  const y = { CTC: 2006, 注意力机制: 2014, Transformer: 2017, MHA: 2017, 'KV-Cache': 2017,
+              BERT: 2018, MQA: 2019, ViT: 2020, Whisper: 2022, GQA: 2023, MLA: 2024, CUDA: 1999 }
+  const E = [['CTC', '演化为', '注意力机制'], ['注意力机制', '演化为', 'Transformer'],
+             ['Transformer', '演化为', 'BERT'], ['Transformer', '演化为', 'ViT'],
+             ['Transformer', '演化为', 'Whisper'], ['Transformer', '扩展为', 'KV-Cache'],
+             ['Transformer', '演化为', 'MQA'], ['MHA', '演化为', 'MQA'],
+             ['MHA', '演化为', 'GQA'], ['MHA', '演化为', 'MLA'], ['MQA', '演化为', 'GQA'],
+             ['CUDA', '被激活', 'Transformer']]
+  return {
+    nodes: Object.entries(y).map(([id, year]) => ({ id, name: id, year, field: 'AI' })),
+    // `被激活` 也属于演化族——族相同、类型不同，血缘只认类型（这正是这组用例要盯的）
+    edges: E.map(([source, type, target], i) => ({
+      id: `e${i}`, source, target, type, family: '演化', year: y[target] ?? null })),
+  }
+}
+
+test('一条演化线：祖先 + 后代 + 直接旁系，`被激活` 不算血缘', () => {
+  const { core, kin } = lineageOf(attentionGraph().edges, '注意力机制')
+  assert.deepEqual([...core].sort(),
+    ['BERT', 'CTC', 'GQA', 'KV-Cache', 'MQA', 'Transformer', 'ViT', 'Whisper', '注意力机制'].sort(),
+    '主线 = 往上到 CTC、往下到 GQA 的全部')
+  assert.deepEqual([...kin].sort(), ['MHA', 'MLA'].sort(),
+    'MHA 是 MQA 的上游（不是根的祖先），MLA 是 MQA 的同父兄弟——正是"这一支"的内容')
+  assert.ok(!core.has('CUDA') && !kin.has('CUDA'),
+            'CUDA 被激活 Transformer 是跨代点燃，算进来一条线就窜到硬件那边去了')
+})
+
+test('一条演化线：没有演化边的点只剩它自己', () => {
+  const { core, kin } = lineageOf(attentionGraph().edges, 'CUDA')
+  assert.deepEqual([...core], ['CUDA'], '入口那层据此拦下来，不让人进一张只有一个点的图')
+  assert.equal(kin.size, 0)
+})
+
+test('一条演化线：`源自` 反向折算，方向不会读反', () => {
+  const edges = [{ id: 'e0', source: 'B', target: 'A', type: '源自', family: '演化' }]
+  assert.deepEqual([...lineageOf(edges, 'A').core].sort(), ['A', 'B'], 'B 源自 A ⇒ A 是 B 的上游')
+})
+
+test('只看一条线：可见集合先裁再算比例尺，旁系带 kin 标记', () => {
+  const index = attentionGraph()
+  const all = buildTimeline(index, { nodes: {}, groups: {} }, {})
+  const one = buildTimeline(index, { nodes: {}, groups: {} }, { lineage: '注意力机制' })
+  assert.equal(all.placed.size, 12, '全图 12 个点')
+  assert.equal(one.placed.size, 11, '裁掉 CUDA：它只靠「被激活」挂在这条线上')
+  assert.ok(one.ticks[0].year === 2006,
+            `年份尺度按裁完的集合重标定（最早从 2006 起），实际 ${one.ticks[0].year}`)
+  assert.equal(one.placed.get('MLA').kin, true, '旁系要能在渲染层画淡')
+  assert.ok(!one.placed.get('Transformer').kin, '主线不带 kin')
+  assert.deepEqual([one.lineage.root, one.lineage.core.length, one.lineage.kin.length],
+                   ['注意力机制', 9, 2], 'plan 带着血缘信息，横幅和面板都读它')
+})
+
+test('只看一条线 + 主干道：主轴就是这条线里最长的那串', () => {
+  const plan = buildTimeline(attentionGraph(), { nodes: {}, groups: {} },
+                             { lineage: '注意力机制', trunk: true })
+  assert.deepEqual(plan.chain, ['CTC', '注意力机制', 'Transformer', 'MQA', 'GQA'],
+                   '并行的捷径（MHA → GQA）抄不短主轴')
+  assert.equal(plan.placed.get('CTC').trunk, true)
+  assert.ok(!plan.placed.get('MLA').trunk, 'MLA 是旁支，挂在主轴上下')
 })
 
 // ---------------------------------------------------------------- 流派泳道

@@ -1553,6 +1553,11 @@ kbd.key {
 .x6-node:hover .kg-dot-name, .kg-lit .kg-dot-name { opacity: 1 !important; }
 .kg-lit .kg-dot-name { font-weight: 700; }
 
+/* 旁系：只看某条演化线时，挂在主线上的同代岔路。压淡不隐藏——
+   它在图上是"参照"，不是"内容"；悬停时恢复满不透明，要看它时看得清。 */
+.kg-kin { opacity: .42; }
+.x6-node:hover .kg-kin { opacity: 1; }
+
 /* 参数量面板：两张手画的图。不引图表库——几十个点不值得再背一个包 */
 .chart { width: 100%; height: auto; display: block; margin: 2px 0 4px; overflow: visible; }
 .chart .axis line { stroke: var(--line); stroke-width: 1; stroke-dasharray: 3 3; }

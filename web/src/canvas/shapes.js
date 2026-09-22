@@ -415,7 +415,8 @@ export function initialOf(name = '') {
 
 /** 时间轴上的圆点：圆 + 首字 + 旁边的全名（挤的时候由 showName 关掉）。 */
 export function dotAttrs(meta, color = NEUTRAL,
-                         { showName = true, year = null, schools = [], shadow = false } = {}) {
+                         { showName = true, year = null, schools = [], shadow = false,
+                           kin = false } = {}) {
   const name = meta?.name || meta?.id || ''
   const tip = schools.length
     ? `${name}${year ? `（${year}）` : ''} · ${schools.map((s) => s.name).join(' / ')}`
@@ -426,7 +427,10 @@ export function dotAttrs(meta, color = NEUTRAL,
     ...ringAttrs(schools),
     body: shadow
       ? { fill: 'transparent', stroke: color.line, strokeWidth: 1.4, strokeDasharray: '3 3' }
-      : { fill: color.fill, stroke: color.line, strokeWidth: 1.8 },
+      // 旁系（只看某条演化线时，挂在主线边上的同代岔路）：同样的配色，只是整体压淡。
+      // **不换形状**——空心已经是影子的意思了，再借一次两种状态就分不开。
+      : { fill: color.fill, stroke: color.line, strokeWidth: 1.8,
+          class: kin ? 'kg-card kg-kin' : 'kg-card' },
     initial: { text: initialOf(name), fill: color.text },
     // 文本**永远画出来**，只把 opacity 压成 0：这样悬停和回放点亮时，
     // CSS 一句 opacity:1 就能让它现形（presentation 属性打不过 CSS）。
