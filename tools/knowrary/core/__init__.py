@@ -11,7 +11,8 @@ from .digest import (build_digest, drafts, duplicates, group_labels, kinship, li
 from .audit import THIN_BODY as AUDIT_THIN_BODY, precheck as audit_precheck
 from .cards import (KINDS as CARD_KINDS, applied as card_applied, audited as card_audited,
                     audits as card_audits, cards_path, last_audit as card_last_audit, load as load_cards,
-                    new_card_id, proposed as card_proposed, stats as card_stats)
+                    new_card_id, proposed as card_proposed, revised as card_revised,
+                    revisions as card_revisions, stats as card_stats)
 from .issues import (issues_path, load as load_issues, record as record_issue,
                      summary as issues_summary)
 from .index import INDEX_SCHEMA_VERSION, IndexResult, build_index, content_hash, index_path, load_previous
@@ -73,7 +74,7 @@ __all__ = [
     "SETTINGS_DEFAULTS", "ArticlesNeedMove", "VaultConfigRejected", "articles_dir", "articles_dir_candidates", "list_articles",
     "load_vault_config", "save_articles_dir",
     "audit_precheck", "AUDIT_THIN_BODY",
-    "CARD_KINDS", "card_applied", "card_audited", "card_audits", "card_last_audit", "card_proposed", "card_stats", "cards_path",
+    "CARD_KINDS", "card_applied", "card_audited", "card_audits", "card_last_audit", "card_proposed", "card_revised", "card_revisions", "card_stats", "cards_path",
     "load_cards", "new_card_id",
     "build_article_prompt", "cards_from_index", "cards_from_nodes", "describe_points", "describe_related",
     "select_linkable", "select_related",

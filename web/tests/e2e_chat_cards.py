@@ -63,22 +63,32 @@ def seed_chat(vault: Path) -> None:
 LONG = "这是一段足够长的正文，用来绕开「正文太薄」那条确定性检查。" * 8
 S2 = "2026-09-21T10:00:00+08:00"      # 比 s1 晚：刷新后默认接着的就是这一段
 AUDITS: list = []                    # 假审校被问了几次：「写入时沿用结论、不再问第二遍」靠它验
+REVISES: list = []                   # 假写手被问了几次（「按意见修改」）
+FIXED = "已按意见改成2017"
 
 
 class FakeReview(BaseHTTPRequestHandler):
-    """假的 OpenAI 兼容接口，当 review 角色。等 2 秒再答——「审核中 · 已等 N 秒」要看得见。
-    正文里带 WARNME 的给一条意见，其余放行。"""
+    """假的 OpenAI 兼容接口，review 和 learn 两个角色都是它。等 2 秒再答——「审核中 · 已等 N 秒」要看得见。
+    审核：正文里带 WARNME 的给一条意见，其余放行。改稿（提示词里有「写稿人」）：交回去掉 WARNME 的丙。"""
 
     def do_POST(self):  # noqa: N802
         body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
-        AUDITS.append(1)
+        prompt = body["messages"][0]["content"]
         time.sleep(2)
-        warn = "WARNME" in body["messages"][0]["content"]
+        if "写稿人" in prompt:           # 「按意见修改」的提示词：交回改好的丙
+            REVISES.append(1)
+            return self._answer({"changes": [{"type": "update_body", "source": "丙", "body": LONG + FIXED}],
+                                 "summary": "年份改成 2017", "skipped": []})
+        AUDITS.append(1)
+        warn = "WARNME" in prompt
         verdict = {"verdict": "warn" if warn else "pass", "summary": "年份再核一下" if warn else "没问题",
                    "issues": [{"path": "nodes/组B/丙.md", "severity": "warn", "what": "年份存疑",
                                "why": "原文是 2017", "fix": "改成 2017"}] if warn else []}
+        self._answer(verdict)
+
+    def _answer(self, data: dict):
         out = json.dumps({"model": "fake-review", "usage": {"prompt_tokens": 1, "completion_tokens": 1},
-                          "choices": [{"message": {"content": json.dumps(verdict, ensure_ascii=False)}}]}).encode()
+                          "choices": [{"message": {"content": json.dumps(data, ensure_ascii=False)}}]}).encode()
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(out)))
@@ -97,7 +107,7 @@ def fake_review(tmp: Path) -> Path:
         "cli": {"type": "claude-cli"},
         "fake": {"type": "openai", "base_url": f"http://127.0.0.1:{srv.server_port}/v1",
                  "model": "fake-review", "api_key": "x"}},
-        "roles": {"learn": "cli", "review": "fake"}}), "utf-8")
+        "roles": {"learn": "fake", "review": "fake"}}), "utf-8")
     return cfg
 
 
@@ -118,18 +128,24 @@ async def card_state(page, head: str) -> dict:
       const c = [...document.querySelectorAll('.change-card')]
         .find((x) => x.querySelector('.cc-head').textContent.includes({head!r}));
       if (!c) return {{}};
+      const txt = (sel) => c.querySelector(sel)?.textContent.replace(/\\s+/g, '') || '';
+      const revise = [...c.querySelectorAll('.cc-acts .btn')].find((b) => b.textContent.includes('按意见修改'));
+      const busy = [...c.querySelectorAll('.cc-audit.busy')].map((x) => x.textContent.replace(/\\s+/g, '')).join('|');
       return {{ head: c.querySelector('.cc-head').textContent.replace(/\\s+/g, ''),
                panel: c.querySelector('.cc-audit')?.textContent.replace(/\\s+/g, '') || '',
+               revised: txt('.cc-revised') + busy, delta: txt('.cc-revised-delta'), diff: txt('.cc-file'),
+               primary: c.querySelector('.cc-acts .btn.primary')?.textContent.trim() || '',
+               reviseDisabled: !!revise?.disabled,
                btns: [...c.querySelectorAll('.cc-acts .btn')].map((b) => b.textContent.trim()),
                folded: c.classList.contains('folded') }};
     }})())""") or "{}")
 
 
-async def click_btn(page, head: str, label: str) -> str:
+async def click_btn(page, head: str, label: str, scope: str = ".cc-acts .btn") -> str:
     return await page.ev(f"""(() => {{
       const c = [...document.querySelectorAll('.change-card')]
         .find((x) => x.querySelector('.cc-head').textContent.includes({head!r}));
-      const b = [...(c?.querySelectorAll('.cc-acts .btn') || [])].find((x) => x.textContent.trim() === {label!r});
+      const b = [...(c?.querySelectorAll({scope!r}) || [])].find((x) => x.textContent.trim() === {label!r});
       if (!b) return 'missing'; b.click(); return 'ok';
     }})()""")
 
@@ -168,27 +184,92 @@ async def audit_scenarios(page, ck, vault: Path) -> None:
 
     # 没审就点「审核并写入」：先审，有意见就停下给人看
     assert await click_btn(page, "丙", "审核并写入") == "ok"
-    await E.poll(page, "[...document.querySelectorAll('.change-card .cc-acts .btn')].some((b) => b.textContent.trim() === '照写')",
+    await E.poll(page, "[...document.querySelectorAll('.change-card .cc-acts .btn')].some((b) => b.textContent.trim() === '忽略意见，原样写入')",
                  lambda v: v, timeout=8)
     st = await card_state(page, "丙")
     ck.add("有意见就停在卡上：依据和改法都在", "年份存疑" in st.get("panel", "") and "改成2017" in st.get("panel", ""), str(st))
     ck.add("停下时没写盘", (vault / "nodes/组B/丙.md").read_text("utf-8") == before["丙"], "")
+    ck.add("有意见时两条路：按意见修改（主）/ 原样写入；没有多余的「重新审核」",
+           st.get("btns") == ["按意见修改（1 条）", "忽略意见，原样写入"] and st.get("primary") == "按意见修改（1 条）", str(st))
+
+    # 意见可以逐条勾：全取消就不给改
+    await toggle_pick(page, "丙")
+    st = await card_state(page, "丙")
+    ck.add("取消勾选后按钮变 0 条且不能点", "按意见修改（0 条）" in st.get("btns", []) and st.get("reviseDisabled"), str(st))
+    await toggle_pick(page, "丙")
+
+    await revise_and_wait(page, ck, "丙", first=True)
+    st = await card_state(page, "丙")
+    ck.add("改完挂在卡上：谁改的、改了什么、改前改后", "AI按意见改过" in st.get("revised", "")
+           and "fake-review" in st.get("revised", "") and "年份改成2017" in st.get("revised", "")
+           and FIXED in st.get("delta", ""), str(st))
+    ck.add("按意见修改不写盘", (vault / "nodes/组B/丙.md").read_text("utf-8") == before["丙"], "")
+    ck.add("改完旧结论作废：给「重新审核」和「审核并写入」",
+           st.get("btns") == ["重新审核", "审核并写入"] and "改之前的审核意见" in st.get("panel", ""), str(st))
+    ck.add("卡上的 diff 换成改后的", FIXED in st.get("diff", ""), str(st))
+
+    # 不刷新、当场撤回：审核结论要认回来
+    assert await click_btn(page, "丙", "撤回修改", scope=".cc-revised .btn") == "ok"
+    await E.poll(page, "document.querySelectorAll('.change-card .cc-revised').length", lambda v: v == 0, timeout=6)
+    await asyncio.sleep(0.8)
+    st = await card_state(page, "丙")
+    ck.add("当场撤回：回到原样、结论又算数", st.get("btns") == ["按意见修改（1 条）", "忽略意见，原样写入"]
+           and FIXED not in st.get("diff", ""), str(st))
+    await revise_and_wait(page, ck, "丙")
+
+    await page.call("Page.reload")
+    await asyncio.sleep(2)
+    await settle(page)
+    await E.poll(page, "document.querySelectorAll('.change-card .cc-revised').length", lambda v: v == 1, timeout=8)
+    st = await card_state(page, "丙")
+    ck.add("刷新后 AI 改的那版还在", FIXED in st.get("delta", "") and FIXED in st.get("diff", ""), str(st))
+
+    assert await click_btn(page, "丙", "撤回修改", scope=".cc-revised .btn") == "ok"
+    await E.poll(page, "document.querySelectorAll('.change-card .cc-revised').length", lambda v: v == 0, timeout=6)
+    await asyncio.sleep(0.8)
+    st = await card_state(page, "丙")
+    ck.add("撤回后回到原样：审核结论又算数", st.get("btns") == ["按意见修改（1 条）", "忽略意见，原样写入"]
+           and FIXED not in st.get("diff", ""), str(st))
+
+    await revise_and_wait(page, ck, "丙")
     calls = len(AUDITS)
-    assert await click_btn(page, "丙", "照写") == "ok"
-    await E.poll(page, "document.querySelectorAll('.change-card.folded').length", lambda v: v == 2, timeout=6)
-    ck.add("点「照写」落盘、不再审第二遍", len(AUDITS) == calls and "WARNME" in (vault / "nodes/组B/丙.md").read_text("utf-8"),
-           f"calls {calls}->{len(AUDITS)}")
+    assert await click_btn(page, "丙", "审核并写入") == "ok"
+    await E.poll(page, "document.querySelectorAll('.change-card.folded').length", lambda v: v == 2, timeout=10)
+    text = (vault / "nodes/组B/丙.md").read_text("utf-8")
+    ck.add("改后写入前重审了一遍，写下去的是改后的版本",
+           len(AUDITS) == calls + 1 and FIXED in text and "WARNME" not in text, f"calls {calls}->{len(AUDITS)}")
 
     await page.call("Page.reload")
     await asyncio.sleep(2)
     await settle(page)
     await E.poll(page, "document.querySelectorAll('.change-card.folded').length", lambda v: v == 2, timeout=8)
     st = await card_state(page, "丙")
-    ck.add("刷新后折叠条上还有审核结论", "条意见" in st.get("head", "") and st.get("folded"), str(st))
+    ck.add("刷新后折叠条上是重审的结论", "审核通过" in st.get("head", "") and st.get("folded"), str(st))
     await E.click_text(page, ".change-card.folded .cc-head", "丙")
     await asyncio.sleep(0.3)
     st = await card_state(page, "丙")
-    ck.add("展开能看到当时的审核意见", "年份存疑" in st.get("panel", ""), str(st))
+    ck.add("展开能看到 AI 改过的记录", "AI按意见改过" in st.get("revised", ""), str(st))
+
+
+async def toggle_pick(page, head: str) -> None:
+    await page.ev(f"""(() => {{
+      const c = [...document.querySelectorAll('.change-card')]
+        .find((x) => x.querySelector('.cc-head').textContent.includes({head!r}));
+      c.querySelector('.cc-audit-pick').click();
+    }})()""")
+    await asyncio.sleep(0.2)
+
+
+async def revise_and_wait(page, ck, head: str, first: bool = False) -> None:
+    n = len(REVISES)
+    assert await click_btn(page, head, "按意见修改（1 条）") == "ok"
+    if first:
+        await asyncio.sleep(1.2)
+        st = await card_state(page, head)
+        ck.add("改稿中看得见：谁在改、等了几秒", "learn角色在按1条意见改" in st.get("revised", "")
+               and "已等" in st.get("revised", ""), str(st))
+    await E.poll(page, "document.querySelectorAll('.change-card .cc-revised').length", lambda v: v == 1, timeout=8)
+    assert len(REVISES) == n + 1
 
 
 CARDS = """JSON.stringify([...document.querySelectorAll('.chat .change-card, .change-card')].map((c) => ({

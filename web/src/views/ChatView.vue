@@ -24,7 +24,7 @@ import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import Icon from '../ui/Icon.vue'
 import Markdown from '../ui/Markdown.vue'
 import Popover from '../ui/Popover.vue'
-import { parseDiff } from '../ui/diff.js'
+import { pairDiff, parseDiff } from '../ui/diff.js'
 
 const props = defineProps({
   busy: { type: Boolean, default: false },
@@ -39,7 +39,7 @@ const props = defineProps({
   auditOn: { type: Boolean, default: false },     // 写入审核开着：变更卡先审再写
   forceAllowed: { type: Boolean, default: true }, // 挡下之后给不给「仍然写入」
 })
-const emit = defineEmits(['send', 'stop', 'retry', 'apply', 'audit', 'preview', 'apply-project', 'apply-points',
+const emit = defineEmits(['send', 'stop', 'retry', 'apply', 'audit', 'preview', 'revise', 'undo-revise', 'apply-project', 'apply-points',
                           'apply-list-edit', 'goto',
                           'new-session', 'pick-session', 'drop-focus', 'toggle-graph', 'stance',
                           'rename-session', 'archive-session', 'delete-session', 'close'])
@@ -77,7 +77,7 @@ const VERDICT_CHIP = { pass: 'm-mastered', warn: 'm-due', block: 'm-drop' }
 // 审核中的秒表：只在有卡在审时才走，免得整页每秒重渲染
 const now = ref(Date.now())
 let ticker = null
-const auditing = computed(() => props.messages.some((m) => (m.cards || []).some((c) => c.auditing)))
+const auditing = computed(() => props.messages.some((m) => (m.cards || []).some((c) => c.auditing || c.revising)))
 watch(auditing, (on) => {
   clearInterval(ticker)
   ticker = on ? setInterval(() => { now.value = Date.now() }, 1000) : null
@@ -86,7 +86,7 @@ watch(auditing, (on) => {
 onBeforeUnmount(() => clearInterval(ticker))
 
 function auditFresh(c) { return !!c.audit && c.auditFor === JSON.stringify(c.changes) }
-function waited(c) { return Math.max(0, Math.round((now.value - c.auditing) / 1000)) }
+function waited(c) { return Math.max(0, Math.round((now.value - (c.auditing || c.revising?.at || now.value)) / 1000)) }
 function auditTag(a) {
   if (!a.checked && !a.forced) return '只跑了确定性检查'
   if (a.forced) return '强制写入，没问模型'
@@ -102,16 +102,37 @@ function auditMeta(a) {
   return bits.join(' · ')
 }
 function blockedNow(c) { return props.auditOn && auditFresh(c) && c.audit.verdict === 'block' }
+function working(c) { return !!c.auditing || !!c.revising }
+
+// —— 审完之后的三条路：按意见修改 / 原样写入 / 自己「改一改」（2026-09-23）——
+// 以前有意见时只剩一个「照写」，看着像"照审核者的意思写"，其实是原样写；想按意见改只能自己动手抄。
+// 意见可以逐条勾：勾上的交给 learn 角色改一版，改完停在卡上给人看，点写入时照常重审。
+function pickable(c) { return props.auditOn && !c.applied && auditFresh(c) && c.audit.issues?.length > 0 }
+function picked(c) { return (c.audit?.issues || []).filter((_, k) => !c.skip?.[k]) }
+function togglePick(c, k) { c.skip = { ...(c.skip || {}), [k]: !c.skip?.[k] } }
+function revise(c, i, j) { emit('revise', { card: c, i, j, issues: picked(c) }) }
+// 审完有意见（warn / block）时，「按意见修改」是主按钮，原样写入退成次要的
+function reviseFirst(c) { return pickable(c) && c.audit.verdict !== 'pass' }
 function writeLabel(c) {
   if (!props.auditOn) return '写入'
   if (!auditFresh(c)) return '审核并写入'
-  return c.audit.verdict === 'warn' ? '照写' : '写入'
+  return c.audit.verdict === 'warn' ? '忽略意见，原样写入' : '写入'
 }
 function writeHint(c) {
   if (!props.auditOn) return '写前自动备份到 .knowrary/backup/'
-  if (!auditFresh(c)) return c.audit ? '卡改过了，写入前会重新审' : '先由 review 角色审一遍，没意见直接写；有意见停下来给你看'
-  if (c.audit.verdict === 'block') return '改一改再审，或者你确认它看走眼了'
+  if (!auditFresh(c)) {
+    if (c.revised) return 'AI 按意见改过了，看一眼改动；写入前会重新审'
+    return c.audit ? '卡改过了，写入前会重新审' : '先由 review 角色审一遍，没意见直接写；有意见停下来给你看'
+  }
+  if (c.audit.verdict === 'block') return '被挡下：按意见修改，或者「改一改」自己改；确认它看走眼了才强制写入'
+  if (c.audit.verdict === 'warn') return '按意见修改 = learn 角色照勾上的意见改一版，改完先给你看；原样写入 = 不管意见，按卡上现在的写'
   return '已经审过，写入不再等模型；写前自动备份'
+}
+function revisedMeta(r) {
+  const bits = []
+  if (r.model) bits.push(`${r.model} · ${Math.round((r.ms || 0) / 1000)} 秒`)
+  if (r.at) bits.push(r.at.slice(5, 16).replace('T', ' '))
+  return bits.join(' · ')
 }
 
 /** 折叠条上直接写清楚这一轮都动了什么，不点开也知道它去查了图还是出了题。 */
@@ -562,7 +583,9 @@ function onKey(e) {
               </div>
               <p v-if="c.audit.summary" class="cc-audit-sum">{{ c.audit.summary }}</p>
               <ul v-if="c.audit.issues?.length" class="cc-audit-list">
-                <li v-for="(it, k) in c.audit.issues" :key="k" :class="it.level">
+                <li v-for="(it, k) in c.audit.issues" :key="k" :class="[it.level, { off: pickable(c) && c.skip?.[k] }]">
+                  <input v-if="pickable(c)" type="checkbox" class="cc-audit-pick" :checked="!c.skip?.[k]"
+                         :disabled="working(c)" title="勾上的意见交给「按意见修改」" @change="togglePick(c, k)">
                   <span class="chip" :class="it.level === 'block' ? 'm-drop' : 'm-due'">{{ it.level === 'block' ? '得改' : '提醒' }}</span>
                   <span>{{ it.message }}</span>
                   <span v-if="it.path" class="dim cc-audit-path">{{ it.path }}</span>
@@ -573,19 +596,57 @@ function onKey(e) {
               <p v-if="!c.applied && !auditFresh(c)" class="dim" style="font-size: 11px; margin: 4px 0 0">
                 卡改过了，这是改之前的审核意见</p>
             </div>
+            <div v-if="c.revising" class="cc-audit busy">
+              <Icon name="pencil" :size="13" />learn 角色在按 {{ c.revising.n }} 条意见改 · 已等 {{ waited(c) }} 秒
+              <span class="dim">（只改卡，不写盘；改完先给你看）</span>
+            </div>
+            <div v-else-if="c.revised" class="cc-audit cc-revised">
+              <div class="cc-audit-head">
+                <Icon name="pencil" :size="13" /><b>AI 按意见改过</b>
+                <span class="dim">{{ revisedMeta(c.revised) }}</span>
+                <button v-if="!c.applied" class="btn subtle tiny" style="margin-left: auto" :disabled="busy || working(c)"
+                        title="不要这一版：卡回到改之前的样子" @click="emit('undo-revise', { card: c, i, j })">
+                  <Icon name="x" :size="12" />撤回修改
+                </button>
+              </div>
+              <p v-if="c.revised.summary" class="cc-audit-sum">{{ c.revised.summary }}</p>
+              <ul v-if="c.revised.skipped?.length" class="cc-audit-list">
+                <li v-for="(s, k) in c.revised.skipped" :key="k" class="warn">
+                  <span class="chip m-due">没照改</span><span>{{ s.what }}</span>
+                  <p v-if="s.why" class="dim">{{ s.why }}</p>
+                </li>
+              </ul>
+              <details v-if="c.revised.delta" :open="c.revised.open ?? !c.applied" class="cc-revised-delta">
+                <summary class="dim">改了哪儿（改前 → 改后）</summary>
+                <pre class="cc-diff cc-delta"><span v-for="(l, k) in pairDiff(c.revised.delta)" :key="k"
+                  :class="l.cls"><template v-for="(p, q) in l.parts" :key="q"><mark v-if="p.hot">{{ p.text }}</mark><template v-else>{{ p.text }}</template></template>
+</span></pre>
+              </details>
+              <p v-else class="dim" style="font-size: 11px; margin: 4px 0 0">模型交回的和原来一模一样，什么都没改</p>
+            </div>
             </template>
             <div v-if="!c.applied && !c.expired" class="cc-acts">
-              <button v-if="auditOn" class="btn subtle tiny" :disabled="busy || !!c.auditing"
+              <button v-if="auditOn && !c.audit" class="btn subtle tiny" :disabled="busy || working(c)"
                       title="只审不写：结论挂在卡上，看完再决定写不写" @click="emit('audit', { card: c, i, j })">
-                <Icon name="checklist" :size="12" />{{ c.audit ? '重新审核' : '审核' }}
+                <Icon name="checklist" :size="12" />审核
               </button>
-              <button class="btn primary tiny" :disabled="busy || !!c.auditing || blockedNow(c)"
-                      @click="emit('apply', { card: c, i, j })">
+              <button v-if="auditOn && c.audit && !auditFresh(c)" class="btn subtle tiny" :disabled="busy || working(c)"
+                      title="卡改过了，上面那份结论已经作废：只审不写，再审一遍" @click="emit('audit', { card: c, i, j })">
+                <Icon name="checklist" :size="12" />重新审核
+              </button>
+              <button v-if="pickable(c)" class="btn tiny" :class="reviseFirst(c) ? 'primary' : 'subtle'"
+                      :disabled="busy || working(c) || !picked(c).length"
+                      title="把勾上的意见交给 learn 角色改一版：只改卡，不写盘，改完先给你看"
+                      @click="revise(c, i, j)">
+                <Icon name="pencil" :size="12" />按意见修改（{{ picked(c).length }} 条）
+              </button>
+              <button v-if="!blockedNow(c)" class="btn tiny" :class="reviseFirst(c) ? 'subtle' : 'primary'"
+                      :disabled="busy || working(c)" @click="emit('apply', { card: c, i, j })">
                 <Icon name="check" :size="13" />{{ writeLabel(c) }}
               </button>
-              <button v-if="blockedNow(c) && forceAllowed" class="btn subtle tiny danger" :disabled="busy"
+              <button v-if="blockedNow(c) && forceAllowed" class="btn subtle tiny danger" :disabled="busy || working(c)"
                       title="你确认审核看走眼了：跳过模型直接写（会记一笔）"
-                      @click="emit('apply', { card: c, i, j, force: true })">仍然写入</button>
+                      @click="emit('apply', { card: c, i, j, force: true })">忽略意见，强制写入</button>
               <span class="dim" style="font-size: 11px">{{ writeHint(c) }}</span>
             </div>
           </div>

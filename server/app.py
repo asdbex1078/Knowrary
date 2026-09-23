@@ -18,8 +18,8 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import (assets, audit, chat as chat_svc, compare as compare_svc, copying, curation, importing,
-               projects as projects_svc, summarize as summarize_svc, vaults, years as years_svc)
-from .contracts import (AuditReport, AuditRequest, VaultConfigPatch, VaultConfigRead, CalendarRead, ChangeResult, ChangeSet, ChatRequest, CoachToday, FileDiff, ImportProposal,
+               projects as projects_svc, revise as revise_svc, summarize as summarize_svc, vaults, years as years_svc)
+from .contracts import (AuditReport, AuditRequest, ReviseRequest, ReviseResult, ReviseUndo, VaultConfigPatch, VaultConfigRead, CalendarRead, ChangeResult, ChangeSet, ChatRequest, CoachToday, FileDiff, ImportProposal,
                         ImportProposeRequest, ImportRequest, ImportResult, SourceText, SourcesRead, SummarizeRequest, SummaryDraft,
                         InboxRead,
                         LayoutPatch, LayoutRead,
@@ -803,6 +803,34 @@ def post_audit(req: AuditRequest) -> AuditReport:
     if req.card:
         core.card_audited(vault, req.card, report.stamp, report.model_dump())
     return report
+
+
+@app.post("/api/revise", response_model=ReviseResult)
+def post_revise(req: ReviseRequest) -> ReviseResult:
+    """卡上的「按意见修改」：learn 角色按勾选的审核意见改一版，**只改卡不写盘**。
+    改完的整份改法记在这张卡名下（cards.jsonl 的 revised 事件），留档读回来时用它替换最初那份。"""
+    if not req.issues:
+        raise HTTPException(status_code=422, detail="没勾选任何意见，没什么可改的")
+    vault = vault_path()
+    before = [c.model_dump(exclude_none=True) for c in req.changes]
+    try:
+        result = revise_svc.run(vault, current_index(vault), before, req.issues)
+    except revise_svc.ReviseFailed as exc:
+        core.record_issue(vault, "revise", str(exc), where="/api/revise")
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if req.card:
+        core.card_revised(vault, req.card, result.model_dump()["changes"], {
+            "before": before, "summary": result.summary, "delta": result.delta,
+            "skipped": [s.model_dump() for s in result.skipped], "model": result.model, "ms": result.ms})
+    return result
+
+
+@app.post("/api/revise/undo")
+def post_revise_undo(req: ReviseUndo) -> dict:
+    """撤回 AI 改的那一版：再记一条 revised，改法换回改前那份、不带 summary——留档读回来就是原样。"""
+    core.card_revised(vault_path(), req.card, [c.model_dump(exclude_none=True) for c in req.changes],
+                      {"undo": True})
+    return {"ok": True}
 
 
 @app.post("/api/changes", response_model=ChangeResult)
