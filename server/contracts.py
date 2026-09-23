@@ -1034,6 +1034,22 @@ class VaultRead(Strict):
     pinned: bool = False
 
 
+class VaultConfigRead(Strict):
+    """库级配置（`<库>/.knowrary/vault.json`，跟着库进 git）+ 设置页要的旁证。"""
+
+    articles_dir: str                  # 原文目录，库内相对路径
+    articles: int = 0                  # 这个目录里现在有几篇原文（改目录时要不要搬，看它）
+    candidates: list[str] = Field(default_factory=list)   # 库里现有的目录，给输入框当候选
+    moved: list[str] = Field(default_factory=list)        # 这次一起搬过去的文章
+    backup: str = ""                   # 搬之前的快照在哪
+
+
+class VaultConfigPatch(Strict):
+    articles_dir: str
+    move: bool = False                 # 旧目录里还有文章时，得明说一起搬
+    dry_run: bool = False              # 只校验不落盘：设置页边打边问，规则只在服务端写一份
+
+
 class VaultBrowse(Strict):
     """目录选择器的一页：当前在哪、能不能往上走、下面有哪些子目录。"""
 

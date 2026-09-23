@@ -2,7 +2,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, shallowRef, watch } from 'vue'
 import {
   fetchSettings, putSettings, fetchLLMConfig, putLLMConfig, testLLMConfig as postLLMConfigTest,
-  fetchVault, browseVault, initVault, putVault, forgetVault,
+  fetchVault, browseVault, initVault, putVault, forgetVault, fetchVaultConfig, putVaultConfig,
   fetchCopySources, fetchCopyCatalog, postCopy, fetchCalendar, fetchCompareGroups, fetchCompareTable, postCompareFill, fetchDigest, postSyncToGlobal, fetchDue, fetchProjects, putProjects, postPlanPropose, fetchToday, fetchUsage, postMerge, postRename, postQuiz, postQuizDiagnose, postQuizGrade, fetchOpenQuiz, dropOpenQuiz, postRegroup, fetchIndex, fetchInbox, fetchLayout, fetchNode,
   patchLayout, postAudit, postChanges, postPlace, postReview, postSuggest, postSummarize, postYearsPropose,
 } from './api.js'
@@ -3447,6 +3447,7 @@ onBeforeUnmount(() => {
                       :pick-vault="(p) => switchVault(putVault, p)"
                       :start-vault="(p, sample) => switchVault(initVault, p, sample)"
                       :forget-vault="forgetVaultEntry"
+                      :read-vault-config="fetchVaultConfig" :save-vault-config="putVaultConfig"
                       @close="settingsOn = false" @set="saveSettings"
                       @toggle-snap="toggleSnap" @toggle-avoid="toggleAvoid" @toggle-map="toggleMap"
                       @toggle-lod="toggleLod()" @toggle-aggregate="toggleAggregate()"

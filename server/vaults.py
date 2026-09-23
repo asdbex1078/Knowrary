@@ -36,7 +36,7 @@ DEMO_DATED = (".knowrary/review-log.json", ".knowrary/quiz-log.json")
 DATE_HEAD = re.compile(r"^(\d{4})-(\d{2})-(\d{2})")
 
 # 初始化时铺出来的目录骨架（空目录也建，人打开 Finder 就知道东西该往哪放）
-SKELETON = ("nodes", "fields", "assets", ".knowrary/layouts", ".knowrary/imports", ".knowrary/coaches")
+SKELETON = ("nodes", "fields", "assets", "articles", ".knowrary/layouts", ".knowrary/imports", ".knowrary/coaches")
 
 
 class VaultRejected(ValueError):

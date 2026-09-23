@@ -180,6 +180,15 @@ export const putVault = (path) => request('/api/vault/current', {
 export const forgetVault = (path) =>
   request(`/api/vault/recent?path=${encodeURIComponent(path)}`, { method: 'DELETE' })
 
+// **这两个不一样**：读写的是**当前库自己的** `.knowrary/vault.json`（跟着库进 git），
+// 管的是「这个库的原文放在哪」。旧目录里还有文章而没带 move 时回 409（detail.articles 是篇数）。
+export const fetchVaultConfig = () => request('/api/vault/config')
+export const putVaultConfig = (body) => request('/api/vault/config', {
+  method: 'PUT',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify(body),
+})
+
 // —— 跨库复制 ——
 // 两个方向共用一条接口：不给 target 就是抄进当前库（从别处拉），
 // 给了就是往那个库推（站在参考库里看到好东西，抄进自己的库）。

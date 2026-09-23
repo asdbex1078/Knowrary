@@ -81,6 +81,52 @@ async def case_current(page, ck, api: str, vault: Path) -> None:
            not await page.ev("!!document.querySelector('.set-body .field-hint')"), shown)
 
 
+async def type_articles(page, text: str) -> None:
+    await page.ev(f"""(() => {{ const i = document.querySelector('.art-input');
+      i.value = {json.dumps(text)}; i.dispatchEvent(new Event('input', {{ bubbles: true }})); }})()""")
+    await asyncio.sleep(0.8)          # 防抖 300ms + 一次 dry_run
+
+
+ART = """JSON.stringify({ input: document.querySelector('.art-input')?.value,
+  bad: document.querySelector('.art-input')?.classList.contains('bad'),
+  err: document.querySelector('.set-body .model-error')?.textContent.trim() || '',
+  move: document.querySelector('.art-move')?.textContent.replace(/\\s+/g, '') || '',
+  count: document.querySelector('.art-count')?.textContent.trim() || '',
+  done: document.querySelector('.art-done')?.textContent.trim() || '',
+  save: document.querySelector('.art-row .btn')?.disabled,
+  options: [...document.querySelectorAll('#art-dir-options option')].map((o) => o.value) })"""
+
+
+async def case_articles(page, ck, vault: Path) -> None:
+    """原文目录：边打边校验（规则在服务端）、旧目录有文章要问一句搬不搬、搬完真在新目录里。"""
+    assert await poll(page, "!!document.querySelector('.art-input')", bool, 8), "原文目录那一栏没渲染"
+    st = json.loads(await page.ev(ART))
+    ck.add("显示当前原文目录和篇数", st["input"] == "articles" and "2 篇" in st["count"], str(st))
+    ck.add("候选里有库里现有的目录、没有 nodes", "长文区" in st["options"] and "nodes" not in st["options"],
+           str(st["options"]))
+
+    await type_articles(page, "nodes/长文")
+    st = json.loads(await page.ev(ART))
+    ck.add("填进节点层当场标红、说清为什么", st["bad"] and "节点" in st["err"] and st["save"], str(st))
+    await type_articles(page, "/Users/x/文章")
+    st = json.loads(await page.ev(ART))
+    ck.add("绝对路径也当场拒", st["bad"] and "相对路径" in st["err"], str(st))
+
+    await type_articles(page, "长文区/2026")
+    st = json.loads(await page.ev(ART))
+    ck.add("旧目录有文章：先问一句要不要一起搬", "2篇原文" in st["move"] and "一起搬过去" in st["move"], str(st))
+    ck.add("还没点就一篇没动", len(list((vault / "articles").rglob("*.md"))) == 2, "")
+    await click(page, ".art-move .btn", "b.textContent.includes('一起搬过去')")
+    assert await poll(page, "document.querySelector('.art-done')?.textContent || ''", bool, 8), "搬完没提示"
+    st = json.loads(await page.ev(ART))
+    moved = sorted(p.relative_to(vault).as_posix() for p in (vault / "长文区" / "2026").rglob("*.md"))
+    ck.add("点了一起搬：文章真到了新目录", moved == ["长文区/2026/BPE全景.md", "长文区/2026/旧/注意力.md"], str(moved))
+    ck.add("提示里写了搬了几篇、快照在哪", "2 篇" in st["done"] and ".knowrary/backup/articles-move-" in st["done"],
+           st["done"])
+    cfg = json.loads((vault / ".knowrary" / "vault.json").read_text("utf-8"))
+    ck.add("配置写进了库里的 vault.json", cfg.get("articles_dir") == "长文区/2026", str(cfg))
+
+
 async def case_init(page, ck, api: str, blank: Path) -> None:
     """选一个空目录 → 初始化 → 自动切过去。这是新用户的第一步，错一步就进不了门。"""
     await click(page, ".model-head .btn", "b.textContent.includes('选择目录')")
@@ -180,6 +226,7 @@ async def scenarios(page, api: str, paths: dict, results: list) -> None:
     ck = E.Check(api)
     await open_vault_tab(page)
     await case_current(page, ck, api, paths["vault"])
+    await case_articles(page, ck, paths["vault"])
     await case_init(page, ck, api, paths["blank"])
     await case_switch_back(page, ck, api, paths["vault"])
     await case_sample(page, ck, api, paths["sample"])
@@ -215,6 +262,10 @@ def main() -> None:
     with tempfile.TemporaryDirectory(prefix="knowrary-e2e-vault-") as tmpdir:
         tmp = Path(tmpdir).resolve()        # macOS 的 /var 是指向 /private/var 的符号链接
         vault = E.make_vault(tmp)
+        (vault / "articles" / "旧").mkdir(parents=True)
+        (vault / "articles" / "BPE全景.md").write_text("# BPE 全景\n", "utf-8")
+        (vault / "articles" / "旧" / "注意力.md").write_text("# 注意力\n", "utf-8")
+        (vault / "长文区").mkdir()
         blank = tmp / "新库"
         blank.mkdir()
         sample = tmp / "带示例的库"

@@ -3527,6 +3527,81 @@ def chat_入库只出卡不写md():
 
 
 @case
+def vault_config_原文目录默认articles_坏文件回落默认():
+    """原文目录配在库里（.knowrary/vault.json，跟着 git 走）。文件坏了不能让库打不开。"""
+    c, vault = client()
+    got = c.get("/api/vault/config").json()
+    assert got["articles_dir"] == "articles" and got["articles"] == 0, got
+    (vault / ".knowrary").mkdir(exist_ok=True)
+    (vault / ".knowrary" / "vault.json").write_text("{坏的", "utf-8")
+    assert c.get("/api/vault/config").json()["articles_dir"] == "articles"
+    (vault / ".knowrary" / "vault.json").write_text(json.dumps({"articles_dir": "nodes/偷渡"}), "utf-8")
+    assert c.get("/api/vault/config").json()["articles_dir"] == "articles", "不合法的值该回落默认"
+
+
+@case
+def vault_config_只收库内相对路径_不许进节点层():
+    c, vault = client()
+    for bad, word in (("", "空"), ("/tmp/x", "相对路径"), ("~/文章", "相对路径"), ("../外面", ".."),
+                      ("nodes/长文", "节点"), ("fields", "节点"), (".knowrary/x", "程序"), ("assets", "程序"),
+                      ("C:/x", "相对路径")):
+        r = c.put("/api/vault/config", json={"articles_dir": bad})
+        assert r.status_code == 422 and word in r.json()["detail"]["message"], (bad, r.text)
+    (vault / "一个文件.md").write_text("x", "utf-8")
+    r = c.put("/api/vault/config", json={"articles_dir": "一个文件.md"})
+    assert r.status_code == 422 and "文件" in r.json()["detail"]["message"], r.text
+    assert not (vault / ".knowrary" / "vault.json").exists(), "拒绝了还写盘"
+
+    r = c.put("/api/vault/config", json={"articles_dir": "day-info/长文", "dry_run": True})
+    assert r.status_code == 200 and r.json()["articles_dir"] == "day-info/长文", r.text
+    assert not (vault / "day-info").exists() and not (vault / ".knowrary" / "vault.json").exists(), "dry_run 写了盘"
+    r = c.put("/api/vault/config", json={"articles_dir": " day-info\\长文/ "})
+    assert r.status_code == 200 and r.json()["articles_dir"] == "day-info/长文", r.text
+    assert (vault / "day-info" / "长文").is_dir(), "保存时该把目录建出来"
+    doc = json.loads((vault / ".knowrary" / "vault.json").read_text("utf-8"))
+    assert doc == {"schema_version": 1, "articles_dir": "day-info/长文"}, doc
+    assert "day-info" in c.get("/api/vault/config").json()["candidates"]
+    assert not any(x.split("/")[0] in ("nodes", "fields", "assets") for x in
+                   c.get("/api/vault/config").json()["candidates"]), "候选里混进了保留目录"
+
+
+@case
+def vault_config_旧目录有文章要明说搬_搬前先备份_撞名一篇不动():
+    c, vault = client()
+    (vault / "articles" / "2026").mkdir(parents=True)
+    (vault / "articles" / "BPE全景.md").write_text("# BPE 全景\n\n原文", "utf-8")
+    (vault / "articles" / "2026" / "注意力.md").write_text("# 注意力\n", "utf-8")
+    assert c.get("/api/vault/config").json()["articles"] == 2
+
+    r = c.put("/api/vault/config", json={"articles_dir": "长文", "dry_run": True})
+    assert r.status_code == 409, "边打边问时就该知道要不要搬"
+    r = c.put("/api/vault/config", json={"articles_dir": "长文"})
+    assert r.status_code == 409, r.text
+    assert r.json()["detail"]["articles"] == 2 and r.json()["detail"]["from"] == "articles"
+    assert c.get("/api/vault/config").json()["articles_dir"] == "articles", "没说搬就改了指向"
+
+    (vault / "长文").mkdir()
+    (vault / "长文" / "BPE全景.md").write_text("另一篇", "utf-8")
+    r = c.put("/api/vault/config", json={"articles_dir": "长文", "move": True})
+    assert r.status_code == 422 and "同名" in r.json()["detail"]["message"], r.text
+    assert (vault / "articles" / "BPE全景.md").exists() and (vault / "articles/2026/注意力.md").exists(), \
+        "撞名时整批都不该动"
+    (vault / "长文" / "BPE全景.md").unlink()
+
+    r = c.put("/api/vault/config", json={"articles_dir": "articles/子目录", "move": True})
+    assert r.status_code == 422 and "套着" in r.json()["detail"]["message"], r.text
+
+    r = c.put("/api/vault/config", json={"articles_dir": "长文", "move": True})
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert sorted(data["moved"]) == ["长文/2026/注意力.md", "长文/BPE全景.md"], data
+    assert data["articles_dir"] == "长文" and data["articles"] == 2
+    assert (vault / "长文" / "BPE全景.md").read_text("utf-8").endswith("原文")
+    assert not core.list_articles(vault / "articles"), "搬完旧目录里还有"
+    assert (vault / data["backup"] / "articles" / "BPE全景.md").exists(), data["backup"]
+
+
+@case
 def chat_卡片跟着留档回来_点过的标已点_撞车的标过期():
     """2026-09-23：在 AI 史里点了一张改 Transformer 清单的卡，页面跳去了 Transformer，
     再切回来，同一轮里还没点的三张变更卡全没了——卡片只活在前端内存里，留档只记正文。

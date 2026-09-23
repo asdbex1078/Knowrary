@@ -19,7 +19,7 @@ from fastapi.staticfiles import StaticFiles
 
 from . import (assets, audit, chat as chat_svc, compare as compare_svc, copying, curation, importing,
                projects as projects_svc, summarize as summarize_svc, vaults, years as years_svc)
-from .contracts import (AuditReport, AuditRequest, CalendarRead, ChangeResult, ChangeSet, ChatRequest, CoachToday, FileDiff, ImportProposal,
+from .contracts import (AuditReport, AuditRequest, VaultConfigPatch, VaultConfigRead, CalendarRead, ChangeResult, ChangeSet, ChatRequest, CoachToday, FileDiff, ImportProposal,
                         ImportProposeRequest, ImportRequest, ImportResult, SourceText, SourcesRead, SummarizeRequest, SummaryDraft,
                         InboxRead,
                         LayoutPatch, LayoutRead,
@@ -513,6 +513,35 @@ def forget_vault(path: str) -> VaultRead:
     """把一条从「最近使用」里去掉。只动列表，磁盘上的库一个字节都不碰。"""
     vaults.forget(Path(path))
     return VaultRead(**vaults.read())
+
+
+def _vault_config_read(vault: Path, extra: dict | None = None) -> VaultConfigRead:
+    cfg = core.load_vault_config(vault)
+    return VaultConfigRead(**cfg, articles=len(core.list_articles(vault / cfg["articles_dir"])),
+                           candidates=core.articles_dir_candidates(vault), **(extra or {}))
+
+
+@app.get("/api/vault/config", response_model=VaultConfigRead)
+def get_vault_config() -> VaultConfigRead:
+    """这个库的结构配置（现在只有原文目录）。在库里，跟着 git 走——和「用哪个库」那份用户级选择不是一回事。"""
+    return _vault_config_read(vault_path())
+
+
+@app.put("/api/vault/config", response_model=VaultConfigRead)
+def put_vault_config(req: VaultConfigPatch) -> VaultConfigRead:
+    """改原文目录。旧目录里还有文章而没说 `move` 就 409——前端据此问一句「一起搬过去？」。"""
+    vault = vault_path()
+    try:
+        done = core.save_articles_dir(vault, req.articles_dir, move=req.move, dry_run=req.dry_run)
+    except core.ArticlesNeedMove as exc:
+        raise HTTPException(status_code=409, detail={"message": str(exc), "articles": exc.count,
+                                                     "from": exc.old}) from exc
+    except core.VaultConfigRejected as exc:
+        raise HTTPException(status_code=422, detail={"message": str(exc)}) from exc
+    if req.dry_run:
+        cfg = done["config"]
+        return VaultConfigRead(**cfg, articles=len(core.list_articles(vault / cfg["articles_dir"])))
+    return _vault_config_read(vault, {"moved": done["moved"], "backup": done["backup"]})
 
 
 @app.get("/api/settings", response_model=SettingsRead)

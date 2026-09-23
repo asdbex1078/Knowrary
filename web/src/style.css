@@ -665,6 +665,16 @@ select:disabled { cursor: not-allowed; opacity: .5; }
 .model-editor-foot { flex: none; display: flex; align-items: center; gap: 7px; padding: 10px 14px; border-top: 1px solid var(--line); }
 .model-editor-foot > span { flex: 1; }
 /* 知识库：当前库那一条 + 目录选择器 */
+/* 设置 → 知识库 → 原文目录 */
+.art-row { display: flex; gap: 8px; align-items: center; margin: 6px 0 4px; }
+.art-input { flex: 1; min-width: 0; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+.art-input.bad { border-color: var(--danger); }
+.art-move { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-size: 12px; margin: 4px 0;
+  padding: 8px 10px; border: 1px solid var(--warn); border-radius: 8px; background: var(--warn-soft); }
+.art-move span { flex: 1 1 100%; line-height: 1.6; }
+.art-count { margin: 0 0 10px; }
+.art-done { font-size: 12px; color: var(--ok); margin: 0 0 10px; }
+
 .vault-now { padding: 10px 9px; margin-bottom: 4px; background: var(--surface-2); border: 1px solid var(--line); border-radius: var(--r-sm); }
 .vault-now .sub { display: block; margin-bottom: 4px; font-size: 10.5px; color: var(--text-3); }
 .vault-now b { display: block; font-size: 12.5px; line-height: 1.45; color: var(--text); word-break: break-all; }

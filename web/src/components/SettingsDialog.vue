@@ -2,13 +2,15 @@
 /**
  * 设置：居中弹窗，左边分类、右边开关。把散在顶栏菜单、画布浮层、活动栏底部的开关收到一处。
  *
- * **存储按语义分两边，界面上不分**：
- * - 「学习与复习」跟着 vault 走（`.knowrary/settings.json`）——教练的系统提示词在服务端拼，
+ * **存储按语义分三处，界面上不分**：
+ * - 「学习与复习」「写入审核」「模型」跟着人走（`~/.knowrary/`）——教练的系统提示词在服务端拼，
  *   只存浏览器的话，界面安静了、教练照样每轮开场播报欠账、结尾出检验题。
+ * - 「知识库」里的原文目录跟着库走（`<库>/.knowrary/vault.json`，进 git）——那是库的结构，
+ *   记在人身上的话，库推给别人之后原文链接全断。
  * - 「画布 / 外观」留 localStorage——那是"这台机器上怎么看图"，换台机器本来就该各看各的。
  * 分界写在每组标题下面给人看，免得以后问"为什么有的设置跟过来了、有的没有"。
  */
-import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import Icon from '../ui/Icon.vue'
 
 const props = defineProps({
@@ -33,18 +35,21 @@ const props = defineProps({
   pickVault: { type: Function, default: null },
   startVault: { type: Function, default: null },
   forgetVault: { type: Function, default: null },
+  // 当前库自己的配置（.knowrary/vault.json）：原文目录。和上面那几个「用哪个库」的用户级选择不是一层
+  readVaultConfig: { type: Function, default: null },
+  saveVaultConfig: { type: Function, default: null },
 })
 const emit = defineEmits(['close', 'set', 'toggle-snap', 'toggle-avoid', 'toggle-lod',
                           'toggle-aggregate', 'toggle-map', 'toggle-theme'])
 
 const TABS = [
-  { id: 'vault', name: '知识库', icon: 'folder', where: '这台机器上的选择，不属于任何一个库' },
-  { id: 'review', name: '学习与复习', icon: 'rotate', where: '跟着 vault 走，换台机器也一样' },
-  { id: 'audit', name: '写入审核', icon: 'checklist', where: '跟着 vault 走，换台机器也一样' },
+  { id: 'vault', name: '知识库', icon: 'folder', where: '用哪个库记在这台机器上；原文目录写在库里，跟着 git 走' },
+  { id: 'review', name: '学习与复习', icon: 'rotate', where: '跟着人走（~/.knowrary），换个库也一样' },
+  { id: 'audit', name: '写入审核', icon: 'checklist', where: '跟着人走（~/.knowrary），换个库也一样' },
   // 画布和外观合成一栏：两边都是 localStorage、都是"这台机器上怎么看图"，
   // 而「外观」里只有一个深色主题开关——一个开关不值得单开一栏，点进去只会觉得空。
   { id: 'canvas', name: '画布与外观', icon: 'map', where: '只存在这台机器上' },
-  { id: 'models', name: '模型', icon: 'cube', where: '跟着 vault 走' },
+  { id: 'models', name: '模型', icon: 'cube', where: '跟着人走（~/.knowrary/llm.local.json）' },
 ]
 const tab = ref('review')
 const draft = ref({ providers: [], roles: {} })
@@ -213,6 +218,68 @@ async function run(action, path, sample = false) {
   }
 }
 
+// —— 原文目录：这个库的长文放在哪（库内相对路径，写在库的 .knowrary/vault.json 里）——
+const artCfg = ref(null)          // 服务端读回来的：{ articles_dir, articles, candidates }
+const artDraft = ref('')
+const artCheck = ref({ ok: true, message: '', needMove: 0 })   // 边打边问服务端（dry_run）的结果
+const artBusy = ref(false)
+const artError = ref('')
+const artDone = ref('')
+let artTimer = null
+
+async function loadArticlesDir() {
+  if (!props.readVaultConfig || !props.vault?.current) return
+  try {
+    artCfg.value = await props.readVaultConfig()
+    artDraft.value = artCfg.value.articles_dir
+  } catch (err) {
+    artError.value = `读不到原文目录：${err.body?.detail?.message || err.message}`
+  }
+}
+watch(() => props.vault?.current?.path, loadArticlesDir, { immediate: true })
+onBeforeUnmount(() => clearTimeout(artTimer))
+
+const artChanged = computed(() => !!artCfg.value && artDraft.value.trim() !== artCfg.value.articles_dir)
+
+/** 规则只在服务端写一份：这里防抖去问一句 dry_run，不在前端再抄一遍校验。 */
+watch(artDraft, (text) => {
+  clearTimeout(artTimer)
+  artDone.value = ''
+  if (!artChanged.value) { artCheck.value = { ok: true, message: '', needMove: 0 }; return }
+  artTimer = setTimeout(async () => {
+    try {
+      await props.saveVaultConfig({ articles_dir: text, dry_run: true })
+      artCheck.value = { ok: true, message: '', needMove: 0 }
+    } catch (err) {
+      const d = err.body?.detail || {}
+      artCheck.value = err.status === 409 ? { ok: true, message: '', needMove: d.articles || 0 }
+        : { ok: false, message: d.message || err.message, needMove: 0 }
+    }
+  }, 300)
+})
+
+async function saveArticlesDir(move = false) {
+  if (!props.saveVaultConfig || !artChanged.value || !artCheck.value.ok) return
+  artBusy.value = true
+  artError.value = ''
+  try {
+    const got = await props.saveVaultConfig({ articles_dir: artDraft.value, move })
+    const from = artCfg.value.articles_dir
+    artCfg.value = got
+    artDraft.value = got.articles_dir
+    artCheck.value = { ok: true, message: '', needMove: 0 }
+    artDone.value = got.moved?.length
+      ? `已把 ${got.moved.length} 篇从 ${from}/ 搬到 ${got.articles_dir}/，搬之前的快照在 ${got.backup}`
+      : `原文目录改成了 ${got.articles_dir}/`
+  } catch (err) {
+    const d = err.body?.detail || {}
+    if (err.status === 409) artCheck.value = { ok: true, message: '', needMove: d.articles || 0 }
+    else artError.value = d.message || err.message
+  } finally {
+    artBusy.value = false
+  }
+}
+
 async function forget(path) {
   vaultError.value = ''
   if (!props.forgetVault) return
@@ -259,6 +326,38 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onKey, true))
               <b v-if="vault?.current">{{ vault.current.path }}</b>
               <b v-else class="vault-none">还没有选择——挑一个目录开始</b>
             </div>
+            <template v-if="vault?.current && artCfg">
+              <div class="model-head">
+                <div><b>原文目录</b><span class="sub">长文原样存在这儿：不上图、不进复习，节点用 sources 链回来。
+                  写在这个库的 <code>.knowrary/vault.json</code> 里，跟着 git 走。</span></div>
+              </div>
+              <div class="art-row">
+                <input v-model="artDraft" class="art-input" list="art-dir-options" spellcheck="false"
+                       placeholder="articles" :class="{ bad: !artCheck.ok }" aria-label="原文目录"
+                       @keydown.enter.prevent="artCheck.needMove ? null : saveArticlesDir()" />
+                <datalist id="art-dir-options">
+                  <option v-for="d in artCfg.candidates" :key="d" :value="d" />
+                </datalist>
+                <button class="btn tiny primary" type="button"
+                        :disabled="artBusy || !artChanged || !artCheck.ok || !!artCheck.needMove"
+                        @click="saveArticlesDir()">保存</button>
+              </div>
+              <p v-if="!artCheck.ok" class="model-error">{{ artCheck.message }}</p>
+              <div v-else-if="artCheck.needMove" class="art-move">
+                <span>旧目录 <code>{{ artCfg.articles_dir }}/</code> 里还有 <b>{{ artCheck.needMove }}</b> 篇原文，
+                  要一起搬到 <code>{{ artDraft.trim() }}/</code> 吗？搬之前会先整份备份。</span>
+                <button class="btn tiny primary" type="button" :disabled="artBusy"
+                        @click="saveArticlesDir(true)">{{ artBusy ? '搬家中…' : '一起搬过去' }}</button>
+                <button class="btn tiny subtle" type="button" :disabled="artBusy"
+                        @click="artDraft = artCfg.articles_dir">取消</button>
+              </div>
+              <p v-else class="sub art-count">
+                {{ artChanged ? `保存后原文放进 ${artDraft.trim()}/（不存在会自动建）`
+                  : `现在 ${artCfg.articles_dir}/ 里有 ${artCfg.articles} 篇原文` }}</p>
+              <p v-if="artDone" class="art-done">{{ artDone }}</p>
+              <p v-if="artError" class="model-error">{{ artError }}</p>
+            </template>
+
             <p v-if="vault?.pinned" class="model-error">
               当前库被环境变量 <code>KNOWRARY_VAULT</code> 钉住了，<b>在这里切换不会生效</b>——
               它的优先级高于这份选择。去掉这个变量（或用 <code>./server/dev.sh</code> 重起服务）再来。
