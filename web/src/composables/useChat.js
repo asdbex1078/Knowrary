@@ -8,7 +8,10 @@
  * 要同时动图谱和项目，留在 App.vue 编排；这里只负责把卡片收进这一轮的回复里。
  */
 import { computed, nextTick, reactive, ref, shallowRef } from 'vue'
-import { fetchChatHistory, fetchChatSessions, markChatTidied, renameChatSession, streamChat } from '../api.js'
+import {
+  archiveChatSession, deleteChatSession, fetchChatHistory, fetchChatSessions, markChatTidied,
+  renameChatSession, streamChat,
+} from '../api.js'
 import { highlightPath } from '../canvas/render.js'
 
 const TOOL_LABEL = {
@@ -112,10 +115,43 @@ export function useChat(deps) {
     if (!session) return
     try {
       await renameChatSession(session, title, currentProject.value || null)
-      const list = await fetchChatSessions(currentProject.value || null)
-      chatSessions.value = list.sessions
+      await refreshSessions()
     } catch (err) {
       setBanner(`改名失败：${err.message}`, 'error')
+    }
+  }
+
+  async function refreshSessions() {
+    const list = await fetchChatSessions(currentProject.value || null)
+    chatSessions.value = list.sessions
+  }
+
+  /** 收起来 / 放回来。收的是正在聊的这段就顺手新开一段：留在一段已归档的会话里接着聊，下次打开又找不着它。 */
+  async function archiveSession({ session, archived }) {
+    if (!session) return
+    try {
+      await archiveChatSession(session, archived, currentProject.value || null)
+      if (archived && session === chatSession.value && !chatBusy.value) newChatSession()
+      await refreshSessions()
+    } catch (err) {
+      setBanner(`${archived ? '归档' : '取消归档'}失败：${err.message}`, 'error')
+    }
+  }
+
+  /** 真删一段。正在聊的这段不许删到一半——流还在往留档里追加，删完又会长出一截来。 */
+  async function deleteSession(session) {
+    if (!session) return
+    if (chatBusy.value && session === chatSession.value) {
+      setBanner('这段还在回答，停下来再删', 'error')
+      return
+    }
+    try {
+      await deleteChatSession(session, currentProject.value || null)
+      if (session === chatSession.value) newChatSession()
+      await refreshSessions()
+      pushToast('已删除这段对话', 'info')
+    } catch (err) {
+      setBanner(`删除失败：${err.message}`, 'error')
     }
   }
 
@@ -263,7 +299,7 @@ export function useChat(deps) {
   return {
     chatLog, chatBusy, chatSessions, chatSession, chatTidied, chatStance, chatFocus,
     graphPane, chatFresh,
-    newSessionId, setStance, toggleGraphPane, loadChatHistory, renameSession,
+    newSessionId, setStance, toggleGraphPane, loadChatHistory, renameSession, archiveSession, deleteSession,
     newChatSession, pickChatSession, sinceTidied, sendChat, advanceTidied, stopChat, retryChat,
   }
 }

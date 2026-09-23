@@ -22,8 +22,10 @@ import asyncio
 import datetime as dt
 import json
 import logging
+import os
 import queue
 import re
+import tempfile
 import time
 
 from difflib import SequenceMatcher
@@ -1023,8 +1025,7 @@ def chat_log_path(vault: Path, project: str | None = None, today: dt.date | None
     """按项目分目录、按月分文件。项目 id 只允许 ASCII（core.ID_OK 挡住），
     所以可以直接当目录名；认不出的一律归到 `_scratch`，绝不让它拼出路径。"""
     today = today or dt.date.today()
-    slot = project if project and core.ID_OK.match(project) else SCRATCH
-    return vault / ".knowrary" / "chat" / slot / f"{today:%Y-%m}.jsonl"
+    return _slot_dir(vault, project) / f"{today:%Y-%m}.jsonl"
 
 
 def append_log(vault: Path, role: str, text: str, node_ids: list[str] | None = None,
@@ -1055,34 +1056,42 @@ def append_log(vault: Path, role: str, text: str, node_ids: list[str] | None = N
     return row["ts"]
 
 
-def _read_rows(vault: Path, project: str | None, months: int = 2) -> list[dict]:
-    """把最近几个月的留档按时间顺序读出来。跨月的第一天只剩很短一截，所以默认往前翻两个月。"""
+def _slot_dir(vault: Path, project: str | None = None) -> Path:
+    slot = project if project and core.ID_OK.match(project) else SCRATCH
+    return vault / ".knowrary" / "chat" / slot
+
+
+def _log_files(vault: Path, project: str | None) -> list[Path]:
+    """这个项目的全部月档，旧的在前。文件名就是 `YYYY-MM`，字符串序即时间序。"""
+    d = _slot_dir(vault, project)
+    return sorted(d.glob("[0-9][0-9][0-9][0-9]-[0-9][0-9].jsonl")) if d.is_dir() else []
+
+
+def _read_rows(vault: Path, project: str | None) -> list[dict]:
+    """把留档按时间顺序全部读出来。
+
+    原来只往前翻两个月，超过的会话会**悄悄从列表里消失、也切不回去**——文件明明还在。
+    现在想收起旧会话靠手动归档（`archived.json`），不靠时间窗口替人决定。
+    按月分的 jsonl 一个月也就几百 KB，全读没有压力。
+    """
     rows: list[dict] = []
-    today = dt.date.today()
-    day = today
-    for _ in range(max(1, months)):
-        path = chat_log_path(vault, project, day)
-        if path.exists():
-            got = []
+    for path in _log_files(vault, project):
+        try:
+            lines = path.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            continue
+        for line in lines:
             try:
-                lines = path.read_text(encoding="utf-8").splitlines()
-            except OSError:
-                lines = []
-            for line in lines:
-                try:
-                    row = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                if row.get("role") in ("user", "assistant") and (row.get("text") or "").strip():
-                    got.append(row)
-            rows = got + rows
-        day = day.replace(day=1) - dt.timedelta(days=1)
+                row = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if row.get("role") in ("user", "assistant") and (row.get("text") or "").strip():
+                rows.append(row)
     return rows
 
 
 def titles_path(vault: Path, project: str | None = None) -> Path:
-    slot = project if project and core.ID_OK.match(project) else SCRATCH
-    return vault / ".knowrary" / "chat" / slot / "titles.json"
+    return _slot_dir(vault, project) / "titles.json"
 
 
 def load_titles(vault: Path, project: str | None = None) -> dict:
@@ -1115,8 +1124,7 @@ def rename_session(vault: Path, session: str, title: str, project: str | None = 
 # ---------------------------------------------------------------- 梳理游标
 
 def tidied_path(vault: Path, project: str | None = None) -> Path:
-    slot = project if project and core.ID_OK.match(project) else SCRATCH
-    return vault / ".knowrary" / "chat" / slot / "tidied.json"
+    return _slot_dir(vault, project) / "tidied.json"
 
 
 def load_tidied(vault: Path, project: str | None = None) -> dict:
@@ -1171,6 +1179,91 @@ def mark_tidied(vault: Path, session: str, upto: str, project: str | None = None
     return marks[session]
 
 
+# ---------------------------------------------------------------- 归档与删除
+
+def archived_path(vault: Path, project: str | None = None) -> Path:
+    return _slot_dir(vault, project) / "archived.json"
+
+
+def load_archived(vault: Path, project: str | None = None) -> dict:
+    """收起来的会话：「id → 归档时间」。**和 titles.json 一样是张贴纸**：
+    归档只是不占列表，留档一行都不动；删掉这个文件，所有会话回到列表里。"""
+    path = archived_path(vault, project)
+    if not path.exists():
+        return {}
+    try:
+        data = core.load_json(path)
+    except (ValueError, OSError):
+        return {}
+    return {str(k): str(v) for k, v in data.items()} if isinstance(data, dict) else {}
+
+
+def _save_sticker(path: Path, data: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    core.write_json_atomic(path, data)
+
+
+def archive_session(vault: Path, session: str, archived: bool,
+                    project: str | None = None) -> str | None:
+    """归档 / 取消归档。返回归档时间，取消了就是 None。"""
+    marks = load_archived(vault, project)
+    if archived:
+        marks.setdefault(session, dt.datetime.now().astimezone().isoformat(timespec="seconds"))
+    else:
+        marks.pop(session, None)
+    _save_sticker(archived_path(vault, project), marks)
+    return marks.get(session)
+
+
+def _drop_session_lines(path: Path, session: str) -> int:
+    """把一个月档里属于 `session` 的行剔掉，原子重写。读不懂的行原样留着——删的是一段对话，不是清洗留档。"""
+    kept, dropped = [], 0
+    for line in path.read_text(encoding="utf-8").splitlines():
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError:
+            kept.append(line)
+            continue
+        if isinstance(row, dict) and (row.get("session") or "legacy") == session:
+            dropped += 1
+        else:
+            kept.append(line)
+    if not dropped:
+        return 0
+    if not kept:
+        path.unlink()
+        return dropped
+    fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=path.name + ".", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write("\n".join(kept) + "\n")
+        os.replace(tmp, path)
+    except BaseException:
+        Path(tmp).unlink(missing_ok=True)
+        raise
+    return dropped
+
+
+def delete_session(vault: Path, session: str, project: str | None = None) -> int:
+    """真删一段对话：留档里这段的行全部剔掉，三张贴纸上它的条目一并撕掉。
+
+    **删了就没了**，这是人明确说"不想保留"的那种。已经梳理进 md 的知识不受影响——
+    知识住在节点里，对话只是过程。返回删了多少行；一行都没有就抛 ChatRejected。
+    """
+    session = (session or "").strip()
+    if not session:
+        raise ChatRejected("删除要给 session")
+    dropped = sum(_drop_session_lines(p, session) for p in _log_files(vault, project))
+    if not dropped:
+        raise ChatRejected(f"没有找到会话 `{session}`")
+    for path_of, load in ((titles_path, load_titles), (tidied_path, load_tidied),
+                          (archived_path, load_archived)):
+        marks = load(vault, project)
+        if marks.pop(session, None) is not None:
+            _save_sticker(path_of(vault, project), marks)
+    return dropped
+
+
 def sessions(vault: Path, project: str | None = None) -> list[dict]:
     """会话列表，**从留档行聚合出来**，不存第二份。
 
@@ -1194,11 +1287,13 @@ def sessions(vault: Path, project: str | None = None) -> list[dict]:
     out = sorted(buckets.values(), key=lambda b: b["seq"], reverse=True)
     mine = load_titles(vault, project)
     marks = load_tidied(vault, project)
+    shelved = load_archived(vault, project)
     for b in out:
         b["auto"] = b["title"] or "（没说什么）"      # 自动取的那个：改名框里当占位符
         b["title"] = mine.get(b["id"]) or b["auto"]
         b["renamed"] = b["id"] in mine
         b["tidied"] = marks.get(b["id"]) or None    # 梳理到哪儿了；没梳理过就是 None
+        b["archived"] = shelved.get(b["id"]) or None  # 归档时间；没归档是 None
     return out
 
 
@@ -1213,8 +1308,11 @@ def history(vault: Path, project: str | None = None, limit: int = 40,
     if session:
         rows = [r for r in rows if (r.get("session") or "legacy") == session]
     elif rows:
-        newest = rows[-1].get("session") or "legacy"
-        rows = [r for r in rows if (r.get("session") or "legacy") == newest]
+        # 最近那一段要跳过归档的：刚收起来的会话，刷新一下又自己弹回来就白收了
+        shelved = load_archived(vault, project)
+        live = [r for r in rows if (r.get("session") or "legacy") not in shelved]
+        newest = (live[-1].get("session") or "legacy") if live else None
+        rows = [r for r in live if (r.get("session") or "legacy") == newest]
     # ts 从留档原样带出来：界面靠它判断"这条在梳理游标前还是后"，没有它就只能全量重梳
     # failed 是**读出来的，不是存出来的**：留档里只有那句记号，这里认回来标上，
     # 前端才知道刷新之后这一轮不能算回答、也不能再喂给模型。

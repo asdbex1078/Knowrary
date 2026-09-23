@@ -238,6 +238,19 @@ export const uploadAsset = (name, file) => request(
 export const fetchCalendar = (days = 120) => request(`/api/calendar?days=${days}`)
 
 /** 最近几轮对话：刷新页面后接着聊（纯读 .knowrary/chat/ 的留档）。 */
+/** 归档 / 取消归档一段对话：只是一张贴纸，留档不动。 */
+export const archiveChatSession = (session, archived, project) => request(
+  `/api/chat/sessions/${encodeURIComponent(session)}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ archived, project: project || null }),
+  })
+
+/** 真删一段对话：留档里的行剔掉，删了就没了。 */
+export const deleteChatSession = (session, project) => request(
+  `/api/chat/sessions/${encodeURIComponent(session)}${project ? `?project=${encodeURIComponent(project)}` : ''}`,
+  { method: 'DELETE' })
+
 export const fetchChatHistory = (project, session = null) => {
   const q = new URLSearchParams()
   if (project) q.set('project', project)

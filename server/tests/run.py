@@ -3618,6 +3618,70 @@ def chat_多段会话各自独立且列表是聚合出来的():
 
 
 @case
+def chat_会话归档是贴纸删除是真删():
+    """归档只是收起来：留档一行不动，列表上标 archived，默认接着聊的那段跳过它。
+    删除是真删：这段的行从月档里剔掉，改名 / 游标 / 归档三张贴纸一并撕掉，别的会话不受影响。"""
+    c, vault, _ = with_inbox_node()
+    for sid, q in (("s1", "讲讲 a"), ("s2", "讲讲 b")):
+        original, _ = stub_chat([f"回答 {q}"])
+        try:
+            c.post("/api/chat", json={"project": "llm", "session": sid,
+                                      "messages": [{"role": "user", "content": q}]})
+        finally:
+            restore_chat(original)
+    from server import chat as chat_mod
+    log = chat_mod.chat_log_path(vault, "llm")
+    before = log.read_text("utf-8")
+
+    r = c.patch("/api/chat/sessions/s2", json={"project": "llm", "archived": True}).json()
+    assert r["archived"] and "title" not in r, r
+    assert log.read_text("utf-8") == before, "归档动了留档"
+    rows = {s["id"]: s for s in c.get("/api/chat/sessions?project=llm").json()["sessions"]}
+    assert rows["s2"]["archived"] and rows["s1"]["archived"] is None, rows
+    # 刚收起来的那段不能在刷新后又自己弹回来
+    last = c.get("/api/chat/history?project=llm").json()["messages"]
+    assert last[0]["content"] == "讲讲 a", last
+    # 点名要它还是读得到
+    assert c.get("/api/chat/history?project=llm&session=s2").json()["messages"]
+    c.patch("/api/chat/sessions/s2", json={"project": "llm", "archived": False})
+    rows = {s["id"]: s for s in c.get("/api/chat/sessions?project=llm").json()["sessions"]}
+    assert rows["s2"]["archived"] is None, rows
+
+    # 删除：先贴上三张贴纸，删完都该撕干净
+    c.patch("/api/chat/sessions/s1", json={"project": "llm", "title": "改过名"})
+    c.patch("/api/chat/sessions/s1", json={"project": "llm", "archived": True})
+    upto = c.get("/api/chat/history?project=llm&session=s1").json()["messages"][-1]["ts"]
+    c.post("/api/chat/tidied", json={"session": "s1", "upto": upto, "project": "llm"})
+    r = c.delete("/api/chat/sessions/s1?project=llm")
+    assert r.status_code == 200 and r.json()["deleted"] == 2, r.text
+    assert '"session": "s1"' not in log.read_text("utf-8")
+    assert '"session": "s2"' in log.read_text("utf-8"), "删一段把别的也删了"
+    for name in ("titles.json", "tidied.json", "archived.json"):
+        assert "s1" not in core.load_json(log.parent / name), name
+    assert [s["id"] for s in c.get("/api/chat/sessions?project=llm").json()["sessions"]] == ["s2"]
+    assert c.delete("/api/chat/sessions/s1?project=llm").status_code == 404
+
+    # 删到一个月档一行不剩，文件本身也不留
+    c.delete("/api/chat/sessions/s2?project=llm")
+    assert not log.exists()
+
+
+@case
+def chat_超过两个月的会话不会从列表里消失():
+    """原来只往前翻两个月：老会话悄悄消失、切不回去，文件明明还在。现在收起靠手动归档。"""
+    c, vault, _ = with_inbox_node()
+    from server import chat as chat_mod
+    old = chat_mod.chat_log_path(vault, "llm", dt.date(2024, 1, 15))
+    old.parent.mkdir(parents=True, exist_ok=True)
+    rows = [{"ts": "2024-01-15T10:00:00+08:00", "role": "user", "text": "很久以前", "session": "old"},
+            {"ts": "2024-01-15T10:00:05+08:00", "role": "assistant", "text": "嗯", "session": "old"}]
+    old.write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows), "utf-8")
+    ids = [s["id"] for s in c.get("/api/chat/sessions?project=llm").json()["sessions"]]
+    assert ids == ["old"], ids
+    assert len(c.get("/api/chat/history?project=llm&session=old").json()["messages"]) == 2
+
+
+@case
 def chat_回答里带回聊到的节点():
     """node_ids 从调试信息升级成了界面契约：「聊到哪、图上亮哪」靠它。"""
     c, _, _ = with_inbox_node()

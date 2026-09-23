@@ -490,7 +490,7 @@ const plansSchedules = shallowRef({})     // 时间账：装不装得下、每�
 const {
   chatLog, chatBusy, chatSessions, chatSession, chatTidied, chatStance, chatFocus,
   graphPane, chatFresh,
-  setStance, toggleGraphPane, loadChatHistory, renameSession,
+  setStance, toggleGraphPane, loadChatHistory, renameSession, archiveSession, deleteSession,
   newChatSession, pickChatSession, sendChat, advanceTidied, stopChat, retryChat,
 } = useChat({
   graph, currentProject,
@@ -3356,6 +3356,9 @@ onMounted(async () => {
   }
   try {
     await load()
+    // 首屏就落在对话（默认模式）时 switchMode 不会被调到——它见模式没变就直接返回，
+    // 于是会话列表是空的、上一段也没接上，得切一次模式才出来。这里补拉一次。
+    if (mode.value === 'chat') loadChatHistory()
     // 开场就把这两份拉回来：双态要项目进度，晨间简报要今日清单。
     // 都是本地接口、都不调 LLM，不 await 是为了不挡首屏。
     // 设置要先回来：今日清单、到期角标、简报都按它决定要不要拉
@@ -3479,6 +3482,7 @@ onBeforeUnmount(() => {
                   @apply-project="applyProjectCard" @apply-points="applyPointsCard"
                   @apply-list-edit="applyListEditCard" @goto="gotoNode"
                   @new-session="newChatSession" @pick-session="pickChatSession" @rename-session="renameSession"
+                  @archive-session="archiveSession" @delete-session="deleteSession"
                   @drop-focus="chatFocus = null" @toggle-graph="toggleGraphPane"
                   @close="switchMode(currentProject ? 'project' : 'structure')" />
 

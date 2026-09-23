@@ -399,11 +399,27 @@ def get_chat_sessions(project: str | None = None) -> dict:
 
 @app.patch("/api/chat/sessions/{session}")
 def patch_chat_session(session: str, body: dict) -> dict:
-    """给一段对话改名。存的是一张「id → 名字」的贴纸，不是会话表；
-    留空就撕掉贴纸，回到自动取的标题（第一句我说的话）。"""
-    title = chat_svc.rename_session(vault_path(), session, str(body.get("title") or ""),
-                                    body.get("project") or None)
-    return {"session": session, "title": title}
+    """改一段对话的贴纸：给了 `title` 就改名，给了 `archived` 就归档 / 取消归档。
+    都是「id → 值」的贴纸，不是会话表；改名留空就撕掉，回到自动取的标题（第一句我说的话）。"""
+    project = body.get("project") or None
+    out: dict = {"session": session}
+    if "title" in body:
+        out["title"] = chat_svc.rename_session(vault_path(), session, str(body.get("title") or ""),
+                                               project)
+    if "archived" in body:
+        out["archived"] = chat_svc.archive_session(vault_path(), session, bool(body["archived"]),
+                                                   project)
+    return out
+
+
+@app.delete("/api/chat/sessions/{session}")
+def delete_chat_session(session: str, project: str | None = None) -> dict:
+    """真删一段对话：留档里的行剔掉、贴纸撕掉。删了就没了，已经梳理进 md 的知识不受影响。"""
+    try:
+        dropped = chat_svc.delete_session(vault_path(), session, project or None)
+    except chat_svc.ChatRejected as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return {"session": session, "deleted": dropped}
 
 
 @app.post("/api/chat/tidied")

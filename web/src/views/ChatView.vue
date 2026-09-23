@@ -23,6 +23,7 @@
 import { computed, nextTick, ref, watch } from 'vue'
 import Icon from '../ui/Icon.vue'
 import Markdown from '../ui/Markdown.vue'
+import Popover from '../ui/Popover.vue'
 import { parseDiff } from '../ui/diff.js'
 
 const props = defineProps({
@@ -39,7 +40,7 @@ const props = defineProps({
 const emit = defineEmits(['send', 'stop', 'retry', 'apply', 'preview', 'apply-project', 'apply-points',
                           'apply-list-edit', 'goto',
                           'new-session', 'pick-session', 'drop-focus', 'toggle-graph', 'stance',
-                          'rename-session', 'close'])
+                          'rename-session', 'archive-session', 'delete-session', 'close'])
 
 
 /**
@@ -132,6 +133,32 @@ const sessionLabel = computed(() => {
   return hit ? `${hit.title}（${hit.turns} 条）` : '这段（还没说话）'
 })
 
+// 会话列表：没归档的平铺，归档的折叠在底下。**归档只是收起来**，点开照样能切回去接着聊
+const shelvedCount = computed(() => props.sessions.filter((s) => s.archived).length)
+const showShelved = ref(false)
+const listed = computed(() => {
+  const live = props.sessions.filter((s) => !s.archived)
+  return showShelved.value ? [...live, ...props.sessions.filter((s) => s.archived)] : live
+})
+// 删除走两步：先点垃圾桶，这一行变成确认条。删了就没了，不值得省这一下
+const confirming = ref('')
+
+function pickSession(s, close) {
+  confirming.value = ''
+  if (s.id !== props.session) emit('pick-session', s.id)
+  close()
+}
+
+function doDelete(s) {
+  confirming.value = ''
+  emit('delete-session', s.id)
+}
+
+function deleteTip(s) {
+  return s.tidied ? '删除：梳理过的内容已经在节点里了，删的只是对话本身'
+    : '删除：这段从没梳理过，里面聊到的东西还没进图谱，删了就找不回来'
+}
+
 // 改名：默认名是第一句我说的话（自动取的），改过之后存一张贴纸
 const naming = ref(false)
 const nameDraft = ref('')
@@ -185,13 +212,48 @@ function onKey(e) {
       <input v-if="naming" ref="nameBox" v-model="nameDraft" class="sess-pick sess-name"
              :placeholder="autoTitle" title="回车保存，Esc 取消；留空就回到自动取的名字"
              @keydown.enter.prevent="saveName" @keydown.esc="naming = false" @blur="saveName" />
-      <select v-else class="sess-pick" :value="session" title="切到另一段对话"
-              @change="emit('pick-session', $event.target.value)">
-        <option v-if="!sessions.some((s) => s.id === session)" :value="session">{{ sessionLabel }}</option>
-        <option v-for="s in sessions" :key="s.id" :value="s.id">
-          {{ s.title }} · {{ s.turns }} 条
-        </option>
-      </select>
+      <Popover v-else align="start" :width="320">
+        <template #trigger="{ toggle, open }">
+          <button class="sess-pick sess-trigger" :class="{ active: open }" title="切换、归档或删除对话"
+                  @click="confirming = ''; toggle()">
+            <span class="sess-label">{{ sessionLabel }}</span>
+            <Icon name="chevronDown" :size="12" class="caret" />
+          </button>
+        </template>
+        <template #default="{ close }">
+          <div class="sess-list">
+            <div v-if="!listed.length" class="sess-empty">还没有别的对话</div>
+            <template v-for="s in listed" :key="s.id">
+              <div v-if="confirming === s.id" class="sess-confirm" :title="deleteTip(s)">
+                <span>删除「{{ s.title }}」？{{ s.tidied ? '' : '没梳理过' }}</span>
+                <button class="btn tiny danger" @click="doDelete(s)">删除</button>
+                <button class="btn subtle tiny" @click="confirming = ''">取消</button>
+              </div>
+              <div v-else class="sess-row" :class="{ on: s.id === session, shelved: s.archived }"
+                   @click="pickSession(s, close)">
+                <span class="sess-title">{{ s.title }}</span>
+                <span class="dim">{{ s.turns }} 条</span>
+                <button class="icon-btn ghost tiny"
+                        :title="s.archived ? '放回列表' : '归档：不占列表，随时能在「已归档」里找回来'"
+                        @click.stop="emit('archive-session', { session: s.id, archived: !s.archived })">
+                  <Icon :name="s.archived ? 'undo' : 'archive'" :size="13" />
+                </button>
+                <button class="icon-btn ghost tiny danger" :title="deleteTip(s)"
+                        @click.stop="confirming = s.id">
+                  <Icon name="trash" :size="13" />
+                </button>
+              </div>
+            </template>
+          </div>
+          <template v-if="shelvedCount">
+            <div class="pop-sep" />
+            <button class="pop-item" @click="showShelved = !showShelved">
+              <Icon name="archive" :size="13" />{{ showShelved ? '收起已归档' : '已归档' }}
+              <span class="hint">{{ shelvedCount }}</span>
+            </button>
+          </template>
+        </template>
+      </Popover>
       <button class="icon-btn ghost tiny" :title="naming ? '收起' : '给这段对话改个名字'"
               @click="naming ? (naming = false) : startName()">
         <Icon name="pencil" :size="13" />
