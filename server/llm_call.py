@@ -31,6 +31,11 @@ class LLMFailed(Exception):
 
 
 def ask(vault: Path, role: str, prompt: str, op: str = "?") -> str:
+    return ask_meta(vault, role, prompt, op)[0]
+
+
+def ask_meta(vault: Path, role: str, prompt: str, op: str = "?") -> tuple[str, dict]:
+    """`ask` 的带回执版：多给一份 `{model, ms}`，界面要写"谁审的、审了多久"时用。"""
     """按角色取 provider 问一次，并把用量记进账本。
 
     所有 LLM 调用都从这里过，所以记账放这一处就够了——包括失败的那些：
@@ -45,9 +50,9 @@ def ask(vault: Path, role: str, prompt: str, op: str = "?") -> str:
     except BaseException as exc:                      # SystemExit 也要记：它是 llm_backend 的报错方式
         _record(vault, {**row, "ok": False, "ms": _ms(started), "error": str(exc)[:200]})
         raise _with_context(exc, role, name, provider) from None
-    _record(vault, {**row, **used, "model": used.get("model") or provider.get("model"),
-                    "ok": True, "ms": _ms(started), "chars": len(text or "")})
-    return text
+    meta = {"model": used.get("model") or provider.get("model") or name, "ms": _ms(started)}
+    _record(vault, {**row, **used, **meta, "ok": True, "chars": len(text or "")})
+    return text, meta
 
 
 def chat(vault: Path, role: str, messages: list[dict], tools: list[dict] | None = None,

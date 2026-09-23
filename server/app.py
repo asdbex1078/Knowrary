@@ -19,7 +19,7 @@ from fastapi.staticfiles import StaticFiles
 
 from . import (assets, audit, chat as chat_svc, compare as compare_svc, copying, curation, importing,
                projects as projects_svc, summarize as summarize_svc, vaults, years as years_svc)
-from .contracts import (CalendarRead, ChangeResult, ChangeSet, ChatRequest, CoachToday, FileDiff, ImportProposal,
+from .contracts import (AuditReport, AuditRequest, CalendarRead, ChangeResult, ChangeSet, ChatRequest, CoachToday, FileDiff, ImportProposal,
                         ImportProposeRequest, ImportRequest, ImportResult, SourceText, SourcesRead, SummarizeRequest, SummaryDraft,
                         InboxRead,
                         LayoutPatch, LayoutRead,
@@ -753,6 +753,29 @@ def post_merge(req: MergeRequest) -> MergeResult:
                        index_revision=current_index(vault)["revision"])
 
 
+@app.post("/api/audit", response_model=AuditReport)
+def post_audit(req: AuditRequest) -> AuditReport:
+    """卡上的「审核」：只审不写，结论记在这张卡名下（cards.jsonl 的 audited 事件）。
+
+    之后点「写入」，只要改法一个字没动，`/api/changes` 就直接用这份结论，不再问第二遍。
+    审核开关关着时也能调：确定性检查照跑，只是不问模型。
+    """
+    vault = vault_path()
+    index = current_index(vault)
+    payload = [c.model_dump(exclude_none=True) for c in req.changes]
+    try:
+        edits = core.plan(vault, payload, index)
+    except core.WriteConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except core.ChangeRejected as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    report = audit.check(vault, index, edits, payload)
+    report.stamp = audit.stamp_of(payload)
+    if req.card:
+        core.card_audited(vault, req.card, report.stamp, report.model_dump())
+    return report
+
+
 @app.post("/api/changes", response_model=ChangeResult)
 def post_changes(changeset: ChangeSet) -> ChangeResult:
     """Markdown 写回的唯一入口：默认只预览，dry_run=false 才落盘（落盘前自动备份）。"""
@@ -780,7 +803,7 @@ def post_changes(changeset: ChangeSet) -> ChangeResult:
                             audit=audit.preview(vault, index, edits))
     if changeset.force and not core.audit_force_allowed():
         raise HTTPException(status_code=422, detail="「仍然写入」在设置里被关掉了：先改审核意见，或去设置里打开它")
-    report = audit.gate(vault, index, edits, payload, changeset.force)
+    report = audit.gate(vault, index, edits, payload, changeset.force, changeset.card or "")
     if report.blocked:
         # **不是 HTTP 错误**：审核挡下是这条链路的正常结局之一，卡片要把结论和建议摆出来，
         # 人看完可以改、也可以「仍然写入」。抛 4xx 的话前端只剩一句红字。

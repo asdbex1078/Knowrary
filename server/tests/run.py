@@ -4212,14 +4212,14 @@ AUDIT_LONG = "这一段写得足够长，够过 THIN_BODY 那道线。" * 6
 def stub_audit(payload: str):
     """把审核那一次调用换成固定回答：审核链路要能离线测。"""
     from server import audit as audit_mod
-    original = audit_mod.ask
-    audit_mod.ask = lambda vault, role, prompt, op="?": payload
+    original = audit_mod.ask_meta
+    audit_mod.ask_meta = lambda vault, role, prompt, op="?": (payload, {"model": "假审校", "ms": 7})
     return original
 
 
 def restore_audit(original) -> None:
     from server import audit as audit_mod
-    audit_mod.ask = original
+    audit_mod.ask_meta = original
 
 
 def new_node_changes(nid: str = "新点", *, body: str = AUDIT_LONG, edge: bool = True) -> list[dict]:
@@ -4237,13 +4237,97 @@ def write_changes(c, changes, **extra):
 
 
 @case
+def audit_卡上先审过_写入时不再问第二遍_改过就重审():
+    """2026-09-23：点「写入」要等半分钟，界面上什么都不说。现在审核是卡上单独一步，
+    结论挂在卡上；接着点写入，改法一个字没动就直接用那份结论。"""
+    c, vault, _ = with_inbox_node()
+    c.put("/api/settings", json={"audit_enabled": True})
+    called = []
+    from server import audit as audit_mod
+    original = audit_mod.ask_meta
+    audit_mod.ask_meta = lambda *a, **k: (called.append(1) or json.dumps(
+        {"verdict": "warn", "summary": "能写，年份再核一下",
+         "issues": [{"path": "x", "severity": "warn", "what": "年份存疑", "why": "记忆里是 2017", "fix": "查原文"}]},
+        ensure_ascii=False), {"model": "假审校", "ms": 1234})
+    try:
+        changes = new_node_changes()
+        before = md_digest(vault)
+        r = c.post("/api/audit", json={"changes": changes, "card": "c1"})
+        assert r.status_code == 200, r.text
+        rep = r.json()
+        assert rep["verdict"] == "warn" and rep["model"] == "假审校" and rep["ms"] == 1234, rep
+        assert rep["stamp"] and len(called) == 1
+        assert md_digest(vault) == before, "审核写了盘"
+
+        w = write_changes(c, changes, card="c1")
+        assert w.status_code == 200 and w.json()["applied"], w.text
+        assert len(called) == 1, "卡上审过、改法没动，写入时又问了一遍模型"
+        assert w.json()["audit"]["reused"] and w.json()["audit"]["summary"] == "能写，年份再核一下"
+
+        # 另一张卡：审完又改了一个字 → 写入时得重审
+        edited = new_node_changes("另一个点")
+        c.post("/api/audit", json={"changes": edited, "card": "c2"})
+        edited[0]["body"] += "补一句。"
+        w = write_changes(c, edited, card="c2")
+        assert w.status_code == 200 and len(called) == 3, (w.text, called)
+        assert not w.json()["audit"]["reused"]
+        rows = [r for r in core.load_cards(vault) if r.get("event") == "audited"]
+        assert [r["id"] for r in rows] == ["c1", "c2", "c2"], rows
+    finally:
+        audit_mod.ask_meta = original
+        c.put("/api/settings", json={"audit_enabled": False})
+
+
+@case
+def audit_挡下的结论写入时照样挡_不重问():
+    c, vault, _ = with_inbox_node()
+    c.put("/api/settings", json={"audit_enabled": True})
+    original = stub_audit(json.dumps({"verdict": "block", "summary": "年份错了", "issues": [
+        {"path": "x", "severity": "block", "what": "不是 2018", "why": "2017 发表", "fix": "改 2017"}]},
+        ensure_ascii=False))
+    try:
+        changes = new_node_changes()
+        assert c.post("/api/audit", json={"changes": changes, "card": "c9"}).json()["verdict"] == "block"
+        w = write_changes(c, changes, card="c9")
+        assert w.json()["applied"] is False and w.json()["audit"]["reused"], w.json()["audit"]
+        w = write_changes(c, changes, card="c9", force=True)
+        assert w.json()["applied"] is True, "仍然写入要能绕过去"
+    finally:
+        restore_audit(original)
+        c.put("/api/settings", json={"audit_enabled": False})
+
+
+@case
+def audit_审核结论跟着卡片从留档回来():
+    c, vault, _ = with_inbox_node()
+    c.put("/api/settings", json={"audit_enabled": True})
+    changes = [{"type": "update_body", "source": "b", "body": AUDIT_LONG}]
+    original, _ = stub_chat([tool_block("propose_changes", {"changes": changes}), "卡给你了"])
+    try:
+        r = c.post("/api/chat", json={"messages": [{"role": "user", "content": "改 b"}], "session": "s1"})
+    finally:
+        restore_chat(original)
+    card = next(e["card"] for e in sse_events(r) if e["type"] == "card")
+    back = lambda: c.get("/api/chat/history", params={"session": "s1"}).json()["messages"][-1]["cards"][0]["card"]
+    assert back()["audit"] is None, "没审过的卡不该带结论"
+    audit_orig = stub_audit(json.dumps({"verdict": "pass", "summary": "没问题", "issues": []}, ensure_ascii=False))
+    try:
+        c.post("/api/audit", json={"changes": card["changes"], "card": card["card_id"]})
+    finally:
+        restore_audit(audit_orig)
+        c.put("/api/settings", json={"audit_enabled": False})
+    got = back()["audit"]
+    assert got["summary"] == "没问题" and got["fresh"] and got["model"] == "假审校", got
+
+
+@case
 def audit_默认关着时不问模型但确定性检查照跑():
     """开关关掉 ≠ 什么都不查。关的人要的是"别拦我"，不是"别告诉我"。"""
     c, vault, _ = with_inbox_node()
     called = []
     original = stub_audit("不该被调用")
     from server import audit as audit_mod
-    audit_mod.ask = lambda *a, **k: called.append(1) or "{}"
+    audit_mod.ask_meta = lambda *a, **k: (called.append(1) or "{}", {"model": "", "ms": 0})
     try:
         r = write_changes(c, new_node_changes(body="太短", edge=False))
         assert r.status_code == 200 and r.json()["applied"] is True, r.text
@@ -4263,7 +4347,7 @@ def audit_预览阶段只跑第一段():
     called = []
     original = stub_audit("{}")
     from server import audit as audit_mod
-    audit_mod.ask = lambda *a, **k: called.append(1) or "{}"
+    audit_mod.ask_meta = lambda *a, **k: (called.append(1) or "{}", {"model": "", "ms": 0})
     try:
         rev = c.get("/api/index").json()["revision"]
         r = c.post("/api/changes", json={"base_revision": rev, "changes": new_node_changes(body="太短"),
@@ -4304,7 +4388,7 @@ def audit_强制写入跳过模型但留痕():
     called = []
     original = stub_audit("{}")
     from server import audit as audit_mod
-    audit_mod.ask = lambda *a, **k: called.append(1) or "{}"
+    audit_mod.ask_meta = lambda *a, **k: (called.append(1) or "{}", {"model": "", "ms": 0})
     try:
         r = write_changes(c, new_node_changes(), force=True)
         assert r.status_code == 200 and r.json()["applied"] is True, r.text
@@ -4338,7 +4422,7 @@ def audit_只动关系不问模型():
     called = []
     original = stub_audit("{}")
     from server import audit as audit_mod
-    audit_mod.ask = lambda *a, **k: called.append(1) or "{}"
+    audit_mod.ask_meta = lambda *a, **k: (called.append(1) or "{}", {"model": "", "ms": 0})
     try:
         r = write_changes(c, [{"type": "add_edge", "source": "a", "relation": "相关", "target": "b"}])
         assert r.status_code == 200 and r.json()["applied"] is True, r.text

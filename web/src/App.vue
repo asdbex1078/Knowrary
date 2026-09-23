@@ -4,7 +4,7 @@ import {
   fetchSettings, putSettings, fetchLLMConfig, putLLMConfig, testLLMConfig as postLLMConfigTest,
   fetchVault, browseVault, initVault, putVault, forgetVault,
   fetchCopySources, fetchCopyCatalog, postCopy, fetchCalendar, fetchCompareGroups, fetchCompareTable, postCompareFill, fetchDigest, postSyncToGlobal, fetchDue, fetchProjects, putProjects, postPlanPropose, fetchToday, fetchUsage, postMerge, postRename, postQuiz, postQuizDiagnose, postQuizGrade, fetchOpenQuiz, dropOpenQuiz, postRegroup, fetchIndex, fetchInbox, fetchLayout, fetchNode,
-  patchLayout, postChanges, postPlace, postReview, postSuggest, postSummarize, postYearsPropose,
+  patchLayout, postAudit, postChanges, postPlace, postReview, postSuggest, postSummarize, postYearsPropose,
 } from './api.js'
 import AppHeader from './components/AppHeader.vue'
 import ActivityBar from './components/ActivityBar.vue'
@@ -2596,13 +2596,51 @@ async function previewChatCard({ card, i, j }) {
   }
 }
 
-/** 变更卡上的「写入」：走的仍然是 /api/changes 这唯一入口，和详情面板一模一样。 */
-async function applyChatCard({ card, i, j }, force = false) {
+/** 卡上的审核结论还算不算数：审的就是现在这份改法（卡上改过一个字就不算了）。 */
+function auditFresh(c) {
+  return !!c.audit && c.auditFor === JSON.stringify(c.changes)
+}
+
+/** 变更卡上的「审核」：只审不写，结论挂在卡上（2026-09-23 之前是写入时默默审、只在挡下时弹窗）。
+ *  **不占 chatBusy**：审一次要半分钟，占着的话别的卡全都点不动；几张卡可以同时审。 */
+async function auditChatCard({ i, j }) {
+  const c = chatLog.value[i].cards[j]
+  c.auditing = Date.now()
+  try {
+    const rep = await postAudit({ changes: c.changes, card: c.card_id })
+    Object.assign(c, { audit: rep, auditFor: JSON.stringify(c.changes) })
+    return rep
+  } catch (err) {
+    setBanner(`审核没跑成：${err.body?.detail?.message || err.body?.detail || err.message}`, 'error')
+    return null
+  } finally {
+    c.auditing = 0
+  }
+}
+
+/** 变更卡上的「写入」：走的仍然是 /api/changes 这唯一入口，和详情面板一模一样。
+ *
+ * 审核开着时**先审再写**：没审过（或审完又改过）就先审一遍——通过了直接接着写；
+ * 有意见或被挡下就停在卡上，让人看完再点（「照写」/「仍然写入」）。
+ * 卡上审过、改法没动的，服务端写入时直接沿用那份结论，不再问第二遍。 */
+async function applyChatCard({ card, i, j, force }) {
+  const c = chatLog.value[i].cards[j]
+  const forced = !!force            // 卡上「仍然写入」才带：你确认审核看走眼了
+  if (settings.value.audit_enabled && !forced) {
+    if (!auditFresh(c)) {
+      const rep = await auditChatCard({ i, j })
+      if (!rep || rep.verdict !== 'pass') return
+    } else if (c.audit.verdict === 'block') return
+  }
   chatBusy.value = true
   try {
-    const res = await writeChanges(card.changes, { card: card.card_id, force })
+    const res = await writeChanges(card.changes, { card: card.card_id, force: forced })
     // 卡上改过的话 diff 是旧的：换成真写下去的那份，留档里看到的就是落盘的样子
-    Object.assign(chatLog.value[i].cards[j], { applied: true, editing: false, stale: false, files: res.files })
+    Object.assign(c, { applied: true, editing: false, stale: false, files: res.files })
+    // 写入时真问了模型（没先审、或强制）就换成这份；沿用的那份和卡上的是同一个结论
+    if (res.audit && (res.audit.checked || res.audit.forced || !c.audit)) {
+      Object.assign(c, { audit: res.audit, auditFor: JSON.stringify(c.changes) })
+    }
     await load()
     // 学完之后图谱自动长出来（重构方案 §4）：新建的点自动上画布，落 draft 等人定稿。
     // 不这么做的话它只会掉进 Inbox，还得自己去点「放进去」。
@@ -2618,7 +2656,8 @@ async function applyChatCard({ card, i, j }, force = false) {
               + `原文备份在 ${res.backup}`, 'success')
   } catch (err) {
     if (err.audit) {
-      auditBlock.value = { report: err.audit, retry: () => applyChatCard({ card, i, j }, true) }
+      // 挡下的结论挂在卡上，不再弹窗：卡上就有「改一改」和「仍然写入」
+      Object.assign(c, { audit: err.audit, auditFor: JSON.stringify(c.changes) })
       return
     }
     setBanner(`写回失败：${err.body?.detail?.message || err.body?.detail || err.message}`, 'error')
@@ -3475,7 +3514,8 @@ onBeforeUnmount(() => {
                   :stance="chatStance" @stance="setStance"
                   :graph-open="graphPane" :tidied="chatTidied" :fresh="chatFresh"
                   @send="sendChat" @stop="stopChat" @retry="retryChat"
-                  @apply="applyChatCard" @preview="previewChatCard"
+                  :audit-on="!!settings.audit_enabled" :force-allowed="settings.audit_force_allowed !== false"
+                  @apply="applyChatCard" @audit="auditChatCard" @preview="previewChatCard"
                   @apply-project="applyProjectCard" @apply-points="applyPointsCard"
                   @apply-list-edit="applyListEditCard" @goto="gotoNode"
                   @new-session="newChatSession" @pick-session="pickChatSession" @rename-session="renameSession"

@@ -1393,6 +1393,18 @@ kbd.key {
 .cc-head.foldable:hover { color: var(--text-1); }
 .cc-caret { margin-left: auto; color: var(--text-3); }
 .cc-paths { font-weight: 400; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 写入审核：挂在变更卡上 */
+.cc-audit { border: 1px solid var(--line); border-radius: 8px; padding: 7px 10px; margin: 0 0 6px;
+  font-size: 11.5px; background: var(--surface); }
+.cc-audit.busy { display: flex; align-items: center; gap: 6px; color: var(--text-2); }
+.cc-audit.warn { border-color: var(--warn, #c98a1b); }
+.cc-audit.block { border-color: var(--danger); }
+.cc-audit-head { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.cc-audit-sum { margin: 4px 0 0; line-height: 1.6; }
+.cc-audit-list { list-style: none; margin: 6px 0 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.cc-audit-list p { margin: 2px 0 0 4px; line-height: 1.55; }
+.cc-audit-path { font-size: 10.5px; margin-left: 4px; }
+.cc-audit-fix { color: var(--ok); }
 .cc-expired { font-size: 11.5px; color: var(--danger); margin: 0 0 6px; }
 .cc-file { margin: 0 0 6px; }
 .cc-file-head {

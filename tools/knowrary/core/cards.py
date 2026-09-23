@@ -78,6 +78,27 @@ def applied(vault: Path, card_id: str) -> None:
         _write(vault, {"ts": _now(), "id": card_id, "event": "applied"})
 
 
+def audited(vault: Path, card_id: str, stamp: str, report: dict) -> None:
+    """这张卡审过一次。`stamp` 是审的那份改法的指纹：卡上改过一个字，指纹就对不上，
+    旧结论不能再拿来放行（`server/audit.py::gate`）。报告整份存下来——
+    卡片折叠之后再展开、隔天再打开，都要看得到当时审出了什么。"""
+    if card_id:
+        _write(vault, {"ts": _now(), "id": card_id, "event": "audited", "stamp": stamp, "report": report})
+
+
+def last_audit(vault: Path, card_id: str) -> dict | None:
+    """这张卡最近一次审核（整行，带 stamp / report）。没审过是 None。"""
+    if not card_id:
+        return None
+    hit = [r for r in load(vault) if r.get("id") == card_id and r.get("event") == "audited"]
+    return hit[-1] if hit else None
+
+
+def audits(vault: Path) -> dict[str, dict]:
+    """每张卡最近一次审核，一次读完：读回一整段对话时别每张卡都把流水重读一遍。"""
+    return {r["id"]: r for r in load(vault) if r.get("event") == "audited" and r.get("id")}
+
+
 def load(vault: Path) -> list[dict]:
     path = cards_path(vault)
     if not path.exists():

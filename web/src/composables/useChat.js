@@ -42,7 +42,10 @@ function emptyReply(extra = {}) {
 export function takeCard(reply, ev) {
   const slot = CARD_SLOT[ev?.type]
   const body = slot && ev[ev.type]
-  if (body) reply[slot].push({ ...body, applied: !!body.applied })
+  if (!body) return
+  // 读回来的审核结论：审的就是留档里这份改法（fresh）才算数，前端拿改法原文当指纹对照
+  const auditFor = body.audit?.fresh ? JSON.stringify(body.changes) : ''
+  reply[slot].push({ ...body, applied: !!body.applied, ...(body.audit ? { auditFor } : {}) })
 }
 
 /** 这一轮发给模型的是哪几条。

@@ -20,7 +20,7 @@
  * 知识仍然只住在 md 里：模型给的是**变更卡**，看过 diff 点「写入」才落盘（4.4）。
  * 会话状态在前端，服务端不持有；每一轮都已经留档在 .knowrary/chat/<项目>/。
  */
-import { computed, nextTick, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import Icon from '../ui/Icon.vue'
 import Markdown from '../ui/Markdown.vue'
 import Popover from '../ui/Popover.vue'
@@ -36,8 +36,10 @@ const props = defineProps({
   graphOpen: { type: Boolean, default: true },
   tidied: { type: Object, default: null },        // 梳理游标：{ upto, turns, at }，没梳理过是 null
   fresh: { type: Number, default: 0 },            // 游标之后还有几条没梳理
+  auditOn: { type: Boolean, default: false },     // 写入审核开着：变更卡先审再写
+  forceAllowed: { type: Boolean, default: true }, // 挡下之后给不给「仍然写入」
 })
-const emit = defineEmits(['send', 'stop', 'retry', 'apply', 'preview', 'apply-project', 'apply-points',
+const emit = defineEmits(['send', 'stop', 'retry', 'apply', 'audit', 'preview', 'apply-project', 'apply-points',
                           'apply-list-edit', 'goto',
                           'new-session', 'pick-session', 'drop-focus', 'toggle-graph', 'stance',
                           'rename-session', 'archive-session', 'delete-session', 'close'])
@@ -68,6 +70,49 @@ function touch(card) { card.stale = true }
 // 没点的卡永远整张摆着——切项目、刷新、隔天再打开都一样（它们跟着留档一起回来）
 function folded(card) { return card.applied && !card.open }
 function unfold(card) { if (card.applied) card.open = !card.open }
+
+// —— 写入审核：挂在卡上，看得见谁在审、等了多久、审出了什么（2026-09-23 之前是默默审的）——
+const VERDICT = { pass: '审核通过', warn: '有意见（不挡）', block: '被挡下' }
+const VERDICT_CHIP = { pass: 'm-mastered', warn: 'm-due', block: 'm-drop' }
+// 审核中的秒表：只在有卡在审时才走，免得整页每秒重渲染
+const now = ref(Date.now())
+let ticker = null
+const auditing = computed(() => props.messages.some((m) => (m.cards || []).some((c) => c.auditing)))
+watch(auditing, (on) => {
+  clearInterval(ticker)
+  ticker = on ? setInterval(() => { now.value = Date.now() }, 1000) : null
+  now.value = Date.now()
+}, { immediate: true })
+onBeforeUnmount(() => clearInterval(ticker))
+
+function auditFresh(c) { return !!c.audit && c.auditFor === JSON.stringify(c.changes) }
+function waited(c) { return Math.max(0, Math.round((now.value - c.auditing) / 1000)) }
+function auditTag(a) {
+  if (!a.checked && !a.forced) return '只跑了确定性检查'
+  if (a.forced) return '强制写入，没问模型'
+  return a.verdict === 'warn' ? `${a.issues.filter((x) => x.code === 'llm').length || a.issues.length} 条意见（不挡）`
+    : VERDICT[a.verdict] || a.verdict
+}
+function auditMeta(a) {
+  const bits = []
+  if (a.checked && a.model) bits.push(`${a.model} · ${Math.round((a.ms || 0) / 1000)} 秒`)
+  if (a.reused) bits.push('写入时沿用了这份结论，没再问模型')
+  if (a.model_failed) bits.push('模型没给出可用结论，这次放行')
+  if (a.at) bits.push(a.at.slice(5, 16).replace('T', ' '))
+  return bits.join(' · ')
+}
+function blockedNow(c) { return props.auditOn && auditFresh(c) && c.audit.verdict === 'block' }
+function writeLabel(c) {
+  if (!props.auditOn) return '写入'
+  if (!auditFresh(c)) return '审核并写入'
+  return c.audit.verdict === 'warn' ? '照写' : '写入'
+}
+function writeHint(c) {
+  if (!props.auditOn) return '写前自动备份到 .knowrary/backup/'
+  if (!auditFresh(c)) return c.audit ? '卡改过了，写入前会重新审' : '先由 review 角色审一遍，没意见直接写；有意见停下来给你看'
+  if (c.audit.verdict === 'block') return '改一改再审，或者你确认它看走眼了'
+  return '已经审过，写入不再等模型；写前自动备份'
+}
 
 /** 折叠条上直接写清楚这一轮都动了什么，不点开也知道它去查了图还是出了题。 */
 function traceTools(m) {
@@ -461,6 +506,9 @@ function onKey(e) {
             <div class="cc-head" :class="{ foldable: c.applied }" @click="unfold(c)">
               <Icon name="file" :size="13" />提议写入 {{ c.files.length }} 个文件
               <span class="dim cc-paths">{{ c.files.map((f) => f.path.split('/').pop().replace(/\.md$/, '')).join('、') }}</span>
+              <span v-if="c.auditing" class="chip m-due">审核中 {{ waited(c) }}s</span>
+              <span v-else-if="c.audit" class="chip" :class="VERDICT_CHIP[c.audit.verdict] || 'm-due'"
+                    :title="auditMeta(c.audit)">{{ auditTag(c.audit) }}</span>
               <span v-if="c.applied" class="chip m-mastered">已写入</span>
               <Icon v-if="c.applied" :name="c.open ? 'chevronDown' : 'chevronRight'" :size="12" class="cc-caret" />
               <button v-if="!c.applied && !c.expired && editable(c).length" class="btn subtle tiny" style="margin-left: auto"
@@ -503,12 +551,42 @@ function onKey(e) {
               「{{ c.into.project_name }}·{{ c.into.list_name }}」清单——
               不加的话节点建出来了、项目进度却不认它
             </p>
+            <div v-if="c.auditing" class="cc-audit busy">
+              <Icon name="checklist" :size="13" />review 角色在审这张卡 · 已等 {{ waited(c) }} 秒
+              <span class="dim">（看事实、关系方向、和库里有没有冲突）</span>
+            </div>
+            <div v-else-if="c.audit" class="cc-audit" :class="c.audit.verdict">
+              <div class="cc-audit-head">
+                <Icon name="checklist" :size="13" /><b>{{ auditTag(c.audit) }}</b>
+                <span class="dim">{{ auditMeta(c.audit) }}</span>
+              </div>
+              <p v-if="c.audit.summary" class="cc-audit-sum">{{ c.audit.summary }}</p>
+              <ul v-if="c.audit.issues?.length" class="cc-audit-list">
+                <li v-for="(it, k) in c.audit.issues" :key="k" :class="it.level">
+                  <span class="chip" :class="it.level === 'block' ? 'm-drop' : 'm-due'">{{ it.level === 'block' ? '得改' : '提醒' }}</span>
+                  <span>{{ it.message }}</span>
+                  <span v-if="it.path" class="dim cc-audit-path">{{ it.path }}</span>
+                  <p v-if="it.why" class="dim">依据：{{ it.why }}</p>
+                  <p v-if="it.fix" class="cc-audit-fix">改法：{{ it.fix }}</p>
+                </li>
+              </ul>
+              <p v-if="!c.applied && !auditFresh(c)" class="dim" style="font-size: 11px; margin: 4px 0 0">
+                卡改过了，这是改之前的审核意见</p>
+            </div>
             </template>
             <div v-if="!c.applied && !c.expired" class="cc-acts">
-              <button class="btn primary tiny" :disabled="busy" @click="emit('apply', { card: c, i, j })">
-                <Icon name="check" :size="13" />写入
+              <button v-if="auditOn" class="btn subtle tiny" :disabled="busy || !!c.auditing"
+                      title="只审不写：结论挂在卡上，看完再决定写不写" @click="emit('audit', { card: c, i, j })">
+                <Icon name="checklist" :size="12" />{{ c.audit ? '重新审核' : '审核' }}
               </button>
-              <span class="dim" style="font-size: 11px">写前自动备份到 .knowrary/backup/</span>
+              <button class="btn primary tiny" :disabled="busy || !!c.auditing || blockedNow(c)"
+                      @click="emit('apply', { card: c, i, j })">
+                <Icon name="check" :size="13" />{{ writeLabel(c) }}
+              </button>
+              <button v-if="blockedNow(c) && forceAllowed" class="btn subtle tiny danger" :disabled="busy"
+                      title="你确认审核看走眼了：跳过模型直接写（会记一笔）"
+                      @click="emit('apply', { card: c, i, j, force: true })">仍然写入</button>
+              <span class="dim" style="font-size: 11px">{{ writeHint(c) }}</span>
             </div>
           </div>
         </div>

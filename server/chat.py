@@ -34,7 +34,7 @@ import threading
 from pathlib import Path
 from typing import get_args
 
-from . import curation, turns
+from . import audit as audit_svc, curation, turns
 from .contracts import Change, ChatRequest, QuizRequest
 from .index_service import current_index
 from .levels import fragment as level_fragment
@@ -1322,10 +1322,10 @@ def history(vault: Path, project: str | None = None, limit: int = 40,
     # failed 是**读出来的，不是存出来的**：留档里只有那句记号，这里认回来标上，
     # 前端才知道刷新之后这一轮不能算回答、也不能再喂给模型。
     rows = rows[-limit:]
-    applied = _applied_cards(vault)
+    ledger = {"applied": _applied_cards(vault), "audits": core.card_audits(vault)}
     return [{"role": r["role"], "content": r["text"], "node_ids": r.get("node_ids") or [],
              "trace": r.get("trace") or [], "ts": r.get("ts") or "",
-             "failed": _is_failed(r), "cards": _revive_cards(vault, r.get("cards"), applied)}
+             "failed": _is_failed(r), "cards": _revive_cards(vault, r.get("cards"), ledger)}
             for r in rows]
 
 
@@ -1333,7 +1333,19 @@ def _applied_cards(vault: Path) -> set[str]:
     return {r["id"] for r in core.load_cards(vault) if r.get("event") == "applied" and r.get("id")}
 
 
-def _revive_cards(vault: Path, cards, applied: set[str]) -> list[dict]:
+def _card_audit(row: dict | None, changes: list) -> dict | None:
+    """这张卡最近那次审核，读回来挂在卡上。`fresh` = 审的就是留档里这份改法（前端据此决定
+    「写入」要不要先审）。算不出指纹（改法本身已经不合法了）就当不新鲜。"""
+    if not row or not isinstance(row.get("report"), dict):
+        return None
+    try:
+        fresh = row.get("stamp") == audit_svc.stamp_of(changes)
+    except ValueError:
+        fresh = False
+    return {**row["report"], "fresh": fresh, "at": row.get("ts") or ""}
+
+
+def _revive_cards(vault: Path, cards, ledger: dict) -> list[dict]:
     """留档里的卡读回来，标上点没点。
 
     **没点的变更卡按现在的文件重算一遍 diff**：留档里那份是摆出来那一刻算的，
@@ -1347,9 +1359,11 @@ def _revive_cards(vault: Path, cards, applied: set[str]) -> list[dict]:
         body = ev.get(key) if key in CARD_EVENTS else None
         if not isinstance(body, dict):
             continue
-        body = {**body, "applied": body.get("card_id") in applied}
-        if key == "card" and not body["applied"]:
-            body.update(_repreview(vault, body.get("changes") or []))
+        body = {**body, "applied": body.get("card_id") in ledger["applied"]}
+        if key == "card":
+            body["audit"] = _card_audit(ledger["audits"].get(body.get("card_id")), body.get("changes") or [])
+            if not body["applied"]:
+                body.update(_repreview(vault, body.get("changes") or []))
         out.append({"type": key, key: body})
     return out
 

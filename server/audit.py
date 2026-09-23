@@ -17,10 +17,12 @@
 """
 from __future__ import annotations
 
+import hashlib
+import json
 from pathlib import Path
 
-from .contracts import AuditIssue, AuditReport
-from .llm_call import ask, parse_json
+from .contracts import AuditIssue, AuditReport, Change
+from .llm_call import ask_meta, parse_json
 from .paths import core
 
 # 只有"往正文里写东西"才值得花一次调用。加一条边、改一个 year 不审——
@@ -34,6 +36,15 @@ MAX_CONTEXT = 12           # 给多少个相关的已有节点当对照
 def _prompt() -> str:
     path = Path(__file__).resolve().parents[1] / "tools" / "knowrary" / "prompts" / "audit.md"
     return path.read_text(encoding="utf-8")
+
+
+def stamp_of(changes: list) -> str:
+    """一份改法的指纹。先过一遍 `Change` 归一：留档里存的是模型原样给的，
+    `/api/changes` 收到的是 model_dump 过的，两者字段默认值不同，不归一就永远对不上。"""
+    norm = [Change.model_validate(c).model_dump(exclude_none=True) if isinstance(c, dict) else c
+            for c in changes]
+    raw = json.dumps(norm, ensure_ascii=False, sort_keys=True)
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
 
 
 def has_content(changes: list[dict]) -> bool:
@@ -117,11 +128,11 @@ def review(vault: Path, index: dict, edits: list, precheck: list[dict]) -> Audit
     prompt = (_prompt().replace("{{diffs}}", _diffs(edits))
               .replace("{{precheck}}", _precheck_text(precheck))
               .replace("{{context}}", _context(index, edits)))
-    raw = ask(vault, "review", prompt, op="audit")
+    raw, meta = ask_meta(vault, "review", prompt, op="audit")
     data = parse_json(raw, "audit", vault=vault)
     if not data:
         return AuditReport(checked=True, verdict="pass", summary="审核模型没给出可用的结论，这一次放行",
-                           issues=[i for i in _wrap(precheck)], model_failed=True)
+                           issues=[i for i in _wrap(precheck)], model_failed=True, **meta)
     first = (edits[0].rel if edits else "")
     llm = [x for x in (_as_issue(r, first) for r in (data.get("issues") or [])) if x]
     verdict = str(data.get("verdict") or "").strip()
@@ -133,7 +144,7 @@ def review(vault: Path, index: dict, edits: list, precheck: list[dict]) -> Audit
         verdict = "warn" if llm else "pass"
     return AuditReport(checked=True, verdict=verdict,
                        summary=str(data.get("summary") or "").strip(),
-                       issues=_wrap(precheck) + llm)
+                       issues=_wrap(precheck) + llm, **meta)
 
 
 def _wrap(precheck: list[dict]) -> list[AuditIssue]:
@@ -151,11 +162,29 @@ def preview(vault: Path, index: dict, edits: list) -> AuditReport:
     return AuditReport(checked=False, verdict="pass", issues=_wrap(core.audit_precheck(vault, index, edits)))
 
 
-def gate(vault: Path, index: dict, edits: list, changes: list[dict], force: bool) -> AuditReport:
+def gate(vault: Path, index: dict, edits: list, changes: list[dict], force: bool,
+         card: str = "") -> AuditReport:
     """落盘前的总闸。返回的报告**永远带着第一段的结果**，开关只决定要不要问模型、挡不挡。
 
     调用方按 `report.blocked` 决定写不写；`blocked` 为真时不要落盘，把报告交给人。
+
+    **卡上先点过「审核」的，这里不再问第二遍**：同一张卡、指纹对得上（一个字没改过），
+    就用那次的结论。审一次半分钟，写入时再等半分钟，人只会把开关关掉。
     """
+    stamp = stamp_of(changes)
+    if card and not force and core.audit_on():
+        prior = core.card_last_audit(vault, card)
+        if prior and prior.get("stamp") == stamp and isinstance(prior.get("report"), dict):
+            return AuditReport(**{**prior["report"], "reused": True, "stamp": stamp})
+    report = check(vault, index, edits, changes, force)
+    report.stamp = stamp
+    if card and not force and core.audit_on():       # 开关关着时没什么可留的：只是确定性检查
+        core.card_audited(vault, card, stamp, report.model_dump())
+    return report
+
+
+def check(vault: Path, index: dict, edits: list, changes: list[dict], force: bool = False) -> AuditReport:
+    """只审不写：卡上的「审核」按钮和写入前的闸门共用这一段。"""
     precheck = core.audit_precheck(vault, index, edits)
     if not core.audit_on():
         return AuditReport(checked=False, verdict="pass", issues=_wrap(precheck),

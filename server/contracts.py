@@ -358,10 +358,22 @@ class AuditReport(Strict):
     issues: list[AuditIssue] = Field(default_factory=list)
     forced: bool = False               # 这一次是强制写入
     model_failed: bool = False         # 模型抽风或调用失败：放行，但要说出来
+    # 下面几栏是给卡片看的（2026-09-23）：以前审核是"默默的"，等半分钟也不知道谁在审、审出了什么
+    model: str = ""                    # 这次是哪个模型审的
+    ms: int = 0                        # 审了多久
+    stamp: str = ""                    # 审的那份改法的指纹；写入时指纹对得上就直接用这份结论，不再问第二遍
+    reused: bool = False               # 这份结论是写入前那次「审核」留下的，写入时没再问模型
 
     @property
     def blocked(self) -> bool:
         return self.verdict == "block"
+
+
+class AuditRequest(Strict):
+    """卡上的「审核」：只审不写。和 ChangeSet 同一份 changes，审完的结论记在这张卡名下。"""
+
+    changes: list[Change]
+    card: str | None = None
 
 
 class ChangeResult(Strict):

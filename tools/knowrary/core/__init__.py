@@ -9,7 +9,8 @@ from .digest import (build_digest, drafts, duplicates, group_labels, kinship, li
                      lonely_batches, misplaced, no_year,
                      off_canvas, project_layouts, squatted)
 from .audit import THIN_BODY as AUDIT_THIN_BODY, precheck as audit_precheck
-from .cards import (KINDS as CARD_KINDS, applied as card_applied, cards_path, load as load_cards,
+from .cards import (KINDS as CARD_KINDS, applied as card_applied, audited as card_audited,
+                    audits as card_audits, cards_path, last_audit as card_last_audit, load as load_cards,
                     new_card_id, proposed as card_proposed, stats as card_stats)
 from .issues import (issues_path, load as load_issues, record as record_issue,
                      summary as issues_summary)
@@ -69,7 +70,7 @@ __all__ = [
     "load_settings", "save_settings", "review_in_chat", "review_on", "audit_on", "audit_force_allowed",
     "SETTINGS_DEFAULTS",
     "audit_precheck", "AUDIT_THIN_BODY",
-    "CARD_KINDS", "card_applied", "card_proposed", "card_stats", "cards_path",
+    "CARD_KINDS", "card_applied", "card_audited", "card_audits", "card_last_audit", "card_proposed", "card_stats", "cards_path",
     "load_cards", "new_card_id",
     "build_article_prompt", "cards_from_index", "cards_from_nodes", "describe_points", "describe_related",
     "select_linkable", "select_related",

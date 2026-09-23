@@ -34,6 +34,13 @@ export const postChanges = (body) => request('/api/changes', {
   body: JSON.stringify(body),
 })
 
+/** 卡上的「审核」：只审不写。结论记在这张卡名下，之后写入时改法没动就不再审第二遍。 */
+export const postAudit = (body) => request('/api/audit', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify(body),
+})
+
 export const patchLayout = (body, name = null) =>
   request(`/api/layout${name ? `?layout=${encodeURIComponent(name)}` : ''}`, {
   method: 'PATCH',
