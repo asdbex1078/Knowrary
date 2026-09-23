@@ -48,10 +48,15 @@ def _write(vault: Path, row: dict) -> None:
 
 
 def _trim(path: Path) -> None:
+    """只留最近 KEEP 条，**但「采纳」事件一条不裁**：对话留档读回卡片时，
+    点没点全靠它现算（`server/chat.py::_revive_cards`）。裁掉了，几个月前点过的卡
+    就会重新摆成"没点"。它一行几十字节，全留着也不值一提；统计只数还在的「提出」，口径不变。"""
     try:
         lines = path.read_text(encoding="utf-8").splitlines()
         if len(lines) > KEEP * 2:
-            path.write_text("\n".join(lines[-KEEP:]) + "\n", encoding="utf-8")
+            cut = len(lines) - KEEP
+            kept = [ln for ln in lines[:cut] if '"event": "applied"' in ln] + lines[cut:]
+            path.write_text("\n".join(kept) + "\n", encoding="utf-8")
     except OSError:
         pass
 

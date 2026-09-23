@@ -29,6 +29,22 @@ export function stripToolBlocks(text) {
   return text.replace(/```knowrary[\s\S]*?```/g, '').replace(/```knowrary[\s\S]*$/, '').trim()
 }
 
+// 四种卡的 SSE 事件类型 → 回复上挂的那一栏。留档 `cards` 栏里的每一条也是这个形状
+const CARD_SLOT = { card: 'cards', project: 'projects', points: 'points', list_edit: 'listEdits' }
+
+/** 一轮回复的空架子。流式收的时候往里填，从留档读回来的也按它摆，渲染只认这一个形状。 */
+function emptyReply(extra = {}) {
+  return { role: 'assistant', content: '', trace: [], cards: [], projects: [], points: [],
+           listEdits: [], questions: [], ts: '', failed: false, error: '', ...extra }
+}
+
+/** 把一张卡挂到回复上。流式来的是新卡，`applied` 一律 false；读回来的带着服务端现算的结果。 */
+export function takeCard(reply, ev) {
+  const slot = CARD_SLOT[ev?.type]
+  const body = slot && ev[ev.type]
+  if (body) reply[slot].push({ ...body, applied: !!body.applied })
+}
+
 /** 这一轮发给模型的是哪几条。
  *  **没答成的那几轮要摘掉**：断线时收到的半截话留在屏幕上是有用的（断点前那段推理常常值钱），
  *  但喂回去，模型会把它当成"我上一轮就是这么答的"接着往下编，而服务端留档里那一轮记的是
@@ -86,8 +102,9 @@ export function useChat(deps) {
     nextTick(() => window.dispatchEvent(new Event('resize')))   // 画布跟着重新量宽
   }
 
-  /** 刷新页面后接着聊：把留档里最近几轮读回来。**不是多会话**——
-   *  只是别把上下文弄丢。变更卡和工具痕迹不恢复（它们是当时那一刻的东西，过期了）。 */
+  /** 刷新页面后接着聊：把留档里最近几轮读回来。
+   *  **卡片跟着回来**：没点的原样摆着（变更卡的 diff 服务端按现在的文件重算过），
+   *  点过的折叠成一行。以前这里是 `cards: []`——换个项目再切回来，没点的卡就全没了。 */
   async function loadChatHistory(session = null) {
     if (chatBusy.value) return
     try {
@@ -96,12 +113,17 @@ export function useChat(deps) {
         fetchChatSessions(currentProject.value || null),
       ])
       chatSessions.value = list.sessions
-      chatLog.value = hist.messages.map((m) => ({
-        ...m, cards: [], resumed: true,
-        // 没答成的那一行，正文就是"（这一轮没答成：…）"这句记号本身，不是模型说过的话：
-        // 搬进 error 栏显示，正文留空——留在 content 里它会被当成上一轮的回答再发给模型
-        ...(m.failed ? { content: '', error: m.content } : {}),
-        trace: (m.trace || []).map((t) => ({ kind: 'say', text: t })) }))
+      chatLog.value = hist.messages.map((m) => {
+        const { cards = [], ...rest } = m
+        const row = {
+          ...(m.role === 'assistant' ? emptyReply() : {}), ...rest, resumed: true,
+          // 没答成的那一行，正文就是"（这一轮没答成：…）"这句记号本身，不是模型说过的话：
+          // 搬进 error 栏显示，正文留空——留在 content 里它会被当成上一轮的回答再发给模型
+          ...(m.failed ? { content: '', error: m.content } : {}),
+          trace: (m.trace || []).map((t) => ({ kind: 'say', text: t })) }
+        if (m.role === 'assistant') cards.forEach((ev) => takeCard(row, ev))
+        return row
+      })
       // 接着最近那一段聊：服务端不给 session 时返回的就是它，这里把 id 对上
       if (!session && hist.messages.length) chatSession.value = list.sessions[0]?.id || chatSession.value
       else if (session) chatSession.value = session
@@ -202,9 +224,7 @@ export function useChat(deps) {
     // failed = 这一轮没答成。**必须单独标出来**：断线时收到的那半截和一段正常回答长得一模一样，
     // 不标的话，它既会让人以为模型就答了这么点，又会在下一轮被当上下文发回模型——
     // 而服务端留档里这一轮写的是"（这一轮没答成：…）"，两边就此对不上（2026-09-21 那次）。
-    const reply = reactive({ role: 'assistant', content: '', trace: [], cards: [], projects: [],
-                             points: [], listEdits: [], questions: [], streaming: true, ts: '',
-                             failed: false, error: '', waited: 0 })
+    const reply = reactive(emptyReply({ streaming: true, waited: 0 }))
     chatLog.value = [...chatLog.value, reply]
     chatBusy.value = true
     chatAbort = new AbortController()
@@ -225,10 +245,7 @@ export function useChat(deps) {
         // 服务端把「贴成正文的变更集」捞成卡之后发的：这一步的正文整段换掉。
         // 那段 JSON 已经流过来了，不换的话它会被下一条 tool 事件收进过程折叠区。
         else if (ev.type === 'replace') reply.content = stripToolBlocks(ev.text || '')
-        else if (ev.type === 'card') reply.cards.push({ ...ev.card, applied: false })
-        else if (ev.type === 'project') reply.projects.push({ ...ev.project, applied: false })
-        else if (ev.type === 'points') reply.points.push({ ...ev.points, applied: false })
-        else if (ev.type === 'list_edit') reply.listEdits.push({ ...ev.list_edit, applied: false })
+        else if (CARD_SLOT[ev.type]) takeCard(reply, ev)
         else if (ev.type === 'question') reply.questions.push({ stem: ev.stem, points: ev.points })
         else if (ev.type === 'review') { onReview(); pushToast(`已记一次「忘了」：${ev.id}`, 'info') }
         else if (ev.type === 'done') {

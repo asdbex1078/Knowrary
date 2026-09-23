@@ -64,6 +64,11 @@ function toggleEdit(card) {
 // 改过之后 diff 是旧的，真写入时服务端按 changes 现算，所以只是提示，不挡写入
 function touch(card) { card.stale = true }
 
+// 点过的卡折成一行：它已经落盘了，再整张摊着只是挤占后面的对话；但要回看当时写了什么，点标题就展开。
+// 没点的卡永远整张摆着——切项目、刷新、隔天再打开都一样（它们跟着留档一起回来）
+function folded(card) { return card.applied && !card.open }
+function unfold(card) { if (card.applied) card.open = !card.open }
+
 /** 折叠条上直接写清楚这一轮都动了什么，不点开也知道它去查了图还是出了题。 */
 function traceTools(m) {
   return [...new Set((m.trace || []).filter((t) => t.kind === 'tool').map((t) => t.label))]
@@ -346,16 +351,18 @@ function onKey(e) {
           </div>
 
           <!-- 项目卡：建项目 / 加清单。同样只是提议，点了才写 projects.json -->
-          <div v-for="(pj, j) in (m.projects || [])" :key="`p${j}`" class="change-card">
-            <div class="cc-head">
+          <div v-for="(pj, j) in (m.projects || [])" :key="`p${j}`" class="change-card"
+               :class="{ folded: folded(pj) }">
+            <div class="cc-head" :class="{ foldable: pj.applied }" @click="unfold(pj)">
               <Icon name="checklist" :size="13" />
               {{ pj.action === 'create' ? '提议新建项目' : '提议加清单' }}「{{ pj.name }}」
               <span class="dim">id {{ pj.id }}</span>
               <!-- 档位一路决定出题深浅和拆点粒度，按下「创建」之前得看得见它被定成了哪一档 -->
               <span v-if="pj.level" class="chip m-due" title="学到什么份上：出题深浅、拆点粒度都看它">{{ pj.level }}</span>
               <span v-if="pj.applied" class="chip m-mastered">已创建</span>
+              <Icon v-if="pj.applied" :name="pj.open ? 'chevronDown' : 'chevronRight'" :size="12" class="cc-caret" />
             </div>
-            <ul>
+            <ul v-if="!folded(pj)">
               <li v-for="(ls, k) in pj.lists" :key="k" class="edge-row point">
                 <span class="chip m-unbuilt">{{ ls.kind }}</span>
                 <span class="to">{{ ls.name }}</span>
@@ -372,13 +379,16 @@ function onKey(e) {
           </div>
 
           <!-- 拆点卡：把清单拆成知识点。和面板上「让 AI 拆一份」是同一条链路 -->
-          <div v-for="(pt, j) in (m.points || [])" :key="`pt${j}`" class="change-card">
-            <div class="cc-head">
+          <div v-for="(pt, j) in (m.points || [])" :key="`pt${j}`" class="change-card"
+               :class="{ folded: folded(pt) }">
+            <div class="cc-head" :class="{ foldable: pt.applied }" @click="unfold(pt)">
               <Icon name="network" :size="13" />
               给「{{ pt.project_name }}·{{ pt.list_name }}」拆了
               {{ pt.stages.reduce((n, s) => n + s.points.length, 0) }} 个点
               <span v-if="pt.applied" class="chip m-mastered">已采纳</span>
+              <Icon v-if="pt.applied" :name="pt.open ? 'chevronDown' : 'chevronRight'" :size="12" class="cc-caret" />
             </div>
+            <template v-if="!folded(pt)">
             <div v-for="(st, k) in pt.stages" :key="k" class="prop-stage">
               <div class="prop-stage-name">{{ st.name }}
                 <span v-if="st.deadline" class="dim" style="font-weight: 400">· 排到 {{ st.deadline }}</span>
@@ -400,6 +410,7 @@ function onKey(e) {
               时间账：{{ pt.schedule.verdict }}——这份约 {{ pt.schedule.total_hours }} 小时，
               按现在的投入要学到 {{ pt.schedule.suggested_target_date }}
             </p>
+            </template>
             <div v-if="!pt.applied" class="cc-acts">
               <button class="btn primary tiny" :disabled="busy" @click="emit('apply-points', { card: pt, i, j })">
                 <Icon name="check" :size="13" />采纳进清单
@@ -409,12 +420,15 @@ function onKey(e) {
           </div>
 
           <!-- 清单卡：改已有条目（换 id / 删 / 改字段）。只动 projects.json，不碰 md -->
-          <div v-for="(le, j) in (m.listEdits || [])" :key="`le${j}`" class="change-card">
-            <div class="cc-head">
+          <div v-for="(le, j) in (m.listEdits || [])" :key="`le${j}`" class="change-card"
+               :class="{ folded: folded(le) }">
+            <div class="cc-head" :class="{ foldable: le.applied }" @click="unfold(le)">
               <Icon name="network" :size="13" />
               改「{{ le.project_name }}·{{ le.list_name }}」{{ le.edits.length }} 条
               <span v-if="le.applied" class="chip m-mastered">已应用</span>
+              <Icon v-if="le.applied" :name="le.open ? 'chevronDown' : 'chevronRight'" :size="12" class="cc-caret" />
             </div>
+            <template v-if="!folded(le)">
             <ul>
               <li v-for="(e, k) in le.edits" :key="k" class="edge-row point">
                 <span class="chip" :class="e.op === 'drop' ? 'm-drop' : 'm-due'">
@@ -430,7 +444,8 @@ function onKey(e) {
             <p v-if="le.empties" class="dim" style="font-size: 11.5px; color: var(--danger)">
               ⚠️ 这些删完就是<b>空清单</b>了——项目进度和今日清单会跟着全空。
             </p>
-            <p v-else class="dim" style="font-size: 11.5px">改完这份清单还剩 {{ le.left }} 个点</p>
+            <p v-else-if="!le.applied" class="dim" style="font-size: 11.5px">改完这份清单还剩 {{ le.left }} 个点</p>
+            </template>
             <div v-if="!le.applied" class="cc-acts">
               <button class="btn primary tiny" :disabled="busy"
                       @click="emit('apply-list-edit', { card: le, i, j })">
@@ -441,11 +456,14 @@ function onKey(e) {
           </div>
 
           <!-- 变更卡：**这里是唯一能写 md 的地方，且必须人点** -->
-          <div v-for="(c, j) in (m.cards || [])" :key="`c${j}`" class="change-card">
-            <div class="cc-head">
+          <div v-for="(c, j) in (m.cards || [])" :key="`c${j}`" class="change-card"
+               :class="{ folded: folded(c) }">
+            <div class="cc-head" :class="{ foldable: c.applied }" @click="unfold(c)">
               <Icon name="file" :size="13" />提议写入 {{ c.files.length }} 个文件
+              <span class="dim cc-paths">{{ c.files.map((f) => f.path.split('/').pop().replace(/\.md$/, '')).join('、') }}</span>
               <span v-if="c.applied" class="chip m-mastered">已写入</span>
-              <button v-if="!c.applied && editable(c).length" class="btn subtle tiny" style="margin-left: auto"
+              <Icon v-if="c.applied" :name="c.open ? 'chevronDown' : 'chevronRight'" :size="12" class="cc-caret" />
+              <button v-if="!c.applied && !c.expired && editable(c).length" class="btn subtle tiny" style="margin-left: auto"
                       :title="c.editing ? '收起编辑框' : '写入前先改摘要 / 正文'" @click="toggleEdit(c)">
                 <Icon :name="c.editing ? 'x' : 'pencil'" :size="12" />{{ c.editing ? '收起' : '改一改' }}
               </button>
@@ -467,6 +485,10 @@ function onKey(e) {
                 <span v-if="c.stale" class="dim" style="font-size: 11px">改过了，下面的 diff 还是旧的；直接写入也按改后的算</span>
               </div>
             </div>
+            <p v-if="c.expired && !c.applied" class="cc-expired">
+              这张卡摆出来之后文件变了，照原样写不进去了：{{ c.expired }}。要的话让我重新出一张。
+            </p>
+            <template v-if="!folded(c)">
             <div v-for="f in c.files" :key="f.path" class="cc-file">
               <div class="cc-file-head">
                 <b>{{ f.path }}</b>
@@ -481,7 +503,8 @@ function onKey(e) {
               「{{ c.into.project_name }}·{{ c.into.list_name }}」清单——
               不加的话节点建出来了、项目进度却不认它
             </p>
-            <div v-if="!c.applied" class="cc-acts">
+            </template>
+            <div v-if="!c.applied && !c.expired" class="cc-acts">
               <button class="btn primary tiny" :disabled="busy" @click="emit('apply', { card: c, i, j })">
                 <Icon name="check" :size="13" />写入
               </button>

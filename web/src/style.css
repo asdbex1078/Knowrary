@@ -1387,6 +1387,13 @@ kbd.key {
 }
 .cc-head { display: flex; align-items: center; gap: 6px; font-size: 11.5px; font-weight: 600;
   color: var(--text-2); margin-bottom: 6px; }
+/* 点过的卡折成一行，点标题展开回看 */
+.change-card.folded .cc-head { margin-bottom: 0; }
+.cc-head.foldable { cursor: pointer; }
+.cc-head.foldable:hover { color: var(--text-1); }
+.cc-caret { margin-left: auto; color: var(--text-3); }
+.cc-paths { font-weight: 400; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cc-expired { font-size: 11.5px; color: var(--danger); margin: 0 0 6px; }
 .cc-file { margin: 0 0 6px; }
 .cc-file-head {
   display: flex; align-items: center; gap: 6px; margin: 0 0 3px;

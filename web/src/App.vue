@@ -313,12 +313,10 @@ async function applyProjectCard({ card, i, j }) {
     await putProjects({ base_revision: doc.doc.revision, projects: next, card: card.card_id })
     chatLog.value[i].projects[j].applied = true
     await refreshPlans()
-    // **直接把人送到那一项**：建完还要自己去左侧栏找项目面板、再在下拉里挑一遍，
-    // 这一步的摩擦比建项目本身还大。
-    await switchProject(card.id)
-    openPanel('plans', { force: true })
-    setBanner(old ? `已往「${card.name}」加了 ${card.lists.length} 份清单，面板已经切过去了`
-                  : `已创建项目「${card.name}」，面板已经切过去了——点「让 AI 拆一份」把点填进来`, 'success')
+    // **不跳走**（2026-09-23）：以前这里会 switchProject 过去，可对话是按项目分线的，
+    // 一换项目这段对话就被换掉了，同一轮里还没点的卡跟着看不见。人还在聊，就让他留在这段里。
+    setBanner(old ? `已往「${card.name}」加了 ${card.lists.length} 份清单`
+                  : `已创建项目「${card.name}」——切到它之后点「让 AI 拆一份」把点填进来`, 'success')
   } catch (err) {
     setBanner(`创建失败：${err.body?.detail || err.message}`, 'error')
   } finally {
@@ -351,9 +349,8 @@ async function applyListEditCard({ card, i, j }) {
     await putProjects({ base_revision: doc.doc.revision, projects: next, card: card.card_id })
     chatLog.value[i].listEdits[j].applied = true
     await refreshPlans()
-    await switchProject(card.project)
-    openPanel('plans', { force: true })
-    setBanner(`已改「${card.project_name}·${card.list_name}」${done} 条，面板已经切过去了`, 'success')
+    // 不跳走：改的常常是**别的项目**的清单（在 AI 史里聊出 Transformer 清单有重复），跳过去就把这段对话换掉了
+    setBanner(`已改「${card.project_name}·${card.list_name}」${done} 条`, 'success')
   } catch (err) {
     setBanner(`改清单失败：${err.body?.detail || err.message}`, 'error')
   } finally {
@@ -384,10 +381,7 @@ async function applyPointsCard({ card, i, j }) {
     await putProjects({ base_revision: doc.doc.revision, projects: next, card: card.card_id })
     chatLog.value[i].points[j].applied = true
     await refreshPlans()
-    await switchProject(card.project)
-    openPanel('plans', { force: true })
-    setBanner(`已把 ${added} 个点采纳进「${card.project_name}·${card.list_name}」，面板已经切过去了`,
-              'success')
+    setBanner(`已把 ${added} 个点采纳进「${card.project_name}·${card.list_name}」`, 'success')
   } catch (err) {
     setBanner(`采纳失败：${err.body?.detail || err.message}`, 'error')
   } finally {
@@ -2683,6 +2677,7 @@ async function refreshPlans() {
       currentProject.value = ''
       await reloadLayout()                        // 画布跟着退回全局图
       render({ view: 'stored' })
+      if (mode.value === 'chat') { newChatSession(); loadChatHistory() }
     } else if (!projectPicked && !currentProject.value) {
       let saved = null
       try { saved = localStorage.getItem('knowrary-project') } catch { /* 无痕模式 */ }
@@ -2696,6 +2691,8 @@ async function refreshPlans() {
         if (currentProject.value) {
           await reloadLayout()
           render({ view: 'stored' })
+          // 对话也按项目分线：已经在对话里的话，读的还是「全局」那条线，得换过来
+          if (mode.value === 'chat') { newChatSession(); loadChatHistory() }
         }
       }
     }

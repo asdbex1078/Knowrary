@@ -3527,6 +3527,104 @@ def chat_入库只出卡不写md():
 
 
 @case
+def chat_卡片跟着留档回来_点过的标已点_撞车的标过期():
+    """2026-09-23：在 AI 史里点了一张改 Transformer 清单的卡，页面跳去了 Transformer，
+    再切回来，同一轮里还没点的三张变更卡全没了——卡片只活在前端内存里，留档只记正文。
+
+    现在卡跟着 assistant 那一行留档；读回时点没点从 cards.jsonl 现算，
+    没点的变更卡按**现在的文件**重算 diff，算不过去的标 `expired`。
+    """
+    c, vault, _ = with_inbox_node()
+    born = {"type": "create_node", "source": "x", "path": "nodes/组A/x.md",
+            "fields": {"name": "x", "field": "测试", "desc": "新点"}}
+    original, _ = stub_chat([
+        tool_blocks(("propose_changes", {"changes": [born]}),
+                    ("propose_changes", {"changes": [{**born, "fields": {**born["fields"], "desc": "另一版"}}]}),
+                    ("propose_changes", {"changes": [
+                        {"type": "add_edge", "source": "a", "relation": "相关", "target": "b"}]})),
+        "三张卡给你了"])
+    try:
+        r = c.post("/api/chat", json={"messages": [{"role": "user", "content": "存进去"}],
+                                      "session": "s1"})
+    finally:
+        restore_chat(original)
+    live = [e["card"] for e in sse_events(r) if e["type"] == "card"]
+    assert len(live) == 3, [e["type"] for e in sse_events(r)]
+
+    def cards_back():
+        msgs = c.get("/api/chat/history", params={"session": "s1"}).json()["messages"]
+        assert [m["role"] for m in msgs] == ["user", "assistant"], msgs
+        assert msgs[0]["cards"] == [], "卡挂到了我那一行上"
+        return [ev["card"] for ev in msgs[1]["cards"]]
+
+    back = cards_back()
+    assert [b["card_id"] for b in back] == [x["card_id"] for x in live]
+    assert not any(b["applied"] for b in back) and all(b["files"] for b in back), back
+
+    first = live[0]
+    w = c.post("/api/changes", json={"base_revision": c.get("/api/index").json()["revision"],
+                                     "dry_run": False, "changes": first["changes"],
+                                     "card": first["card_id"]})
+    assert w.status_code == 200 and w.json()["applied"], w.text
+
+    back = cards_back()
+    assert back[0]["applied"] and not back[0].get("expired"), back[0]
+    # 第二张也要建 x：x 已经在了，照原样写不进去——卡还摆着，但标上为什么
+    assert not back[1]["applied"] and back[1].get("expired"), back[1]
+    # 第三张和 x 无关：diff 按现在的文件重算，base_revision 跟着换成现在的
+    assert not back[2]["applied"] and not back[2].get("expired"), back[2]
+    assert back[2]["base_revision"] == c.get("/api/index").json()["revision"]
+
+
+@case
+def cards_流水裁剪时采纳事件一条不裁():
+    """点没点是从流水现算的：老的 applied 被裁掉，几个月前点过的卡读回来就又成了"没点"。"""
+    cards_mod = sys.modules["core.cards"]
+
+    _, vault = client()
+    keep = cards_mod.KEEP
+    cards_mod.KEEP = 5
+    try:
+        core.card_proposed(vault, "old", "changes")
+        core.card_applied(vault, "old")
+        for k in range(12):
+            core.card_proposed(vault, f"n{k}", "changes")
+    finally:
+        cards_mod.KEEP = keep
+    rows = core.load_cards(vault)
+    assert {"id": "old", "event": "applied"}.items() <= next(
+        r for r in rows if r["id"] == "old").items(), rows
+    assert not any(r["id"] == "old" and r["event"] == "proposed" for r in rows), "该裁的没裁"
+
+
+@case
+def chat_断在半路的那一轮也留下已经摆出来的卡():
+    """卡片是边跑边推给前端的：模型出完卡之后才挂，屏幕上那几张照样能点，读回来也得在。"""
+    from server import chat as chat_mod
+
+    c, vault, _ = with_inbox_node()
+    original = chat_mod.llm_chat
+    step = [0]
+
+    def flaky(vault, role, messages, tools=None, op="chat", on_delta=None, session=None):
+        step[0] += 1
+        if step[0] > 1:
+            raise RuntimeError("上游断了")
+        blk = tool_block("propose_changes", {"changes": [
+            {"type": "add_edge", "source": "a", "relation": "相关", "target": "b"}]})
+        return blk["text"], blk["calls"], {}
+
+    chat_mod.llm_chat = flaky
+    try:
+        r = c.post("/api/chat", json={"messages": [{"role": "user", "content": "存"}], "session": "s2"})
+    finally:
+        chat_mod.llm_chat = original
+    assert [e for e in sse_events(r) if e["type"] == "card"], [e["type"] for e in sse_events(r)]
+    msgs = c.get("/api/chat/history", params={"session": "s2"}).json()["messages"]
+    assert msgs[-1]["failed"] and len(msgs[-1]["cards"]) == 1, msgs[-1]
+
+
+@case
 def chat_留档一行一轮且不建索引():
     c, vault, _ = with_inbox_node()
     original, _ = stub_chat(["a 是这样的…"])

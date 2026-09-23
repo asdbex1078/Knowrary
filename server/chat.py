@@ -1030,7 +1030,8 @@ def chat_log_path(vault: Path, project: str | None = None, today: dt.date | None
 
 def append_log(vault: Path, role: str, text: str, node_ids: list[str] | None = None,
                project: str | None = None, session: str | None = None,
-               stance: str | None = None, trace: list[str] | None = None) -> str:
+               stance: str | None = None, trace: list[str] | None = None,
+               cards: list[dict] | None = None) -> str:
     """一行一轮，按月分文件。**不建库、不切分、不做 embedding**（F10.7）：
     对话是过程不是知识，检索系统已经存在，就是那张图。找旧对话用 grep。
 
@@ -1047,6 +1048,10 @@ def append_log(vault: Path, role: str, text: str, node_ids: list[str] | None = N
     # 过程（"我先查一下…"、工具报错）另存一栏：它和答案混在一行里，回看时得整段重读一遍
     if trace:
         row["trace"] = trace
+    # 这一轮摆出来的卡，原样记下（形状就是 SSE 上那条事件）。**点没点不记在这儿**——
+    # 采纳可能隔好几天才发生，记这里就得回头改历史行；它从 cards.jsonl 的 applied 事件现算
+    if cards:
+        row["cards"] = cards
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         with path.open("a", encoding="utf-8") as fh:
@@ -1316,10 +1321,46 @@ def history(vault: Path, project: str | None = None, limit: int = 40,
     # ts 从留档原样带出来：界面靠它判断"这条在梳理游标前还是后"，没有它就只能全量重梳
     # failed 是**读出来的，不是存出来的**：留档里只有那句记号，这里认回来标上，
     # 前端才知道刷新之后这一轮不能算回答、也不能再喂给模型。
+    rows = rows[-limit:]
+    applied = _applied_cards(vault)
     return [{"role": r["role"], "content": r["text"], "node_ids": r.get("node_ids") or [],
              "trace": r.get("trace") or [], "ts": r.get("ts") or "",
-             "failed": _is_failed(r)}
-            for r in rows][-limit:]
+             "failed": _is_failed(r), "cards": _revive_cards(vault, r.get("cards"), applied)}
+            for r in rows]
+
+
+def _applied_cards(vault: Path) -> set[str]:
+    return {r["id"] for r in core.load_cards(vault) if r.get("event") == "applied" and r.get("id")}
+
+
+def _revive_cards(vault: Path, cards, applied: set[str]) -> list[dict]:
+    """留档里的卡读回来，标上点没点。
+
+    **没点的变更卡按现在的文件重算一遍 diff**：留档里那份是摆出来那一刻算的，
+    隔了几天文件可能已经被别的卡改过，照旧 diff 看到的就不是真要落下去的东西。
+    重算只跑确定性那一段（和卡上「重算 diff」同一个 preview），不花钱。
+    算不过去的（节点已经被建了、文件被手改了）标上 `expired`，卡还摆着，但不给点。
+    """
+    out = []
+    for ev in cards if isinstance(cards, list) else []:
+        key = ev.get("type") if isinstance(ev, dict) else None
+        body = ev.get(key) if key in CARD_EVENTS else None
+        if not isinstance(body, dict):
+            continue
+        body = {**body, "applied": body.get("card_id") in applied}
+        if key == "card" and not body["applied"]:
+            body.update(_repreview(vault, body.get("changes") or []))
+        out.append({"type": key, key: body})
+    return out
+
+
+def _repreview(vault: Path, changes: list) -> dict:
+    index = current_index(vault)
+    try:
+        files = curation.preview(vault, changes, index)
+    except (core.ChangeRejected, core.WriteConflict) as exc:
+        return {"expired": str(exc)}
+    return {"files": [f.model_dump() for f in files], "base_revision": index["revision"]}
 
 
 def _is_failed(row: dict) -> bool:
@@ -1707,17 +1748,18 @@ def run(vault: Path, req: ChatRequest):
     - **不进出错流水**。`issues.jsonl` 是用来回答"这东西为什么老出问题"的，
       把人主动按的停止算进去，那张表就没法看了。
     """
+    cards: list[dict] = []          # 断在半路也要留下已经摆出来的卡：它们在屏幕上是能点的
     try:
-        yield from _run(vault, req)
+        yield from _run(vault, req, cards)
     except ChatRejected:
         raise
     except (GeneratorExit, asyncio.CancelledError):
-        append_log(vault, "assistant", BROKEN_MARK,
-                   project=req.project, session=req.session, stance=req.stance or DEFAULT_STANCE)
+        append_log(vault, "assistant", BROKEN_MARK, project=req.project, session=req.session,
+                   stance=req.stance or DEFAULT_STANCE, cards=cards)
         raise
     except BaseException as exc:
-        append_log(vault, "assistant", f"{FAILED_MARK}{str(exc)[:200]}）",
-                   project=req.project, session=req.session, stance=req.stance or DEFAULT_STANCE)
+        append_log(vault, "assistant", f"{FAILED_MARK}{str(exc)[:200]}）", project=req.project,
+                   session=req.session, stance=req.stance or DEFAULT_STANCE, cards=cards)
         core.record_issue(vault, "llm", str(exc), where="chat",
                           detail={"stance": req.stance or DEFAULT_STANCE})
         raise
@@ -1790,14 +1832,17 @@ def _invoke(vault: Path, name: str, args: dict, allowed: set, cached: str | None
         return f"工具 `{name}` 执行失败：{exc}", {}
 
 
+# 四种卡在 SSE 上的事件类型，也是留档 `cards` 栏里每一条的形状
+CARD_EVENTS = ("card", "project", "points", "list_edit")
+
+
 def _tool_events(name: str, args: dict, result: str, extra: dict):
     """一次工具调用要往 SSE 上推的那几条。**事件是有类型的**，前端按类型渲染不解析文本。"""
     yield {"type": "tool", "name": name, "args": args,
            "summary": result[:200], **{k: v for k, v in extra.items() if k in ("card", "quiz")}}
-    for field, key in (("card", "card"), ("project", "project"), ("points", "points"),
-                       ("list_edit", "list_edit")):
-        if extra.get(field):
-            yield {"type": key, key: extra[field]}
+    for key in CARD_EVENTS:
+        if extra.get(key):
+            yield {"type": key, key: extra[key]}
     if extra.get("id") and name == "record_review":
         yield {"type": "review", "id": extra["id"], "next_due": extra.get("next_due")}
 
@@ -1884,6 +1929,7 @@ def _step_calls(vault: Path, req: ChatRequest, calls: list[dict], turn: dict):
                 "_turn": turn["user_ts"] or ""}
         result, extra = _invoke(vault, name, args, turn["allowed"], turn["seen_calls"].get(key))
         turn["seen_calls"].setdefault(key, result)
+        turn["cards"].extend({"type": k, k: extra[k]} for k in CARD_EVENTS if extra.get(k))
         yield from _tool_events(name, args, result, extra)
         results.append({"role": "tool", "tool_call_id": call.get("id") or "",
                         "name": name, "content": result})
@@ -1918,14 +1964,15 @@ def _wrap_up(vault: Path, req: ChatRequest, history: list[dict], turn: dict):
                        visible=[*history, {"role": "assistant", "content": answer}],
                        messages=[*turn["messages"], {"role": "assistant", "content": turn["last_raw"]}])
     ts = append_log(vault, "assistant", answer, node_ids=touched, project=req.project,
-                    session=req.session, stance=req.stance or DEFAULT_STANCE, trace=trace)
+                    session=req.session, stance=req.stance or DEFAULT_STANCE, trace=trace,
+                    cards=turn["cards"])
     # node_ids 从调试信息升级成了界面契约：「聊到哪、图上亮哪」靠它（重构方案 §8 第 4 条）
     # ts / user_ts 同理：梳理游标就停在某一条留档上，界面得知道这两条各自是哪一条。
     yield {"type": "done", "text": answer, "trace": trace, "usage": turn["usage"],
            "node_ids": touched, "ts": ts, "user_ts": turn["user_ts"]}
 
 
-def _run(vault: Path, req: ChatRequest):
+def _run(vault: Path, req: ChatRequest, cards: list[dict]):
     history, dropped = _fit_history([m.model_dump() for m in req.messages])
     if not history or history[-1]["role"] != "user":
         raise ChatRejected("最后一条必须是我说的话")
@@ -1942,6 +1989,7 @@ def _run(vault: Path, req: ChatRequest):
         "last_raw": "",        # 收尾那段的**原文**：存进续接缓存的是它，不是剥过工具块的版本
         "messages": _assemble(vault, req, history, dropped),
         "usage": {},
+        "cards": cards,        # 这一轮摆出来的卡，收尾时跟着回复一起留档
     }
     tools = tool_schemas(allowed)
     for _ in range(MAX_STEPS):
