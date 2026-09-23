@@ -2637,8 +2637,9 @@ async function applyChatCard({ card, i, j, force }) {
     const res = await writeChanges(card.changes, { card: card.card_id, force: forced })
     // 卡上改过的话 diff 是旧的：换成真写下去的那份，留档里看到的就是落盘的样子
     Object.assign(c, { applied: true, editing: false, stale: false, files: res.files })
-    // 写入时真问了模型（没先审、或强制）就换成这份；沿用的那份和卡上的是同一个结论
-    if (res.audit && (res.audit.checked || res.audit.forced || !c.audit)) {
+    // 写入时真问了模型（没先审、或强制）就换成这份；沿用的那份和卡上的是同一个结论。
+    // 审核关着就不挂：那份只是确定性检查，卡头多一个「只跑了确定性检查」纯属噪音
+    if (res.audit && settings.value.audit_enabled && (res.audit.checked || res.audit.forced || !c.audit)) {
       Object.assign(c, { audit: res.audit, auditFor: JSON.stringify(c.changes) })
     }
     await load()

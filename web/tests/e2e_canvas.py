@@ -1457,6 +1457,24 @@ CROSS_PROBE = """(() => {
 })()"""
 
 
+async def set_avoid(page: Page, on: bool) -> bool:
+    """在设置 →「画布与外观」里把「连线绕开卡片」拨到 `on`，返回进来时的值（好还原）。
+    走真的设置弹窗：这个开关 2026-09-22 起**出厂默认关**（VIEW_DEFAULTS），不能再假设它开着。"""
+    await page.ev("""[...document.querySelectorAll('button.icon-btn')].find((b) => b.title.startsWith('设置'))?.click()""")
+    await poll(page, "!!document.querySelector('.set-dialog')", lambda v: v)
+    await page.ev("""[...document.querySelectorAll('.set-tab')].find((b) => b.textContent.includes('画布'))?.click()""")
+    await asyncio.sleep(0.3)
+    box = """[...document.querySelectorAll('.set-dialog .switch-row')]
+      .find((r) => r.textContent.includes('连线绕开卡片'))?.querySelector('input')"""
+    was = bool(await page.ev(f"!!({box})?.checked"))
+    if was != on:
+        await page.ev(f"({box})?.click()")
+        await asyncio.sleep(0.6)
+    await page.ev("document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))")
+    await poll(page, "!document.querySelector('.set-dialog')", lambda v: v)
+    return was
+
+
 async def case_edges_dodge(page: Page, ck: Check) -> None:
     """连线不许从别的卡片身上穿过去——这是"卡片挡住连线"那个抱怨的可量化版本。
 
@@ -1464,10 +1482,13 @@ async def case_edges_dodge(page: Page, ck: Check) -> None:
     只断言"路由挂上了"根本发现不了（真实图上 17 条边有 10 条是这么穿过去的）。
     """
     await switch_mode(page, "全局图")
+    was = await set_avoid(page, True)
     await asyncio.sleep(0.8)
     got = json.loads(await page.ev(CROSS_PROBE) or "{}")
     ck.add("连线绕开卡片，一条都不穿模",
            got.get("edges", 0) > 0 and not got.get("hits"), str(got)[:200])
+    if not was:
+        await set_avoid(page, False)          # 还原：后面的用例按出厂默认（直连）写的
 
 
 # ---------------------------------------------------------------- 外部改过文件之后还能继续写
@@ -1600,16 +1621,19 @@ graph LR
       const n = s && s.querySelector('.node rect, rect');
       return n ? getComputedStyle(n).fill : 'no-rect' })()"""
     is_color = lambda v: bool(v) and str(v).startswith("rgb")
-    light = await poll(page, fill_expr, is_color, timeout=10)
     # 直接改属性而不是去点切换按钮：这一条验的是"图跟不跟主题"，不是"按钮点不点得动"。
     # 改完要还原成进来时那个值——后面还有几个用例，别给它们留一个和 app 状态对不上的 DOM。
+    # **先显式切到浅色再量**：出厂默认已经是深色（VIEW_DEFAULTS.theme），进来量到的那张本来就是深色的
     was = await page.ev("document.documentElement.dataset.theme || 'light'")
+    await page.ev("document.documentElement.dataset.theme = 'light'")
+    await asyncio.sleep(0.3)
+    light = await poll(page, fill_expr, is_color, timeout=10)
     await page.ev("document.documentElement.dataset.theme = 'dark'")
     dark = await poll(page, fill_expr, lambda v: is_color(v) and v != light, timeout=10)
     ck.add("切深色后图跟着换主题（不是浅色底那张惨白的）",
            is_color(light) and is_color(dark) and dark != light, f"{light} → {dark}")
     await page.ev(f"document.documentElement.dataset.theme = {json.dumps(was)}")
-    await poll(page, fill_expr, lambda v: v == light, timeout=10)
+    await poll(page, fill_expr, lambda v: v == (light if was == "light" else dark), timeout=10)
 
 
 # ---------------------------------------------------------------- 阶段 6：历史视图
