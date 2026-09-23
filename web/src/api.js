@@ -41,6 +41,20 @@ export const postAudit = (body) => request('/api/audit', {
   body: JSON.stringify(body),
 })
 
+/** 卡上的「按意见修改」：learn 角色按勾选的审核意见改一版，只改卡不写盘。 */
+export const postRevise = (body) => request('/api/revise', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify(body),
+})
+
+/** 撤回 AI 按意见改的那一版：卡上的改法回到改前那份（留档读回来也是）。 */
+export const postReviseUndo = (body) => request('/api/revise/undo', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify(body),
+})
+
 export const patchLayout = (body, name = null) =>
   request(`/api/layout${name ? `?layout=${encodeURIComponent(name)}` : ''}`, {
   method: 'PATCH',

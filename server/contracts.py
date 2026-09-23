@@ -376,6 +376,39 @@ class AuditRequest(Strict):
     card: str | None = None
 
 
+class ReviseRequest(Strict):
+    """卡上的「按意见修改」：把改法和勾选的审核意见交给 learn 角色改一版。只改卡，不写盘。"""
+
+    changes: list[Change]
+    issues: list[AuditIssue]
+    card: str | None = None
+
+
+class ReviseSkip(Strict):
+    """模型没照改的一条意见，以及为什么（拿不准、和别的意见冲突……）。"""
+
+    what: str
+    why: str = ""
+
+
+class ReviseResult(Strict):
+    changes: list[Change]              # 改完的整份改法，直接替换卡上那份
+    files: list[FileDiff] = Field(default_factory=list)   # 按改完的算的 diff（对磁盘）
+    delta: str = ""                    # 改前 → 改后，给人看 AI 到底动了哪儿（对原来那张卡）
+    summary: str = ""
+    skipped: list[ReviseSkip] = Field(default_factory=list)
+    before: list[Change] = Field(default_factory=list)    # 改之前的那份：撤回用
+    model: str = ""
+    ms: int = 0
+
+
+class ReviseUndo(Strict):
+    """撤回卡上 AI 改的那一版：回到改前那份改法。"""
+
+    card: str
+    changes: list[Change]
+
+
 class ChangeResult(Strict):
     applied: bool
     files: list[FileDiff] = Field(default_factory=list)

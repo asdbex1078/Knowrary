@@ -4,7 +4,7 @@ import {
   fetchSettings, putSettings, fetchLLMConfig, putLLMConfig, testLLMConfig as postLLMConfigTest,
   fetchVault, browseVault, initVault, putVault, forgetVault, fetchVaultConfig, putVaultConfig,
   fetchCopySources, fetchCopyCatalog, postCopy, fetchCalendar, fetchCompareGroups, fetchCompareTable, postCompareFill, fetchDigest, postSyncToGlobal, fetchDue, fetchProjects, putProjects, postPlanPropose, fetchToday, fetchUsage, postMerge, postRename, postQuiz, postQuizDiagnose, postQuizGrade, fetchOpenQuiz, dropOpenQuiz, postRegroup, fetchIndex, fetchInbox, fetchLayout, fetchNode,
-  patchLayout, postAudit, postChanges, postPlace, postReview, postSuggest, postSummarize, postYearsPropose,
+  patchLayout, postAudit, postChanges, postRevise, postReviseUndo, postPlace, postReview, postSuggest, postSummarize, postYearsPropose,
 } from './api.js'
 import AppHeader from './components/AppHeader.vue'
 import ActivityBar from './components/ActivityBar.vue'
@@ -2618,6 +2618,41 @@ async function auditChatCard({ i, j }) {
   }
 }
 
+/** 变更卡上的「按意见修改」：把勾选的审核意见交给 learn 角色改一版，**只改卡不写盘**。
+ *  改完停在卡上给人看改了哪儿；审核结论随之作废，点写入时照常重审（改稿引入的新错也得有人看）。
+ *  和审核一样不占 chatBusy：改的时候别的卡照样能点。 */
+async function reviseChatCard({ i, j, issues }) {
+  const c = chatLog.value[i].cards[j]
+  c.revising = { at: Date.now(), n: issues.length }
+  try {
+    const res = await postRevise({ changes: c.changes, issues, card: c.card_id })
+    // 撤回用卡上原来那份，不用服务端回传的 before：那份归一过，和审核记下的改法原文对不上，撤回后结论就不认了
+    const { summary, delta, skipped, model, ms } = res
+    const before = c.changes
+    Object.assign(c, { changes: res.changes, files: res.files, stale: false, skip: {},
+                       revised: { summary, delta, skipped, before, model, ms, open: true } })
+  } catch (err) {
+    setBanner(`按意见修改没成：${err.body?.detail?.message || err.body?.detail || err.message}`, 'error')
+  } finally {
+    c.revising = null
+  }
+}
+
+/** 撤回 AI 改的那一版：改法回到改前那份，diff 按原样重算。 */
+async function undoReviseCard({ card, i, j }) {
+  const c = chatLog.value[i].cards[j]
+  const before = c.revised?.before
+  if (!before) return
+  try {
+    await postReviseUndo({ card: c.card_id, changes: before })
+  } catch (err) {
+    setBanner(`撤回没成：${err.body?.detail?.message || err.body?.detail || err.message}`, 'error')
+    return
+  }
+  Object.assign(c, { changes: before, revised: null })
+  await previewChatCard({ card: c, i, j })
+}
+
 /** 变更卡上的「写入」：走的仍然是 /api/changes 这唯一入口，和详情面板一模一样。
  *
  * 审核开着时**先审再写**：没审过（或审完又改过）就先审一遍——通过了直接接着写；
@@ -3518,6 +3553,7 @@ onBeforeUnmount(() => {
                   @send="sendChat" @stop="stopChat" @retry="retryChat"
                   :audit-on="!!settings.audit_enabled" :force-allowed="settings.audit_force_allowed !== false"
                   @apply="applyChatCard" @audit="auditChatCard" @preview="previewChatCard"
+                  @revise="reviseChatCard" @undo-revise="undoReviseCard"
                   @apply-project="applyProjectCard" @apply-points="applyPointsCard"
                   @apply-list-edit="applyListEditCard" @goto="gotoNode"
                   @new-session="newChatSession" @pick-session="pickChatSession" @rename-session="renameSession"

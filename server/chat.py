@@ -1324,7 +1324,8 @@ def history(vault: Path, project: str | None = None, limit: int = 40,
     # failed 是**读出来的，不是存出来的**：留档里只有那句记号，这里认回来标上，
     # 前端才知道刷新之后这一轮不能算回答、也不能再喂给模型。
     rows = rows[-limit:]
-    ledger = {"applied": _applied_cards(vault), "audits": core.card_audits(vault)}
+    ledger = {"applied": _applied_cards(vault), "audits": core.card_audits(vault),
+              "revisions": core.card_revisions(vault)}
     return [{"role": r["role"], "content": r["text"], "node_ids": r.get("node_ids") or [],
              "trace": r.get("trace") or [], "ts": r.get("ts") or "",
              "failed": _is_failed(r), "cards": _revive_cards(vault, r.get("cards"), ledger)}
@@ -1347,6 +1348,19 @@ def _card_audit(row: dict | None, changes: list) -> dict | None:
     return {**row["report"], "fresh": fresh, "at": row.get("ts") or ""}
 
 
+def _apply_revision(body: dict, row: dict | None) -> None:
+    """卡上按审核意见改过（cards.jsonl 的 revised 事件）：留档里存的是最初那份改法，
+    换成改完的那份，并把"谁改的、改了什么"挂回卡上。撤回过的只换改法、不挂说明。
+    审核结论的新鲜度跟着换过的改法算——审的是改前那份，读回来就该提示重审。"""
+    if not row or not isinstance(row.get("changes"), list):
+        return
+    body["changes"] = row["changes"]
+    if row.get("undo"):
+        return
+    body["revised"] = {k: row.get(k) for k in ("summary", "delta", "skipped", "before", "model", "ms")}
+    body["revised"]["at"] = row.get("ts") or ""
+
+
 def _revive_cards(vault: Path, cards, ledger: dict) -> list[dict]:
     """留档里的卡读回来，标上点没点。
 
@@ -1363,7 +1377,12 @@ def _revive_cards(vault: Path, cards, ledger: dict) -> list[dict]:
             continue
         body = {**body, "applied": body.get("card_id") in ledger["applied"]}
         if key == "card":
+            _apply_revision(body, ledger["revisions"].get(body.get("card_id")))
             body["audit"] = _card_audit(ledger["audits"].get(body.get("card_id")), body.get("changes") or [])
+            if body["audit"] and body.get("revised"):
+                # 审的是改前那份：撤回修改后结论又算数，前端靠这个认回来
+                body["audit"]["fresh_before"] = _card_audit(
+                    ledger["audits"].get(body.get("card_id")), body["revised"].get("before") or [])["fresh"]
             if not body["applied"]:
                 body.update(_repreview(vault, body.get("changes") or []))
         out.append({"type": key, key: body})

@@ -1420,6 +1420,18 @@ kbd.key {
 .cc-audit-list p { margin: 2px 0 0 4px; line-height: 1.55; }
 .cc-audit-path { font-size: 10.5px; margin-left: 4px; }
 .cc-audit-fix { color: var(--ok); }
+.cc-audit-pick { margin: 0 4px 0 0; vertical-align: -2px; cursor: pointer; }
+.cc-audit-list li.off > :not(.cc-audit-pick) { opacity: .45; }
+.cc-revised { border-color: var(--accent, var(--line)); }
+.cc-revised-delta { margin-top: 6px; }
+.cc-revised-delta summary { cursor: pointer; font-size: 11.5px; }
+.cc-revised-delta .cc-diff { margin-top: 4px; }
+/* 改前改后：一段一行，不换行的话改的字常常在屏幕右边看不见 */
+.cc-diff.cc-delta { white-space: pre-wrap; word-break: break-all; }
+.cc-diff.cc-delta span { width: auto; }
+.cc-delta mark { color: inherit; border-radius: 2px; padding: 0 1px; }
+.cc-delta .del mark { background: color-mix(in srgb, var(--danger) 35%, transparent); text-decoration: line-through; }
+.cc-delta .add mark { background: color-mix(in srgb, var(--ok) 35%, transparent); }
 .cc-expired { font-size: 11.5px; color: var(--danger); margin: 0 0 6px; }
 .cc-file { margin: 0 0 6px; }
 .cc-file-head {

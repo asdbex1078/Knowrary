@@ -99,6 +99,19 @@ def audits(vault: Path) -> dict[str, dict]:
     return {r["id"]: r for r in load(vault) if r.get("event") == "audited" and r.get("id")}
 
 
+def revised(vault: Path, card_id: str, changes: list, meta: dict) -> None:
+    """这张卡按审核意见改过一版（或者撤回了那一版）。`changes` 是改完的整份改法——
+    卡片从留档读回来时用它替换最初那份，不然刷新一下 AI 改的就全没了。
+    `meta` 里有改前的 changes（撤回用）、谁改的、改了多久、没照改的意见。"""
+    if card_id:
+        _write(vault, {"ts": _now(), "id": card_id, "event": "revised", "changes": changes, **meta})
+
+
+def revisions(vault: Path) -> dict[str, dict]:
+    """每张卡最近一次修改（撤回也算一次），一次读完。"""
+    return {r["id"]: r for r in load(vault) if r.get("event") == "revised" and r.get("id")}
+
+
 def load(vault: Path) -> list[dict]:
     path = cards_path(vault)
     if not path.exists():

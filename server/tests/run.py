@@ -4483,6 +4483,96 @@ def audit_审核结论跟着卡片从留档回来():
     assert got["summary"] == "没问题" and got["fresh"] and got["model"] == "假审校", got
 
 
+def stub_revise(payload: str):
+    """「按意见修改」那一次调用换成固定回答。"""
+    from server import revise as revise_mod
+    original = revise_mod.ask_meta
+    revise_mod.ask_meta = lambda vault, role, prompt, op="?": (payload, {"model": "假写手", "ms": 9})
+    return original
+
+
+def restore_revise(original) -> None:
+    from server import revise as revise_mod
+    revise_mod.ask_meta = original
+
+
+WARN_ISSUE = {"level": "warn", "code": "llm", "path": "nodes/b.md", "message": "少了一段和 a 的对比",
+              "why": "只说了是什么", "fix": "补一段和 a 的区别"}
+
+
+@case
+def revise_按意见改一版_只改卡不写盘_留档回来是改后的_撤回回到原样():
+    """2026-09-23：审核有意见时，除了原样写入和自己动手，还能让 learn 角色按意见改一版。"""
+    c, vault, _ = with_inbox_node()
+    c.put("/api/settings", json={"audit_enabled": True})
+    changes = [{"type": "update_body", "source": "b", "body": AUDIT_LONG}]
+    original, _ = stub_chat([tool_block("propose_changes", {"changes": changes}), "卡给你了"])
+    try:
+        r = c.post("/api/chat", json={"messages": [{"role": "user", "content": "改 b"}], "session": "s1"})
+    finally:
+        restore_chat(original)
+    card = next(e["card"] for e in sse_events(r) if e["type"] == "card")
+    back = lambda: c.get("/api/chat/history", params={"session": "s1"}).json()["messages"][-1]["cards"][0]["card"]
+    audit_orig = stub_audit(json.dumps({"verdict": "warn", "summary": "能写", "issues": [
+        {"path": "nodes/b.md", "severity": "warn", "what": "少了对比", "why": "", "fix": "补一段"}]}, ensure_ascii=False))
+    try:
+        c.post("/api/audit", json={"changes": card["changes"], "card": card["card_id"]})
+    finally:
+        restore_audit(audit_orig)
+    revised_body = AUDIT_LONG + "\n\n## 和 a 的区别\n\n补上的一段。"
+    seen = {}
+    from server import revise as revise_mod
+    orig = revise_mod.ask_meta
+    revise_mod.ask_meta = lambda vault, role, prompt, op="?": (seen.update(role=role, prompt=prompt) or json.dumps(
+        {"changes": [{"type": "update_body", "source": "b", "body": revised_body}],
+         "summary": "补了一段对比", "skipped": [{"what": "年份", "why": "拿不准"}]}, ensure_ascii=False),
+        {"model": "假写手", "ms": 9})
+    try:
+        before = md_digest(vault)
+        r = c.post("/api/revise", json={"changes": card["changes"], "issues": [WARN_ISSUE], "card": card["card_id"]})
+        assert r.status_code == 200, r.text
+        got = r.json()
+        assert md_digest(vault) == before, "按意见修改写了盘"
+        assert seen["role"] == "learn", "改稿该交给 learn 角色"
+        assert "补一段和 a 的区别" in seen["prompt"] and "少了一段和 a 的对比" in seen["prompt"]
+        assert got["changes"][0]["body"] == revised_body and got["model"] == "假写手"
+        assert "+补上的一段。" in got["delta"], got["delta"]
+        assert got["skipped"] == [{"what": "年份", "why": "拿不准"}]
+        assert got["before"][0]["body"] == AUDIT_LONG and got["files"], got
+    finally:
+        revise_mod.ask_meta = orig
+        c.put("/api/settings", json={"audit_enabled": False})
+    b = back()
+    assert b["changes"][0]["body"] == revised_body, "刷新之后 AI 改的那版没了"
+    assert b["revised"]["summary"] == "补了一段对比" and b["revised"]["model"] == "假写手"
+    assert b["audit"] and not b["audit"]["fresh"], "审的是改前那份，读回来该提示重审"
+    assert b["audit"]["fresh_before"], "前端要靠它在撤回后认回结论"
+    assert "补上的一段" in b["files"][0]["diff"], "留档读回来的 diff 该按改后的重算"
+
+    u = c.post("/api/revise/undo", json={"card": card["card_id"], "changes": got["before"]})
+    assert u.status_code == 200, u.text
+    b = back()
+    assert b["changes"][0]["body"] == AUDIT_LONG and "revised" not in b
+    assert b["audit"]["fresh"], "撤回之后改法回到审过的那份，结论又算数了"
+
+
+@case
+def revise_改坏了结构就报错_卡不动():
+    c, vault, _ = with_inbox_node()
+    changes = [{"type": "update_body", "source": "b", "body": AUDIT_LONG}]
+    for bad in ["不是 JSON", json.dumps({"changes": [{"type": "瞎写", "source": "b"}]}),
+                json.dumps({"changes": [{"type": "update_body", "source": "不存在的点", "body": "x"}]})]:
+        original = stub_revise(bad)
+        try:
+            r = c.post("/api/revise", json={"changes": changes, "issues": [WARN_ISSUE], "card": "c1"})
+        finally:
+            restore_revise(original)
+        assert r.status_code == 422, (bad, r.text)
+    assert not core.card_revisions(vault), "改坏了的版本不该记下来"
+    r = c.post("/api/revise", json={"changes": changes, "issues": [], "card": "c1"})
+    assert r.status_code == 422, "没勾意见也要拦"
+
+
 @case
 def audit_默认关着时不问模型但确定性检查照跑():
     """开关关掉 ≠ 什么都不查。关的人要的是"别拦我"，不是"别告诉我"。"""

@@ -38,3 +38,35 @@ export function parseDiff(text) {
   }
   return memo.get(key)
 }
+
+/**
+ * 「按意见修改」的改前 → 改后：笔记一段就是一行，改了几个字整段红一遍绿一遍，人得自己找不同。
+ * 把相邻的删 / 增行两两配对，掐掉公共的头尾，**只把中间真正变了的那几个字标出来**（`hot`）。
+ */
+export function pairDiff(text) {
+  const lines = parseDiff(text).lines.map((l) => ({ ...l, parts: [{ text: l.text, hot: false }] }))
+  for (let i = 0; i < lines.length;) {
+    if (lines[i].cls !== 'del') { i++; continue }
+    let d = i
+    while (d < lines.length && lines[d].cls === 'del') d++
+    let a = d
+    while (a < lines.length && lines[a].cls === 'add') a++
+    for (let k = 0; k < Math.min(d - i, a - d); k++) mark(lines[i + k], lines[d + k])
+    i = Math.max(a, i + 1)
+  }
+  return lines
+}
+
+function mark(del, add) {
+  const x = del.text.slice(1)
+  const y = add.text.slice(1)
+  let head = 0
+  while (head < x.length && head < y.length && x[head] === y[head]) head++
+  let tail = 0
+  while (tail < x.length - head && tail < y.length - head && x[x.length - 1 - tail] === y[y.length - 1 - tail]) tail++
+  for (const [line, s, sign] of [[del, x, '-'], [add, y, '+']]) {
+    line.parts = [{ text: sign + s.slice(0, head), hot: false },
+                  { text: s.slice(head, s.length - tail), hot: true },
+                  { text: s.slice(s.length - tail), hot: false }].filter((p) => p.text)
+  }
+}

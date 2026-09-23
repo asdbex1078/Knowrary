@@ -43,8 +43,10 @@ export function takeCard(reply, ev) {
   const slot = CARD_SLOT[ev?.type]
   const body = slot && ev[ev.type]
   if (!body) return
-  // 读回来的审核结论：审的就是留档里这份改法（fresh）才算数，前端拿改法原文当指纹对照
-  const auditFor = body.audit?.fresh ? JSON.stringify(body.changes) : ''
+  // 读回来的审核结论：审的就是留档里这份改法（fresh）才算数，前端拿改法原文当指纹对照。
+  // AI 按意见改过的卡，结论审的是改前那份（fresh_before）：记下它，撤回之后结论又算数
+  const auditFor = body.audit?.fresh ? JSON.stringify(body.changes)
+    : body.audit?.fresh_before && body.revised?.before ? JSON.stringify(body.revised.before) : ''
   reply[slot].push({ ...body, applied: !!body.applied, ...(body.audit ? { auditFor } : {}) })
 }
 
