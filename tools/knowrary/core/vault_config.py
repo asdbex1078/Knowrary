@@ -15,7 +15,7 @@ import datetime as dt
 import shutil
 from pathlib import Path, PurePosixPath
 
-from .mdio import load_json, write_json_atomic
+from .mdio import NODE_DIRS, load_json, write_json_atomic
 
 SCHEMA_VERSION = 1
 DEFAULTS = {
@@ -136,12 +136,23 @@ def save_articles_dir(vault: Path, raw, move: bool = False, dry_run: bool = Fals
         plan = _move_plan(vault, vault / old, vault / new, files) if files else []
     if dry_run:
         return {"config": {**load_vault_config(vault), "articles_dir": new}, "moved": [], "backup": ""}
-    backup = _move(vault, old, plan) if plan else ""
+    backup = _move(vault, old, new, plan) if plan else ""
     doc = {"schema_version": SCHEMA_VERSION, **load_vault_config(vault), "articles_dir": new}
     (vault / new).mkdir(parents=True, exist_ok=True)
     write_json_atomic(config_path(vault), doc)
     return {"config": load_vault_config(vault), "moved": [t.relative_to(vault).as_posix() for _, t in plan],
             "backup": backup}
+
+
+def _linking(vault: Path, old: str) -> list[Path]:
+    """节点里链到旧原文目录的那些 md（frontmatter 的 sources 和正文里的 [[old/…]] 都算）。"""
+    needle = f"[[{old}/"
+    out = []
+    for root in NODE_DIRS:
+        folder = vault / root
+        if folder.is_dir():
+            out += [p for p in folder.rglob("*.md") if needle in p.read_text(encoding="utf-8")]
+    return out
 
 
 def _move_plan(vault: Path, src: Path, dst: Path, files: list[Path]) -> list[tuple[Path, Path]]:
@@ -156,12 +167,22 @@ def _move_plan(vault: Path, src: Path, dst: Path, files: list[Path]) -> list[tup
     return plan
 
 
-def _move(vault: Path, old: str, plan: list[tuple[Path, Path]]) -> str:
-    """先把旧目录整份快照，再逐篇搬。返回快照目录（库内相对）。"""
+def _move(vault: Path, old: str, new: str, plan: list[tuple[Path, Path]]) -> str:
+    """先快照（旧目录整份 + 要改链接的节点），再逐篇搬，最后把节点里的 `[[old/…` 改成 `[[new/…`。
+
+    链接是完整路径写法（见 core/sources.py），不跟着改的话搬完全部指向空。返回快照目录（库内相对）。
+    """
     stamp = dt.datetime.now().strftime("%Y%m%d-%H%M%S")
     root = vault / ".knowrary" / "backup" / f"articles-move-{stamp}"
     shutil.copytree(vault / old, root / old)
+    linking = _linking(vault, old)
+    for p in linking:
+        snap = root / p.relative_to(vault)
+        snap.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(p, snap)
     for f, t in plan:
         t.parent.mkdir(parents=True, exist_ok=True)
         f.rename(t)
+    for p in linking:
+        p.write_text(p.read_text(encoding="utf-8").replace(f"[[{old}/", f"[[{new}/"), encoding="utf-8")
     return root.relative_to(vault).as_posix()

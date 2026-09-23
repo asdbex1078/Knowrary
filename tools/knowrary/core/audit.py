@@ -20,6 +20,7 @@ from pathlib import Path
 
 from .mdio import RE_LINK, split_frontmatter
 from .relations import load_relation_types, parse_relations
+from .sources import Resolver, sources_of
 from .writer import split_sections
 
 THIN_BODY = 120      # 新建节点的正文短于这么多字就提醒：入库不许精简（设计文档 F1.1）
@@ -63,11 +64,33 @@ def precheck(vault: Path, index: dict, edits: list) -> list[dict]:
     # 同一批里新建的那些也算"存在"：一篇文章拆出来的点互相链接是正常的，
     # 挨个报死链会把整张卡刷满噪音
     born = {_id_of(e) for e in edits if _is_new(e)} - {None}
+    resolve = Resolver(vault)
     out: list[dict] = []
     for edit in edits:
         if not edit.changed:
             continue
         out += _check_one(edit, types, known | born, names, born)
+        out += _check_sources(edit, resolve)
+    return out
+
+
+def _check_sources(edit, resolve: Resolver) -> list[dict]:
+    """③ 来源链到了不存在的原文 / 原文目录外面。**只提醒不拦**：导入时原文和节点
+    不一定是同一步落盘的，硬拦会卡住流程。纯文字的外部来源（一张图、一篇论文）不查。"""
+    fm, _ = split_frontmatter(_text_of(edit))
+    out: list[dict] = []
+    for item in sources_of(fm):
+        ref = resolve(item)
+        if ref["kind"] != "article" or ref.get("legacy"):
+            continue
+        if not ref["exists"]:
+            out.append(_issue("warn", "dead_source", edit.rel,
+                              f"来源 `{item}` 指向的原文 `{ref['path']}` 不存在",
+                              "先把原文放进原文目录；或者这是外部来源的话，去掉 [[ ]] 写成纯文字"))
+        elif not ref["path"].startswith(resolve.articles + "/"):
+            out.append(_issue("warn", "source_outside", edit.rel,
+                              f"来源 `{item}` 不在原文目录 `{resolve.articles}/` 里",
+                              "原文统一放进原文目录，界面上才认得出它是原文（设置 → 知识库）"))
     return out
 
 

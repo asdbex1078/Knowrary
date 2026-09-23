@@ -18,10 +18,11 @@ from .mdio import (RE_ID_OK, RE_NEXT_H2, RE_REL_HEADER, dump_frontmatter, read, 
                     write)
 from .parser import LAYERS, LAYOUT_KEYS, STATUS_VALUES, digest_of
 from .relations import Edge, parse_relations
+from .sources import clean_sources
 
 # 允许通过 ChangeSet 修改的 frontmatter 字段；布局字段和 id 永远不许改
 EDITABLE_FIELDS = ("name", "field", "layer", "params", "type", "status", "year", "start_year", "end_year",
-                   "aliases", "tags", "desc", "learned", "source", "color", "timeless")
+                   "aliases", "tags", "desc", "learned", "source", "sources", "color", "timeless")
 CHANGE_TYPES = ("add_edge", "remove_edge", "update_edge", "update_frontmatter", "create_node",
                 "update_body", "append_body", "set_fact", "move_node")
 # 新建的知识点只允许落在这两棵树下（规范 2：nodes/ 是知识点，fields/ 是领域总览）
@@ -228,6 +229,9 @@ def apply_to_text(text: str, node_id: str, changes: list[dict]) -> tuple[str, li
                 # 它不报错，只会让这个节点在历史视图上凭空消失（泳道按 LAYERS 建，对不上的没地方去）。
                 if key == "layer" and value and value not in LAYERS:
                     raise ChangeRejected(f"layer `{value}` 不在已知的抽象层里（{' / '.join(LAYERS)}）")
+                if key == "sources":
+                    value = _sources_value(value)
+                    _drop_legacy_source(fm, notes)
                 fm[key] = value
                 fm_changed = True
                 notes.append(f"frontmatter {key} = {value!r}")
@@ -260,6 +264,20 @@ def _render_new_node(fields: dict, body: str | None = None) -> str:
     return dump_frontmatter(fm) + text + "\n\n## 关系\n"
 
 
+def _sources_value(value) -> list[str]:
+    try:
+        return clean_sources(value)
+    except ValueError as exc:
+        raise ChangeRejected(str(exc)) from None
+
+
+def _drop_legacy_source(fm: dict, notes: list[str]) -> None:
+    """写 `sources` 就是给出了完整的来源列表：旧的单值 `source` 一并撕掉，
+    不然读的时候两个字段合并，改掉的那一项又会从 `source` 里冒回来。"""
+    if fm.pop("source", None) is not None:
+        notes.append("旧的 source 并进了 sources")
+
+
 def _create_node_edit(vault: Path, change: dict, taken: set[str]) -> FileEdit:
     """把一条 create_node 变成"新建这个文件"。
 
@@ -282,6 +300,9 @@ def _create_node_edit(vault: Path, change: dict, taken: set[str]) -> FileEdit:
         raise ChangeRejected(f"status `{fields['status']}` 不合法")
     if fields.get("layer") and fields["layer"] not in LAYERS:
         raise ChangeRejected(f"layer `{fields['layer']}` 不在已知的抽象层里（{' / '.join(LAYERS)}）")
+    if "sources" in fields:
+        fields["sources"] = _sources_value(fields["sources"])
+        fields.pop("source", None)
 
     rel = str(change.get("path") or f"{NODE_ROOTS[0]}/{node_id}.md").strip().lstrip("/")
     if not rel.endswith(".md"):

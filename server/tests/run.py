@@ -300,9 +300,10 @@ def 节点详情返回原文与出入边():
 
 @case
 def 节点详情的来源只有找得到原文时才给链接():
-    """`source` 存的是文件名不是路径，所以能不能打开要找过一次才知道。
+    """旧的 `source` 存的是文件名不是路径，所以能不能打开要找过一次才知道。
 
-    两条都要有：找得到（给 obsidian 链接）、找不到（给空串，前端渲染成灰字而不是死链）。
+    两条都要有：找得到（认成原文、给 obsidian 链接）、找不到（外部来源，前端渲染成灰字而不是死链）。
+    旧年代的原文散在 doc/ harness/ 里，第 5 步补旧账之前这条兜底还得在。
     """
     make_vault({
         "nodes/组A/有原文.md": node_md("有原文", extra="source: 某篇笔记.md\n"),
@@ -311,14 +312,101 @@ def 节点详情的来源只有找得到原文时才给链接():
         "doc/技术文档/某篇笔记.md": "# 某篇笔记\n\n正文\n",
     })
     c = TestClient(app)
-    got = c.get("/api/node/有原文").json()["source_uri"]
-    assert got.startswith("obsidian://open?vault="), got
-    assert "doc/%E6%8A%80%E6%9C%AF%E6%96%87%E6%A1%A3" in got or "技术文档" in got, got
+    [got] = c.get("/api/node/有原文").json()["sources"]
+    assert got["kind"] == "article" and got["path"] == "doc/技术文档/某篇笔记.md" and got["exists"], got
+    assert got["uri"].startswith("obsidian://open?vault="), got
 
-    # 不是 md：根本不去找（那 61 个来自一张 jpg 的节点，每次遍历纯属白费）
-    assert c.get("/api/node/图来的").json()["source_uri"] == ""
-    # 是 md 但仓库里没有：给空串，不能拼一个点不开的链接出来
-    assert c.get("/api/node/扔了的").json()["source_uri"] == ""
+    # 不是 md：外部来源（那 61 个来自一张 jpg 的节点）
+    [img] = c.get("/api/node/图来的").json()["sources"]
+    assert img["kind"] == "external" and img["label"] == "一张图.jpg" and not img["uri"], img
+    # 是 md 但哪儿都没有：也当外部来源，不能拼一个点不开的链接出来
+    [gone] = c.get("/api/node/扔了的").json()["sources"]
+    assert gone["kind"] == "external" and not gone["uri"], gone
+
+
+@case
+def sources_原文链接和外部来源混放_旧source合并进来_能反查():
+    c, vault = client({
+        "nodes/组A/甲.md": node_md("甲", extra='sources:\n  - "[[articles/BPE全景]]"\n  - 图灵《计算机器与智能》\n'),
+        "nodes/组A/乙.md": node_md("乙", extra='sources: "[[articles/BPE全景#为什么是子词|全景]]"\nsource: 旧的.jpg\n'),
+        "nodes/组A/丙.md": node_md("丙", extra='sources: ["[[articles/还没放进来]]"]\n'),
+        "articles/BPE全景.md": "# BPE 全景\n\n原文\n",
+    })
+    nodes = {n["id"]: n for n in c.get("/api/index").json()["nodes"]}
+    assert nodes["甲"]["sources"] == ["[[articles/BPE全景]]", "图灵《计算机器与智能》"], nodes["甲"]
+    assert nodes["乙"]["sources"] == ["[[articles/BPE全景#为什么是子词|全景]]", "旧的.jpg"], "旧 source 没并进来"
+    assert "source" not in nodes["乙"], "索引里只该有 sources 一份"
+
+    art, ext = c.get("/api/node/甲").json()["sources"]
+    assert art["kind"] == "article" and art["path"] == "articles/BPE全景.md" and art["exists"] and art["uri"], art
+    assert ext["kind"] == "external" and ext["label"] == "图灵《计算机器与智能》", ext
+    sec = c.get("/api/node/乙").json()["sources"][0]
+    assert sec["section"] == "为什么是子词" and sec["label"] == "全景" and sec["path"] == "articles/BPE全景.md", sec
+    dead = c.get("/api/node/丙").json()["sources"][0]
+    assert dead["kind"] == "article" and not dead["exists"] and not dead["uri"], dead
+
+    back = core.source_backlinks(vault, c.get("/api/index").json())
+    assert sorted(back["articles/BPE全景.md"]) == ["乙", "甲"], back
+    assert back["articles/还没放进来.md"] == ["丙"]
+    # 原文不是节点：不上图
+    assert "BPE全景" not in nodes
+
+
+@case
+def sources_写回收成列表_写了sources就撕掉旧source_不合法的拒():
+    c, vault = client({"nodes/组A/甲.md": node_md("甲", extra="source: 旧文章.md\n")})
+    r = write_changes(c, [{"type": "update_frontmatter", "source": "甲",
+                           "fields": {"sources": [" [[articles/新]] ", "", "某本书", "某本书"]}}])
+    assert r.status_code == 200 and r.json()["applied"], r.text
+    fm, _ = core.split_frontmatter(core.read(vault / "nodes/组A/甲.md"))
+    assert fm["sources"] == ["[[articles/新]]", "某本书"] and "source" not in fm, fm
+
+    r = write_changes(c, [{"type": "create_node", "source": "乙", "path": "nodes/组A/乙.md",
+                           "fields": {"name": "乙", "field": "测试", "desc": "摘要", "sources": "[[articles/新]]"}}])
+    assert r.status_code == 200, r.text
+    fm, _ = core.split_frontmatter(core.read(vault / "nodes/组A/乙.md"))
+    assert fm["sources"] == ["[[articles/新]]"], fm
+
+    r = write_changes(c, [{"type": "update_frontmatter", "source": "甲", "fields": {"sources": [{"x": 1}]}}])
+    assert r.status_code == 422 and "字符串" in r.text, r.text
+
+
+@case
+def sources_链到不存在的原文_审核里提醒但不拦():
+    c, vault = client({"nodes/组A/甲.md": node_md("甲"), "doc/老地方.md": "# 老\n",
+                       "articles/在.md": "# 在\n"})
+    r = write_changes(c, [{"type": "update_frontmatter", "source": "甲", "fields": {"sources": [
+        "[[articles/不在]]", "[[doc/老地方]]", "[[articles/在]]", "某本书"]}}])
+    assert r.status_code == 200 and r.json()["applied"], "只提醒不拦"
+    codes = [(i["code"], i["message"]) for i in r.json()["audit"]["issues"]]
+    assert [c_ for c_, _ in codes if c_ in ("dead_source", "source_outside")] == ["dead_source", "source_outside"], codes
+    assert "articles/不在.md" in codes[[c_ for c_, _ in codes].index("dead_source")][1]
+
+
+@case
+def sources_同一来源的一整批孤点按每一项分组():
+    c, _ = client({f"nodes/组A/{n}.md": node_md(n, extra='sources: ["[[articles/长文]]", "某本书"]\n')
+                   for n in ("甲", "乙", "丙")})
+    batches = {b["source"]: b for b in c.get("/api/digest").json()["lonely_batches"]}
+    assert batches["[[articles/长文]]"]["lonely"] == 3 and batches["某本书"]["whole"], batches
+
+
+@case
+def vault_config_换原文目录时节点里的链接跟着改():
+    """链接写的是完整路径（[[articles/…]]），搬家不改链接就全断了。"""
+    c, vault = client({"nodes/组A/甲.md": node_md("甲", extra='sources: ["[[articles/长文]]", "某本书"]\n'),
+                       "nodes/组A/乙.md": node_md("乙"),
+                       "articles/长文.md": "# 长文\n"})
+    before = core.read(vault / "nodes/组A/乙.md")
+    r = c.put("/api/vault/config", json={"articles_dir": "原文", "move": True})
+    assert r.status_code == 200, r.text
+    fm, _ = core.split_frontmatter(core.read(vault / "nodes/组A/甲.md"))
+    assert fm["sources"] == ["[[原文/长文]]", "某本书"], fm
+    assert core.read(vault / "nodes/组A/乙.md") == before, "没链接的节点被碰了"
+    snap = vault / r.json()["backup"]
+    assert "[[articles/长文]]" in (snap / "nodes/组A/甲.md").read_text("utf-8"), "改链接之前没快照"
+    [ref] = [x for x in c.get("/api/node/甲").json()["sources"] if x["kind"] == "article"]
+    assert ref["exists"] and ref["path"] == "原文/长文.md", ref
 
 
 @case

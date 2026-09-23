@@ -443,6 +443,18 @@ class ReviewDone(Strict):
     next_due: str | None = None
 
 
+class SourceRef(Strict):
+    """节点的一处来源，解析过的。`kind`：`article` = 库里的原文（点得开），`external` = 外部来源（纯文字）。"""
+
+    raw: str                           # frontmatter 里原样写的那一项
+    kind: str                          # article | external
+    label: str                         # 给人看的名字：原文取文件名，外部来源就是原文字
+    path: str = ""                     # 原文的库内路径
+    section: str = ""                  # [[路径#小节]] 里的小节
+    exists: bool = False               # 原文文件在不在
+    uri: str = ""                      # 在 Obsidian 里打开它
+
+
 class NodeDetail(Strict):
     id: str
     path: str
@@ -452,7 +464,7 @@ class NodeDetail(Strict):
     out: list[dict[str, Any]] = Field(default_factory=list)
     in_edges: list[dict[str, Any]] = Field(default_factory=list)
     obsidian_uri: str = ""
-    source_uri: str = ""               # frontmatter 的 source 指向的原文；不是 md 或不在仓库里就是空
+    sources: list[SourceRef] = Field(default_factory=list)   # 来源：原文和外部来源混放，顺序同 frontmatter
 
 
 # ---------------------------------------------------------------- Suggest（AI 建议）

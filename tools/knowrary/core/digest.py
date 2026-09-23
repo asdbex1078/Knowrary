@@ -264,8 +264,7 @@ def lonely_batches(index: dict) -> list[dict]:
     for n in index["nodes"]:
         if n.get("virtual") or n.get("stub") or not n.get("path") or n.get("aggregate"):
             continue
-        src = str(n.get("source") or "").strip()
-        if src:
+        for src in n.get("sources") or []:          # 一个点有几处来源，就算进几批
             by_src.setdefault(src, []).append(n)
     out = []
     for src, rows in by_src.items():

@@ -19,7 +19,7 @@ from fastapi.staticfiles import StaticFiles
 
 from . import (assets, audit, chat as chat_svc, compare as compare_svc, copying, curation, importing,
                projects as projects_svc, summarize as summarize_svc, vaults, years as years_svc)
-from .contracts import (AuditReport, AuditRequest, VaultConfigPatch, VaultConfigRead, CalendarRead, ChangeResult, ChangeSet, ChatRequest, CoachToday, FileDiff, ImportProposal,
+from .contracts import (AuditReport, AuditRequest, SourceRef, VaultConfigPatch, VaultConfigRead, CalendarRead, ChangeResult, ChangeSet, ChatRequest, CoachToday, FileDiff, ImportProposal,
                         ImportProposeRequest, ImportRequest, ImportResult, SourceText, SourcesRead, SummarizeRequest, SummaryDraft,
                         InboxRead,
                         LayoutPatch, LayoutRead,
@@ -155,27 +155,16 @@ def patch_layout(patch: LayoutPatch, layout: str | None = None) -> LayoutSaved:
                        backup=backup)
 
 
-# 原文可能落在这几棵树下（学习笔记、设计与技术文档）。不扫全仓库：
-# nodes/ fields/ 是节点自己，.git/ tools/ web/ 里不会有来源原文，扫了纯属白费。
-SOURCE_DIRS = ("harness", "llm", "doc")
-
-
-def _source_uri(vault: Path, source: str) -> str:
-    """frontmatter 的 `source` 存的是**文件名不是路径**，所以要找一次才知道能不能打开。
-
-    只有 `.md` 才去找：来源常常根本不是仓库里的文件（一张图、一篇论文），
-    那种每次都遍历一遍是白费。重名不做消歧，找到第一个就用它。
-    """
-    if not source.endswith(".md"):
-        return ""
-    for name in SOURCE_DIRS:
-        root = vault / name
-        if not root.is_dir():
-            continue
-        hit = next(root.rglob(source), None)
-        if hit is not None:
-            return f"obsidian://open?vault={quote(vault.name)}&file={quote(str(hit.relative_to(vault)))}"
-    return ""
+def _source_refs(vault: Path, items: list[str]) -> list[SourceRef]:
+    """把节点的 sources 逐项认成原文 / 外部来源。原文在的话给一个 Obsidian 打开链接。"""
+    resolve = core.SourceResolver(vault)
+    out = []
+    for item in items:
+        ref = {k: v for k, v in resolve(item).items() if k != "legacy"}
+        if ref["exists"]:
+            ref["uri"] = f"obsidian://open?vault={quote(vault.name)}&file={quote(ref['path'])}"
+        out.append(SourceRef(**ref))
+    return out
 
 
 @app.get("/api/node/{node_id}", response_model=NodeDetail)
@@ -196,7 +185,7 @@ def get_node(node_id: str) -> NodeDetail:
         out=[edges[i] for i in meta.get("out", []) if i in edges],
         in_edges=[edges[i] for i in meta.get("in", []) if i in edges],
         obsidian_uri=f"obsidian://open?vault={quote(vault.name)}&file={quote(meta['path'])}",
-        source_uri=_source_uri(vault, str(meta.get("source") or "")),
+        sources=_source_refs(vault, meta.get("sources") or []),
     )
 
 

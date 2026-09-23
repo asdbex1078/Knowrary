@@ -665,6 +665,11 @@ select:disabled { cursor: not-allowed; opacity: .5; }
 .model-editor-foot { flex: none; display: flex; align-items: center; gap: 7px; padding: 10px 14px; border-top: 1px solid var(--line); }
 .model-editor-foot > span { flex: 1; }
 /* 知识库：当前库那一条 + 目录选择器 */
+/* 检查器 → 来源：原文可点、外部来源灰字、链到的原文不在标红 */
+.src-list { display: flex; flex-direction: column; gap: 2px; }
+.src-item a { display: inline-flex; align-items: center; gap: 3px; }
+.src-dead { color: var(--danger); }
+
 /* 设置 → 知识库 → 原文目录 */
 .art-row { display: flex; gap: 8px; align-items: center; margin: 6px 0 4px; }
 .art-input { flex: 1; min-width: 0; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }

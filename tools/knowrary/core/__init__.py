@@ -35,6 +35,8 @@ from .quiz import append_answers, clear_open, load_open, load_quiz_log, save_ope
 from .settings import (DEFAULTS as SETTINGS_DEFAULTS, audit_force_allowed, audit_on,
                        load_settings, save_settings, review_in_chat, review_on)
 from .usage import load_usage, record as record_usage, summary as usage_summary
+from .sources import (Resolver as SourceResolver, article_link, backlinks as source_backlinks,
+                      clean_sources, sources_of)
 from .vault_config import (ArticlesNeedMove, VaultConfigRejected, articles_dir, candidates as articles_dir_candidates,
                            list_articles, load_vault_config, save_articles_dir)
 from .article import (build_article_prompt, cards_from_index, cards_from_nodes, describe_points,
@@ -70,7 +72,8 @@ __all__ = [
     "projects_path", "point_ids", "by_field_and_layer", "add_question", "enrich_questions", "pool_norm", "pool_for_nodes", "load_pool", "mark_questions", "pool_stats", "save_open", "load_open", "clear_open", "LEVELS", "DEFAULT_LEVEL", "level_of", "progress_of", "progress_of_project", "stage_points",
     "schedule_of", "upgrade_v1", "record_review", "record_usage", "load_usage", "usage_summary",
     "load_settings", "save_settings", "review_in_chat", "review_on", "audit_on", "audit_force_allowed",
-    "SETTINGS_DEFAULTS", "ArticlesNeedMove", "VaultConfigRejected", "articles_dir", "articles_dir_candidates", "list_articles",
+    "SETTINGS_DEFAULTS", "SourceResolver", "article_link", "source_backlinks", "clean_sources", "sources_of",
+    "ArticlesNeedMove", "VaultConfigRejected", "articles_dir", "articles_dir_candidates", "list_articles",
     "load_vault_config", "save_articles_dir",
     "audit_precheck", "AUDIT_THIN_BODY",
     "CARD_KINDS", "card_applied", "card_audited", "card_audits", "card_last_audit", "card_proposed", "card_stats", "cards_path",

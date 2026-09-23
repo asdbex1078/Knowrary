@@ -27,7 +27,7 @@ RE_NEXT_H2 = re.compile(r"^##\s+", re.M)   # 关系段的下界：规范 4 里 `
 RE_ID_OK = re.compile(r"^[^\s/\\:*?\"<>|]+$")
 
 FM_ORDER = ["id", "name", "field", "type", "status", "year", "start_year", "end_year",
-            "aliases", "tags", "dimensions", "desc", "learned", "source"]
+            "aliases", "tags", "dimensions", "desc", "learned", "source", "sources"]
 
 
 def json_safe(v):

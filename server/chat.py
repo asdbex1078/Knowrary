@@ -913,8 +913,10 @@ FORMAT_DOC = {
 - `update_edge`：边的类型 / 年份 / 注写错了。`from_relation` 定位原来那条，`relation` 给新类型
   （不改类型就填一样的）；`year` 和 `note` **给了才动，没给就保持原样**。
 - `update_frontmatter`：`fields` 里逐个字段给新值。能改的只有 `name / field / layer / params /
-  type / status / year / start_year / end_year / aliases / tags / desc / learned / source / color /
-  timeless`；
+  type / status / year / start_year / end_year / aliases / tags / desc / learned / sources / source /
+  color / timeless`；
+  `sources` 是来源列表：库里的原文写完整路径的链接 `"[[articles/文章名]]"`，外部来源（论文、书、图）写纯文字；
+  **给的是完整列表**，写了它旧的单值 `source` 会一并并掉，所以原来那几项要一起带上。`source` 是旧写法，别再用；
   `id` 和画布坐标（`x / y / w / h / group / collapsed / pinned`）永远改不了，提了整批退回。
   给空串等于删掉这一行。`status` 只能填 `active / deprecated / disputed / stub`；
   `params` 是参数量、按 `175B` / `340M` / `1.3万亿` 这样写（拿来在图上比大小，不是规格表）。

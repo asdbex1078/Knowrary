@@ -172,17 +172,27 @@ const CHANGE_ICON = { add_edge: 'plus', remove_edge: 'trash', update_edge: 'penc
                   <dt>权重</dt><dd class="tnum">{{ (selected.weight * 100).toFixed(0) }}% · pageRank</dd>
                 </template>
                 <template v-if="detail"><dt>文件</dt><dd>{{ detail.path }}</dd></template>
-                <!-- 来源：这个点是从哪篇文章 / 哪张图导进来的。
+                <!-- 来源：这个点是从哪篇文章 / 哪张图导进来的（frontmatter `sources`，旧的 `source` 并在里面）。
                      翻两三个节点就能看出「这批是一次倒进来的」，而这件事以前在界面上完全不可见。
-                     source 存的是文件名不是路径，能不能打开由服务端找过一次才知道（source_uri）。 -->
-                <template v-if="selected.source">
+                     库里的原文点得开；外部来源（一张图、一篇论文）是灰字；链到的原文不在就标出来。
+                     是不是原文要服务端解析过才知道（detail.sources），没打开之前先把原样文字摆着。 -->
+                <template v-if="selected.sources?.length">
                   <dt>来源</dt>
-                  <dd>
-                    <a v-if="detail?.source_uri" :href="detail.source_uri"
-                       title="在 Obsidian 里打开原文">{{ selected.source }}</a>
-                    <span v-else class="muted"
-                          :title="detail ? '原文不在仓库里（可能是一张图、一篇论文，或者导完就扔了）' : '先打开这个节点'">
-                      {{ selected.source }}</span>
+                  <dd class="src-list">
+                    <template v-if="detail?.sources?.length">
+                      <span v-for="s in detail.sources" :key="s.raw" class="src-item">
+                        <a v-if="s.uri" :href="s.uri" :title="`在 Obsidian 里打开原文：${s.path}`">
+                          <Icon name="file" :size="11" />{{ s.label }}<template v-if="s.section"> §{{ s.section }}</template></a>
+                        <span v-else-if="s.kind === 'article'" class="src-dead"
+                              :title="`原文 ${s.path} 不在库里：先放进原文目录（设置 → 知识库）`">
+                          {{ s.label }}（原文不在）</span>
+                        <span v-else class="muted" title="外部来源：一张图、一篇论文、一本书">{{ s.label }}</span>
+                      </span>
+                    </template>
+                    <template v-else>
+                      <span v-for="s in selected.sources" :key="s" class="src-item muted"
+                            title="先打开这个节点，才知道哪一项是库里的原文">{{ s }}</span>
+                    </template>
                   </dd>
                 </template>
               </dl>

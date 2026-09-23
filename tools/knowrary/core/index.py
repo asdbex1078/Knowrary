@@ -23,6 +23,7 @@ from .schools import LINE_TYPES
 from .facts import (COMPARE_HEADING, FACTS_HEADING, FM_DIMENSIONS, bare_compare_headings,
                     compare_targets, facts_of, section_bounds, stray_facts)
 from .parser import Node, is_aggregate, load_vault, validate_frontmatter, parse_params
+from .sources import sources_of
 from .relations import NormalizedEdge, RelationTypes, load_relation_types, normalize_direction
 
 # 演化族里「源比目标晚」属于正常的那几个类型（见 _warn_year_inverted）。
@@ -30,7 +31,7 @@ NEWER_FIRST = ("修订",)
 
 INDEX_SCHEMA_VERSION = 1
 NODE_FM_FIELDS = ("name", "field", "type", "status", "desc", "year", "start_year", "end_year",
-                  "aliases", "tags", "learned", "source", "layer", "params", "dimensions", "color",
+                  "aliases", "tags", "learned", "layer", "params", "dimensions", "color",
                   "timeless")
 
 
@@ -289,6 +290,11 @@ def _node_payload(vault: Path, node: Node) -> dict:
     n = parse_params(node.fm.get("params"))
     if n is not None:
         d["params_n"] = n
+    # 来源：`sources` 列表和旧的单值 `source` 合并成一份。只存原始字符串，
+    # 是不是库里的原文、文件在不在，要用时再解析（core/sources.py）
+    srcs = sources_of(node.fm)
+    if srcs:
+        d["sources"] = srcs
     d.setdefault("status", "active")
     # 聚合文档（对比组 / 领域总览）：算一遍存进来，下游只看这个布尔值，
     # 不用每处都去认那几个 type 字符串
