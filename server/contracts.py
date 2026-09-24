@@ -260,15 +260,30 @@ class ImportRequest(Strict):
 
     plan: dict[str, Any]
     field: str                         # 新节点统一的领域
-    source: str                        # 来源标记（文章名），写进 frontmatter source 与补充段引言
+    source: str                        # 文章名：原文存进原文目录时的文件名，也写进补充段引言
     folder: str | None = None          # nodes/ 下的子目录；不给就用 field
     base_revision: int | None = None   # 基于哪个 index revision；给了就校验
     dry_run: bool = True
     renames: dict[str, str] = Field(default_factory=dict)   # {模型给的 id: 改成的 id}，认领幽灵用
     promote: list[str] = Field(default_factory=list)        # 要直接写入的待审边 key（源->目标#类型）
+    # 原文层（2026-09-23）：保留原文就把它放进原文目录，节点的 sources 链过去。
+    # 写入时要再带一次原文——方案里没有它，服务端也不替前端记着
+    keep_article: bool = True
+    text: str | None = None            # 粘贴 / 本地文件的正文
+    file: str | None = None            # 或者：库里的一个 md / txt（相对路径）
+    origin: str | None = None          # 本地文件名；写进复制过来那份原文的 origin
     # 跨库复制用：方案里每个节点自带 field 时按它落，不统一压成 `field` 那一个领域
     keep_field: bool = False
     force: bool = False                # 审核挡下之后仍然写入（同 ChangeSet.force）
+
+
+class ImportArticle(Strict):
+    """这篇原文怎么进库。`action`：in_place 就地引用 / reuse 已有一模一样的 / copy 存一份进来。"""
+
+    path: str
+    action: str
+    link: str                          # 节点 sources 里写的那种链接
+    headings: int = 0                  # 原文里有几个小节（节点能链到哪一节，靠它们）
 
 
 class ImportResult(Strict):
@@ -282,6 +297,7 @@ class ImportResult(Strict):
     log: str | None = None             # 落盘后方案存档（vault 相对路径）
     index_revision: int = 0
     audit: AuditReport | None = None   # 写入审核的结论（预览时只有确定性那一段）
+    article: ImportArticle | None = None   # 原文怎么进库；没保留原文就是 None
 
 
 class ImportProposeRequest(Strict):
@@ -289,10 +305,12 @@ class ImportProposeRequest(Strict):
 
     text: str | None = None            # 粘贴 / 本地文件读出来的正文
     file: str | None = None            # 或者：vault 里的一个 md / txt（相对路径）
-    source: str                        # 文章名（写进 frontmatter source）
+    source: str                        # 文章名：原文存进原文目录时的文件名
     field: str
     folder: str | None = None
     project: str | None = None         # 在哪个项目下导入：它清单里没建的点作为"待认领"给模型看
+    keep_article: bool = True          # 保留原文：同名冲突在调模型之前就挡下，不白花一次钱
+    origin: str | None = None          # 本地文件名
 
 
 class ImportClaim(Strict):
@@ -311,6 +329,7 @@ class ImportProposal(Strict):
     suggest_home: dict[str, Any] | None = None                     # 模型对孤立节点该归哪的建议
     project_points: int = 0            # 给模型看了几个待认领的点
     prompt_chars: int = 0
+    shape: str = ""                    # 模型的判断：single = 整篇讲一个点（不拆），multi = 讲了好几个
 
 
 class SourceFile(Strict):

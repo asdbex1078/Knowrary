@@ -2099,7 +2099,10 @@ def 导入翻译_旧字段merge_into仍认且没confidence当确定():
             "merge_into": [{"existing": "a", "content": "老写法"}]}
     tr = core.translate(plan, r.data, rt, core.ImportTarget("测试", "旧方案"))
     assert not tr.pending, "旧方案没有 confidence 字段，不能因此全进待审"
-    assert [c["type"] for c in tr.changes] == ["create_node", "add_edge", "append_body"], tr.changes
+    # 补充过的老节点把这篇追加进 sources（2026-09-23）：多一条 update_frontmatter，正文仍然只追加
+    assert [c["type"] for c in tr.changes] == ["create_node", "add_edge", "append_body", "update_frontmatter"], \
+        tr.changes
+    assert tr.changes[-1]["fields"] == {"sources": ["旧方案"]}, tr.changes[-1]
 
 
 @case
@@ -2114,7 +2117,10 @@ def 导入翻译_落盘后老节点只追加不改写且待审边进pending():
     after_b = core.read(vault / "nodes/x/b.md")
     head, _, tail = after_b.partition("## 关系")
     assert "> 补充自《某文章》（2026-09-18）" in head and "补一段关于 B 的新理解" in head, after_b
-    assert before_b.split("## 关系")[0].strip() in head, "老正文一个字都不能少"
+    # 比的是**正文**：frontmatter 现在会多一项 sources（这篇被追加进来源），那是故意的
+    old_body = core.split_frontmatter(before_b)[1].split("## 关系")[0].strip()
+    assert old_body in core.split_frontmatter(head)[1], "老正文一个字都不能少"
+    assert core.split_frontmatter(after_b)[0]["sources"] == ["某文章"], after_b[:200]
     assert "- 部件:: [[a]]" in tail, "老节点自己的关系段要原样保留"
     new = core.read(vault / "nodes/测试/新甲.md")
     assert "- 依赖:: [[a]]" in new and "- 部件:: [[新乙]]" in new and "对比" not in new, new

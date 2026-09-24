@@ -65,6 +65,7 @@ learned: 2026-09-10
 | `aliases/tags` | 否 | string[] | 检索和合并，不承担布局语义 |
 | `desc` | 是 | string | 一句话摘要 |
 | `learned` | 否 | date | 首次加入知识库的日期；复习记录不进 md，在 `.knowrary/review-log.json` |
+| `sources` | 否 | string[] | 这个点从哪来。库里的原文写**完整路径**的链接 `"[[articles/BPE全景]]"`（可带 `#小节`，点开跳到那一节），外部来源（论文、书、一张图）写纯文字。原文目录在库级配置 `.knowrary/vault.json` 里（默认 `articles`），原文不上图、不进复习；哪篇原文拆出了哪些点由 `sources` 反查，原文里不回写链接。旧的单值 `source` 照读、并进 sources，写回时给了 sources 就撕掉它（2026-09-23） |
 
 `year` 是可选的历史事件元数据；没有 `year` 的节点只进入结构视图。未来需要表达多个事件时扩展为 `events: [{ year, type, note }]`。
 

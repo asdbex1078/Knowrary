@@ -2306,6 +2306,168 @@ def import_propose_认领幽灵_近似撞名_孤立判定():
     assert "- 对比:: [[b]]" in rnn["diff"], rnn["diff"]
 
 
+ARTICLE = ("---\ntitle: BPE 全景\ntags: [NLP]\n---\n# BPE 全景\n\n开头一段。\n\n"
+           "## 为什么是子词\n\n词表太大、字符太碎。\n\n## 合并规则\n\n高频对先合并。\n")
+
+
+def stub_import(payload: dict):
+    """把导入那一次模型调用换成固定方案；返回 (原函数, 调用次数)。"""
+    from server import importing as imp_mod
+    original, calls = imp_mod.ask, []
+    imp_mod.ask = lambda vault, role, prompt, op="?": calls.append(prompt) or json.dumps(payload, ensure_ascii=False)
+    return original, calls
+
+
+def restore_import(original) -> None:
+    from server import importing as imp_mod
+    imp_mod.ask = original
+
+
+@case
+def import_保留原文_复制进原文目录_节点链到出自的那一节():
+    """原文层第 3 步：导入时原文原样存进原文目录，新节点 sources 链到它出自的小节，
+    补充过的老节点也把这篇追加进 sources。预览不碰文件，写入才放。"""
+    c, vault = client({"nodes/组A/a.md": node_md("A", extra="source: 旧的.jpg\n")})
+    payload = {"shape": "single", "summary": "s", "nodes": [
+        {"id": "BPE", "name": "BPE", "desc": "子词分词", "from_section": "为什么 是子词", "body": AUDIT_LONG,
+         "relations": [{"type": "依赖", "target": "a", "confidence": 0.9}, {"type": "部件", "target": "合并表"}]},
+        {"id": "WordPiece", "name": "WordPiece", "desc": "近亲", "from_section": "文中没有的标题",
+         "relations": [{"type": "对比", "target": "BPE", "confidence": 0.9}]}],
+        "stubs": [{"id": "合并表", "name": "合并表", "desc": "d", "why": "w"}],
+        "enrich": [{"existing": "a", "content": "补一句。", "why": "w"}]}
+    original, calls = stub_import(payload)
+    try:
+        r = c.post("/api/import/propose", json={"text": ARTICLE, "source": "BPE全景", "field": "测试"})
+    finally:
+        restore_import(original)
+    assert r.status_code == 200, r.text
+    d = r.json()
+    assert d["shape"] == "single", d["shape"]
+    art = d["preview"]["article"]
+    assert art == {"path": "articles/BPE全景.md", "action": "copy", "link": "[[articles/BPE全景]]", "headings": 2}, art
+    assert not (vault / "articles" / "BPE全景.md").exists(), "预览就放了原文"
+    codes = [i["code"] for i in d["preview"]["audit"]["issues"]]
+    assert "dead_source" not in codes, "原文还没放是正常的，不该报一串「指不到原文」"
+
+    r = c.post("/api/import", json={"plan": d["plan"], "field": "测试", "source": "BPE全景", "text": ARTICLE,
+                                    "dry_run": False})
+    assert r.status_code == 200 and r.json()["applied"], r.text
+    saved = (vault / "articles" / "BPE全景.md").read_text("utf-8")
+    fm, body = core.split_frontmatter(saved)
+    assert fm["title"] == "BPE 全景" and fm["tags"] == ["NLP"], "原文自己的 frontmatter 要留着"
+    assert str(fm["imported"]) == dt.date.today().isoformat() and fm["origin"] == "粘贴", fm
+    assert body == core.split_frontmatter(ARTICLE)[1], "正文一字不改"
+    bare = "\n  开头有空白的原文\n\n## 一节\n\n正文\n"
+    assert core.split_frontmatter(core.render_article(bare, "粘贴", "2026-09-24"))[1] == bare, \
+        "原文没有 frontmatter 时，补上的那段后面也不许多出空行、动开头的空白"
+
+    def sources(rel):
+        return core.split_frontmatter(core.read(vault / rel))[0].get("sources")
+    assert sources("nodes/测试/BPE.md") == ["[[articles/BPE全景#为什么是子词]]"], "对上小节要用原文的原样标题"
+    assert sources("nodes/测试/WordPiece.md") == ["[[articles/BPE全景]]"], "对不上的小节链整篇"
+    assert sources("nodes/_stubs/合并表.md") == ["[[articles/BPE全景]]"]
+    fm_a = core.split_frontmatter(core.read(vault / "nodes/组A/a.md"))[0]
+    assert fm_a["sources"] == ["旧的.jpg", "[[articles/BPE全景]]"] and "source" not in fm_a, fm_a
+    back = core.source_backlinks(vault, c.get("/api/index").json())
+    assert sorted(back["articles/BPE全景.md"]) == ["BPE", "WordPiece", "a", "合并表"], back
+    assert "BPE全景" not in {n["id"] for n in c.get("/api/index").json()["nodes"]}, "原文被扫成了节点"
+    [ref] = c.get("/api/node/BPE").json()["sources"]
+    assert ref["exists"] and ref["section"] == "为什么是子词", ref
+
+
+@case
+def import_原文同名不同文_调模型之前就挡下_同文就复用():
+    c, vault = client()
+    (vault / "articles").mkdir()
+    (vault / "articles" / "BPE全景.md").write_text("# 另一篇\n", "utf-8")
+    original, calls = stub_import({"nodes": [{"id": "x", "name": "x", "desc": "d"}]})
+    try:
+        r = c.post("/api/import/propose", json={"text": ARTICLE, "source": "BPE全景", "field": "测试"})
+        assert r.status_code == 422 and "换个文章名" in r.text, r.text
+        assert calls == [], "同名冲突要在调模型之前挡下，不白花一次钱"
+        # 同一篇（只差我们加的 imported / origin）：复用，不存第二份
+        (vault / "articles" / "BPE全景.md").write_text(
+            core.render_article(ARTICLE, "粘贴", "2026-01-01"), "utf-8")
+        before = (vault / "articles" / "BPE全景.md").read_text("utf-8")
+        r = c.post("/api/import/propose", json={"text": ARTICLE, "source": "BPE全景", "field": "测试"})
+        assert r.status_code == 200 and r.json()["preview"]["article"]["action"] == "reuse", r.text
+        r = c.post("/api/import", json={"plan": r.json()["plan"], "field": "测试", "source": "BPE全景",
+                                        "text": ARTICLE, "dry_run": False})
+        assert r.status_code == 200, r.text
+        assert (vault / "articles" / "BPE全景.md").read_text("utf-8") == before, "复用的原文被改了"
+        assert len(core.list_articles(vault / "articles")) == 1
+    finally:
+        restore_import(original)
+
+
+@case
+def import_原文目录里的就地引用_别处的复制并记下原路径_不保留就写文章名():
+    c, vault = client({"nodes/组A/a.md": node_md("A"),
+                       "articles/长文/注意力.md": "# 注意力\n\n## 缩放\n\n除以根号 d。\n",
+                       "doc/笔记/一篇.md": "# 一篇\n\n正文\n"})
+    plan = {"nodes": [{"id": "缩放点积", "name": "缩放点积", "desc": "d", "from_section": "缩放"}]}
+    r = c.post("/api/import", json={"plan": plan, "field": "测试", "source": "注意力",
+                                    "file": "articles/长文/注意力.md", "dry_run": False})
+    assert r.status_code == 200 and r.json()["article"]["action"] == "in_place", r.text
+    assert (vault / "articles/长文/注意力.md").read_text("utf-8").startswith("# 注意力"), "就地引用的原文被改了"
+    fm = core.split_frontmatter(core.read(vault / "nodes/测试/缩放点积.md"))[0]
+    assert fm["sources"] == ["[[articles/长文/注意力#缩放]]"], fm
+
+    plan = {"nodes": [{"id": "另一个", "name": "另一个", "desc": "d"}]}
+    r = c.post("/api/import", json={"plan": plan, "field": "测试", "source": "一篇", "file": "doc/笔记/一篇.md",
+                                    "dry_run": False})
+    assert r.status_code == 200 and r.json()["article"]["action"] == "copy", r.text
+    copied = core.split_frontmatter((vault / "articles" / "一篇.md").read_text("utf-8"))[0]
+    assert copied["origin"] == "doc/笔记/一篇.md", copied
+    assert (vault / "doc/笔记/一篇.md").exists(), "别处的原文是复制不是搬"
+
+    plan = {"nodes": [{"id": "第三个", "name": "第三个", "desc": "d"}]}
+    r = c.post("/api/import", json={"plan": plan, "field": "测试", "source": "不留原文的", "text": "随便",
+                                    "keep_article": False, "dry_run": False})
+    assert r.status_code == 200 and r.json()["article"] is None, r.text
+    assert core.split_frontmatter(core.read(vault / "nodes/测试/第三个.md"))[0]["sources"] == ["不留原文的"]
+    assert not (vault / "articles" / "不留原文的.md").exists()
+
+
+@case
+def import_审核挡下或写失败_刚放进来的原文撤掉():
+    c, vault = client({"nodes/组A/a.md": node_md("A")})
+    c.put("/api/settings", json={"audit_enabled": True})
+    plan = {"nodes": [{"id": "新点", "name": "新点", "desc": "d", "body": AUDIT_LONG,
+                       "relations": [{"type": "依赖", "target": "a", "confidence": 0.9}]}]}
+    seen = []
+    from server import audit as audit_mod
+    orig = audit_mod.ask_meta
+
+    def block(vault_, role, prompt, op="?"):
+        # 审核那一刻原文已经在了：确定性检查不该报「指不到原文」
+        seen.append("dead_source" in prompt)
+        return json.dumps({"verdict": "block", "summary": "错", "issues": [
+            {"path": "x", "severity": "block", "what": "年份错", "why": "w", "fix": "f"}]}), {"model": "m", "ms": 1}
+    audit_mod.ask_meta = block
+    try:
+        r = c.post("/api/import", json={"plan": plan, "field": "测试", "source": "长文", "text": ARTICLE,
+                                        "dry_run": False})
+    finally:
+        audit_mod.ask_meta = orig
+        c.put("/api/settings", json={"audit_enabled": False})
+    assert r.status_code == 200 and r.json()["applied"] is False, r.text
+    assert seen == [False], "审核那一刻原文还不在，确定性检查报了一串指不到原文"
+    assert not (vault / "articles" / "长文.md").exists(), "挡下了原文还留着"
+
+    orig_commit = core.commit
+    core.commit = lambda *a, **k: (_ for _ in ()).throw(OSError("磁盘满了"))
+    try:
+        try:
+            c.post("/api/import", json={"plan": plan, "field": "测试", "source": "长文", "text": ARTICLE,
+                                        "dry_run": False})
+        except OSError:
+            pass
+    finally:
+        core.commit = orig_commit
+    assert not (vault / "articles" / "长文.md").exists(), "节点没写成，原文还留着"
+
+
 @case
 def import_素材源列表与读取_挡住越界路径():
     c, vault = client()
@@ -6145,7 +6307,9 @@ def 跨库复制把正文和关系一起抄过来():
     md = (target / "nodes" / "_抄来的" / "quic.md").read_text("utf-8")
     assert "field: 网络" in md, ("领域没保留", md[:200])
     assert "year: 2021" in md and "layer: 系统软件" in md, ("frontmatter 掉字段了", md[:200])
-    assert "source: 抄自 参考库" in md and f"learned: {dt.date.today().isoformat()}" in md, md[:200]
+    fm, _ = core.split_frontmatter(md)
+    assert fm.get("sources") == ["抄自 参考库"] and "source" not in fm, md[:200]
+    assert f"learned: {dt.date.today().isoformat()}" in md, md[:200]
     assert "- 基于:: [[udp]]" in md and "借它的什么都不做" in md, ("关系连说明一起抄", md)
     assert body["log"].startswith(".knowrary/imports/"), body["log"]
 

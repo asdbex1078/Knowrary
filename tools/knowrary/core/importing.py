@@ -10,6 +10,10 @@
    只记 `.knowrary/pending.json`，审核通过再写回。同一篇拆出的新节点之间的边默认直接写——
    那是模型刚刚亲手拆出来的结构，它最清楚。
 
+**来源**（2026-09-23 起）：节点记 `sources`。保留了原文（`ImportTarget.article`）就链到原文，
+新节点链到它出自的那一节（`[[articles/文章#小节]]`）；没保留就是一段纯文字的文章名。
+补充过的老节点也把这篇追加进它的 sources——它现在确实有一部分内容出自这篇。
+
 前两种都是普通的 ChangeSet 变更，走 `/api/changes` 那条唯一的 Markdown 写回通道
 （dry-run 出 diff、落盘前备份），CLI 的 `apply` 和服务端的 `/api/import` 共用这一份翻译，
 skill 和网页不会各长出一套写法。
@@ -19,6 +23,7 @@ from __future__ import annotations
 import datetime as dt
 from dataclasses import dataclass, field
 
+from .articles import ArticlePlan
 from .mdio import RE_ID_OK, RE_LINK, RE_REL_HEADER
 from .relations import RelationTypes
 
@@ -59,6 +64,11 @@ class ImportTarget:
     folder: str | None = None
     today: str | None = None
     keep_field: bool = False
+    article: ArticlePlan | None = None     # 保留了原文就有：节点的 sources 链到它
+
+    def sources_for(self, section: str | None = None) -> list[str]:
+        """一个节点该写的 sources：链到原文（能对上小节就链到那一节），没原文就是文章名。"""
+        return [self.article.link_to(section)] if self.article else [self.source]
 
     @property
     def node_dir(self) -> str:
@@ -89,6 +99,9 @@ def translate(plan: dict, index: dict, rt: RelationTypes, target: ImportTarget) 
         if change is not None:
             out.changes.append(change)
             out.enriched.append(change["source"])
+            more = _enrich_sources(existing[change["source"]], target)
+            if more is not None:
+                out.changes.append(more)
     for t in plan.get("proposed_types") or []:
         out.warnings.append(f"提议新类型 `{t.get('type')}`（{t.get('family')}）：{t.get('why', '')}")
     return out
@@ -135,7 +148,8 @@ def _collect_stubs(plan: dict, nodes: list[dict], existing: dict, out: Translati
 def _create_node(n: dict, target: ImportTarget, out: Translation) -> dict:
     field_name = (n.get("field") if target.keep_field else None) or target.field_name
     fields = {"name": n.get("name") or n["id"], "field": field_name,
-              "desc": n.get("desc") or "待补充", "learned": target.date, "source": target.source}
+              "desc": n.get("desc") or "待补充", "learned": target.date,
+              "sources": target.sources_for(n.get("from_section"))}
     for k in ("type", "year", "aliases", "tags", "layer"):
         if n.get(k):
             fields[k] = n[k]
@@ -157,7 +171,7 @@ def _body_without_relations(n: dict, out: Translation) -> str:
 def _create_stub(s: dict, target: ImportTarget) -> dict:
     field_name = (s.get("field") if target.keep_field else None) or target.field_name
     fields = {"name": s.get("name") or s["id"], "field": field_name, "status": "stub",
-              "desc": s.get("desc") or "待补充", "source": target.source}
+              "desc": s.get("desc") or "待补充", "sources": target.sources_for()}
     return {"type": "create_node", "source": s["id"], "path": f"{STUB_DIR}/{s['id']}.md",
             "fields": fields, "body": f"> 空壳节点（stub）：{s.get('why', '')}"}
 
@@ -211,6 +225,18 @@ def _enrich(e: dict, existing: dict, target: ImportTarget, out: Translation) -> 
     why = str(e.get("why") or "").strip()
     head = f"> {ENRICH_MARK}《{target.source}》（{target.date}）" + (f"：{why}" if why else "")
     return {"type": "append_body", "source": nid, "body": f"{head}\n\n{content}"}
+
+
+def _enrich_sources(node: dict, target: ImportTarget) -> dict | None:
+    """补充过的老节点：把这篇追加进它的 sources（原有的保留在前面）。已经有了就不动。
+
+    `sources` 写的是完整列表（写回层会顺手撕掉旧的单值 source），所以这里把索引里
+    已经并过一遍的那份原样带上再追加。"""
+    have = list(node.get("sources") or [])
+    add = target.sources_for()[0]
+    if add in have:
+        return None
+    return {"type": "update_frontmatter", "source": node["id"], "fields": {"sources": [*have, add]}}
 
 
 # ---------------------------------------------------------------- 方案改写（审核卡上的两个动作）

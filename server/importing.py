@@ -14,8 +14,8 @@ from pathlib import Path
 import os
 
 from . import audit, curation
-from .contracts import (FileDiff, ImportClaim, ImportProposal, ImportProposeRequest, ImportRequest, ImportResult,
-                        PendingEdge, SourceFile, SourceText, SourcesRead)
+from .contracts import (FileDiff, ImportArticle, ImportClaim, ImportProposal, ImportProposeRequest, ImportRequest,
+                        ImportResult, PendingEdge, SourceFile, SourceText, SourcesRead)
 from .index_service import current_index, invalidate
 from .llm_call import ask
 from .paths import core
@@ -41,8 +41,9 @@ def run(vault: Path, req: ImportRequest) -> ImportResult:
     index = current_index(vault)
     if req.base_revision is not None and req.base_revision != index["revision"]:
         raise StaleIndex(index["revision"])
+    article = _article_plan(vault, req)
     target = core.ImportTarget(req.field.strip(), req.source.strip(), (req.folder or "").strip() or None,
-                               keep_field=req.keep_field)
+                               keep_field=req.keep_field, article=article)
     # 先提升再改名：卡上待审边的 key 是按**卡上显示的 id** 拼的，改名之后就对不上了
     plan = core.promote_in_plan(req.plan, req.promote)
     for old_id, new_id in req.renames.items():
@@ -56,16 +57,25 @@ def run(vault: Path, req: ImportRequest) -> ImportResult:
 
     files = [FileDiff(path=e.rel, notes=e.notes, diff=curation.diff_of(e)) for e in edits]
     pending = [PendingEdge(**{k: v for k, v in p.items() if k in PendingEdge.model_fields}) for p in tr.pending]
-    base = dict(files=files, pending=pending, warnings=tr.warnings, counts=tr.counts(), summary=tr.summary)
+    base = dict(files=files, pending=pending, warnings=tr.warnings, counts=tr.counts(), summary=tr.summary,
+                article=_article_info(article))
     if req.dry_run:
         return ImportResult(applied=False, index_revision=index["revision"],
-                            audit=audit.preview(vault, index, edits), **base)
+                            audit=_not_yet(audit.preview(vault, index, edits), article), **base)
 
-    # 导入走的是同一条闸：一篇文章拆出来的新节点正是最该被审的那批内容
-    report = audit.gate(vault, index, edits, tr.changes, req.force)
-    if report.blocked:
-        return ImportResult(applied=False, index_revision=index["revision"], audit=report, **base)
-    snapshot = core.commit(vault, edits) if edits else ""
+    # 先放原文再过审核：原文还不在的话，确定性检查会给每个节点都报一条「来源指不到原文」，
+    # 那串噪音还会喂进审核模型的提示词。挡下了、写失败了，都把刚放进来的撤掉
+    created = core.write_article(vault, article, _origin_of(req), target.date) if article else False
+    try:
+        # 导入走的是同一条闸：一篇文章拆出来的新节点正是最该被审的那批内容
+        report = audit.gate(vault, index, edits, tr.changes, req.force)
+        if report.blocked:
+            _undo_article(vault, article, created)
+            return ImportResult(applied=False, index_revision=index["revision"], audit=report, **base)
+        snapshot = core.commit(vault, edits) if edits else ""
+    except BaseException:
+        _undo_article(vault, article, created)
+        raise
     origin = {"source": target.source, "imported_at": target.date}
     if tr.pending:
         core.add_pending(vault, tr.pending, origin)
@@ -85,8 +95,56 @@ def _archive(vault: Path, plan: dict, tr, target) -> str:
     stem = re.sub(r"[^\w一-鿿-]+", "-", target.source)[:60]
     rel = f".knowrary/imports/{dt.date.today().isoformat()}-{stem}.json"
     core.write(vault / rel, json.dumps({"plan": plan, "changes": tr.changes, "pending": tr.pending,
-                                        "warnings": tr.warnings}, ensure_ascii=False, indent=2))
+                                        "warnings": tr.warnings,
+                                        "article": target.article.path if target.article else None},
+                                       ensure_ascii=False, indent=2))
     return rel
+
+
+# ---------------------------------------------------------------- 原文进库
+
+def _article_plan(vault: Path, req) -> "core.ArticlePlan | None":
+    """保留原文的话它该怎么进库。同名不同文在这里就挡下（`ImportRejected`）——
+    `propose` 在调模型之前先跑这一步，免得付了钱才发现写不进去。"""
+    if not req.keep_article:
+        return None
+    # 不 strip：原文要一字不改地存下来，连结尾的换行也算
+    text = req.text or ""
+    if not text.strip() and req.file:
+        text = read_source(vault, req.file).text
+    if not text.strip():
+        return None
+    try:
+        return core.plan_article(vault, req.source.strip(), text, req.file or None)
+    except core.ArticleConflict as exc:
+        raise ImportRejected(str(exc)) from exc
+
+
+def _article_info(article) -> ImportArticle | None:
+    if article is None:
+        return None
+    return ImportArticle(path=article.path, action=article.action, link=article.link,
+                         headings=len(article.headings))
+
+
+def _origin_of(req) -> str:
+    """复制过来那份原文的 origin：库里原来的路径 / 本地文件名 / 粘贴。"""
+    return (req.file or req.origin or "粘贴").strip()
+
+
+def _undo_article(vault: Path, article, created: bool) -> None:
+    """只撤自己这次新放进来的那份：就地引用、复用的原文本来就在，一个字节都不碰。"""
+    if created:
+        (vault / article.path).unlink(missing_ok=True)
+
+
+def _not_yet(report, article):
+    """预览时原文还没进库（真写入那一下才放），「来源指不到原文」里指向它的那几条不算数。"""
+    if article is None or article.action != "copy":
+        return report
+    report.issues = [i for i in report.issues
+                     if not (i.code == "dead_source" and f"`{article.path}`" in i.message)]
+    return report
 
 
 # ---------------------------------------------------------------- 文章 → 方案（一次 LLM 调用）
@@ -95,6 +153,9 @@ def propose(vault: Path, req: ImportProposeRequest) -> ImportProposal:
     """文章 → 方案 → 顺手 dry-run。三级匹配在这里算完：
     先对当前项目里没建的点（认领幽灵），再看方案连到全局哪些已有节点，两边都沾不上的标孤立。"""
     text = _article_text(vault, req)
+    ask_for = ImportRequest(plan={}, field=req.field, source=req.source, folder=req.folder, dry_run=True,
+                            keep_article=req.keep_article, text=req.text, file=req.file, origin=req.origin)
+    _article_plan(vault, ask_for)          # 同名冲突在调模型之前挡下
     index = current_index(vault)
     rt = core.load_relation_types(vault)
     points = core.project_points(vault, index, req.project)
@@ -106,14 +167,15 @@ def propose(vault: Path, req: ImportProposeRequest) -> ImportProposal:
 
     plan, raw_claims = core.normalize_claims(plan, points, core.rename_in_plan)
     claims = [ImportClaim(**c) for c in raw_claims]
-    preview = run(vault, ImportRequest(plan=plan, field=req.field, source=req.source, folder=req.folder,
-                                       dry_run=True))
+    preview = run(vault, ask_for.model_copy(update={"plan": plan}))
     claimed = {c.node_id for c in claims}
     near = [ImportClaim(**c) for c in core.near_misses(plan, points, claimed)]
     isolated = core.isolated(plan, [p.model_dump() for p in preview.pending], index, claimed)
     home = plan.get("suggest_home") if isinstance(plan.get("suggest_home"), dict) else None
+    shape = str(plan.get("shape") or "").strip()
     return ImportProposal(plan=plan, preview=preview, claims=claims, near_misses=near, isolated=isolated,
-                          suggest_home=home, project_points=len(points), prompt_chars=len(prompt))
+                          suggest_home=home, project_points=len(points), prompt_chars=len(prompt),
+                          shape=shape if shape in ("single", "multi") else "")
 
 
 def _article_text(vault: Path, req: ImportProposeRequest) -> str:

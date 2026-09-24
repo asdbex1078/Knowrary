@@ -45,6 +45,11 @@ const promote = ref(new Set())  // 要直接写的待审边 key
 const openBodies = ref(new Set())
 const stale = ref(false)        // 改过了、diff 还是旧的
 const blocked = ref(null)       // 写入审核挡下来的那份结论（AuditReport）
+// 原文层：保留原文就把它放进原文目录（设置 → 知识库），节点的 sources 链过去。**默认开**
+const keepArticle = ref(true)
+const localName = ref('')       // 本地文件名：复制进来的那份原文记下它从哪来
+// 这一张卡拆的是哪篇：写入时要把原文再带一次（方案里没有它，服务端也不替前端记着）
+const article = ref({ text: '', file: null, origin: null })
 
 // 批量队列：{ key, name, kind: 'vault' | 'file' | 'paste', path?, text?, status, error? }
 // status: waiting → proposing → review → done | skipped | failed
@@ -98,10 +103,11 @@ async function onFile(ev) {
   if (!files.length) return
   if (files.length === 1) {
     text.value = await readText(files[0])
+    localName.value = files[0].name
     if (!source.value) source.value = stripExt(files[0].name)
     return
   }
-  for (const f of files) enqueue({ name: stripExt(f.name), kind: 'file', text: await readText(f) })
+  for (const f of files) enqueue({ name: stripExt(f.name), kind: 'file', text: await readText(f), origin: f.name })
 }
 
 function toggleCheck(path) {
@@ -136,7 +142,7 @@ async function runNext() {
   let body = item.text || ''
   try {
     if (item.kind === 'vault' && !body) body = (await fetchImportSource(item.path)).text
-    await proposeText(body, item.name)
+    await proposeText(body, item.name, { file: item.kind === 'vault' ? item.path : null, origin: item.origin || null })
     setStatus(item.key, { status: 'review' })
   } catch (err) {
     setStatus(item.key, { status: 'failed', error: msgOf(err) })
@@ -155,7 +161,8 @@ function msgOf(err) { return err?.body?.detail?.message || err?.body?.detail || 
 function reqBody(dryRun, force = false) {
   return { plan: plan.value, field: field.value.trim(), source: source.value.trim(), folder: folder.value.trim() || null,
            base_revision: props.revision, dry_run: dryRun, renames: renames.value, promote: [...promote.value],
-           ...(force ? { force: true } : {}) }
+           keep_article: keepArticle.value, text: article.value.text, file: article.value.file,
+           origin: article.value.origin, ...(force ? { force: true } : {}) }
 }
 
 /** 单篇：编辑框里的这一篇直接拆。队列里有东西时也能用，但拆完得先处理完它才会起队列。 */
@@ -164,19 +171,38 @@ async function propose() {
   if (!text.value.trim()) { error.value = '先把文章贴进来，或选一个文件'; return }
   if (!source.value.trim()) source.value = text.value.trim().split('\n')[0].replace(/^#+\s*/, '').slice(0, 40)
   if (!field.value.trim()) { error.value = '选一个领域（新节点统一归它）'; return }
-  try { await proposeText(text.value, source.value.trim()) } catch (err) { error.value = `拆解失败：${msgOf(err)}` }
+  // 选的是库里的文件、而且没改过（改一个字 picked 就清空了）才算就地那一篇；本地文件记下文件名
+  const from = { file: tab.value === 'vault' && picked.value ? picked.value : null,
+                 origin: tab.value === 'file' && localName.value ? localName.value : null }
+  try { await proposeText(text.value, source.value.trim(), from) } catch (err) { error.value = `拆解失败：${msgOf(err)}` }
 }
 
 /** 真正的一次拆解：清掉上一张卡的状态，调 propose，把方案摆成卡。失败往上抛，由调用方决定怎么提示。 */
-async function proposeText(body, name) {
+async function proposeText(body, name, from = {}) {
   working.value = true
   source.value = name
   proposal.value = null; renames.value = {}; promote.value = new Set(); openBodies.value = new Set(); stale.value = false
+  article.value = { text: body, file: from.file || null, origin: from.origin || null }
   try {
     proposal.value = await postImportPropose({ text: body, source: name, field: field.value.trim(),
-                                               folder: folder.value.trim() || null, project: props.project || null })
+                                               folder: folder.value.trim() || null, project: props.project || null,
+                                               keep_article: keepArticle.value, file: article.value.file,
+                                               origin: article.value.origin })
   } finally { working.value = false }
 }
+
+// 卡上那一行「原文怎么进库」
+const ARTICLE_SAY = {
+  copy: (a) => `原文会存进 ${a.path}（写入那一下才放，预览不碰文件）`,
+  reuse: (a) => `原文目录里已经有这一篇（${a.path}），直接链过去，不存第二份`,
+  in_place: (a) => `就地引用 ${a.path}：它本来就在原文目录里，一个字不动`,
+}
+const articleSay = computed(() => {
+  const a = preview.value?.article
+  if (a) return ARTICLE_SAY[a.action]?.(a) || a.path
+  return keepArticle.value ? '' : '不保留原文：节点的来源只记文章名'
+})
+const SHAPE_SAY = { single: '整篇只讲一个点：没有拆，正文写足，原文另存', multi: '讲了好几个点：按概念拆开' }
 
 /** 改过摘要 / 正文 / 认领 / 提升之后重算 diff：服务端改方案再翻译，卡上看到的就是会落盘的。 */
 async function recompute() {
@@ -241,6 +267,7 @@ async function apply(force = false) {
 function reset() {
   if (current.value && !proposal.value?.applied) { skip(current.value.key); return }
   proposal.value = null; text.value = ''; source.value = ''; picked.value = ''; error.value = ''
+  localName.value = ''
 }
 </script>
 
@@ -286,13 +313,18 @@ function reset() {
                   @input="picked = ''"></textarea>
 
         <div class="imp-form">
-          <label>来源<input v-model="source" type="text" placeholder="文章名（写进 frontmatter source）"></label>
+          <label>文章名<input v-model="source" type="text" placeholder="原文存进原文目录时就叫这个名字"></label>
           <label>领域
             <input v-model="field" type="text" list="imp-fields" placeholder="新节点统一归哪个领域">
             <datalist id="imp-fields"><option v-for="f in fields" :key="f" :value="f" /></datalist>
           </label>
           <label>目录<input v-model="folder" type="text" :placeholder="`nodes/ 下的子目录，默认同领域名`"></label>
         </div>
+        <label class="switch-row imp-keep">
+          <input v-model="keepArticle" type="checkbox" data-act="keep-article" />
+          <span class="check"><Icon name="check" :size="11" :width="2.6" /></span>
+          <span class="label">保留原文<span class="sub">原样存进原文目录（设置 → 知识库），节点的来源链过去；关掉就只记文章名</span></span>
+        </label>
 
         <div class="imp-run">
           <button class="btn primary" style="flex: 1; justify-content: center" :disabled="!canRun || !!current" @click="propose">
@@ -352,6 +384,14 @@ function reset() {
           新建 {{ preview.counts.nodes }} · stub {{ preview.counts.stubs }} · 补充老节点 {{ preview.counts.enrich }}
           · 直接写入 {{ preview.counts.edges }} 条边 · 待审 {{ preview.counts.pending }} 条
           <span v-if="proposal.project_points">· 给模型看了 {{ proposal.project_points }} 个待认领的点</span>
+        </div>
+        <!-- 原文层：模型对这篇形状的判断，和原文怎么进库。两件事都是写入前该看见的 -->
+        <div v-if="proposal.shape || articleSay" class="imp-article">
+          <span v-if="proposal.shape" class="chip" :class="proposal.shape === 'single' ? 'm-due' : 'm-unbuilt'"
+                data-shape>{{ SHAPE_SAY[proposal.shape] }}</span>
+          <span v-if="articleSay" class="dim" data-article>
+            <Icon name="file" :size="12" />{{ articleSay }}
+          </span>
         </div>
 
         <!-- 孤立提醒：整块和体系断开的，只会掉进 Inbox -->

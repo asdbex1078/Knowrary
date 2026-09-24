@@ -781,7 +781,7 @@ def add_llm_parsers(sub: argparse._SubParsersAction) -> None:
     p.add_argument("--vault", default=None, help=VAULT_HELP)
     p.add_argument("--field", required=True)
     p.add_argument("--folder")
-    p.add_argument("--source", help="写入 frontmatter source 字段，如文章名")
+    p.add_argument("--source", help="文章名：写进节点的 sources（纯文字）和补充段引言")
     p.add_argument("--dry-run", action="store_true")
     p.set_defaults(fn=cmd_apply)
 
