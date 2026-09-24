@@ -4563,7 +4563,7 @@ def chat_面试口径改不动清单():
 
 # ---------------------------------------------------------------- 写入审核（三层闸）
 
-AUDIT_LONG = "这一段写得足够长，够过 THIN_BODY 那道线。" * 6
+AUDIT_LONG = "这一段写得足够长，够过 THIN_BODY 那道线。" * 12 + "\n\n## 例子\n\n" + "照着走一遍的具体案例。" * 3
 
 
 def stub_audit(payload: str):
@@ -4840,7 +4840,7 @@ def audit_默认关着时不问模型但确定性检查照跑():
         report = r.json()["audit"]
         assert called == [], "开关关着还问了模型"
         assert report["checked"] is False and report["verdict"] == "pass"
-        assert {i["code"] for i in report["issues"]} == {"thin_body", "no_relation"}, report["issues"]
+        assert {i["code"] for i in report["issues"]} == {"thin_body", "no_example", "no_relation"}, report["issues"]
     finally:
         restore_audit(original)
 
@@ -5059,20 +5059,20 @@ def chat_搜索也能搜到计划里还没建的点():
 
 
 @case
-def chat_正文档位跟项目难度走_线头哪档都有():
-    """了解 = 精简、会用 = 标准、精通 = 详尽。三档都必须保留「线头」——
-    那是给以后连边留的钩子，精简掉的关键词（神经生理学家 + 数学家）就是这样丢的。"""
+def chat_正文不分档一律写足_例子和线头哪档都有():
+    """2026-09-24 取消三档正文：档位只管讲多深、考多深，正文一律写足。
+    以前「了解」叫精简档，模型把正文压成提纲；「例子」「线头」不管哪档都要有，
+    没聊到的节由模型补、标「（补充）」。"""
     c, vault, _ = with_inbox_node()
     from server import chat as chat_mod
-    for level, word in (("了解", "精简档"), ("会用", "标准档"), ("精通", "详尽档")):
+    for level in ("了解", "会用", "精通"):
         rev = c.get("/api/projects").json()["doc"].get("revision", 0)
         c.put("/api/projects", json={"base_revision": rev, "projects": {"p": {
             "name": "P", "level": level, "lists": [{"kind": "学习", "name": "主线", "stages": []}]}}})
         prompt = chat_mod._system_prompt(vault, "教练", "p")
-        assert word in prompt, (level, word)
+        assert "一律写足" in prompt and "## 例子" in prompt and "（补充）" in prompt, level
         assert "线头" in prompt and "不能省" in prompt, level
-    # 不绑项目走默认档
-    assert "标准档" in chat_mod._system_prompt(vault, "教练")
+        assert "精简档" not in prompt and "整节不要" not in prompt, level
 
 
 @case
@@ -5173,7 +5173,7 @@ def chat_能往已有节点补正文而不是只会新建():
     assert "正文要写成能过半年回看的笔记" in prompt, "没给正文骨架，它只会写两句话交差"
     # 笔记层按档写足：讲多深（chat 栏）和记多满（note 栏）是两件事，缺后者模型会把
     # 「一句话结论就停」套到正文上，建出来的点只剩 desc（阈值逻辑单元那次）
-    assert "## 线头" in prompt and "标准档" in prompt, "骨架没带线头 / 档位"
+    assert "## 线头" in prompt and "## 例子" in prompt, "骨架没带线头 / 例子"
     assert "{{" not in prompt, [l for l in prompt.splitlines() if "{{" in l]
     # frontmatter 白名单同理：少列一个字段，那个字段就永远改不成
     for f in core.EDITABLE_FIELDS:

@@ -5,7 +5,7 @@
 1. `writer.plan` 的 `ChangeRejected`：请求本身不合法（改了不许改的字段、id 非法、
    正文里出现 `## 关系`…）。直接 422，连 diff 都不出，**永远在**。
 2. **这一层**：拿 dry-run 已经算好的新内容重新看一遍，查"写进去之后"会不会留下欠账——
-   未登记类型、正文死链、空摘要、正文太薄、孤点、撞名。纯本地、毫秒级、零成本，
+   未登记类型、正文死链、空摘要、正文太薄、缺例子、孤点、撞名。纯本地、毫秒级、零成本，
    所以**开关关掉时它照样跑**，只是不挡路（`settings.audit_on` 只决定挡不挡、以及要不要问模型）。
 3. `server/audit.py` 的第二段：review 角色看内容对不对。那一段花钱、要等，归开关管。
 
@@ -15,6 +15,7 @@
 """
 from __future__ import annotations
 
+import re
 from difflib import SequenceMatcher
 from pathlib import Path
 
@@ -23,7 +24,9 @@ from .relations import load_relation_types, parse_relations
 from .sources import Resolver, sources_of
 from .writer import split_sections
 
-THIN_BODY = 120      # 新建节点的正文短于这么多字就提醒：入库不许精简（设计文档 F1.1）
+THIN_BODY = 300      # 新建节点的正文短于这么多字就提醒：入库不许精简（设计文档 F1.1）。
+                     # 120 时代一句定义 + 线头就能过线，薄正文几乎全漏；骨架写足约五六百字起
+RE_EXAMPLE = re.compile(r"^#{2,4}\s*(?:（补充）)?\s*(?:例子|案例|示例|举例)", re.M)
 NEAR_NAME = 0.86     # 名字相似到这个程度就提醒可能撞名。比导入那边的 0.6 严——
                      # 这里是"写之前拦一下"，误报的代价是每次写入都被烦，宁可漏报
 
@@ -138,7 +141,12 @@ def _check_one(edit, types, exists: set[str], names: dict[str, str], born: set[s
     if _body_len(text) < THIN_BODY:
         out.append(_issue("warn", "thin_body", path,
                           f"正文只有 {_body_len(text)} 字，太薄了",
-                          "按项目档位把它写足；入库不许精简，正文是以后出题和补充的唯一依据"))
+                          "按骨架把它写足；入库不许精简，正文是以后出题和补充的唯一依据"))
+
+    # 例子是回看时最先要找的东西，也是模型最爱省的一节：没有就提醒，不拦。stub 是占位，不查
+    if fm.get("status") != "stub" and not RE_EXAMPLE.search(body):
+        out.append(_issue("warn", "no_example", path, "正文没有「## 例子」一节",
+                          "补一个具体案例：一段代码、一次调用过程、一个历史事件或一组数字，能照着走一遍的那种"))
 
     if not edges:
         out.append(_issue("warn", "no_relation", path, "新节点一条关系都没有，落地就是孤点",

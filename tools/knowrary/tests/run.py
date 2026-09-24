@@ -475,7 +475,7 @@ def 写回后仍然可解析且索引更新():
 
 # ---------------------------------------------------------------- 写入审核第一段（不调模型）
 
-AUDIT_BODY = "这一段写得足够长，够过 THIN_BODY 那道线。" * 6
+AUDIT_BODY = "这一段写得足够长，够过 THIN_BODY 那道线。" * 12 + "\n\n## 例子\n\n" + "照着走一遍的具体案例。" * 3
 
 
 def audit_vault():
@@ -497,7 +497,7 @@ def audit_of(vault, result, changes):
 def 审核第一段_新节点太薄又没关系时报出来():
     vault, r = audit_vault()
     issues = audit_of(vault, r, [new_node("丙")])
-    assert {i["code"] for i in issues} == {"thin_body", "no_relation"}, issues
+    assert {i["code"] for i in issues} == {"thin_body", "no_example", "no_relation"}, issues
     assert all(i["level"] == "warn" for i in issues), "这一层只提醒不硬拦，挡不挡是开关和人的事"
     assert all(i["fix"] for i in issues), "每条都要说怎么改，不然只是骂人"
 
