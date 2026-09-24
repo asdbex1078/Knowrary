@@ -366,6 +366,10 @@ class AuditIssue(Strict):
     message: str
     why: str = ""                      # 模型的依据。确定性那段不需要——码本身就是依据
     fix: str = ""
+    # 模型报的意见要引一句原文（2026-09-24）：`located` = 那句在这次要写的内容里真找得到。
+    # 找不到的是「没指明在哪」的空泛意见，卡上默认不勾、不交给按意见修改
+    quote: str = ""
+    located: bool = True
 
 
 class AuditReport(Strict):

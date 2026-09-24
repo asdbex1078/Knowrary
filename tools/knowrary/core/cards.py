@@ -86,6 +86,12 @@ def audited(vault: Path, card_id: str, stamp: str, report: dict) -> None:
         _write(vault, {"ts": _now(), "id": card_id, "event": "audited", "stamp": stamp, "report": report})
 
 
+def is_applied(vault: Path, card_id: str) -> bool:
+    """这张卡是不是已经写进去了。页面上的卡片状态可能是旧的（别的标签页写过、没刷新），
+    审核 / 按意见修改 / 写入之前都拿它对一下——对一张已经落盘的卡再花一次模型的钱没有意义。"""
+    return bool(card_id) and any(r.get("id") == card_id and r.get("event") == "applied" for r in load(vault))
+
+
 def last_audit(vault: Path, card_id: str) -> dict | None:
     """这张卡最近一次审核（整行，带 stamp / report）。没审过是 None。"""
     if not card_id:

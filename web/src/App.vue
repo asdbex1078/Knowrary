@@ -2623,6 +2623,16 @@ async function previewChatCard({ card, i, j }) {
   }
 }
 
+/** 服务端说「这张卡已经写入过了」（409 + applied）：页面上的卡是旧状态——别的标签页写过、
+ *  或者一直没刷新。当场把卡对齐成已写入（折起来、按钮收掉），不再让人对着一张落过盘的卡操作。
+ *  2026-09-24 那次：13:38 写入的卡，14:27 还能点「按意见修改」，白跑了 42 秒的 Opus。 */
+function alignApplied(c, err) {
+  if (err?.status !== 409 || !err.body?.detail?.applied) return false
+  Object.assign(c, { applied: true, open: false, reviseError: null, auditing: 0, revising: null })
+  setBanner('这张卡已经写入过了——页面上显示的是旧状态，已经对齐', 'info')
+  return true
+}
+
 /** 卡上的审核结论还算不算数：审的就是现在这份改法（卡上改过一个字就不算了）。 */
 function auditFresh(c) {
   return !!c.audit && c.auditFor === JSON.stringify(c.changes)
@@ -2638,6 +2648,7 @@ async function auditChatCard({ i, j }) {
     Object.assign(c, { audit: rep, auditFor: JSON.stringify(c.changes) })
     return rep
   } catch (err) {
+    if (alignApplied(c, err)) return null
     setBanner(`审核没跑成：${err.body?.detail?.message || err.body?.detail || err.message}`, 'error')
     return null
   } finally {
@@ -2651,6 +2662,7 @@ async function auditChatCard({ i, j }) {
 async function reviseChatCard({ i, j, issues }) {
   const c = chatLog.value[i].cards[j]
   c.revising = { at: Date.now(), n: issues.length }
+  c.reviseError = null
   try {
     const res = await postRevise({ changes: c.changes, issues, card: c.card_id })
     // 撤回用卡上原来那份，不用服务端回传的 before：那份归一过，和审核记下的改法原文对不上，撤回后结论就不认了
@@ -2659,7 +2671,12 @@ async function reviseChatCard({ i, j, issues }) {
     Object.assign(c, { changes: res.changes, files: res.files, stale: false, skip: {},
                        revised: { summary, delta, skipped, before, model, ms, open: true } })
   } catch (err) {
-    setBanner(`按意见修改没成：${err.body?.detail?.message || err.body?.detail || err.message}`, 'error')
+    if (alignApplied(c, err)) return
+    // 失败原因挂在卡上、不消失：钱已经花了，得看得见是哪个模型花了多久、卡在哪一步。
+    // 只弹 toast 的话几秒就没了，看起来就是「点了没反应」（2026-09-24 那次）
+    const d = err.body?.detail
+    c.reviseError = { message: d?.message || (typeof d === 'string' ? d : '') || err.message,
+                      model: d?.model || '', ms: d?.ms || 0 }
   } finally {
     c.revising = null
   }
@@ -2723,6 +2740,7 @@ async function applyChatCard({ card, i, j, force }) {
       Object.assign(c, { audit: err.audit, auditFor: JSON.stringify(c.changes) })
       return
     }
+    if (alignApplied(c, err)) return
     setBanner(`写回失败：${err.body?.detail?.message || err.body?.detail || err.message}`, 'error')
   } finally {
     chatBusy.value = false

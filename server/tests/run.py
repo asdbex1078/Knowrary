@@ -2443,7 +2443,7 @@ def import_审核挡下或写失败_刚放进来的原文撤掉():
         # 审核那一刻原文已经在了：确定性检查不该报「指不到原文」
         seen.append("dead_source" in prompt)
         return json.dumps({"verdict": "block", "summary": "错", "issues": [
-            {"path": "x", "severity": "block", "what": "年份错", "why": "w", "fix": "f"}]}), {"model": "m", "ms": 1}
+            {"path": "x", "severity": "block", "quote": "够过 THIN_BODY 那道线", "what": "年份错", "why": "w", "fix": "f"}]}), {"model": "m", "ms": 1}
     audit_mod.ask_meta = block
     try:
         r = c.post("/api/import", json={"plan": plan, "field": "测试", "source": "长文", "text": ARTICLE,
@@ -4640,7 +4640,7 @@ def audit_挡下的结论写入时照样挡_不重问():
     c, vault, _ = with_inbox_node()
     c.put("/api/settings", json={"audit_enabled": True})
     original = stub_audit(json.dumps({"verdict": "block", "summary": "年份错了", "issues": [
-        {"path": "x", "severity": "block", "what": "不是 2018", "why": "2017 发表", "fix": "改 2017"}]},
+        {"path": "x", "severity": "block", "quote": "够过 THIN_BODY 那道线", "what": "不是 2018", "why": "2017 发表", "fix": "改 2017"}]},
         ensure_ascii=False))
     try:
         changes = new_node_changes()
@@ -4762,9 +4762,68 @@ def revise_改坏了结构就报错_卡不动():
         finally:
             restore_revise(original)
         assert r.status_code == 422, (bad, r.text)
+        # 钱已经花了：卡上要说清是哪个模型花了多久、卡在哪一步（2026-09-24 那次只有一条几秒就消失的 toast）
+        d = r.json()["detail"]
+        assert d["message"] and d["model"] == "假写手" and d["ms"] == 9, d
     assert not core.card_revisions(vault), "改坏了的版本不该记下来"
     r = c.post("/api/revise", json={"changes": changes, "issues": [], "card": "c1"})
     assert r.status_code == 422, "没勾意见也要拦"
+
+
+@case
+def cards_已经写入的卡_审核按意见修改写入都直接拦_不调模型():
+    """2026-09-24：页面上的卡是旧状态（13:38 已经写进去了），14:27 又点了「按意见修改」——
+    Opus 改了 42 秒，改出来还是「新建独热编码」，写回校验说已经存在，整份作废。
+    已经写入的卡，服务端直接 409 带 applied，前端据此把卡对齐。"""
+    c, vault, _ = with_inbox_node()
+    c.put("/api/settings", json={"audit_enabled": True})
+    changes = [{"type": "append_body", "source": "b", "body": "补一句。"}]
+    w = write_changes(c, changes, card="c-done")
+    assert w.status_code == 200 and w.json()["applied"], w.text
+    before = core.read(vault / "nodes/组A/b.md")
+    calls = []
+    from server import audit as audit_mod, revise as revise_mod
+    orig_a, orig_r = audit_mod.ask_meta, revise_mod.ask_meta
+    audit_mod.ask_meta = revise_mod.ask_meta = lambda *a, **k: calls.append(1) or ("{}", {})
+    try:
+        for url, body in (("/api/audit", {"changes": changes, "card": "c-done"}),
+                          ("/api/revise", {"changes": changes, "issues": [WARN_ISSUE], "card": "c-done"})):
+            r = c.post(url, json=body)
+            assert r.status_code == 409 and r.json()["detail"]["applied"] is True, (url, r.text)
+        r = write_changes(c, changes, card="c-done")
+        assert r.status_code == 409 and r.json()["detail"]["applied"] is True, r.text
+    finally:
+        audit_mod.ask_meta, revise_mod.ask_meta = orig_a, orig_r
+        c.put("/api/settings", json={"audit_enabled": False})
+    assert calls == [], "已经写入的卡还去问了模型"
+    assert core.read(vault / "nodes/组A/b.md") == before, "同一张卡写了两遍（append_body 会追加两段）"
+    # 没带卡的写入（面板上手动改）不受影响；预览也不受影响
+    assert write_changes(c, changes).status_code == 200
+    assert c.post("/api/changes", json={"base_revision": c.get("/api/index").json()["revision"],
+                                        "changes": changes, "dry_run": True, "card": "c-done"}).status_code == 200
+
+
+@case
+def audit_意见要引原句_引不到的标没指明在哪_指不出位置的不许挡():
+    """2026-09-24 那次 qwen-max 的两条意见：「关系不完全准确」「建议更详细地解释」——
+    指不出哪句、也说不出改成什么，拿去「按意见修改」模型只能瞎猜。"""
+    c, vault, _ = with_inbox_node()
+    c.put("/api/settings", json={"audit_enabled": True})
+    original = stub_audit(json.dumps({"verdict": "block", "summary": "s", "issues": [
+        {"path": "p", "severity": "warn", "quote": "够过  THIN_BODY\n那道线", "what": "引得到", "fix": "f"},
+        {"path": "p", "severity": "block", "quote": "原文里根本没有这句", "what": "引不到还想挡", "fix": "f"},
+        {"path": "p", "severity": "warn", "what": "压根没引", "fix": "建议更详细地解释"}]}, ensure_ascii=False))
+    try:
+        rep = c.post("/api/audit", json={"changes": new_node_changes(), "card": "c1"}).json()
+    finally:
+        restore_audit(original)
+        c.put("/api/settings", json={"audit_enabled": False})
+    llm = {i["message"]: i for i in rep["issues"] if i["code"] == "llm"}
+    assert llm["引得到"]["located"] is True, "引文比对要不计空白"
+    assert llm["引不到还想挡"]["located"] is False and llm["引不到还想挡"]["level"] == "warn", "指不出位置的不能挡人"
+    assert llm["压根没引"]["located"] is False
+    assert rep["verdict"] == "warn", "唯一的 block 被降级了，整体结论跟着降"
+    assert all(i["located"] for i in rep["issues"] if i["code"] != "llm"), "确定性检查的不受影响"
 
 
 @case
@@ -4813,7 +4872,7 @@ def audit_开着时挡下不落盘_但返回200把理由带回来():
     c.put("/api/settings", json={"audit_enabled": True})
     before = md_digest(vault)
     original = stub_audit(json.dumps({"verdict": "block", "summary": "年份写错了",
-        "issues": [{"path": "nodes/新点.md", "severity": "block", "what": "Transformer 不是 2018 年",
+        "issues": [{"path": "nodes/新点.md", "severity": "block", "quote": "够过 THIN_BODY 那道线", "what": "Transformer 不是 2018 年",
                     "why": "论文 2017 年发表", "fix": "改成 2017"}]}, ensure_ascii=False))
     try:
         r = write_changes(c, new_node_changes())

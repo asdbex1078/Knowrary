@@ -771,6 +771,14 @@ def post_merge(req: MergeRequest) -> MergeResult:
                        index_revision=current_index(vault)["revision"])
 
 
+def _refuse_applied(vault: Path, card: str | None) -> None:
+    """这张卡已经写进去了，还来审 / 改 / 写：页面上的状态是旧的（别的标签页写过、没刷新）。
+    直接 409 带 `applied`，前端据此把卡对齐成已写入——不去花那一次模型的钱，也不重复写。"""
+    if card and core.card_is_applied(vault, card):
+        raise HTTPException(status_code=409, detail={
+            "message": "这张卡已经写入过了，页面上显示的是旧状态", "applied": True})
+
+
 @app.post("/api/audit", response_model=AuditReport)
 def post_audit(req: AuditRequest) -> AuditReport:
     """卡上的「审核」：只审不写，结论记在这张卡名下（cards.jsonl 的 audited 事件）。
@@ -779,6 +787,7 @@ def post_audit(req: AuditRequest) -> AuditReport:
     审核开关关着时也能调：确定性检查照跑，只是不问模型。
     """
     vault = vault_path()
+    _refuse_applied(vault, req.card)
     index = current_index(vault)
     payload = [c.model_dump(exclude_none=True) for c in req.changes]
     try:
@@ -801,12 +810,13 @@ def post_revise(req: ReviseRequest) -> ReviseResult:
     if not req.issues:
         raise HTTPException(status_code=422, detail="没勾选任何意见，没什么可改的")
     vault = vault_path()
+    _refuse_applied(vault, req.card)
     before = [c.model_dump(exclude_none=True) for c in req.changes]
     try:
         result = revise_svc.run(vault, current_index(vault), before, req.issues)
     except revise_svc.ReviseFailed as exc:
         core.record_issue(vault, "revise", str(exc), where="/api/revise")
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
+        raise HTTPException(status_code=422, detail={"message": str(exc), **exc.meta}) from exc
     if req.card:
         core.card_revised(vault, req.card, result.model_dump()["changes"], {
             "before": before, "summary": result.summary, "delta": result.delta,
@@ -826,6 +836,8 @@ def post_revise_undo(req: ReviseUndo) -> dict:
 def post_changes(changeset: ChangeSet) -> ChangeResult:
     """Markdown 写回的唯一入口：默认只预览，dry_run=false 才落盘（落盘前自动备份）。"""
     vault = vault_path()
+    if not changeset.dry_run:
+        _refuse_applied(vault, changeset.card)       # 同一张卡写两遍：append_body 会追加两段
     index = current_index(vault)
     if changeset.base_revision and changeset.base_revision != index["revision"]:
         raise HTTPException(status_code=409, detail={

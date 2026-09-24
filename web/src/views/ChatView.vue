@@ -108,8 +108,14 @@ function working(c) { return !!c.auditing || !!c.revising }
 // 以前有意见时只剩一个「照写」，看着像"照审核者的意思写"，其实是原样写；想按意见改只能自己动手抄。
 // 意见可以逐条勾：勾上的交给 learn 角色改一版，改完停在卡上给人看，点写入时照常重审。
 function pickable(c) { return props.auditOn && !c.applied && auditFresh(c) && c.audit.issues?.length > 0 }
-function picked(c) { return (c.audit?.issues || []).filter((_, k) => !c.skip?.[k]) }
-function togglePick(c, k) { c.skip = { ...(c.skip || {}), [k]: !c.skip?.[k] } }
+// 勾没勾：人动过就按人的；没动过的，**指不出在哪的意见默认不勾**（located=false：引文在这次的内容里找不到）——
+// 那种「解释得不够清楚」交给按意见修改，模型只能瞎猜
+function isPicked(c, k) {
+  const mine = c.skip?.[k]
+  return mine === undefined ? c.audit?.issues?.[k]?.located !== false : !mine
+}
+function picked(c) { return (c.audit?.issues || []).filter((_, k) => isPicked(c, k)) }
+function togglePick(c, k) { c.skip = { ...(c.skip || {}), [k]: isPicked(c, k) } }
 function revise(c, i, j) { emit('revise', { card: c, i, j, issues: picked(c) }) }
 // 审完有意见（warn / block）时，「按意见修改」是主按钮，原样写入退成次要的
 function reviseFirst(c) { return pickable(c) && c.audit.verdict !== 'pass' }
@@ -583,18 +589,29 @@ function onKey(e) {
               </div>
               <p v-if="c.audit.summary" class="cc-audit-sum">{{ c.audit.summary }}</p>
               <ul v-if="c.audit.issues?.length" class="cc-audit-list">
-                <li v-for="(it, k) in c.audit.issues" :key="k" :class="[it.level, { off: pickable(c) && c.skip?.[k] }]">
-                  <input v-if="pickable(c)" type="checkbox" class="cc-audit-pick" :checked="!c.skip?.[k]"
+                <li v-for="(it, k) in c.audit.issues" :key="k" :class="[it.level, { off: pickable(c) && !isPicked(c, k) }]">
+                  <input v-if="pickable(c)" type="checkbox" class="cc-audit-pick" :checked="isPicked(c, k)"
                          :disabled="working(c)" title="勾上的意见交给「按意见修改」" @change="togglePick(c, k)">
                   <span class="chip" :class="it.level === 'block' ? 'm-drop' : 'm-due'">{{ it.level === 'block' ? '得改' : '提醒' }}</span>
+                  <span v-if="it.located === false" class="chip m-unbuilt" data-vague
+                        title="审校没引出是哪一句（或引的那句这次内容里没有）：说不清改哪儿，默认不交给按意见修改">没指明在哪</span>
                   <span>{{ it.message }}</span>
                   <span v-if="it.path" class="dim cc-audit-path">{{ it.path }}</span>
+                  <p v-if="it.quote && it.located !== false" class="dim cc-audit-quote">原句：「{{ it.quote }}」</p>
                   <p v-if="it.why" class="dim">依据：{{ it.why }}</p>
                   <p v-if="it.fix" class="cc-audit-fix">改法：{{ it.fix }}</p>
                 </li>
               </ul>
               <p v-if="!c.applied && !auditFresh(c)" class="dim" style="font-size: 11px; margin: 4px 0 0">
                 卡改过了，这是改之前的审核意见</p>
+            </div>
+            <div v-if="c.reviseError && !c.revising" class="cc-audit block" data-revise-error>
+              <div class="cc-audit-head">
+                <Icon name="warn" :size="13" /><b>按意见修改没成</b>
+                <span v-if="c.reviseError.model" class="dim">{{ c.reviseError.model }} · {{ Math.round(c.reviseError.ms / 1000) }} 秒</span>
+              </div>
+              <p class="cc-audit-sum">{{ c.reviseError.message }}</p>
+              <p class="dim" style="font-size: 11px; margin: 4px 0 0">卡上还是原来那份，一个字没动；可以换几条意见再试，或者「改一改」自己改。</p>
             </div>
             <div v-if="c.revising" class="cc-audit busy">
               <Icon name="pencil" :size="13" />learn 角色在按 {{ c.revising.n }} 条意见改 · 已等 {{ waited(c) }} 秒

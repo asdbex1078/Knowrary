@@ -1451,6 +1451,7 @@ kbd.key {
 .cc-audit-list p { margin: 2px 0 0 4px; line-height: 1.55; }
 .cc-audit-path { font-size: 10.5px; margin-left: 4px; }
 .cc-audit-fix { color: var(--ok); }
+.cc-audit-quote { font-style: normal; border-left: 2px solid var(--line); padding-left: 6px; }
 .cc-audit-pick { margin: 0 4px 0 0; vertical-align: -2px; cursor: pointer; }
 .cc-audit-list li.off > :not(.cc-audit-pick) { opacity: .45; }
 .cc-revised { border-color: var(--accent, var(--line)); }

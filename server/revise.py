@@ -24,7 +24,12 @@ from .paths import core
 
 
 class ReviseFailed(Exception):
-    """模型没交回一份能用的改法。"""
+    """模型没交回一份能用的改法。`meta` 是那次调用的回执（谁改的、改了多久）：
+    钱已经花了，卡上得说清楚是哪个模型花了多久、卡在哪一步。"""
+
+    def __init__(self, message: str, meta: dict | None = None):
+        super().__init__(message)
+        self.meta = meta or {}
 
 
 def _prompt() -> str:
@@ -83,15 +88,15 @@ def run(vault: Path, index: dict, changes: list[dict], issues: list[AuditIssue])
     data = parse_json(raw, "revise", vault=vault)
     got = data.get("changes") if isinstance(data, dict) else None
     if not isinstance(got, list) or not got:
-        raise ReviseFailed("模型没交回改好的改法（回答不是预期的 JSON）")
+        raise ReviseFailed("模型没交回改好的改法（回答不是预期的 JSON）", meta)
     try:
         after = [Change.model_validate(c).model_dump(exclude_none=True) for c in got]
     except ValueError as exc:
-        raise ReviseFailed(f"模型交回的改法结构不对：{exc}") from exc
+        raise ReviseFailed(f"模型交回的改法结构不对：{exc}", meta) from exc
     try:
         files = curation.preview(vault, after, index)
     except (core.ChangeRejected, core.WriteConflict) as exc:
-        raise ReviseFailed(f"改出来的版本过不了写回校验：{exc}") from exc
+        raise ReviseFailed(f"改出来的版本过不了写回校验：{exc}", meta) from exc
     skipped = [ReviseSkip(what=str(s.get("what") or "").strip(), why=str(s.get("why") or "").strip())
                for s in (data.get("skipped") or []) if isinstance(s, dict) and s.get("what")]
     return ReviseResult(changes=after, files=files, delta=delta(changes, after),

@@ -75,14 +75,27 @@ class FakeReview(BaseHTTPRequestHandler):
         body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
         prompt = body["messages"][0]["content"]
         time.sleep(2)
+        if "写稿人" in prompt and "VAGUEME" in prompt:
+            # 改坏了：交回一个新建已存在节点的改法，写回校验必然拒——看卡上怎么报
+            REVISES.append(1)
+            return self._answer({"changes": [{"type": "create_node", "source": "甲", "path": "nodes/组A/甲.md",
+                                              "fields": {"name": "甲", "field": "测试", "desc": "d"}}],
+                                 "summary": "瞎改", "skipped": []})
         if "写稿人" in prompt:           # 「按意见修改」的提示词：交回改好的丙
             REVISES.append(1)
             return self._answer({"changes": [{"type": "update_body", "source": "丙", "body": LONG + FIXED}],
                                  "summary": "年份改成 2017", "skipped": []})
         AUDITS.append(1)
+        if "VAGUEME" in prompt:        # 一条引得到原句的、一条空泛的（2026-09-24 qwen-max 那种）
+            return self._answer({"verdict": "warn", "summary": "有两处", "issues": [
+                {"path": "nodes/组A/乙.md", "severity": "warn", "quote": "VAGUEME 这一句写错了年份",
+                 "what": "年份错了", "why": "原文是 2017", "fix": "这一句写成 2017 年"},
+                {"path": "nodes/组A/乙.md", "severity": "warn", "what": "关系描述不够清晰",
+                 "why": "还有其他重要差异", "fix": "建议更详细地解释"}]})
         warn = "WARNME" in prompt
         verdict = {"verdict": "warn" if warn else "pass", "summary": "年份再核一下" if warn else "没问题",
-                   "issues": [{"path": "nodes/组B/丙.md", "severity": "warn", "what": "年份存疑",
+                   "issues": [{"path": "nodes/组B/丙.md", "severity": "warn", "quote": "这是一段足够长的正文",
+                               "what": "年份存疑",
                                "why": "原文是 2017", "fix": "改成 2017"}] if warn else []}
         self._answer(verdict)
 
@@ -121,6 +134,67 @@ def seed_audit_session(vault: Path) -> None:
             {"ts": S2, "role": "assistant", "text": "两张卡", "session": "s2", "cards": cards}]
     with (vault / ".knowrary/chat/pa/2026-09.jsonl").open("a", encoding="utf-8") as fh:
         fh.write("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows))
+
+
+S3 = "2026-09-22T10:00:00+08:00"      # 比 s2 还晚：刷新后默认接着这一段
+
+
+def seed_stale_session(vault: Path) -> None:
+    """pa 线上第三段：一张会被审出一条空泛意见的卡（乙），一张页面加载后在「别处」被写入的卡（丁）。"""
+    def card(cid, change, path):
+        return {"type": "card", "card": {"card_id": cid, "into": None, "changes": [change],
+                                         "files": [{"path": path, "notes": [], "diff": ""}]}}
+    cards = [card("c-vague", {"type": "update_body", "source": "乙", "body": LONG + "VAGUEME 这一句写错了年份"},
+                  "nodes/组A/乙.md"),
+             card("c-stale", {"type": "append_body", "source": "丁", "body": "补一句"}, "nodes/组B/丁.md")]
+    rows = [{"ts": S3, "role": "user", "text": "再改两处", "session": "s3"},
+            {"ts": S3, "role": "assistant", "text": "两张卡", "session": "s3", "cards": cards}]
+    with (vault / ".knowrary/chat/pa/2026-09.jsonl").open("a", encoding="utf-8") as fh:
+        fh.write("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows))
+
+
+async def stale_scenarios(page, ck, vault: Path) -> None:
+    """2026-09-24 乙那次：页面上是旧状态的卡、空泛的意见、改坏了的修改——三件事各看一眼。"""
+    seed_stale_session(vault)
+    await page.call("Page.reload")
+    await asyncio.sleep(2)
+    await settle(page)
+    await E.poll(page, "document.querySelectorAll('.change-card').length", lambda v: v == 2, timeout=8)
+
+    # 页面加载之后，丁那张在「别的标签页」写进去了：这边的卡还显示着按钮
+    with (vault / ".knowrary/cards.jsonl").open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps({"ts": S3, "id": "c-stale", "event": "applied"}) + "\n")
+    before = (vault / "nodes/组B/丁.md").read_text("utf-8")
+    calls = len(AUDITS)
+    assert await click_btn(page, "丁", "审核") == "ok"
+    await E.poll(page, "[...document.querySelectorAll('.change-card')].find((c) => c.textContent.includes('丁'))"
+                 "?.classList.contains('folded')", lambda v: v, timeout=6)
+    st = await card_state(page, "丁")
+    ck.add("旧状态的卡一点就对齐成已写入、折起来", st.get("folded") and "已写入" in st.get("head", ""), str(st))
+    ck.add("对齐时没去问模型、也没重复写", len(AUDITS) == calls
+           and (vault / "nodes/组B/丁.md").read_text("utf-8") == before, f"calls {calls}->{len(AUDITS)}")
+
+    # 乙：审出一条引得到原句的、一条空泛的
+    assert await click_btn(page, "乙", "审核") == "ok"
+    await E.poll(page, "!!document.querySelector('.change-card [data-vague]')", lambda v: v, timeout=10)
+    picks = await page.ev("""JSON.stringify([...document.querySelectorAll('.change-card .cc-audit-list li')].map((li) =>
+      [li.textContent.includes('没指明在哪'), li.querySelector('.cc-audit-pick')?.checked, li.textContent.includes('原句')]))""")
+    picks = json.loads(picks or "[]")
+    ck.add("空泛的意见标「没指明在哪」、默认不勾；引得到的带原句、默认勾上",
+           picks == [[False, True, True], [True, False, False]], str(picks))
+    st = await card_state(page, "乙")
+    ck.add("按意见修改只算勾上的那 1 条", "按意见修改（1 条）" in st.get("btns", []), str(st))
+
+    body = (vault / "nodes/组A/乙.md").read_text("utf-8")
+    assert await click_btn(page, "乙", "按意见修改（1 条）") == "ok"
+    await E.poll(page, "!!document.querySelector('.change-card [data-revise-error]')", lambda v: v, timeout=10)
+    err = await page.ev("document.querySelector('.change-card [data-revise-error]').textContent.replace(/\\s+/g, '')")
+    ck.add("改坏了的原因挂在卡上：谁改的、多久、卡在哪一步", "按意见修改没成" in err and "fake-review" in err
+           and "已经存在" in err, err)
+    await asyncio.sleep(6)             # toast 早就没了，卡上的还在
+    still = await page.ev("!!document.querySelector('.change-card [data-revise-error]')")
+    ck.add("失败原因不会过几秒就消失", bool(still), str(still))
+    ck.add("改坏了卡和文件都没动", (vault / "nodes/组A/乙.md").read_text("utf-8") == body, "")
 
 
 async def card_state(page, head: str) -> dict:
@@ -347,6 +421,7 @@ async def scenarios(page, ck, vault: Path) -> None:
     got = await cards(page)
     ck.add("刷新后三张都是已点、都折叠", len(got) == 3 and all(g["folded"] for g in got), str(got))
     await audit_scenarios(page, ck, vault)
+    await stale_scenarios(page, ck, vault)
 
 
 async def run(api: str, cdp: str, vault: Path, results: list) -> None:

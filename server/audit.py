@@ -116,7 +116,25 @@ def _as_issue(raw: dict, fallback_path: str) -> AuditIssue | None:
     return AuditIssue(level="block" if sev == "block" else "warn", code="llm",
                       path=str(raw.get("path") or fallback_path).strip(),
                       message=what, why=str(raw.get("why") or "").strip(),
-                      fix=str(raw.get("fix") or "").strip())
+                      fix=str(raw.get("fix") or "").strip(), quote=str(raw.get("quote") or "").strip())
+
+
+def _squash(text: str) -> str:
+    """比对引文时不计空白和 Markdown 强调符：模型抄原句时常把 `**` 和换行丢掉。"""
+    return "".join(ch for ch in text if not ch.isspace() and ch not in "*_`")
+
+
+def _locate(issues: list[AuditIssue], edits: list) -> list[AuditIssue]:
+    """拿每条意见的 quote 去这次要写的内容里找。找不到（或压根没引）的标 `located=False`：
+    它指不出哪句、多半也说不出改成什么，交给「按意见修改」只会让模型瞎猜。
+    **指不出位置的意见不能挡人**：block 降成 warn——连哪句错都说不出，凭什么不让写。"""
+    hay = _squash("\n".join(e.after or "" for e in edits))
+    for it in issues:
+        needle = _squash(it.quote)
+        it.located = len(needle) >= 4 and needle in hay
+        if not it.located and it.level == "block":
+            it.level = "warn"
+    return issues
 
 
 def review(vault: Path, index: dict, edits: list, precheck: list[dict]) -> AuditReport:
@@ -134,7 +152,7 @@ def review(vault: Path, index: dict, edits: list, precheck: list[dict]) -> Audit
         return AuditReport(checked=True, verdict="pass", summary="审核模型没给出可用的结论，这一次放行",
                            issues=[i for i in _wrap(precheck)], model_failed=True, **meta)
     first = (edits[0].rel if edits else "")
-    llm = [x for x in (_as_issue(r, first) for r in (data.get("issues") or [])) if x]
+    llm = _locate([x for x in (_as_issue(r, first) for r in (data.get("issues") or [])) if x], edits)
     verdict = str(data.get("verdict") or "").strip()
     if verdict not in ("pass", "warn", "block"):
         verdict = "block" if any(i.level == "block" for i in llm) else ("warn" if llm else "pass")
