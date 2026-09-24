@@ -2469,6 +2469,38 @@ def import_审核挡下或写失败_刚放进来的原文撤掉():
 
 
 @case
+def articles_列出原文带拆出几个点_读一篇带每个点链的那一节():
+    """原文层第 4 步：阅读视图要的两个只读接口。"""
+    c, vault = client({
+        "nodes/组A/甲.md": node_md("甲", extra='sources: ["[[articles/BPE全景#为什么是子词]]"]\n'),
+        "nodes/组A/乙.md": node_md("乙", extra='sources: ["[[articles/BPE全景]]", "某本书"]\n'),
+        "nodes/组A/丙.md": node_md("丙", extra="source: 老文章.md\n"),
+        "articles/BPE全景.md": "---\nimported: 2026-09-23\norigin: 粘贴\n---\n# BPE 全景\n\n## 为什么是子词\n\n正文\n",
+        "articles/还没拆.md": "# 还没拆的一篇\n\n正文\n",
+        "doc/老文章.md": "# 老文章\n\n旧年代散在 doc/ 的原文\n",
+        "doc/无关.md": "# 无关\n",
+    })
+    got = c.get("/api/articles").json()
+    assert got["dir"] == "articles", got
+    rows = {a["path"]: a for a in got["articles"]}
+    assert set(rows) == {"articles/BPE全景.md", "articles/还没拆.md"}, "只列原文目录里的"
+    assert rows["articles/BPE全景.md"]["nodes"] == 2 and rows["articles/BPE全景.md"]["title"] == "BPE 全景"
+    assert rows["articles/BPE全景.md"]["imported"] == "2026-09-23" and rows["articles/BPE全景.md"]["origin"] == "粘贴"
+    assert rows["articles/还没拆.md"]["nodes"] == 0 and rows["articles/还没拆.md"]["title"] == "还没拆的一篇"
+
+    art = c.get("/api/article", params={"path": "articles/BPE全景.md"}).json()
+    assert art["text"].startswith("# BPE 全景"), "正文不带 frontmatter"
+    assert [h["title"] for h in art["headings"]] == ["BPE 全景", "为什么是子词"], art["headings"]
+    assert sorted((n["id"], n["section"]) for n in art["nodes"]) == [("乙", ""), ("甲", "为什么是子词")], art["nodes"]
+
+    # 旧年代散在 doc/ 的：有节点链着才读得到，而且标明不在原文目录里
+    old = c.get("/api/article", params={"path": "doc/老文章.md"}).json()
+    assert old["in_dir"] is False and [n["id"] for n in old["nodes"]] == ["丙"], old
+    for bad in ("doc/无关.md", "../外面.md", "nodes/组A/甲.md", "articles/不存在.md", "articles"):
+        assert c.get("/api/article", params={"path": bad}).status_code == 404, bad
+
+
+@case
 def import_素材源列表与读取_挡住越界路径():
     c, vault = client()
     core.write(vault / "doc/笔记/一篇.md", "# 一篇\n正文")

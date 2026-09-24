@@ -665,6 +665,32 @@ select:disabled { cursor: not-allowed; opacity: .5; }
 .model-editor-foot { flex: none; display: flex; align-items: center; gap: 7px; padding: 10px 14px; border-top: 1px solid var(--line); }
 .model-editor-foot > span { flex: 1; }
 /* 知识库：当前库那一条 + 目录选择器 */
+/* 原文面板：列表 + 只读阅读页（每节标题旁挂出自这一节的点） */
+.art-list, .art-read { padding: 0 2px 16px; }   /* 滚动交给外层 .drawer-body */
+.art-list-head { font-size: 11.5px; margin: 2px 0 8px; }
+.art-row { display: flex; align-items: center; gap: 6px; padding: 2px 0; }
+.art-open { flex: 1; min-width: 0; display: flex; align-items: center; gap: 6px; text-align: left;
+  padding: 6px 8px; border-radius: var(--r-sm); background: transparent; border: 1px solid transparent;
+  color: var(--text-1); cursor: pointer; font-size: 12.5px; }
+.art-open:hover { background: var(--surface-2); border-color: var(--line); }
+.art-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.art-head { border-bottom: 1px solid var(--line); padding-bottom: 10px; margin-bottom: 8px; }
+.art-title { font-size: 17px; margin: 4px 0 4px; }
+.art-meta { font-size: 11px; }
+.art-note { font-size: 12px; line-height: 1.6; margin: 8px 0 4px; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.art-note.warn { color: var(--warn); }
+.art-summary { list-style: none; margin: 4px 0 0; padding: 0; display: flex; flex-direction: column; gap: 3px;
+  font-size: 11.5px; }
+.art-summary li { display: flex; align-items: center; gap: 6px; }
+.art-chip { font-size: 11px; padding: 1px 8px; border-radius: 999px; border: 1px solid var(--line);
+  background: var(--surface-2); color: var(--text-1); cursor: pointer; font-weight: 500; }
+.art-chip:hover { border-color: var(--accent, var(--ok)); }
+.art-h { display: flex; align-items: baseline; flex-wrap: wrap; gap: 8px; scroll-margin-top: 8px;
+  border-radius: 6px; transition: background .6s; }
+.art-h-nodes { display: inline-flex; flex-wrap: wrap; gap: 4px; }
+.art-h.art-flash { background: var(--warn-soft); }
+.src-obsidian { margin-left: 4px; color: var(--text-3); }
+
 /* 导入面板：保留原文开关、原文怎么进库 */
 .imp-keep { margin: 6px 0 2px; }
 .imp-article { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: 11.5px; margin: 4px 0 6px; }

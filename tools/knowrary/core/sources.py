@@ -104,16 +104,24 @@ class Resolver:
         return ""
 
 
-def backlinks(vault: Path, index: dict) -> dict[str, list[str]]:
-    """原文 → 从它拆出来的节点（按 id）。**派生的，不存第二份**：原文里不回写链接。"""
+def backlink_refs(vault: Path, index: dict) -> dict[str, list[dict]]:
+    """原文 → 从它拆出来的节点，带上每个点链的是哪一节（`section` 为空 = 链整篇）。
+    **派生的，不存第二份**：原文里不回写链接。一个点链了同一篇的两节就出现两次。"""
     resolve = Resolver(vault)
-    out: dict[str, list[str]] = {}
+    out: dict[str, list[dict]] = {}
     for node in index.get("nodes", []):
         if node.get("virtual"):
             continue
         for item in node.get("sources") or []:
             ref = resolve(item)
             if ref["kind"] == "article":
-                out.setdefault(ref["path"], []).append(node["id"])
+                out.setdefault(ref["path"], []).append(
+                    {"id": node["id"], "name": node.get("name") or node["id"], "section": ref["section"]})
     return out
+
+
+def backlinks(vault: Path, index: dict) -> dict[str, list[str]]:
+    """原文 → 从它拆出来的节点 id（去重，保持顺序）。"""
+    return {path: list(dict.fromkeys(r["id"] for r in refs))
+            for path, refs in backlink_refs(vault, index).items()}
 

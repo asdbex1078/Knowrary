@@ -17,9 +17,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import (assets, audit, chat as chat_svc, compare as compare_svc, copying, curation, importing,
+from . import (articles as articles_svc, assets, audit, chat as chat_svc, compare as compare_svc, copying, curation, importing,
                projects as projects_svc, revise as revise_svc, summarize as summarize_svc, vaults, years as years_svc)
-from .contracts import (AuditReport, AuditRequest, ReviseRequest, ReviseResult, ReviseUndo, SourceRef, VaultConfigPatch, VaultConfigRead, CalendarRead, ChangeResult, ChangeSet, ChatRequest, CoachToday, FileDiff, ImportProposal,
+from .contracts import (ArticleRead, ArticlesRead, AuditReport, AuditRequest, ReviseRequest, ReviseResult, ReviseUndo, SourceRef, VaultConfigPatch, VaultConfigRead, CalendarRead, ChangeResult, ChangeSet, ChatRequest, CoachToday, FileDiff, ImportProposal,
                         ImportProposeRequest, ImportRequest, ImportResult, SourceText, SourcesRead, SummarizeRequest, SummaryDraft,
                         InboxRead,
                         LayoutPatch, LayoutRead,
@@ -884,6 +884,21 @@ def post_import_propose(req: ImportProposeRequest) -> ImportProposal:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except LLMFailed as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@app.get("/api/articles", response_model=ArticlesRead)
+def get_articles() -> ArticlesRead:
+    """原文目录里的全部原文，带「拆出了几个点」。只读。"""
+    return articles_svc.list_articles(vault_path())
+
+
+@app.get("/api/article", response_model=ArticleRead)
+def get_article(path: str) -> ArticleRead:
+    """读一篇原文（只读）：正文、小节、从它拆出的点（各自链的是哪一节）。"""
+    try:
+        return articles_svc.read_article(vault_path(), path)
+    except articles_svc.ArticleRejected as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 @app.get("/api/import/sources", response_model=SourcesRead)

@@ -25,7 +25,7 @@ const props = defineProps({
 // 抽象层的七档，和 core.parser.LAYERS 同一张表
 const LAYERS = ['理论', '硬件', '体系结构', '汇编接口', '系统软件', '高级语言', 'AI应用']
 const emit = defineEmits([
-  'close', 'goto', 'edit-desc', 'set-layer', 'set-year', 'add-ref', 'review', 'quiz', 'rename', 'finalize',
+  'close', 'goto', 'open-article', 'edit-desc', 'set-layer', 'set-year', 'add-ref', 'review', 'quiz', 'rename', 'finalize',
   'retype-edge', 'remove-edge', 'add-edge', 'drop-change',
   'preview-changes', 'apply-changes', 'clear-changes', 'save-body',
   'suggest', 'dismiss-suggestion',
@@ -181,8 +181,14 @@ const CHANGE_ICON = { add_edge: 'plus', remove_edge: 'trash', update_edge: 'penc
                   <dd class="src-list">
                     <template v-if="detail?.sources?.length">
                       <span v-for="s in detail.sources" :key="s.raw" class="src-item">
-                        <a v-if="s.uri" :href="s.uri" :title="`在 Obsidian 里打开原文：${s.path}`">
-                          <Icon name="file" :size="11" />{{ s.label }}<template v-if="s.section"> §{{ s.section }}</template></a>
+                        <!-- 点名字在应用里读（跳到那一节）；想改原文时点旁边的小图标去 Obsidian -->
+                        <template v-if="s.uri">
+                          <a href="#" :title="`在应用里读原文：${s.path}${s.section ? ' §' + s.section : ''}`"
+                             @click.prevent="emit('open-article', { path: s.path, section: s.section })">
+                            <Icon name="book" :size="11" />{{ s.label }}<template v-if="s.section"> §{{ s.section }}</template></a>
+                          <a :href="s.uri" class="src-obsidian" title="在 Obsidian 里打开（要改原文走这里）">
+                            <Icon name="external" :size="11" /></a>
+                        </template>
                         <span v-else-if="s.kind === 'article'" class="src-dead"
                               :title="`原文 ${s.path} 不在库里：先放进原文目录（设置 → 知识库）`">
                           {{ s.label }}（原文不在）</span>

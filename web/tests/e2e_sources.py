@@ -32,7 +32,8 @@ SOURCES = """JSON.stringify((() => {
   if (!dd) return null;
   return [...dd.querySelectorAll('.src-item')].map((s) => ({
     text: s.textContent.replace(/\\s+/g, ''),
-    href: s.querySelector('a')?.getAttribute('href') || '',
+    href: s.querySelector('a.src-obsidian')?.getAttribute('href') || '',
+    inapp: !!s.querySelector('a:not(.src-obsidian)'),
     dead: !!s.querySelector('.src-dead'),
     muted: !!s.querySelector('.muted') || s.classList.contains('muted') }));
 })())"""
@@ -65,12 +66,13 @@ async def scenarios(page, ck) -> None:
     got = json.loads(await page.ev(SOURCES) or "null") or []
     ck.add("检查器里来源是一个列表（三项）", len(got) == 3, str(got))
     art, ext, dead = (got + [{}] * 3)[:3]
-    ck.add("库里的原文点得开，带上小节", art.get("href", "").startswith("obsidian://open?")
+    ck.add("库里的原文点得开（名字在应用里读，旁边小图标去 Obsidian），带上小节",
+           art.get("inapp") and art.get("href", "").startswith("obsidian://open?")
            and "file=articles/BPE%E5%85%A8%E6%99%AF.md" in art.get("href", "") and "§为什么是子词" in art.get("text", ""),
            str(art))
-    ck.add("外部来源是灰字、不是链接", ext.get("muted") and not ext.get("href")
+    ck.add("外部来源是灰字、不是链接", ext.get("muted") and not ext.get("href") and not ext.get("inapp")
            and ext.get("text") == "图灵《计算机器与智能》", str(ext))
-    ck.add("链到了但原文不在：标出来、不给死链", dead.get("dead") and not dead.get("href")
+    ck.add("链到了但原文不在：标出来、不给死链", dead.get("dead") and not dead.get("href") and not dead.get("inapp")
            and "原文不在" in dead.get("text", ""), str(dead))
 
     await pick(page, "乙")

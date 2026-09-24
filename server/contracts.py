@@ -1098,6 +1098,49 @@ class VaultRead(Strict):
     pinned: bool = False
 
 
+class ArticleEntry(Strict):
+    """原文目录里的一篇。`nodes` = 从它拆出了几个点（由节点的 sources 反查）；0 就是「还没拆」。"""
+
+    path: str
+    title: str
+    nodes: int = 0
+    imported: str = ""
+    origin: str = ""
+    size: int = 0
+    modified: str = ""
+
+
+class ArticlesRead(Strict):
+    dir: str                           # 原文目录（库内相对路径）
+    articles: list[ArticleEntry] = Field(default_factory=list)
+
+
+class ArticleHeading(Strict):
+    level: int
+    title: str
+
+
+class ArticleNodeRef(Strict):
+    """从这篇拆出的一个点。`section` 是它链的那一节（原文的原样标题），空 = 链整篇。"""
+
+    id: str
+    name: str
+    section: str = ""
+
+
+class ArticleRead(Strict):
+    """一篇原文，只读。`text` 不含 frontmatter（imported / origin 单独给）。"""
+
+    path: str
+    title: str
+    text: str
+    imported: str = ""
+    origin: str = ""
+    in_dir: bool = True                # 在不在原文目录里（旧年代散在 doc/ harness/ 的那几篇是 false）
+    headings: list[ArticleHeading] = Field(default_factory=list)
+    nodes: list[ArticleNodeRef] = Field(default_factory=list)
+
+
 class VaultConfigRead(Strict):
     """库级配置（`<库>/.knowrary/vault.json`，跟着库进 git）+ 设置页要的旁证。"""
 

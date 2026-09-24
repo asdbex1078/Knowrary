@@ -25,6 +25,9 @@ const props = defineProps({
   projectField: { type: String, default: '' },
   revision: { type: Number, default: 0 },           // index revision，写入时做乐观锁
   busy: { type: Boolean, default: false },          // 上层正在落位 / 刷新
+  // 从别处带过来的一篇（原文面板上「拆成知识点」）：库内路径。变一次就载一次，
+  // 走「仓库里的文件」那条路——在原文目录里的会就地引用，不复制
+  preset: { type: String, default: '' },
 })
 const emit = defineEmits(['applied', 'close', 'goto', 'error', 'copy'])
 
@@ -76,6 +79,12 @@ const edgeCount = (n) => (n.relations || []).length
 const canRun = computed(() => !working.value && !props.busy)
 
 onMounted(loadSources)
+watch(() => props.preset, (path) => {
+  if (!path) return
+  tab.value = 'vault'
+  source.value = path.split('/').pop().replace(/\.(md|markdown|txt)$/i, '')
+  pickSource(path)
+}, { immediate: true })
 
 async function loadSources() {
   loadingSources.value = true

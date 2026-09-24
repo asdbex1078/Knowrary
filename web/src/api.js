@@ -90,6 +90,9 @@ const postJSON = (url, body) => request(url, {
 export const postImportPropose = (body) => postJSON('/api/import/propose', body)
 export const postImport = (body) => postJSON('/api/import', body)
 export const fetchImportSources = () => request('/api/import/sources')
+/** 原文阅读（只读）：原文目录里的全部原文 / 读一篇（带从它拆出的点、各自链的是哪一节）。 */
+export const fetchArticles = () => request('/api/articles')
+export const fetchArticle = (path) => request(`/api/article?path=${encodeURIComponent(path)}`)
 /** 把几个点概括成一个上位节点：让模型起草名字 / 摘要 / 正文（提议，不写盘）。 */
 export const postSummarize = (body) => postJSON('/api/summarize', body)
 export const fetchImportSource = (path) => request(`/api/import/source?path=${encodeURIComponent(path)}`)

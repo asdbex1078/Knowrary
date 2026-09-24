@@ -39,6 +39,7 @@ import MorningBrief from './components/MorningBrief.vue'
 import SettingsDialog from './components/SettingsDialog.vue'
 import CopyDialog from './components/CopyDialog.vue'
 import ProjectsPanel from './panels/ProjectsPanel.vue'
+import ArticlesPanel from './panels/ArticlesPanel.vue'
 import ImagePicker from './panels/ImagePicker.vue'
 import TimelinePanel from './panels/TimelinePanel.vue'
 import ComparePanel from './panels/ComparePanel.vue'
@@ -53,7 +54,7 @@ import { useCamera } from './composables/useCamera.js'
 import { usePathSearch } from './composables/usePathSearch.js'
 import { ancestors as groupAncestors, computeCollapsed } from './canvas/lod.js'
 import {
-  applyViewport, buildCells, contentBBox, createGraph,
+  applyViewport, buildCells, clearPath, contentBBox, createGraph,
   highlightEdges, highlightPath, mount, movedPositions, setSnap, snapDelta,
 } from './canvas/render.js'
 import { communityLayout, compareWithGroups } from './canvas/communities.js'
@@ -515,6 +516,32 @@ const problems = ref([])                 // 加载时发现的待处理项，挂
 
 const inspectorOpen = computed(() =>
   !inspectorHidden.value && (!!selected.value || pending.value.length > 0))
+
+// —— 原文（原文层第 4 步）——
+const articleReq = shallowRef(null)      // 要打开哪一篇：{ path, section, nonce }；nonce 变一次开一次
+const importPreset = ref('')             // 原文面板上「拆成知识点」带给导入面板的那一篇（库内路径）
+
+/** 在应用里读一篇原文、滚到某一节。检查器的来源链接、别处的"看原文"都走这里。 */
+function openArticle({ path, section }) {
+  if (!path) return
+  articleReq.value = { path, section: section || '', nonce: Date.now() }
+  openPanel('articles', { force: true })
+}
+
+/** 原文面板上的「拆成知识点」：换到导入面板，把这篇带过去（在原文目录里的会就地引用，不复制）。 */
+async function importArticle(path) {
+  importPreset.value = ''
+  openPanel('import', { force: true })
+  await nextTick()
+  importPreset.value = path
+}
+
+/** 打开一篇原文时，画布上点亮它拆出的那些点；回到列表 / 关掉时清掉。 */
+function highlightArticle(ids) {
+  if (!graph.value) return
+  if (ids?.length) highlightPath(graph.value, new Set(ids), new Set())
+  else clearPath(graph.value)
+}
 
 /** `force` = 无论当前开着什么都切到这个面板（程序主动带人过去时用，不能让它变成"切回关闭"）。 */
 function openPanel(id, { force = false } = {}) {
@@ -3499,7 +3526,10 @@ onBeforeUnmount(() => {
       <InboxTray v-if="panel === 'inbox'" class="inbox" :items="inboxItems" :busy="placing"
                  @place="placeOne" @place-all="placeAll" @place-new-group="placeWithNewGroup"
                  @suggest="suggestForInbox" @close="panel = ''" />
+      <ArticlesPanel v-else-if="panel === 'articles'" class="study" :open="articleReq"
+                     @goto="gotoNode" @import="importArticle" @highlight="highlightArticle" @close="panel = ''" />
       <ImportPanel v-else-if="panel === 'import'" class="study" :fields="fieldNames" :project="currentProject"
+                   :preset="importPreset"
                    :project-name="plansDoc?.projects?.[currentProject]?.name || ''" :project-field="projectField()"
                    :revision="indexDoc?.revision || 0" :busy="status === 'saving'"
                    @applied="onImported" @goto="gotoNode" @copy="openCopy()" @close="panel = ''" />
@@ -3667,7 +3697,7 @@ onBeforeUnmount(() => {
                  :all-node-ids="allNodeIds" :pending="pending" :change-preview="changePreview"
                  :is-due="!!selected && dueIds.has(selected.id)"
                  :suggestions="suggestions" :suggesting="suggesting"
-                 @close="inspectorHidden = true" @goto="gotoNode" @edit-desc="editDesc" @set-layer="setLayer" @set-year="setYear" @add-ref="addRef"
+                 @close="inspectorHidden = true" @goto="gotoNode" @open-article="openArticle" @edit-desc="editDesc" @set-layer="setLayer" @set-year="setYear" @add-ref="addRef"
                  @review="markReviewed($event.id, $event.grade)" @quiz="startQuiz"
                  @rename="openRename"
                  @finalize="finalize" @retype-edge="retypeEdge"

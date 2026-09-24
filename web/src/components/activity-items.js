@@ -19,6 +19,10 @@ export const ITEMS = [
     modes: ['chat', 'project', 'structure'] },
   { id: 'import', icon: 'file', name: '导入', group: 'do', scopes: ['project', 'global'],
     tip: '把一篇笔记拆成知识点导进图谱（项目下先认领清单里没建的点）', modes: ['chat', 'project', 'structure'] },
+  // 原文是整个库的东西（不分项目），所以两个作用域都给；对话里边聊边翻原文也常见
+  { id: 'articles', icon: 'book', name: '原文', group: 'do', scopes: ['project', 'global'],
+    tip: '读原文：长文原样存在原文目录里，看它拆出了哪些点；还没拆的在这儿一键拆',
+    modes: ['chat', 'project', 'structure'] },
   { id: 'assets', icon: 'image', name: '素材', group: 'do', scopes: ['project', 'global'],
     tip: '往当前这块画布上贴图、加便签', modes: ['project', 'structure'] },
 
