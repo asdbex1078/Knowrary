@@ -17,11 +17,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
+from . import curator as curator_svc
 from . import edge_check as edge_check_svc
 from . import pending_review as pending_svc
 from . import (articles as articles_svc, assets, audit, chat as chat_svc, compare as compare_svc, copying, curation, importing,
                projects as projects_svc, revise as revise_svc, summarize as summarize_svc, vaults, years as years_svc)
-from .contracts import (ArticleRead, ArticlesRead, EdgeCheckPlan, EdgeCheckPlanned, EdgeCheckRan, EdgeCheckRun,
+from .contracts import (ArticleRead, ArticlesRead, CurateRequest, CurateResult, EdgeCheckPlan, EdgeCheckPlanned, EdgeCheckRan, EdgeCheckRun,
                         EdgeChecksRead, EdgeFix, EdgeFixed, RelinkRequest, RelinkResult, PendingDecide, PendingDecided, PendingRead, TypeDecide, TypeDecided, AuditReport, AuditRequest, ReviseRequest, ReviseResult, ReviseUndo, SourceRef, VaultConfigPatch, VaultConfigRead, CalendarRead, ChangeResult, ChangeSet, ChatRequest, CoachToday, FileDiff, ImportProposal,
                         ImportProposeRequest, ImportRequest, ImportResult, SourceText, SourcesRead, SummarizeRequest, SummaryDraft,
                         InboxRead,
@@ -209,6 +210,17 @@ def post_place(req: PlaceRequest) -> PlaceResult:
         raise HTTPException(status_code=409, detail={
             "message": str(exc), "current_revision": exc.current.revision,
             "hint": "重新 GET /api/layout 后基于新 revision 重试"}) from exc
+
+
+@app.post("/api/curate", response_model=CurateResult)
+def post_curate(req: CurateRequest) -> CurateResult:
+    """「问 AI 该放哪」：邻居投票判不出的一批点，review 角色给一个分组和理由。只是建议，存下来显示在 Inbox 上。"""
+    try:
+        return curator_svc.curate(vault_path(), req.ids)
+    except curator_svc.CurateRejected as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except LLMFailed as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
 @app.post("/api/place/regroup", response_model=PlaceResult)

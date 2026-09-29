@@ -1,14 +1,16 @@
 <script setup>
 // Inbox：索引里有、画布上还没有的节点。两种上画布的方式——
 // 「放进建议分组」交给服务端按邻居投票找空位；拖到画布上则是人工指定落点。
+import InboxReason from '../components/InboxReason.vue'
 import Drawer from '../ui/Drawer.vue'
 import Icon from '../ui/Icon.vue'
 
 defineProps({
   items: { type: Array, default: () => [] },
   busy: { type: Boolean, default: false },
+  curating: { type: Object, default: null },
 })
-const emit = defineEmits(['place', 'placeAll', 'placeNewGroup', 'suggest', 'close', 'dragStart'])
+const emit = defineEmits(['place', 'placeAll', 'placeNewGroup', 'suggest', 'curate', 'placeAi', 'close', 'dragStart'])
 
 function onDragStart(ev, item) {
   ev.dataTransfer.effectAllowed = 'copy'
@@ -34,7 +36,7 @@ function onDragStart(ev, item) {
         </button>
 
         <ul>
-          <li v-for="it in items" :key="it.id" class="card inbox-item" draggable="true"
+          <li v-for="it in items" :key="it.id" class="card inbox-item" draggable="true" :data-inbox="it.id"
               @dragstart="onDragStart($event, it)">
             <div class="nm">
               {{ it.name }}
@@ -46,6 +48,8 @@ function onDragStart(ev, item) {
               建议归到{{ it.home.kind === 'project' ? '项目' : it.home.kind === 'field' ? '领域' : '' }}「{{ it.home.name }}」{{ it.home.why ? `——${it.home.why}` : '' }}
               <span v-if="it.home.origin?.source">（来自《{{ it.home.origin.source }}》）</span>
             </div>
+            <InboxReason :item="it" :busy="busy" :curating="curating"
+                         @curate="emit('curate', $event)" @place-ai="emit('placeAi', $event)" />
             <div class="ft">
               <span>{{ it.field || '未指定领域' }}</span>
               <span class="dim">·</span>

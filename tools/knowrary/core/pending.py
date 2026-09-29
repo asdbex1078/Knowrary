@@ -41,7 +41,7 @@ def pending_path(vault: Path) -> Path:
 
 def empty_pending() -> dict:
     return {"schema_version": SCHEMA_VERSION, "updated_at": None, "edges": [], "homes": [], "rejected": [],
-            "types": [], "rejected_types": []}
+            "types": [], "rejected_types": [], "curated": {}}
 
 
 def _now() -> str:
@@ -59,6 +59,8 @@ def load_pending(vault: Path) -> dict:
     for key in ("homes", "rejected", "types", "rejected_types"):
         if not isinstance(doc.get(key), list):
             doc[key] = []
+    if not isinstance(doc.get("curated"), dict):
+        doc["curated"] = {}
     return doc
 
 
@@ -210,6 +212,22 @@ def add_home(vault: Path, node_ids: list[str], home: dict, origin: dict) -> dict
     doc["updated_at"] = now
     write_json_atomic(pending_path(vault), doc)
     return entry
+
+
+@_locked
+def add_curated(vault: Path, node_ids: list[str], suggestion: dict) -> None:
+    """记下「问 AI 该放哪」的结论：{节点 id: {group, why, model, ms, at}}。一批点共用一条。
+    只是建议——放不放还是人点；节点放上画布之后它就没用了（Inbox 读的时候只看还在 Inbox 里的）。"""
+    doc = load_pending(vault)
+    now = _now()
+    for nid in node_ids:
+        doc["curated"][nid] = {**suggestion, "ids": list(node_ids), "at": now}
+    doc["updated_at"] = now
+    write_json_atomic(pending_path(vault), doc)
+
+
+def load_curated(vault: Path) -> dict[str, dict]:
+    return load_pending(vault)["curated"]
 
 
 def load_homes(vault: Path) -> dict[str, dict]:

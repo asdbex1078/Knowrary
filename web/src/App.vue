@@ -4,7 +4,7 @@ import {
   fetchSettings, putSettings, fetchLLMConfig, putLLMConfig, testLLMConfig as postLLMConfigTest,
   fetchPending, postPendingDecide, postTypeDecide, postEdgesPlan, postEdgesCheck, fetchEdgeChecks, postEdgeFix, fetchVault, browseVault, initVault, putVault, forgetVault, fetchVaultConfig, putVaultConfig,
   fetchCopySources, fetchCopyCatalog, postCopy, fetchCalendar, fetchCompareGroups, fetchCompareTable, postCompareFill, fetchDigest, postSyncToGlobal, fetchDue, fetchProjects, putProjects, postPlanPropose, fetchToday, fetchUsage, postMerge, postRename, postQuiz, postQuizDiagnose, postQuizGrade, fetchOpenQuiz, dropOpenQuiz, postRegroup, fetchIndex, fetchInbox, fetchLayout, fetchNode,
-  patchLayout, postAudit, postChanges, postRelink, postRevise, postReviseUndo, postPlace, postReview, postSuggest, postSummarize, postYearsPropose,
+  patchLayout, postAudit, postChanges, postRelink, postRevise, postReviseUndo, postPlace, postCurate, postReview, postSuggest, postSummarize, postYearsPropose,
 } from './api.js'
 import AppHeader from './components/AppHeader.vue'
 import ActivityBar from './components/ActivityBar.vue'
@@ -2507,6 +2507,29 @@ async function place(body, label) {
 }
 
 const placeOne = (item) => place({ ids: [item.id] }, `放置「${item.name}」`)
+
+/** 「问 AI 该放哪」：问它所在的整块（都还在 Inbox 里、互相连着的那几个），结论挂回每个条目上。 */
+const curating = ref(null)
+async function curateInbox(item) {
+  if (curating.value) return
+  const ids = item.cluster?.length ? item.cluster : [item.id]
+  curating.value = { ids, started: Date.now() }
+  try {
+    const res = await postCurate(ids)
+    await refreshInbox()
+    setBanner(`AI 建议把${ids.length > 1 ? `这 ${res.ids.length} 个` : `「${item.name}」`}放进「${res.group_name}」（${res.model} · ${Math.round(res.ms / 100) / 10} 秒）`, 'success')
+  } catch (err) {
+    setBanner(`问 AI 该放哪失败：${err.body?.detail || err.message}`, 'error')
+  } finally {
+    curating.value = null
+  }
+}
+/** 按 AI 的建议放：同一块里还在 Inbox 的都放进它说的那个分组。 */
+function placeAi(item) {
+  const waiting = new Set(inboxItems.value.map((i) => i.id))
+  const ids = (item.ai.ids || [item.id]).filter((i) => waiting.has(i))
+  place({ ids: ids.length ? ids : [item.id], group: item.ai.group }, `按 AI 建议放进「${item.ai.group_name}」`)
+}
 /** 画布上还没有这个领域的框：服务端在最下面开一个同名顶层框再放进去（加法，不动已有内容）。 */
 const placeWithNewGroup = (item) => place({ ids: [item.id], create_field_group: true },
                                           `建「${item.field}」域框并放入「${item.name}」`)
@@ -3696,8 +3719,8 @@ onBeforeUnmount(() => {
                    :inbox="inboxCount" :due="dueIds.size" :pending="pendingCount" :theme="theme"
                    @select="openPanel" @toggle-theme="toggleTheme" />
 
-      <InboxTray v-if="panel === 'inbox'" class="inbox" :items="inboxItems" :busy="placing"
-                 @place="placeOne" @place-all="placeAll" @place-new-group="placeWithNewGroup"
+      <InboxTray v-if="panel === 'inbox'" class="inbox" :items="inboxItems" :busy="placing" :curating="curating"
+                 @curate="curateInbox" @place-ai="placeAi" @place="placeOne" @place-all="placeAll" @place-new-group="placeWithNewGroup"
                  @suggest="suggestForInbox" @close="panel = ''" />
       <ArticlesPanel v-else-if="panel === 'articles'" class="study" :open="articleReq"
                      @goto="gotoNode" @import="importArticle" @highlight="highlightArticle" @close="panel = ''" />

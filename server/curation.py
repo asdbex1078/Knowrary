@@ -33,19 +33,28 @@ def inbox(vault: Path) -> InboxRead:
     plain = layout.model_dump()
     by_id = {n["id"]: n for n in index["nodes"]}
     top_names = {g.get("name") for g in plain["groups"].values() if not g.get("parent")}
-    homes = core.load_homes(vault)
+    homes, curated = core.load_homes(vault), core.load_curated(vault)
     items = []
     for nid in core.inbox_ids(index, plain):
         meta = by_id.get(nid, {})
-        gid = core.target_group(nid, index, plain)
-        field = meta.get("field")
+        d = core.decide_group(nid, index, plain)
+        gid, field = d["group"], meta.get("field")
         items.append(InboxItem(
             id=nid, name=meta.get("name") or nid, field=field, desc=meta.get("desc"),
             stub=bool(meta.get("stub")), degree=int(meta.get("degree") or 0),
             suggested_group=gid, suggested_group_name=plain["groups"].get(gid, {}).get("name") if gid else None,
             field_group_missing=bool(field) and gid is None and field not in top_names,
-            home=homes.get(nid)))
+            home=homes.get(nid), confidence=d["confidence"], reason=d["reason"], cluster=d["cluster"],
+            ai=_ai_view(curated.get(nid), plain["groups"])))
     return InboxRead(items=items, index_revision=index["revision"], layout_revision=layout.revision)
+
+
+def _ai_view(row: dict | None, groups: dict) -> dict | None:
+    """「问 AI 该放哪」的结论；它说的分组后来被删了就当没问过。"""
+    if not row or row.get("group") not in groups:
+        return None
+    return {**{k: row.get(k) for k in ("group", "why", "model", "ms", "at", "ids")},
+            "group_name": groups[row["group"]].get("name") or row["group"]}
 
 
 def _merge_patch(plain: dict, patch_groups: dict, patch_nodes: dict,

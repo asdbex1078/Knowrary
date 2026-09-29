@@ -44,24 +44,95 @@ def _occupied(layout: dict, gid: str, box: dict | None = None) -> list[tuple[flo
 
 
 def target_group(node_id: str, index: dict, layout: dict) -> str | None:
-    """该去哪个分组。
+    """该去哪个分组（`decide_group` 的结论）。放置和 Inbox 上显示的推荐走同一套，不会显示 A、落进 B。"""
+    return decide_group(node_id, index, layout)["group"]
 
-    先按关系族加权投票——邻居里哪个分组的"关系分"最高就去哪，结构族优先体现在权重上；
-    取第一个匹配到的邻居会被随机的边顺序带偏（实测把 CPU 判到了只有 1 个节点的小组）。
-    投不出来再按 field 找同名的顶层分组。
-    """
-    votes: dict[str, float] = {}
+
+STRONG = 2.0          # 至少一条结构 / 依赖 / 演化边的分量，才算「有把握」
+
+
+def _neighbours(node_id: str, index: dict) -> list[tuple[str, str]]:
+    out = []
     for e in index["edges"]:
         other = e["target"] if e["source"] == node_id else e["source"] if e["target"] == node_id else None
-        if other is None:
-            continue
-        gid = layout.get("nodes", {}).get(other, {}).get("group")
-        if gid in layout.get("groups", {}):
-            votes[gid] = votes.get(gid, 0) + FAMILY_WEIGHT.get(e["family"], 0.5)
+        if other is not None:
+            out.append((other, e["family"]))
+    return out
+
+
+def _votes(ids: list[str], index: dict, layout: dict) -> tuple[dict[str, float], dict[str, list[str]]]:
+    """这几个点连着的、已经在画布上的邻居都在哪个分组。按关系族加权。返回 (票数, 每个分组是谁投的)。"""
+    votes: dict[str, float] = {}
+    who: dict[str, list[str]] = {}
+    mine = set(ids)
+    names = {n["id"]: n.get("name") or n["id"] for n in index["nodes"]}
+    for nid in ids:
+        for other, family in _neighbours(nid, index):
+            if other in mine:
+                continue
+            gid = layout.get("nodes", {}).get(other, {}).get("group")
+            if gid in layout.get("groups", {}):
+                votes[gid] = votes.get(gid, 0) + FAMILY_WEIGHT.get(family, 0.5)
+                who.setdefault(gid, []).append(f"{names.get(other, other)}（{family}）")
+    return votes, who
+
+
+def inbox_cluster(node_id: str, index: dict, layout: dict) -> list[str]:
+    """和它一批、互相连着、都还没上画布的那一块（含它自己）。
+
+    一批导进来的点常常只互相连着：`ELF` 那一族 9 个点，外面一个上了画布的邻居都没有，
+    一个一个投都是零票；整块一起看，块里有几个连到画布上，票就够了。"""
+    placed = set(layout.get("nodes", {}))
+    real = {n["id"] for n in index["nodes"] if not n.get("virtual") and not n.get("aggregate")}
+    seen, todo = {node_id}, [node_id]
+    while todo:
+        cur = todo.pop()
+        for other, _ in _neighbours(cur, index):
+            if other not in seen and other in real and other not in placed:
+                seen.add(other)
+                todo.append(other)
+    return sorted(seen)
+
+
+def decide_group(node_id: str, index: dict, layout: dict) -> dict:
+    """该去哪个分组、有多大把握、为什么。三步，先到先得：
+
+    1. **自己的邻居投票**：它连着的、已经在画布上的点都在哪个分组（按关系族加权）；
+    2. **整块投票**：自己零票的话，把和它一批、互相连着、都还在 Inbox 里的那一块合起来投；
+    3. **按领域 + 抽象层猜**：整块也零票，就按 field 找顶层框、按 layer 落泳道。
+
+    `confidence`：strong（有一条结构 / 依赖 / 演化边以上的分量、且领先第二名一倍）/
+    weak（有票但单薄或者接近）/ guess（第 3 步猜的）/ none（判不出）。`reason` 是给人看的一句话。
+    """
+    groups = layout.get("groups", {})
+    name = lambda gid: groups.get(gid, {}).get("name") or gid     # noqa: E731
+    votes, who = _votes([node_id], index, layout)
+    basis, cluster = "own", [node_id]
+    if not votes:
+        cluster = inbox_cluster(node_id, index, layout)
+        if len(cluster) > 1:
+            votes, who = _votes(cluster, index, layout)
+            basis = "cluster"
     if votes:
-        return max(sorted(votes), key=lambda k: votes[k])
-    node = next((n for n in index["nodes"] if n["id"] == node_id), None)
-    return by_field_and_layer(node or {}, layout)
+        ranked = sorted(sorted(votes), key=lambda k: -votes[k])
+        top = ranked[0]
+        second = votes[ranked[1]] if len(ranked) > 1 else 0.0
+        sure = votes[top] >= STRONG and votes[top] >= 2 * second
+        lead = f"连着的 {'、'.join(who[top][:4])}{' 等' if len(who[top]) > 4 else ''} 在「{name(top)}」"
+        if basis == "cluster":
+            lead = f"它自己连着的点都还在 Inbox 里；和它一批的点里，{lead}"
+        if len(ranked) > 1:
+            lead += f"；另有 {'、'.join(who[ranked[1]][:2])} 在「{name(ranked[1])}」"
+        return {"group": top, "confidence": "strong" if sure else "weak", "basis": basis, "reason": lead,
+                "cluster": cluster}
+    node = next((n for n in index["nodes"] if n["id"] == node_id), None) or {}
+    gid = by_field_and_layer(node, layout)
+    if gid:
+        why = (f"没有邻居在画布上{'（整批都还在 Inbox 里）' if len(cluster) > 1 else ''}，"
+               f"按领域「{node.get('field')}」+ 层「{node.get('layer') or UNLAYERED}」猜的")
+        return {"group": gid, "confidence": "guess", "basis": "field", "reason": why, "cluster": cluster}
+    return {"group": None, "confidence": "none", "basis": "none", "cluster": cluster,
+            "reason": "没有邻居在画布上，也没有和它领域同名的顶层框"}
 
 
 def by_field_and_layer(node: dict, layout: dict) -> str | None:

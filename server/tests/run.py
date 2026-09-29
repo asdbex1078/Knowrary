@@ -504,6 +504,52 @@ def inbox_列出未上画布的节点并给出建议分组():
 
 
 @case
+def inbox_推荐带把握和理由_整块投票_判不出的可以问AI():
+    """2026-09-29 Curator 说理由：自己有邻居在画布上的按邻居投票；自己零票就合整块投；
+    整块也零票的，手动点「问 AI 该放哪」，review 给分组 + 理由，存下来显示，放不放人点。"""
+    c, vault, layout = with_inbox_node()
+    core.write(vault / "nodes/组A/e.md", node_md("E", rels="- 依赖:: [[d]]"))
+    core.write(vault / "nodes/新域/岛一.md", node_md("岛一", rels="- 对比:: [[岛二]]", field="没这个框"))
+    core.write(vault / "nodes/新域/岛二.md", node_md("岛二", field="没这个框"))
+    index_service.invalidate()
+    items = {i["id"]: i for i in c.get("/api/inbox").json()["items"]}
+    group_of_a = layout["layout"]["nodes"]["a"]["group"]
+    d, e = items["d"], items["e"]
+    assert d["confidence"] == "strong" and "A（结构）" in d["reason"] and d["suggested_group"] == group_of_a, d
+    assert e["suggested_group"] == group_of_a and "和它一批" in e["reason"] and e["cluster"] == ["d", "e"], e
+    isle = items["岛一"]
+    assert isle["confidence"] == "none" and isle["cluster"] == ["岛一", "岛二"] and isle["ai"] is None, isle
+
+    from server import curator as cur_mod
+    original, calls = cur_mod.ask_meta, []
+    cur_mod.ask_meta = lambda vault, role, prompt, op="?": (calls.append((role, prompt)) or json.dumps(
+        {"group": f"[{group_of_a}]", "why": "和 A 是一类"}, ensure_ascii=False), {"model": "假整理员", "ms": 7})
+    try:
+        r = c.post("/api/curate", json={"ids": ["岛一", "岛二", "不在Inbox的"]})
+        name = layout["layout"]["groups"][group_of_a]["name"]
+        cur_mod.ask_meta = lambda vault, role, prompt, op="?": (json.dumps({"group": name, "why": "w"}), {"model": "m", "ms": 1})
+        by_name = c.post("/api/curate", json={"ids": ["岛二"]})
+        cur_mod.ask_meta = lambda vault, role, prompt, op="?": (json.dumps({"group": "瞎编的框", "why": "w"}), {"model": "m", "ms": 1})
+        bad = c.post("/api/curate", json={"ids": ["岛一"]})
+    finally:
+        cur_mod.ask_meta = original
+    assert r.status_code == 200, r.text
+    assert r.json()["ids"] == ["岛一", "岛二"] and r.json()["group"] == group_of_a and r.json()["model"] == "假整理员", r.json()
+    role, prompt = calls[0]
+    assert role == "review" and f"[{group_of_a}]" in prompt and "「岛一」" in prompt and "岛一 的摘要" in prompt, prompt[-300:]
+    assert "A" in prompt.split("## 这一批")[0], "分组要列出代表成员"
+    assert by_name.status_code == 200 and by_name.json()["group"] == group_of_a, "回了名字也对得回 id"
+    assert bad.status_code == 422 and "瞎编的框" in bad.json()["detail"], bad.text
+    assert c.post("/api/curate", json={"ids": ["d-不存在"]}).status_code == 422
+
+    ai = {i["id"]: i for i in c.get("/api/inbox").json()["items"]}["岛一"]["ai"]
+    assert ai["group"] == group_of_a and ai["why"] == "和 A 是一类" and ai["group_name"] == name and ai["model"] == "假整理员", ai
+    rev = get_layout(c)["layout"]["revision"]
+    placed = c.post("/api/place", json={"base_revision": rev, "ids": ["岛一"], "group": ai["group"]}).json()["placed"]
+    assert placed and placed[0]["group"] == group_of_a, placed
+
+
+@case
 def place_放进建议分组且不与已有节点重叠():
     c, vault, _ = with_inbox_node()
     before = md_digest(vault)

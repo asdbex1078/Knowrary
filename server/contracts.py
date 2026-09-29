@@ -629,12 +629,32 @@ class InboxItem(Strict):
     suggested_group_name: str | None = None
     field_group_missing: bool = False   # 有 field、但画布上没有同名顶层框：判不出分组的根因，给一键建框
     home: dict[str, Any] | None = None  # 导入时模型给的归属建议（pending.json 的 homes），只显示不自动建
+    # 推荐分组的把握和理由（2026-09-29）：strong / weak / guess（按领域 + 层猜的）/ none
+    confidence: str = "none"
+    reason: str = ""
+    cluster: list[str] = Field(default_factory=list)   # 和它一批、互相连着、都还在 Inbox 里的那一块
+    ai: dict[str, Any] | None = None    # 「问 AI 该放哪」的结论：{group, group_name, why, model, ms, at}
 
 
 class InboxRead(Strict):
     items: list[InboxItem] = Field(default_factory=list)
     index_revision: int = 0
     layout_revision: int = 0
+
+
+class CurateRequest(Strict):
+    """「问 AI 该放哪」：一批投不出票的点（通常是一整块），让 review 角色判放进哪个分组。"""
+
+    ids: list[str]
+
+
+class CurateResult(Strict):
+    ids: list[str]
+    group: str
+    group_name: str = ""
+    why: str = ""
+    model: str = ""
+    ms: int = 0
 
 
 class PlaceRequest(Strict):

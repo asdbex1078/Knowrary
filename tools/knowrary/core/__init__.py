@@ -24,7 +24,8 @@ from .mdio import (NODE_DIRS, RE_ID_OK, RE_LINK, RE_REL_HEADER, dump_frontmatter
 from .parser import (AGGREGATE_TYPES, LAYERS, OFF_CANVAS_TYPES, UNLAYERED, Node, digest_of,
                      is_aggregate, load_node, load_vault, validate_frontmatter)
 from .placement import (by_field_and_layer, growth_blocker, inbox_ids, is_lane_stack, place_node,
-                        place_or_grow, plan_field_group, plan_growth, plan_lane_growth, plan_new_lane, target_group)
+                        place_or_grow, plan_field_group, plan_growth, plan_lane_growth, plan_new_lane, target_group,
+                        decide_group, inbox_cluster)
 from .projects import (DEFAULT_LEVEL, DEFAULT_LOAD, ID_OK, KINDS, LEVELS, level_of, exam_state, states_of, study_state, LOAD_HOURS, LOADS, MASTERY_ORDER, all_progress,
                        all_schedules, as_date, ascii_id, done_ids, empty_projects, legacy_plans_path,
                        list_field, lists_of, load_projects, mastery_of, merge_progress, point_ids,
@@ -60,7 +61,7 @@ from .edge_checks import (VERDICTS as EDGE_VERDICTS, fix_changes as edge_fix_cha
                           mark_check as mark_edge_check, record_checks as record_edge_checks)
 from .near import (candidates as near_candidates, for_changes as near_for_changes, relink as relink_changes,
                    relink_in_plan)
-from .pending import (LOCK as PENDING_LOCK, add_home, add_pending, add_type_proposals, edge_key, settle_type, load_homes, load_pending, pending_path, reject_pending,
+from .pending import (LOCK as PENDING_LOCK, add_curated, load_curated, add_home, add_pending, add_type_proposals, edge_key, settle_type, load_homes, load_pending, pending_path, reject_pending,
                       remove_pending, restore_rejected)
 from .rename import RenameRejected, apply_rename, backup_rename, plan_rename
 from .review import GRADES, due_nodes, load_log, next_due_for, record_review
@@ -101,10 +102,10 @@ __all__ = [
     "MAX_ARTICLE_CHARS", "NEAR_MISS_RATIO", "check_length", "isolated", "near_misses",
     "normalize_claims", "project_points",
     "EDGE_VERDICTS", "edge_fix_changes", "fresh_edge_checks", "mark_edge_check", "record_edge_checks",
-    "near_candidates", "near_for_changes", "relink_changes", "relink_in_plan", "PENDING_LOCK", "add_pending", "add_type_proposals", "settle_type", "TypeRejected", "register_type", "edge_key", "load_pending", "pending_path", "reject_pending", "remove_pending", "restore_rejected", "add_home", "load_homes", "plan_field_group",
+    "near_candidates", "near_for_changes", "relink_changes", "relink_in_plan", "PENDING_LOCK", "add_curated", "load_curated", "add_pending", "add_type_proposals", "settle_type", "TypeRejected", "register_type", "edge_key", "load_pending", "pending_path", "reject_pending", "remove_pending", "restore_rejected", "add_home", "load_homes", "plan_field_group",
     "MergeRejected", "RenameRejected", "apply_merge", "apply_rename", "backup_rename",
     "plan_merge", "plan_rename",
-    "save_projects", "target_group", "wrong_nodes",
+    "save_projects", "target_group", "decide_group", "inbox_cluster", "wrong_nodes",
     "CELL_H", "LAYOUT_SCHEMA_VERSION", "build_project_layout", "NODE_H", "NODE_W", "WriteConflict", "apply_to_text", "backup", "commit", "digest_of", "plan",
     "split_sections",
     "build_compare_layout", "build_initial_layout", "empty_layout", "find_orphans", "layout_path", "stamp", "IndexResult", "NODE_DIRS", "Node",

@@ -54,6 +54,8 @@ export const postEdgesPlan = (scope) => postJSON('/api/edges/plan', scope)
 export const postEdgesCheck = (ids) => postJSON('/api/edges/check', { ids })
 export const fetchEdgeChecks = () => request('/api/edges/checks')
 export const postEdgeFix = (body) => postJSON('/api/edges/fix', body)
+/** Inbox「问 AI 该放哪」：投不出票的一批点，review 给一个分组和理由（只是建议，存下来）。 */
+export const postCurate = (ids) => postJSON('/api/curate', { ids })
 /** 变更卡上的「并进已有节点」：不新建 src，并进图里已有的 dst（只改卡不写盘，带 card 会记下来）。 */
 export const postRelink = (body) => postJSON('/api/relink', body)
 export const postReviseUndo = (body) => request('/api/revise/undo', {
