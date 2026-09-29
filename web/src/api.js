@@ -90,6 +90,9 @@ const postJSON = (url, body) => request(url, {
 export const postImportPropose = (body) => postJSON('/api/import/propose', body)
 export const postImport = (body) => postJSON('/api/import', body)
 export const fetchImportSources = () => request('/api/import/sources')
+/** 待审边：导入时模型没把握的那些。decide 一批处理：adopt（可带 relation / swap）/ reject / clear / restore。 */
+export const fetchPending = () => request('/api/pending')
+export const postPendingDecide = (decisions) => postJSON('/api/pending/decide', { decisions })
 /** 原文阅读（只读）：原文目录里的全部原文 / 读一篇（带从它拆出的点、各自链的是哪一节）。 */
 export const fetchArticles = () => request('/api/articles')
 export const fetchArticle = (path) => request(`/api/article?path=${encodeURIComponent(path)}`)

@@ -76,7 +76,9 @@ def run(vault: Path, req: ImportRequest) -> ImportResult:
     except BaseException:
         _undo_article(vault, article, created)
         raise
-    origin = {"source": target.source, "imported_at": target.date}
+    # 原文进了库就记下它在哪：审待审边时要能点开看「模型当时是看着什么说的」
+    origin = {"source": target.source, "imported_at": target.date,
+              **({"article": target.article.path} if target.article else {})}
     if tr.pending:
         core.add_pending(vault, tr.pending, origin)
     home = plan.get("suggest_home")

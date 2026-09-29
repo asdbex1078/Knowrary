@@ -357,6 +357,64 @@ class PendingEdge(Strict):
     confidence: float
 
 
+class PendingItem(Strict):
+    """一条待审边（或已驳回的），带上审它要看的上下文。
+
+    `state`：ok = 可以采纳；linked = md 里后来已经连上了，清掉就行；missing = 某一端不在图里了，只能驳回。
+    """
+
+    id: str
+    source: str
+    relation: str
+    target: str
+    year: int | None = None
+    note: str | None = None
+    confidence: float = 0.0
+    origin: dict[str, Any] = Field(default_factory=dict)   # 出自哪篇（source / imported_at / article）
+    created_at: str | None = None
+    rejected_at: str | None = None
+    state: str = "ok"
+    family: str = ""
+    source_name: str = ""
+    source_desc: str = ""
+    target_name: str = ""
+    target_desc: str = ""
+    article: str = ""                  # 出自的原文在库里的路径（在的话），卡上能点开读
+
+
+class PendingRead(Strict):
+    edges: list[PendingItem] = Field(default_factory=list)
+    rejected: list[PendingItem] = Field(default_factory=list)
+
+
+class PendingDecision(Strict):
+    """对一条待审边的决定。`adopt` 可以带 `relation` 改类型、`swap` 换方向。"""
+
+    id: str
+    action: str                        # adopt | reject | clear | restore
+    relation: str | None = None
+    swap: bool = False
+
+
+class PendingDecide(Strict):
+    decisions: list[PendingDecision]
+
+
+class PendingSkip(Strict):
+    id: str
+    why: str
+
+
+class PendingDecided(Strict):
+    adopted: list[str] = Field(default_factory=list)
+    rejected: list[str] = Field(default_factory=list)
+    cleared: list[str] = Field(default_factory=list)
+    restored: list[str] = Field(default_factory=list)
+    skipped: list[PendingSkip] = Field(default_factory=list)   # 没办成的，和原因
+    backup: str | None = None
+    index_revision: int = 0
+
+
 class AuditIssue(Strict):
     """审核报的一条。`code` 是确定性检查的码（unknown_type / dead_link…），模型报的一律是 `llm`。"""
 

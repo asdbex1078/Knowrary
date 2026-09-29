@@ -9,6 +9,7 @@ import { computed, reactive, ref, watch } from 'vue'
 import Drawer from '../ui/Drawer.vue'
 import Icon from '../ui/Icon.vue'
 import { parseDiff } from '../ui/diff.js'
+import PendingEdgeRow from './PendingEdgeRow.vue'
 
 const props = defineProps({
   selected: { type: Object, default: null },
@@ -21,11 +22,12 @@ const props = defineProps({
   writeNonce: { type: Number, default: 0 },   // 外面 ++ 一次就把正文编辑框打开
   suggestions: { type: Object, default: null },   // SuggestResult from /api/suggest
   suggesting: { type: Boolean, default: false },   // LLM 正在生成建议
+  pendingEdges: { type: Array, default: () => [] },   // 和这个点有关的待审边（导入时模型没把握的）
 })
 // 抽象层的七档，和 core.parser.LAYERS 同一张表
 const LAYERS = ['理论', '硬件', '体系结构', '汇编接口', '系统软件', '高级语言', 'AI应用']
 const emit = defineEmits([
-  'close', 'goto', 'open-article', 'edit-desc', 'set-layer', 'set-year', 'add-ref', 'review', 'quiz', 'rename', 'finalize',
+  'close', 'goto', 'open-article', 'decide-pending', 'edit-desc', 'set-layer', 'set-year', 'add-ref', 'review', 'quiz', 'rename', 'finalize',
   'retype-edge', 'remove-edge', 'add-edge', 'drop-change',
   'preview-changes', 'apply-changes', 'clear-changes', 'save-body',
   'suggest', 'dismiss-suggestion',
@@ -107,6 +109,8 @@ const CHANGE_ICON = { add_edge: 'plus', remove_edge: 'trash', update_edge: 'penc
           <button :class="{ on: tab === 'relations' }" :disabled="!detail" @click="tab = 'relations'">
             <Icon name="link" :size="14" />关系
             <span v-if="outCount + inCount" class="badge quiet">{{ outCount + inCount }}</span>
+            <span v-if="pendingEdges.length" class="badge" data-pending-count
+                  :title="`${pendingEdges.length} 条待审的边：导入时模型没把握，等你一句话`">{{ pendingEdges.length }} 待审</span>
           </button>
           <button :class="{ on: tab === 'changes' }" @click="tab = 'changes'">
             <Icon name="save" :size="14" />变更
@@ -117,6 +121,9 @@ const CHANGE_ICON = { add_edge: 'plus', remove_edge: 'trash', update_edge: 'penc
         <div class="insp-body scroll-thin">
           <!-- ---------- 详情 ---------- -->
           <template v-if="tab === 'detail'">
+            <button v-if="selected && pendingEdges.length" class="insp-pend-hint" @click="tab = 'relations'">
+              <Icon name="link" :size="12" />这个点有 {{ pendingEdges.length }} 条待审的边，去「关系」里看
+            </button>
             <div v-if="!selected" class="empty">
               <Icon name="target" :size="30" :width="1.3" />
               <span class="t">没有选中节点</span>
@@ -243,6 +250,16 @@ const CHANGE_ICON = { add_edge: 'plus', remove_edge: 'trash', update_edge: 'penc
               <span class="t">先选一个节点</span>
             </div>
             <template v-else>
+              <div v-if="pendingEdges.length" class="section pend-section" style="margin-top: 0" data-section="pending">
+                <div class="section-head">
+                  <Icon name="link" :size="13" />待审的边 <span class="count">{{ pendingEdges.length }}</span>
+                </div>
+                <ul class="pend-list">
+                  <PendingEdgeRow v-for="e in pendingEdges" :key="e.id" :item="e" :relation-types="relationTypes"
+                                  @decide="emit('decide-pending', $event)" @goto="emit('goto', $event)"
+                                  @open-article="emit('open-article', $event)" />
+                </ul>
+              </div>
               <div class="section" style="margin-top: 0">
                 <div class="section-head">
                   出边 <span class="count">{{ outCount }}</span>

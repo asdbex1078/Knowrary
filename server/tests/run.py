@@ -2500,6 +2500,95 @@ def articles_列出原文带拆出几个点_读一篇带每个点链的那一节
         assert c.get("/api/article", params={"path": bad}).status_code == 404, bad
 
 
+def seed_pending(vault, *edges, origin=None):
+    core.add_pending(vault, [{"source": s, "relation": r, "target": t, "confidence": 0.5, "note": f"{s}{r}{t}"}
+                             for s, r, t in edges], origin or {"source": "某文章", "imported_at": "2026-09-20"})
+
+
+@case
+def pending_列出待审边_带上下文和状态_能不能采纳一眼看出():
+    """2026-09-29：pending.json 以前只有导入往里写，没有任何地方读——进了待审就再也看不见。"""
+    c, vault, _ = with_inbox_node()
+    (vault / "articles").mkdir()
+    (vault / "articles" / "某文章.md").write_text("# 某文章\n", "utf-8")
+    seed_pending(vault, ("b", "依赖", "d"), ("a", "部件", "b"), ("b", "依赖", "不存在的点"))
+    got = c.get("/api/pending").json()
+    rows = {e["id"]: e for e in got["edges"]}
+    ok, linked, gone = rows["b->d#依赖"], rows["a->b#部件"], rows["b->不存在的点#依赖"]
+    assert ok["state"] == "ok" and ok["source_name"] == "B" and ok["target_desc"] == "D 的摘要", ok
+    assert ok["family"] == "依赖" and ok["confidence"] == 0.5 and ok["note"] == "b依赖d"
+    assert ok["article"] == "articles/某文章.md", "老记录没存路径，按文章名去原文目录里找"
+    assert linked["state"] == "linked", "md 里已经有 a 部件 b 了"
+    assert gone["state"] == "missing", gone
+    assert got["rejected"] == []
+
+
+@case
+def pending_采纳写进md_可改类型换方向_驳回留一笔_以后不再进待审_能撤销():
+    c, vault, _ = with_inbox_node()
+    seed_pending(vault, ("b", "依赖", "d"), ("d", "相关", "c"), ("c", "依赖", "b"), ("a", "部件", "b"))
+    r = c.post("/api/pending/decide", json={"decisions": [
+        {"id": "b->d#依赖", "action": "adopt"},
+        {"id": "d->c#相关", "action": "adopt", "relation": "对比", "swap": True},
+        {"id": "c->b#依赖", "action": "reject"},
+        {"id": "a->b#部件", "action": "clear"}]})
+    assert r.status_code == 200, r.text
+    d = r.json()
+    assert sorted(d["adopted"]) == ["b->d#依赖", "d->c#相关"] and d["rejected"] == ["c->b#依赖"], d
+    assert d["cleared"] == ["a->b#部件"] and d["backup"], d
+    assert "- 依赖:: [[d]] — b依赖d" in core.read(vault / "nodes/组A/b.md"), "note 要跟着写进去"
+    c_md = core.read(vault / "nodes/组B/c.md")
+    assert "- 对比:: [[d]]" in c_md, "换了方向：写在 c 上、指向 d"
+    assert "d相关c" not in c_md, "改过类型 / 方向的，不该带着模型原来那句备注"
+    assert "相关" not in core.read(vault / "nodes/组A/d.md").split("## 关系")[-1], "原方向不该写"
+    got = c.get("/api/pending").json()
+    assert got["edges"] == [] and [e["id"] for e in got["rejected"]] == ["c->b#依赖"], got
+
+    # 另一篇文章又推出同一条被驳回的：不再进待审
+    added = core.add_pending(vault, [{"source": "c", "relation": "依赖", "target": "b", "confidence": 0.4}],
+                             {"source": "另一篇"})
+    assert added == [], "驳回过的又回来了"
+    r = c.post("/api/pending/decide", json={"decisions": [{"id": "c->b#依赖", "action": "restore"}]})
+    assert r.json()["restored"] == ["c->b#依赖"]
+    got = c.get("/api/pending").json()
+    assert [e["id"] for e in got["edges"]] == ["c->b#依赖"] and got["rejected"] == [], got
+
+
+@case
+def pending_写不进去的原样留在待审_说清原因():
+    c, vault, _ = with_inbox_node()
+    seed_pending(vault, ("b", "依赖", "d"), ("b", "依赖", "不存在的点"), ("a", "部件", "b"))
+    before = core.read(vault / "nodes/组A/b.md")
+    r = c.post("/api/pending/decide", json={"decisions": [
+        {"id": "b->d#依赖", "action": "adopt", "relation": "瞎编的类型"},
+        {"id": "b->不存在的点#依赖", "action": "adopt"},
+        {"id": "没有这条", "action": "adopt"}]})
+    why = {s["id"]: s["why"] for s in r.json()["skipped"]}
+    assert "没在 relation-types.json 里登记" in why["b->d#依赖"] and "不在图里" in why["b->不存在的点#依赖"], why
+    assert "已经没有这条" in why["没有这条"] and r.json()["adopted"] == []
+    # md 里已经有了还点采纳（页面是旧的）：整批不写，原样留着
+    r = c.post("/api/pending/decide", json={"decisions": [{"id": "a->b#部件", "action": "adopt"},
+                                                          {"id": "b->d#依赖", "action": "adopt"}]})
+    assert r.json()["adopted"] == [] and len(r.json()["skipped"]) == 2 and "已存在" in r.json()["skipped"][0]["why"]
+    assert core.read(vault / "nodes/组A/b.md") == before, "整批写不进去就一个字都不写"
+    assert len(c.get("/api/pending").json()["edges"]) == 3, "写不进去的要原样留在待审里"
+    assert c.post("/api/pending/decide", json={"decisions": []}).status_code == 422
+    assert c.post("/api/pending/decide", json={"decisions": [{"id": "x", "action": "乱来"}]}).status_code == 422
+
+
+@case
+def pending_从导入进待审_列出来时带着原文():
+    c, vault = client({"nodes/组A/a.md": node_md("A")})
+    plan = {"nodes": [{"id": "新点", "name": "新点", "desc": "d",
+                       "relations": [{"type": "依赖", "target": "a", "confidence": 0.3, "note": "没把握"}]}]}
+    r = c.post("/api/import", json={"plan": plan, "field": "测试", "source": "一篇长文", "text": "# 一篇长文\n\n正文\n",
+                                    "dry_run": False})
+    assert r.status_code == 200 and r.json()["applied"], r.text
+    [e] = c.get("/api/pending").json()["edges"]
+    assert e["id"] == "新点->a#依赖" and e["state"] == "ok" and e["note"] == "没把握", e
+    assert e["origin"]["article"] == "articles/一篇长文.md" and e["article"] == "articles/一篇长文.md", e
+
+
 @case
 def import_素材源列表与读取_挡住越界路径():
     c, vault = client()

@@ -15,13 +15,15 @@ const props = defineProps({
   mode: { type: String, default: 'structure' },
   inbox: { type: Number, default: 0 },
   due: { type: Number, default: 0 },
+  pending: { type: Number, default: 0 },       // 待审边：导入时没把握的那些，在「欠账」里审
   theme: { type: String, default: 'light' },
   project: { type: String, default: '' },      // 空串 = 「🌐 全局」
 })
 const emit = defineEmits(['select', 'toggle-theme'])
 
 /** 角标是响应式的，所以清单里只存"取哪个数"，值在这里现取。 */
-const badgeOf = (it) => (it.badge === 'inbox' ? props.inbox : it.badge === 'due' ? props.due : 0)
+const BADGES = { inbox: () => props.inbox, due: () => props.due, pending: () => props.pending }
+const badgeOf = (it) => BADGES[it.badge]?.() || 0
 
 const groups = computed(() => railGroups(props.mode, props.project))
 </script>

@@ -17,9 +17,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
+from . import pending_review as pending_svc
 from . import (articles as articles_svc, assets, audit, chat as chat_svc, compare as compare_svc, copying, curation, importing,
                projects as projects_svc, revise as revise_svc, summarize as summarize_svc, vaults, years as years_svc)
-from .contracts import (ArticleRead, ArticlesRead, AuditReport, AuditRequest, ReviseRequest, ReviseResult, ReviseUndo, SourceRef, VaultConfigPatch, VaultConfigRead, CalendarRead, ChangeResult, ChangeSet, ChatRequest, CoachToday, FileDiff, ImportProposal,
+from .contracts import (ArticleRead, ArticlesRead, PendingDecide, PendingDecided, PendingRead, AuditReport, AuditRequest, ReviseRequest, ReviseResult, ReviseUndo, SourceRef, VaultConfigPatch, VaultConfigRead, CalendarRead, ChangeResult, ChangeSet, ChatRequest, CoachToday, FileDiff, ImportProposal,
                         ImportProposeRequest, ImportRequest, ImportResult, SourceText, SourcesRead, SummarizeRequest, SummaryDraft,
                         InboxRead,
                         LayoutPatch, LayoutRead,
@@ -286,6 +287,21 @@ def post_compare_propose(group_id: str, req: CompareProposeRequest) -> ComparePr
 def get_digest() -> dict:
     """图谱欠账清单：草稿 / 待复习 / stub / 跨分组桥 / 重复候选 / 环。只读。"""
     return curation.digest(vault_path())
+
+
+@app.get("/api/pending", response_model=PendingRead)
+def get_pending() -> PendingRead:
+    """待审边：导入时模型没把握（置信度 < 0.8）、连到已有节点的那些，还有驳回过的。只读。"""
+    return pending_svc.read(vault_path())
+
+
+@app.post("/api/pending/decide", response_model=PendingDecided)
+def post_pending_decide(req: PendingDecide) -> PendingDecided:
+    """处理一批待审边：采纳（可改类型 / 换方向，走写回层、写前备份）/ 驳回 / 清掉已连上的 / 撤销驳回。"""
+    try:
+        return pending_svc.decide(vault_path(), req)
+    except pending_svc.PendingRejected as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 @app.post("/api/years/propose", response_model=YearProposal)

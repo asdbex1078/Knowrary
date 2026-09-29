@@ -3,21 +3,43 @@
 //
 // 只管图谱本身的欠账（草稿 / 桥 / 重复 / stub）。"今天该复习什么、哪些老错"
 // 是我脑子里的欠账，在「学习」面板，不在这里重复一遍。
+import { computed, ref } from 'vue'
 import Drawer from '../ui/Drawer.vue'
 import Icon from '../ui/Icon.vue'
+import PendingEdgeRow from '../components/PendingEdgeRow.vue'
 
 const props = defineProps({
   digest: { type: Object, default: null },
   busy: { type: Boolean, default: false },
+  // 待审边（2026-09-29）：导入时模型没把握的那些。以前进了 pending.json 就再也看不见
+  pending: { type: Object, default: () => ({ edges: [], rejected: [] }) },
+  relationTypes: { type: Array, default: () => [] },
 })
-const emit = defineEmits(['goto', 'close', 'refresh', 'merge', 'link', 'suggest', 'years', 'misplace', 'regroup'])
+const emit = defineEmits(['goto', 'close', 'refresh', 'merge', 'link', 'suggest', 'years', 'misplace', 'regroup',
+                          'decide-pending', 'open-article'])
+
+// 按出自哪篇文章分组：一篇进来一批，看完这篇的上下文就能整批判
+const pendingGroups = computed(() => {
+  const by = new Map()
+  for (const e of props.pending?.edges || []) {
+    const key = e.origin?.source || '（不知道出自哪篇）'
+    if (!by.has(key)) by.set(key, [])
+    by.get(key).push(e)
+  }
+  return [...by.entries()].map(([name, items]) => ({ name, items }))
+})
+const showRejected = ref(false)
+const adoptAll = (items) => emit('decide-pending',
+  items.filter((e) => e.state === 'ok').map((e) => ({ id: e.id, action: 'adopt' })))
+const rejectAll = (items) => emit('decide-pending',
+  items.filter((e) => e.state !== 'linked').map((e) => ({ id: e.id, action: 'reject' })))
 
 const total = () => {
   const c = props.digest?.counts
   if (!c) return 0
   // 孤点不计进总数：47 个孤点会把角标顶成一个吓人的数字，而它们是**长期欠账**，
   // 不是"今天冒出来的待办"。它有自己那一节的计数。
-  return (c.drafts || 0) + (c.links || 0) + (c.duplicates || 0) + (c.stubs || 0)
+  return (props.pending?.edges?.length || 0) + (c.drafts || 0) + (c.links || 0) + (c.duplicates || 0) + (c.stubs || 0)
     + (c.cycles || 0) + (c.bad_years || 0) + (c.misplaced || 0) + (c.issues || 0)
 }
 </script>
@@ -35,7 +57,42 @@ const total = () => {
     <template #default>
       <p v-if="!digest" class="dim">统计中…</p>
       <template v-else>
-        <section v-if="digest.drafts.length" class="section" style="margin-top: 0">
+        <!-- 待审边：放最上面——它们是模型花钱推出来、等人一句话就能落地的东西 -->
+        <section v-if="pending?.edges?.length || pending?.rejected?.length" class="section pend-section"
+                 style="margin-top: 0" data-section="pending">
+          <div class="section-head">
+            <Icon name="link" :size="13" />待审的边 <span class="count">{{ pending.edges.length }}</span>
+            <span class="tail dim" style="font-size: 11px">导入时模型没把握（置信度 &lt; 80%）</span>
+          </div>
+          <div v-for="g in pendingGroups" :key="g.name" class="pend-group">
+            <div class="pend-group-head">
+              <span>《{{ g.name }}》 · {{ g.items.length }} 条</span>
+              <button class="btn subtle tiny" :disabled="busy || !g.items.some((e) => e.state === 'ok')"
+                      data-act="adopt-all" title="这一篇的待审边全部照原样采纳（改过类型的请逐条点）"
+                      @click="adoptAll(g.items)">全部采纳</button>
+              <button class="btn subtle tiny" :disabled="busy" data-act="reject-all" @click="rejectAll(g.items)">
+                全部驳回</button>
+            </div>
+            <ul class="pend-list">
+              <PendingEdgeRow v-for="e in g.items" :key="e.id" :item="e" :relation-types="relationTypes" :busy="busy"
+                              @decide="emit('decide-pending', $event)" @goto="emit('goto', $event)"
+                              @open-article="emit('open-article', $event)" />
+            </ul>
+          </div>
+          <template v-if="pending.rejected?.length">
+            <button class="pop-item pend-toggle" @click="showRejected = !showRejected">
+              <Icon :name="showRejected ? 'chevronDown' : 'chevronRight'" :size="12" />
+              已驳回 {{ pending.rejected.length }} 条<span class="dim">（以后导入不再提；点开能撤销）</span>
+            </button>
+            <ul v-if="showRejected" class="pend-list">
+              <PendingEdgeRow v-for="e in pending.rejected" :key="e.id" :item="e" rejected :busy="busy"
+                              @decide="emit('decide-pending', $event)" @goto="emit('goto', $event)"
+                              @open-article="emit('open-article', $event)" />
+            </ul>
+          </template>
+        </section>
+
+        <section v-if="digest.drafts.length" class="section" :style="pending?.edges?.length ? '' : 'margin-top: 0'">
           <div class="section-head">
             <Icon name="pencil" :size="13" />草稿 <span class="count">{{ digest.counts.drafts }}</span>
             <span v-if="digest.counts.stale_drafts" class="tail warn-text">

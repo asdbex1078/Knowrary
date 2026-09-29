@@ -5,6 +5,9 @@
 （和幽灵占位、复习记录同一条纪律），审核通过那一刻才走 `/api/changes` 的 add_edge 写回 md。
 
 它和 md / index / layout / review 并列，是第五份契约；只由导入与审核两条链路写。
+
+**驳回的留一笔**（`rejected`，2026-09-29）：不留的话，下一篇文章又推出同一条（同源、同类型、同目标），
+它会原样回到待审里让人再驳一次。留下的记录能撤销（回到待审）。
 """
 from __future__ import annotations
 
@@ -15,6 +18,7 @@ from .mdio import load_json, write_json_atomic
 
 SCHEMA_VERSION = 1
 STATUS_PENDING = "pending"
+STATUS_REJECTED = "rejected"
 
 
 def pending_path(vault: Path) -> Path:
@@ -22,7 +26,11 @@ def pending_path(vault: Path) -> Path:
 
 
 def empty_pending() -> dict:
-    return {"schema_version": SCHEMA_VERSION, "updated_at": None, "edges": [], "homes": []}
+    return {"schema_version": SCHEMA_VERSION, "updated_at": None, "edges": [], "homes": [], "rejected": []}
+
+
+def _now() -> str:
+    return dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
 def load_pending(vault: Path) -> dict:
@@ -33,8 +41,9 @@ def load_pending(vault: Path) -> dict:
     if not isinstance(doc, dict) or not isinstance(doc.get("edges"), list):
         return empty_pending()
     doc.setdefault("schema_version", SCHEMA_VERSION)
-    if not isinstance(doc.get("homes"), list):
-        doc["homes"] = []
+    for key in ("homes", "rejected"):
+        if not isinstance(doc.get(key), list):
+            doc[key] = []
     return doc
 
 
@@ -50,8 +59,9 @@ def add_pending(vault: Path, edges: list[dict], origin: dict) -> list[dict]:
     返回真正新增的那几条。
     """
     doc = load_pending(vault)
-    have = {e.get("id") for e in doc["edges"]}
-    now = dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    # 已经驳回过的也算"有了"：同一条错边不该换一篇文章就回来让人再驳一次
+    have = {e.get("id") for e in doc["edges"]} | {e.get("id") for e in doc["rejected"]}
+    now = _now()
     added: list[dict] = []
     for e in edges:
         key = edge_key(e["source"], e["relation"], e["target"])
@@ -81,6 +91,37 @@ def remove_pending(vault: Path, ids: list[str]) -> int:
         doc["updated_at"] = dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
         write_json_atomic(pending_path(vault), doc)
     return removed
+
+
+def reject_pending(vault: Path, ids: list[str]) -> int:
+    """驳回：从待审挪进 `rejected`，留着原样（撤销时原样放回去）。返回挪了几条。"""
+    doc = load_pending(vault)
+    gone = set(ids)
+    moved = [e for e in doc["edges"] if e.get("id") in gone]
+    if not moved:
+        return 0
+    now = _now()
+    doc["edges"] = [e for e in doc["edges"] if e.get("id") not in gone]
+    doc["rejected"] += [{**e, "status": STATUS_REJECTED, "rejected_at": now} for e in moved]
+    doc["updated_at"] = now
+    write_json_atomic(pending_path(vault), doc)
+    return len(moved)
+
+
+def restore_rejected(vault: Path, ids: list[str]) -> int:
+    """撤销驳回：原样放回待审。返回放回几条。"""
+    doc = load_pending(vault)
+    back = set(ids)
+    moved = [e for e in doc["rejected"] if e.get("id") in back]
+    if not moved:
+        return 0
+    have = {e.get("id") for e in doc["edges"]}
+    doc["rejected"] = [e for e in doc["rejected"] if e.get("id") not in back]
+    doc["edges"] += [{**{k: v for k, v in e.items() if k != "rejected_at"}, "status": STATUS_PENDING}
+                     for e in moved if e.get("id") not in have]
+    doc["updated_at"] = _now()
+    write_json_atomic(pending_path(vault), doc)
+    return len(moved)
 
 
 # ---------------------------------------------------------------- 归属建议（孤立节点该去哪）

@@ -665,6 +665,26 @@ select:disabled { cursor: not-allowed; opacity: .5; }
 .model-editor-foot { flex: none; display: flex; align-items: center; gap: 7px; padding: 10px 14px; border-top: 1px solid var(--line); }
 .model-editor-foot > span { flex: 1; }
 /* 知识库：当前库那一条 + 目录选择器 */
+/* 待审边：欠账面板一栏、检查器「关系」里按节点列 */
+.pend-group { margin: 6px 0 10px; }
+.pend-group-head { display: flex; align-items: center; gap: 6px; font-size: 11.5px; color: var(--text-2); margin: 0 0 4px; }
+.pend-group-head > span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pend-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.pend-row { border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px; background: var(--surface); font-size: 12px; }
+.pend-row.missing, .pend-row.rejected { opacity: .75; }
+.pend-edge { display: flex; align-items: center; flex-wrap: wrap; gap: 4px; }
+.pend-type { font-size: 11.5px; padding: 1px 4px; max-width: 110px; }
+.pend-type-ro { color: var(--text-2); font-size: 11.5px; }
+.pend-edge .icon-btn.on { color: var(--warn); }
+.pend-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; font-size: 11px; margin: 4px 0 0; }
+.pend-meta a { display: inline-flex; align-items: center; gap: 3px; }
+.pend-note { font-size: 11.5px; margin: 4px 0 0; line-height: 1.5; }
+.pend-acts { display: flex; gap: 6px; margin: 6px 0 0; }
+.pend-toggle { width: 100%; font-size: 11.5px; }
+.insp-pend-hint { display: flex; align-items: center; gap: 6px; width: 100%; margin: 0 0 8px; padding: 5px 8px;
+  font-size: 11.5px; border-radius: 6px; border: 1px solid var(--warn); background: var(--warn-soft);
+  color: var(--text-1); cursor: pointer; text-align: left; }
+
 /* 原文面板：列表 + 只读阅读页（每节标题旁挂出自这一节的点） */
 .art-list, .art-read { padding: 0 2px 16px; }   /* 滚动交给外层 .drawer-body */
 .art-list-head { font-size: 11.5px; margin: 2px 0 8px; }

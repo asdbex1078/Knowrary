@@ -55,7 +55,8 @@ from .llmjson import carve as carve_json, parse_json
 from .proposal import (MAX_ARTICLE_CHARS, NEAR_MISS_RATIO, check_length, isolated, near_misses,
                        normalize_claims, project_points)
 from .merge import MergeRejected, apply_merge, plan_merge
-from .pending import add_home, add_pending, load_homes, load_pending, pending_path, remove_pending
+from .pending import (add_home, add_pending, edge_key, load_homes, load_pending, pending_path, reject_pending,
+                      remove_pending, restore_rejected)
 from .rename import RenameRejected, apply_rename, backup_rename, plan_rename
 from .review import GRADES, due_nodes, load_log, next_due_for, record_review
 from .schools import DOMAIN_TYPE, LINE_TYPES, SCHOOL_TYPE, line_homes, school_of, schools
@@ -94,7 +95,7 @@ __all__ = [
     "carve_json", "parse_json",
     "MAX_ARTICLE_CHARS", "NEAR_MISS_RATIO", "check_length", "isolated", "near_misses",
     "normalize_claims", "project_points",
-    "add_pending", "load_pending", "pending_path", "remove_pending", "add_home", "load_homes", "plan_field_group",
+    "add_pending", "edge_key", "load_pending", "pending_path", "reject_pending", "remove_pending", "restore_rejected", "add_home", "load_homes", "plan_field_group",
     "MergeRejected", "RenameRejected", "apply_merge", "apply_rename", "backup_rename",
     "plan_merge", "plan_rename",
     "save_projects", "target_group", "wrong_nodes",

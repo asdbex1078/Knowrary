@@ -32,7 +32,7 @@ export const ITEMS = [
     tip: '所有项目：新建、切换、改配置', modes: ['chat', 'project', 'structure'] },
   { id: 'inbox', icon: 'inbox', name: 'Inbox', group: 'org', badge: 'inbox', scopes: ['global'],
     tip: '待上全局图的知识点', modes: ['project', 'structure'] },
-  { id: 'digest', icon: 'layers', name: '欠账', group: 'org', scopes: ['global'],
+  { id: 'digest', icon: 'layers', name: '欠账', group: 'org', badge: 'pending', scopes: ['global'],
     tip: '草稿 / 桥 / 连边建议 / 重复 / stub（整张图的）', modes: ['chat', 'project', 'structure'] },
 
   // 对比在 compare 模式下也留着：进了某个组还能直接跳去另一个组，

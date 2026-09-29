@@ -2,7 +2,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, shallowRef, watch } from 'vue'
 import {
   fetchSettings, putSettings, fetchLLMConfig, putLLMConfig, testLLMConfig as postLLMConfigTest,
-  fetchVault, browseVault, initVault, putVault, forgetVault, fetchVaultConfig, putVaultConfig,
+  fetchPending, postPendingDecide, fetchVault, browseVault, initVault, putVault, forgetVault, fetchVaultConfig, putVaultConfig,
   fetchCopySources, fetchCopyCatalog, postCopy, fetchCalendar, fetchCompareGroups, fetchCompareTable, postCompareFill, fetchDigest, postSyncToGlobal, fetchDue, fetchProjects, putProjects, postPlanPropose, fetchToday, fetchUsage, postMerge, postRename, postQuiz, postQuizDiagnose, postQuizGrade, fetchOpenQuiz, dropOpenQuiz, postRegroup, fetchIndex, fetchInbox, fetchLayout, fetchNode,
   patchLayout, postAudit, postChanges, postRevise, postReviseUndo, postPlace, postReview, postSuggest, postSummarize, postYearsPropose,
 } from './api.js'
@@ -106,6 +106,9 @@ function loadFamilies() {
 const edgesShown = ref(0)
 const aggShown = ref(0)
 const inboxCount = ref(0)
+// 待审边（pending.json）：导入时模型没把握、连到已有节点的边。欠账面板一栏 + 检查器按节点列
+const pendingEdges = shallowRef({ edges: [], rejected: [] })
+const pendingCount = computed(() => pendingEdges.value.edges.length)
 const inboxItems = shallowRef([])        // GET /api/inbox：索引里有、画布上还没有的节点
 const digest = shallowRef(null)          // GET /api/digest：欠账清单
 const dueIds = shallowRef(new Set())     // 今天该复习的节点，画布上点一个金色小圆点
@@ -613,6 +616,7 @@ async function load() {
   Object.assign(stats, { nodes: index.stats.nodes, edges: index.stats.edges, stubs: index.stats.stubs })
   inboxCount.value = index.nodes.filter((n) => !n.virtual && !layout.layout.nodes[n.id]).length
   refreshInbox()
+  refreshPending()
   refreshDue()
   refreshUsage()
   ready.value = false
@@ -2235,6 +2239,36 @@ function addNote(at) {
 
 // —— 阶段 4：Inbox 放置 / 欠账清单 / 复习 ——
 
+let pendingSeq = 0
+async function refreshPending() {
+  // 只认最后一次发出的：连着点「清掉」「驳回」时两次拉取会并发，晚发先到的旧结果不能盖掉新的
+  const mine = ++pendingSeq
+  try {
+    const got = await fetchPending()
+    if (mine === pendingSeq) pendingEdges.value = got
+  } catch { /* 拉不到就当没有，不影响画布 */ }
+}
+
+/** 处理一批待审边（欠账面板 / 检查器上点的）。采纳的写进 md，所以要重载索引和画布；
+ *  没办成的逐条说原因——它们原样留在待审里，不会丢。 */
+async function decidePending(decisions) {
+  if (!decisions?.length) return
+  try {
+    const res = await postPendingDecide(decisions)
+    if (res.adopted.length) await load()
+    else await refreshPending()
+    const done = [res.adopted.length && `采纳 ${res.adopted.length} 条（写进了 md）`,
+                  res.rejected.length && `驳回 ${res.rejected.length} 条`,
+                  res.cleared.length && `清掉 ${res.cleared.length} 条已连上的`,
+                  res.restored.length && `撤销驳回 ${res.restored.length} 条`].filter(Boolean).join('，')
+    const skipped = res.skipped.map((s) => `「${s.id}」${s.why}`).join('；')
+    if (skipped) setBanner(`${done ? done + '。' : ''}没办成的还在待审里：${skipped}`, 'error')
+    else setBanner(done || '没有变化', 'success')
+  } catch (err) {
+    setBanner(`处理待审边失败：${err.body?.detail || err.message}`, 'error')
+  }
+}
+
 async function refreshInbox() {
   try {
     const data = await fetchInbox()
@@ -3538,7 +3572,7 @@ onBeforeUnmount(() => {
                     @start="briefStart" @quiz="briefOn = false; startQuiz($event)" />
 
       <ActivityBar :active="panel" :mode="mode" :project="currentProject"
-                   :inbox="inboxCount" :due="dueIds.size" :theme="theme"
+                   :inbox="inboxCount" :due="dueIds.size" :pending="pendingCount" :theme="theme"
                    @select="openPanel" @toggle-theme="toggleTheme" />
 
       <InboxTray v-if="panel === 'inbox'" class="inbox" :items="inboxItems" :busy="placing"
@@ -3569,6 +3603,8 @@ onBeforeUnmount(() => {
       <CalendarPanel v-else-if="panel === 'calendar'" class="study" :data="calendar"
                      @goto="gotoNode" @refresh="refreshCalendar" @close="panel = ''" />
       <DigestPanel v-else-if="panel === 'digest'" :busy="status === 'saving'" @regroup="regroupDrafts" class="digest" :digest="digest"
+                   :pending="pendingEdges" :relation-types="relationTypes" @decide-pending="decidePending"
+                   @open-article="openArticle"
                    @goto="gotoNode" @refresh="refreshDigest" @merge="openMerge" @link="linkFromDigest"
                    @suggest="suggestFromDigest" @years="openYears" @misplace="fixMisplaced"
                    @close="panel = ''" />
@@ -3712,6 +3748,8 @@ onBeforeUnmount(() => {
       </div>
 
       <Inspector v-if="inspectorOpen" :selected="selected" :detail="detail" :relation-types="relationTypes"
+                 :pending-edges="selected ? pendingEdges.edges.filter((e) => e.source === selected.id || e.target === selected.id) : []"
+                 @decide-pending="decidePending"
                  :all-node-ids="allNodeIds" :pending="pending" :change-preview="changePreview"
                  :is-due="!!selected && dueIds.has(selected.id)"
                  :suggestions="suggestions" :suggesting="suggesting"
