@@ -49,6 +49,8 @@ export const postRevise = (body) => request('/api/revise', {
 })
 
 /** 撤回 AI 按意见改的那一版：卡上的改法回到改前那份（留档读回来也是）。 */
+/** 变更卡上的「并进已有节点」：不新建 src，并进图里已有的 dst（只改卡不写盘，带 card 会记下来）。 */
+export const postRelink = (body) => postJSON('/api/relink', body)
 export const postReviseUndo = (body) => request('/api/revise/undo', {
   method: 'POST',
   headers: { 'Content-Type': 'application/json' },

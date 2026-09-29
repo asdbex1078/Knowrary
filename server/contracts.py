@@ -272,6 +272,7 @@ class ImportRequest(Strict):
     text: str | None = None            # 粘贴 / 本地文件的正文
     file: str | None = None            # 或者：库里的一个 md / txt（相对路径）
     origin: str | None = None          # 本地文件名；写进复制过来那份原文的 origin
+    relink: dict[str, str] = Field(default_factory=dict)   # {新节点 id: 并进的已有节点 id}：不新建，补充已有的
     # 跨库复制用：方案里每个节点自带 field 时按它落，不统一压成 `field` 那一个领域
     keep_field: bool = False
     force: bool = False                # 审核挡下之后仍然写入（同 ChangeSet.force）
@@ -330,6 +331,7 @@ class ImportProposal(Strict):
     project_points: int = 0            # 给模型看了几个待认领的点
     prompt_chars: int = 0
     shape: str = ""                    # 模型的判断：single = 整篇讲一个点（不拆），multi = 讲了好几个
+    near_existing: dict[str, list[dict[str, Any]]] = Field(default_factory=dict)   # 新节点 → 图里可能是同一个的
 
 
 class SourceFile(Strict):
@@ -380,6 +382,22 @@ class PendingItem(Strict):
     target_name: str = ""
     target_desc: str = ""
     article: str = ""                  # 出自的原文在库里的路径（在的话），卡上能点开读
+
+
+class RelinkRequest(Strict):
+    """变更卡上的「并进已有节点」：不新建 `src`，并进图里已有的 `dst`。"""
+
+    changes: list[Change]
+    src: str
+    dst: str
+    card: str | None = None
+
+
+class RelinkResult(Strict):
+    changes: list[dict[str, Any]]
+    files: list[FileDiff] = Field(default_factory=list)
+    notes: list[str] = Field(default_factory=list)       # 给人看：并了什么、丢了哪几条边
+    near: dict[str, list[dict[str, Any]]] = Field(default_factory=dict)   # 换完之后还剩的重复候选
 
 
 class PendingType(Strict):

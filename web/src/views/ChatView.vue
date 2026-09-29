@@ -39,7 +39,7 @@ const props = defineProps({
   auditOn: { type: Boolean, default: false },     // 写入审核开着：变更卡先审再写
   forceAllowed: { type: Boolean, default: true }, // 挡下之后给不给「仍然写入」
 })
-const emit = defineEmits(['send', 'stop', 'retry', 'apply', 'audit', 'preview', 'revise', 'undo-revise', 'apply-project', 'apply-points',
+const emit = defineEmits(['send', 'stop', 'retry', 'apply', 'audit', 'preview', 'revise', 'undo-revise', 'relink', 'undo-relink', 'apply-project', 'apply-points',
                           'apply-list-edit', 'goto',
                           'new-session', 'pick-session', 'drop-focus', 'toggle-graph', 'stance',
                           'rename-session', 'archive-session', 'delete-session', 'close'])
@@ -559,6 +559,29 @@ function onKey(e) {
                 </button>
                 <span v-if="c.stale" class="dim" style="font-size: 11px">改过了，下面的 diff 还是旧的；直接写入也按改后的算</span>
               </div>
+            </div>
+            <!-- 写入前拦重复：要新建的点，图里可能已经有了（只报几乎确定的：同名 / 用字一样只是顺序不同 / 只差个空后缀） -->
+            <template v-if="!c.applied && !c.expired">
+              <div v-for="(cands, nid) in (c.near || {})" :key="nid" class="cc-near" :data-near="nid">
+                <div class="cc-audit-head"><Icon name="target" :size="13" />
+                  <b>图里可能已经有「{{ nid }}」了</b></div>
+                <div v-for="x in cands" :key="x.id" class="cc-near-row">
+                  <span class="link" :title="x.desc" @click="emit('goto', x.id)">{{ x.name }}</span>
+                  <span class="dim">{{ x.why }}</span>
+                  <button class="btn tiny" :disabled="busy || working(c)" data-act="relink"
+                          :title="`不新建「${nid}」：边改指「${x.name}」，正文作为补充追加到它末尾，名字进它的别名`"
+                          @click="emit('relink', { card: c, i, j, src: nid, dst: x.id })">并进「{{ x.name }}」</button>
+                </div>
+              </div>
+            </template>
+            <div v-if="c.relinked" class="cc-near done" data-relinked>
+              <div class="cc-audit-head"><Icon name="check" :size="13" />
+                <b>并进了已有的「{{ c.relinked.to }}」</b>
+                <button v-if="!c.applied" class="btn subtle tiny" style="margin-left: auto" :disabled="busy || working(c)"
+                        data-act="undo-relink" @click="emit('undo-relink', { card: c, i, j })">
+                  <Icon name="undo" :size="12" />改回来</button>
+              </div>
+              <ul class="cc-near-notes dim"><li v-for="(n, k) in c.relinked.notes || []" :key="k">{{ n }}</li></ul>
             </div>
             <p v-if="c.expired && !c.applied" class="cc-expired">
               这张卡摆出来之后文件变了，照原样写不进去了：{{ c.expired }}。要的话让我重新出一张。

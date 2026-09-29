@@ -2679,6 +2679,104 @@ def pending_types_不合法的登记拒绝_表一个字不动():
 
 
 @case
+def near_只报几乎确定是同一个的_上下位兄弟缩写都不报():
+    """2026-09-29 在 HunDun 140 个点上量过：子串 + 相似度的宽口径 59 个点冒候选，几乎全是误报。"""
+    idx = {"nodes": [{"id": x, "name": x, "path": f"nodes/{x}.md", "aliases": al} for x, al in (
+        ("子词分词-BPE", []), ("MHA机制", []), ("RISC-V", []), ("ELF段", []), ("编译器后端", []), ("RAM", []),
+        ("Perceptrons", ["感知机"]))] + [{"id": "虚的", "name": "BPE分词", "virtual": True}], "edges": []}
+
+    def hit(name):
+        return [c["id"] for c in core.near_candidates(idx, {"id": name, "name": name})]
+    assert hit("BPE分词") == ["子词分词-BPE"], "用字一样只是顺序不同"
+    assert hit("MHA") == ["MHA机制"] and hit("Perceptron") == ["Perceptrons"], "只差一个空后缀 / 复数"
+    assert hit("感知机") == ["Perceptrons"], "对上别名"
+    for name in ("RISC", "ELF", "编译器前端", "ARM"):
+        assert hit(name) == [], (name, "上下位 / 兄弟 / 缩写撞车不是重复")
+    assert "虚的" not in hit("BPE分词"), "没有 md 的占位并不进去"
+
+
+@case
+def relink_变更卡并进已有节点_边改指向_正文追加_名字进别名_刷新回来还在_能撤回():
+    c, vault = client({"nodes/组A/MHA机制.md": node_md("MHA机制", rels="- 相关:: [[b]]"),
+                       "nodes/组A/b.md": node_md("B"), "nodes/组A/c.md": node_md("C")})
+    changes = [
+        {"type": "create_node", "source": "MHA", "path": "nodes/组A/MHA.md",
+         "fields": {"name": "MHA", "field": "测试", "desc": "多头注意力"}, "body": "多头注意力的笔记"},
+        {"type": "add_edge", "source": "MHA", "relation": "相关", "target": "b"},      # MHA机制 身上已经有了
+        {"type": "add_edge", "source": "MHA", "relation": "依赖", "target": "c"},
+        {"type": "add_edge", "source": "c", "relation": "对比", "target": "MHA"},
+        {"type": "create_node", "source": "新点", "path": "nodes/组A/新点.md",
+         "fields": {"name": "新点", "field": "测试", "desc": "d"}, "body": "它用到了 [[MHA]]"}]
+    original, _ = stub_chat([tool_block("propose_changes", {"changes": changes}), "卡给你了"])
+    try:
+        r = c.post("/api/chat", json={"messages": [{"role": "user", "content": "存"}], "session": "s1"})
+    finally:
+        restore_chat(original)
+    card = next(e["card"] for e in sse_events(r) if e["type"] == "card")
+    assert [x["id"] for x in card["near"]["MHA"]] == ["MHA机制"] and "新点" not in card["near"], card["near"]
+
+    r = c.post("/api/relink", json={"changes": card["changes"], "src": "MHA", "dst": "MHA机制",
+                                    "card": card["card_id"]})
+    assert r.status_code == 200, r.text
+    d = r.json()
+    kinds = [(x["type"], x["source"], x.get("target")) for x in d["changes"]]
+    assert ("create_node", "MHA", None) not in kinds and ("add_edge", "MHA机制", "b") not in kinds, kinds
+    assert ("add_edge", "MHA机制", "c") in kinds and ("add_edge", "c", "MHA机制") in kinds, kinds
+    body = next(x["body"] for x in d["changes"] if x["type"] == "append_body")
+    assert body.startswith("> 补充自对话") and "原本想新建「MHA」" in body and body.endswith("多头注意力的笔记")
+    assert next(x for x in d["changes"] if x["source"] == "新点")["body"] == "它用到了 [[MHA机制]]"
+    alias = next(x for x in d["changes"] if x["type"] == "update_frontmatter")
+    assert alias["fields"]["aliases"] == ["MHA"], alias
+    assert any("丢掉一条边" in n for n in d["notes"]) and d["files"] and d["near"] == {}, d["notes"]
+    assert not (vault / "nodes/组A/MHA.md").exists(), "只改卡不写盘"
+
+    back = lambda: c.get("/api/chat/history", params={"session": "s1"}).json()["messages"][-1]["cards"][0]["card"]
+    b = back()
+    assert b["relinked"]["from"] == "MHA" and b["relinked"]["to"] == "MHA机制" and "revised" not in b, b.keys()
+    assert not any(x["type"] == "create_node" and x["source"] == "MHA" for x in b["changes"]), "刷新回来要是换过的"
+    assert b["near"] == {}
+    r = c.post("/api/revise/undo", json={"card": card["card_id"], "changes": card["changes"]})
+    assert r.status_code == 200 and "relinked" not in back() and back()["near"], "撤回之后回到原样、候选又回来"
+    assert [x["id"] for x in r.json()["near"]["MHA"]] == ["MHA机制"], "撤回接口直接给回候选：刷新后前端手里没有原来那份"
+
+    w = write_changes(c, d["changes"], card=card["card_id"])
+    assert w.status_code == 200 and w.json()["applied"], w.text
+    md = core.read(vault / "nodes/组A/MHA机制.md")
+    assert "- 依赖:: [[c]]" in md and "多头注意力的笔记" in md and "aliases:" in md, md
+    r = c.post("/api/relink", json={"changes": card["changes"], "src": "MHA", "dst": "MHA机制", "card": card["card_id"]})
+    assert r.status_code == 409, "已经写入的卡不许再换"
+
+
+@case
+def relink_导入时并进已有节点_不新建_边挂过去仍按置信度分流_名字进别名():
+    c, vault = client({"nodes/组A/MHA机制.md": node_md("MHA机制"), "nodes/组A/b.md": node_md("B")})
+    plan = {"nodes": [
+        {"id": "MHA", "name": "MHA", "desc": "d", "body": "从文章里拆出来的 MHA 笔记",
+         "relations": [{"type": "依赖", "target": "b", "confidence": 0.4}, {"type": "相关", "target": "新点"}]},
+        {"id": "新点", "name": "新点", "desc": "d", "body": "见 [[MHA]]", "relations": [{"type": "依赖", "target": "MHA"}]}]}
+    original, _ = stub_import(plan)
+    try:
+        r = c.post("/api/import/propose", json={"text": "# 文章\n\n正文", "source": "文章", "field": "测试",
+                                                "keep_article": False})
+    finally:
+        restore_import(original)
+    assert [x["id"] for x in r.json()["near_existing"]["MHA"]] == ["MHA机制"], r.json()["near_existing"]
+    r = c.post("/api/import", json={"plan": r.json()["plan"], "field": "测试", "source": "文章", "keep_article": False,
+                                    "relink": {"MHA": "MHA机制"}, "dry_run": False})
+    assert r.status_code == 200 and r.json()["applied"], r.text
+    assert not (vault / "nodes/测试/MHA.md").exists(), "并进了就不该再新建"
+    md = core.read(vault / "nodes/组A/MHA机制.md")
+    assert "从文章里拆出来的 MHA 笔记" in md and "补充自《文章》" in md, "正文作为补充追加"
+    assert "- 相关:: [[新点]]" in md and "aliases:" in md and "- MHA" in md, md
+    pend = [(e["source"], e["target"]) for e in core.load_pending(vault)["edges"]]
+    assert ("MHA机制", "b") in pend, "连到老节点、没把握的边照样进待审——并过也不放宽"
+    assert "- 依赖:: [[MHA机制]]" in core.read(vault / "nodes/测试/新点.md") and \
+        "见 [[MHA机制]]" in core.read(vault / "nodes/测试/新点.md"), "别处指向它的改指已有节点"
+    r = c.post("/api/import", json={"plan": plan, "field": "测试", "source": "文章", "relink": {"MHA": "不存在"}})
+    assert r.status_code == 422
+
+
+@case
 def import_素材源列表与读取_挡住越界路径():
     c, vault = client()
     core.write(vault / "doc/笔记/一篇.md", "# 一篇\n正文")

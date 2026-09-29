@@ -44,6 +44,7 @@ const working = ref(false)      // 正在拆解 / 重算 / 写入
 const error = ref('')
 const proposal = ref(null)      // ImportProposal
 const renames = ref({})         // {模型给的 id: 清单 id}
+const relinks = ref({})         // {新节点 id: 并进的已有节点 id}：图里已经有这个概念了，不新建、补充它
 const promote = ref(new Set())  // 要直接写的待审边 key
 const openBodies = ref(new Set())
 const stale = ref(false)        // 改过了、diff 还是旧的
@@ -170,6 +171,7 @@ function msgOf(err) { return err?.body?.detail?.message || err?.body?.detail || 
 function reqBody(dryRun, force = false) {
   return { plan: plan.value, field: field.value.trim(), source: source.value.trim(), folder: folder.value.trim() || null,
            base_revision: props.revision, dry_run: dryRun, renames: renames.value, promote: [...promote.value],
+           relink: relinks.value,
            keep_article: keepArticle.value, text: article.value.text, file: article.value.file,
            origin: article.value.origin, ...(force ? { force: true } : {}) }
 }
@@ -190,7 +192,8 @@ async function propose() {
 async function proposeText(body, name, from = {}) {
   working.value = true
   source.value = name
-  proposal.value = null; renames.value = {}; promote.value = new Set(); openBodies.value = new Set(); stale.value = false
+  proposal.value = null; renames.value = {}; relinks.value = {}; promote.value = new Set(); openBodies.value = new Set()
+  stale.value = false
   article.value = { text: body, file: from.file || null, origin: from.origin || null }
   try {
     proposal.value = await postImportPropose({ text: body, source: name, field: field.value.trim(),
@@ -221,6 +224,19 @@ async function recompute() {
     proposal.value = { ...proposal.value, preview: await postImport(reqBody(true)) }
     stale.value = false
   } catch (err) { error.value = `重算失败：${msgOf(err)}` } finally { working.value = false }
+}
+
+// 图里可能已经有它了：同名 / 用字一样只是顺序不同 / 只差个空后缀（server 算的，宁可漏报）
+const existingOf = (id) => (proposal.value?.near_existing || {})[id] || []
+function relinkTo(id, dst) {
+  relinks.value = { ...relinks.value, [id]: dst }
+  stale.value = true
+  recompute()
+}
+function undoRelink(id) {
+  const next = { ...relinks.value }; delete next[id]; relinks.value = next
+  stale.value = true
+  recompute()
 }
 
 function adopt(miss) {
@@ -257,7 +273,8 @@ async function apply(force = false) {
       return
     }
     const stubs = new Set((plan.value.stubs || []).map((s) => s.id))
-    const born = nodes.value.map((n) => shownId(n.id)).filter((id) => !stubs.has(id))
+    // 并进已有节点的那几个没有新建：不能当新点去放上画布
+    const born = nodes.value.filter((n) => !relinks.value[n.id]).map((n) => shownId(n.id)).filter((id) => !stubs.has(id))
     const claimed = born.filter((id) => (proposal.value.claims || []).some((c) => c.node_id === id)
         || Object.values(renames.value).includes(id))
     emit('applied', { result: res, born, claimed, enriched: enrich.value.map((e) => e.existing) })
@@ -425,6 +442,17 @@ function reset() {
               <button v-if="!proposal.applied" class="icon-btn" :title="openBodies.has(n.id) ? '收起正文' : '看 / 改正文'"
                       @click="toggleBody(n.id)"><Icon :name="openBodies.has(n.id) ? 'fold' : 'pencil'" :size="12" /></button>
               <button v-if="renames[n.id] && !proposal.applied" class="btn subtle tiny" @click="undoAdopt(n.id)">还用模型的 id</button>
+            </div>
+            <div v-if="relinks[n.id]" class="imp-note" :data-relinked="n.id">
+              <Icon name="check" :size="12" />不新建，并进已有的「<b>{{ relinks[n.id] }}</b>」：正文作为补充追加、边挂过去、名字进它的别名
+              <button v-if="!proposal.applied" class="btn subtle tiny" :disabled="!canRun" @click="undoRelink(n.id)">还是新建</button>
+            </div>
+            <div v-else-if="existingOf(n.id).length && !proposal.applied" class="imp-note warn" :data-near="n.id">
+              <Icon name="target" :size="12" />图里可能已经有它了：
+              <template v-for="x in existingOf(n.id)" :key="x.id">
+                <span :title="x.desc">「<b>{{ x.name }}</b>」<span class="dim">{{ x.why }}</span></span>
+                <button class="btn tiny" :disabled="!canRun" data-act="relink" @click="relinkTo(n.id, x.id)">并进它</button>
+              </template>
             </div>
             <div v-if="nearMissOf(n.id) && !proposal.applied" class="imp-note">
               <Icon name="target" :size="12" />

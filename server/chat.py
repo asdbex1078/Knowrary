@@ -624,7 +624,9 @@ def _tool_propose(vault: Path, args: dict) -> tuple[str, dict]:
     into = _into_list(vault, args.get("_project"), born)
     card = {"card_id": _mint_card(vault, "changes", args, {"files": len(files)}),
             "changes": changes, "base_revision": index["revision"],
-            "files": [f.model_dump() for f in files], "into": into}
+            "files": [f.model_dump() for f in files], "into": into,
+            # 要新建的点图里可能已经有了：卡上给「并进它」（项目化重构方案 §5A，写入前拦重复）
+            "near": core.near_for_changes(index, changes)}
     tail = (f"写入时会顺手把 {'、'.join(into['points'])} 加进「{into['project_name']}·{into['list_name']}」清单。"
             if into else "")
     # 末尾这句是给"一轮一张卡"解锁的：链路本来就支持一轮摆好几张（每张一个「写入」按钮），
@@ -1366,6 +1368,13 @@ def _apply_revision(body: dict, row: dict | None) -> None:
     body["changes"] = row["changes"]
     if row.get("undo"):
         return
+    if row.get("relink"):
+        # 「并进已有节点」也记成一次 revised（换了改法），但它不是 AI 改的：卡上挂的是另一种说明
+        body["relinked"] = {**row["relink"], "before": row.get("before"), "at": row.get("ts") or ""}
+        src, dst = row["relink"].get("from"), row["relink"].get("to")
+        if isinstance(body.get("into"), dict) and src in (body["into"].get("points") or []):
+            body["into"] = {**body["into"], "points": [dst if p == src else p for p in body["into"]["points"]]}
+        return
     body["revised"] = {k: row.get(k) for k in ("summary", "delta", "skipped", "before", "model", "ms")}
     body["revised"]["at"] = row.get("ts") or ""
 
@@ -1394,6 +1403,7 @@ def _revive_cards(vault: Path, cards, ledger: dict) -> list[dict]:
                     ledger["audits"].get(body.get("card_id")), body["revised"].get("before") or [])["fresh"]
             if not body["applied"]:
                 body.update(_repreview(vault, body.get("changes") or []))
+                body["near"] = core.near_for_changes(current_index(vault), body.get("changes") or [])
         out.append({"type": key, key: body})
     return out
 

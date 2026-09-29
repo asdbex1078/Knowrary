@@ -95,6 +95,7 @@ def translate(plan: dict, index: dict, rt: RelationTypes, target: ImportTarget) 
     for s in stubs:
         out.changes.append(_create_stub(s, target))
         out.stub_ids.append(s["id"])
+    _translate_relinks(plan, legal, existing, rt, out)
     for e in plan.get("enrich") or plan.get("merge_into") or []:
         change = _enrich(e, existing, target, out)
         if change is not None:
@@ -229,6 +230,20 @@ def _enrich(e: dict, existing: dict, target: ImportTarget, out: Translation) -> 
     why = str(e.get("why") or "").strip()
     head = f"> {ENRICH_MARK}《{target.source}》（{target.date}）" + (f"：{why}" if why else "")
     return {"type": "append_body", "source": nid, "body": f"{head}\n\n{content}"}
+
+
+def _translate_relinks(plan: dict, legal: set[str], existing: dict, rt: RelationTypes, out: Translation) -> None:
+    """并进已有节点的那几个（`near.relink_in_plan` 改出来的）：原本的边挂到已有节点上，名字进它的别名。
+    边照样走 `_translate_edges`——连到老节点且没把握的照样进待审，口径不因为"并过"就放宽。"""
+    from .near import alias_change
+    for pseudo in plan.get("relink_edges") or []:
+        if pseudo.get("id") in existing:
+            _translate_edges(pseudo, legal, existing, rt, out)
+    for a in plan.get("relink_aliases") or []:
+        node = existing.get(a.get("existing"))
+        change = alias_change(node, a.get("names") or []) if node else None
+        if change:
+            out.changes.append(change)
 
 
 def _enrich_sources(node: dict, target: ImportTarget) -> dict | None:

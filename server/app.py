@@ -20,7 +20,7 @@ from fastapi.staticfiles import StaticFiles
 from . import pending_review as pending_svc
 from . import (articles as articles_svc, assets, audit, chat as chat_svc, compare as compare_svc, copying, curation, importing,
                projects as projects_svc, revise as revise_svc, summarize as summarize_svc, vaults, years as years_svc)
-from .contracts import (ArticleRead, ArticlesRead, PendingDecide, PendingDecided, PendingRead, TypeDecide, TypeDecided, AuditReport, AuditRequest, ReviseRequest, ReviseResult, ReviseUndo, SourceRef, VaultConfigPatch, VaultConfigRead, CalendarRead, ChangeResult, ChangeSet, ChatRequest, CoachToday, FileDiff, ImportProposal,
+from .contracts import (ArticleRead, ArticlesRead, RelinkRequest, RelinkResult, PendingDecide, PendingDecided, PendingRead, TypeDecide, TypeDecided, AuditReport, AuditRequest, ReviseRequest, ReviseResult, ReviseUndo, SourceRef, VaultConfigPatch, VaultConfigRead, CalendarRead, ChangeResult, ChangeSet, ChatRequest, CoachToday, FileDiff, ImportProposal,
                         ImportProposeRequest, ImportRequest, ImportResult, SourceText, SourcesRead, SummarizeRequest, SummaryDraft,
                         InboxRead,
                         LayoutPatch, LayoutRead,
@@ -849,12 +849,35 @@ def post_revise(req: ReviseRequest) -> ReviseResult:
     return result
 
 
+@app.post("/api/relink", response_model=RelinkResult)
+def post_relink(req: RelinkRequest) -> RelinkResult:
+    """变更卡上的「并进已有节点」：不新建 `src`，指向它的边改指 `dst`，正文作为补充追加到 `dst` 末尾，
+    名字进 `dst` 的别名。只改卡不写盘；带 card 的话记一次 revised（刷新回来还是换过的），能撤回。"""
+    vault = vault_path()
+    _refuse_applied(vault, req.card)
+    index = current_index(vault)
+    before = [c.model_dump(exclude_none=True) for c in req.changes]
+    head = (f"> 补充自对话（{dt.date.today().isoformat()}）：原本想新建「{req.src}」，"
+            f"和已有的「{req.dst}」是同一个概念")
+    try:
+        after, notes = core.relink_changes(before, index, req.src, req.dst, head)
+        files = curation.preview(vault, after, index)
+    except (ValueError, core.ChangeRejected, core.WriteConflict) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if req.card:
+        core.card_revised(vault, req.card, after, {"before": before,
+                                                   "relink": {"from": req.src, "to": req.dst, "notes": notes}})
+    return RelinkResult(changes=after, files=files, notes=notes, near=core.near_for_changes(index, after))
+
+
 @app.post("/api/revise/undo")
 def post_revise_undo(req: ReviseUndo) -> dict:
-    """撤回 AI 改的那一版：再记一条 revised，改法换回改前那份、不带 summary——留档读回来就是原样。"""
-    core.card_revised(vault_path(), req.card, [c.model_dump(exclude_none=True) for c in req.changes],
-                      {"undo": True})
-    return {"ok": True}
+    """撤回 AI 改的那一版（或撤回「并进已有节点」）：再记一条 revised，改法换回改前那份、不带说明——
+    留档读回来就是原样。顺手按换回来的改法重算重复候选：刷新之后再撤回，前端手里没有原来那份。"""
+    vault = vault_path()
+    changes = [c.model_dump(exclude_none=True) for c in req.changes]
+    core.card_revised(vault, req.card, changes, {"undo": True})
+    return {"ok": True, "near": core.near_for_changes(current_index(vault), changes)}
 
 
 @app.post("/api/changes", response_model=ChangeResult)

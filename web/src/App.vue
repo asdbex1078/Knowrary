@@ -4,7 +4,7 @@ import {
   fetchSettings, putSettings, fetchLLMConfig, putLLMConfig, testLLMConfig as postLLMConfigTest,
   fetchPending, postPendingDecide, postTypeDecide, fetchVault, browseVault, initVault, putVault, forgetVault, fetchVaultConfig, putVaultConfig,
   fetchCopySources, fetchCopyCatalog, postCopy, fetchCalendar, fetchCompareGroups, fetchCompareTable, postCompareFill, fetchDigest, postSyncToGlobal, fetchDue, fetchProjects, putProjects, postPlanPropose, fetchToday, fetchUsage, postMerge, postRename, postQuiz, postQuizDiagnose, postQuizGrade, fetchOpenQuiz, dropOpenQuiz, postRegroup, fetchIndex, fetchInbox, fetchLayout, fetchNode,
-  patchLayout, postAudit, postChanges, postRevise, postReviseUndo, postPlace, postReview, postSuggest, postSummarize, postYearsPropose,
+  patchLayout, postAudit, postChanges, postRelink, postRevise, postReviseUndo, postPlace, postReview, postSuggest, postSummarize, postYearsPropose,
 } from './api.js'
 import AppHeader from './components/AppHeader.vue'
 import ActivityBar from './components/ActivityBar.vue'
@@ -2733,6 +2733,41 @@ async function reviseChatCard({ i, j, issues }) {
   }
 }
 
+/** 变更卡上的「并进已有节点」：图里已经有这个概念了，不新建，并进去（项目化重构方案 §5A）。
+ *  只改卡不写盘；改法换了，原来的审核结论随之作废，写入前照常重审。 */
+async function relinkChatCard({ i, j, src, dst }) {
+  const c = chatLog.value[i].cards[j]
+  try {
+    const res = await postRelink({ changes: c.changes, src, dst, card: c.card_id })
+    const into = c.into?.points?.includes(src)
+      ? { ...c.into, points: c.into.points.map((p) => (p === src ? dst : p)) } : c.into
+    Object.assign(c, { relinked: { from: src, to: dst, notes: res.notes, before: c.changes },
+                       changes: res.changes, files: res.files, near: res.near, into, stale: false })
+  } catch (err) {
+    if (alignApplied(c, err)) return
+    setBanner(`并进「${dst}」没成：${err.body?.detail || err.message}`, 'error')
+  }
+}
+
+/** 撤回「并进」：改法回到原来那份（和撤回 AI 修改走同一条记录），候选跟着回来。 */
+async function undoRelinkCard({ i, j }) {
+  const c = chatLog.value[i].cards[j]
+  const r = c.relinked
+  if (!r?.before) return
+  let res
+  try {
+    res = await postReviseUndo({ card: c.card_id, changes: r.before })
+  } catch (err) {
+    setBanner(`改回来没成：${err.body?.detail || err.message}`, 'error')
+    return
+  }
+  const into = c.into?.points?.includes(r.to) && r.from
+    ? { ...c.into, points: c.into.points.map((p) => (p === r.to ? r.from : p)) } : c.into
+  // 候选以服务端按换回来的改法重算的为准：刷新之后前端手里没有原来那份
+  Object.assign(c, { changes: r.before, near: res?.near || {}, relinked: null, into })
+  await previewChatCard({ card: c, i, j })
+}
+
 /** 撤回 AI 改的那一版：改法回到改前那份，diff 按原样重算。 */
 async function undoReviseCard({ card, i, j }) {
   const c = chatLog.value[i].cards[j]
@@ -3656,6 +3691,7 @@ onBeforeUnmount(() => {
                   :audit-on="!!settings.audit_enabled" :force-allowed="settings.audit_force_allowed !== false"
                   @apply="applyChatCard" @audit="auditChatCard" @preview="previewChatCard"
                   @revise="reviseChatCard" @undo-revise="undoReviseCard"
+                  @relink="relinkChatCard" @undo-relink="undoRelinkCard"
                   @apply-project="applyProjectCard" @apply-points="applyPointsCard"
                   @apply-list-edit="applyListEditCard" @goto="gotoNode"
                   @new-session="newChatSession" @pick-session="pickChatSession" @rename-session="renameSession"

@@ -48,6 +48,14 @@ def run(vault: Path, req: ImportRequest) -> ImportResult:
     plan = core.promote_in_plan(req.plan, req.promote)
     for old_id, new_id in req.renames.items():
         plan = core.rename_in_plan(plan, old_id, new_id)
+    # 卡上点了「并进已有节点」的：不新建，补充已有的（边挂过去、名字进别名）
+    for src, dst in req.relink.items():
+        if dst not in {n["id"] for n in index["nodes"] if not n.get("virtual")}:
+            raise ImportRejected(f"要并进的 `{dst}` 不在图里")
+        try:
+            plan = core.relink_in_plan(plan, src, dst)
+        except ValueError as exc:
+            raise ImportRejected(str(exc)) from exc
     tr = core.translate(plan, index, core.load_relation_types(vault), target)
     try:
         edits = core.plan(vault, tr.changes, index)
@@ -178,9 +186,14 @@ def propose(vault: Path, req: ImportProposeRequest) -> ImportProposal:
     isolated = core.isolated(plan, [p.model_dump() for p in preview.pending], index, claimed)
     home = plan.get("suggest_home") if isinstance(plan.get("suggest_home"), dict) else None
     shape = str(plan.get("shape") or "").strip()
+    born = {n.get("id") for n in plan.get("nodes") or []}
+    near_existing = {nid: got for n in plan.get("nodes") or []
+            if (nid := n.get("id")) and nid not in claimed
+            and (got := core.near_candidates(index, {"id": nid, "name": n.get("name"), "aliases": n.get("aliases")},
+                                             exclude=born))}
     return ImportProposal(plan=plan, preview=preview, claims=claims, near_misses=near, isolated=isolated,
                           suggest_home=home, project_points=len(points), prompt_chars=len(prompt),
-                          shape=shape if shape in ("single", "multi") else "")
+                          shape=shape if shape in ("single", "multi") else "", near_existing=near_existing)
 
 
 def _article_text(vault: Path, req: ImportProposeRequest) -> str:
