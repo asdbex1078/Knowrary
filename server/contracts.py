@@ -384,6 +384,69 @@ class PendingItem(Strict):
     article: str = ""                  # 出自的原文在库里的路径（在的话），卡上能点开读
 
 
+class EdgeCheck(Strict):
+    """一条已有边的校验结论（review 角色给的）。verdict：ok / reverse（方向反了）/ retype（类型不对，
+    suggest 是建议类型）/ drop（不成立）/ unsure（拿不准）。方向一律是索引归一后的那个。"""
+
+    id: str
+    source: str
+    target: str
+    type: str
+    family: str = ""
+    symmetric: bool = False
+    source_name: str = ""
+    target_name: str = ""
+    verdict: str = "unsure"
+    suggest: str = ""
+    why: str = ""
+    model: str = ""
+    ms: int = 0
+    at: str = ""
+    ignored: bool = False
+
+
+class EdgeCheckPlan(Strict):
+    """要审哪些：给 node 就是这个点的边，给 field 就是这个领域里的边，都不给是全图。"""
+
+    node: str | None = None
+    field: str | None = None
+    force: bool = False                # 审过且没改过的也重审
+
+
+class EdgeCheckPlanned(Strict):
+    total: int                         # 这次要审几条
+    skipped: int = 0                   # 审过、没改过，跳过了几条
+    batches: list[list[str]] = Field(default_factory=list)   # 每批一次调用
+
+
+class EdgeCheckRun(Strict):
+    ids: list[str]
+
+
+class EdgeCheckRan(Strict):
+    results: list[EdgeCheck] = Field(default_factory=list)
+    missing: list[str] = Field(default_factory=list)   # 模型漏掉、没给结论的
+    model: str = ""
+    ms: int = 0
+
+
+class EdgeChecksRead(Strict):
+    checks: list[EdgeCheck] = Field(default_factory=list)
+    fields: list[str] = Field(default_factory=list)
+
+
+class EdgeFix(Strict):
+    id: str
+    action: str                        # reverse | retype | drop | ignore
+    relation: str | None = None        # retype 用
+
+
+class EdgeFixed(Strict):
+    action: str
+    backup: str | None = None
+    files: list[str] = Field(default_factory=list)
+
+
 class RelinkRequest(Strict):
     """变更卡上的「并进已有节点」：不新建 `src`，并进图里已有的 `dst`。"""
 

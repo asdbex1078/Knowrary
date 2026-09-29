@@ -49,6 +49,11 @@ export const postRevise = (body) => request('/api/revise', {
 })
 
 /** 撤回 AI 按意见改的那一版：卡上的改法回到改前那份（留档读回来也是）。 */
+/** 校验已有边：plan 算要审哪些、分几批（不调模型）；check 审一批；checks 读结论；fix 按结论改 / 忽略。 */
+export const postEdgesPlan = (scope) => postJSON('/api/edges/plan', scope)
+export const postEdgesCheck = (ids) => postJSON('/api/edges/check', { ids })
+export const fetchEdgeChecks = () => request('/api/edges/checks')
+export const postEdgeFix = (body) => postJSON('/api/edges/fix', body)
 /** 变更卡上的「并进已有节点」：不新建 src，并进图里已有的 dst（只改卡不写盘，带 card 会记下来）。 */
 export const postRelink = (body) => postJSON('/api/relink', body)
 export const postReviseUndo = (body) => request('/api/revise/undo', {

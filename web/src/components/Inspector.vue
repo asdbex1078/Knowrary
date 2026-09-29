@@ -10,6 +10,8 @@ import Drawer from '../ui/Drawer.vue'
 import Icon from '../ui/Icon.vue'
 import { parseDiff } from '../ui/diff.js'
 import PendingEdgeRow from './PendingEdgeRow.vue'
+import EdgeCheckRow from './EdgeCheckRow.vue'
+import EdgeRunBar from './EdgeRunBar.vue'
 
 const props = defineProps({
   selected: { type: Object, default: null },
@@ -23,11 +25,13 @@ const props = defineProps({
   suggestions: { type: Object, default: null },   // SuggestResult from /api/suggest
   suggesting: { type: Boolean, default: false },   // LLM 正在生成建议
   pendingEdges: { type: Array, default: () => [] },   // 和这个点有关的待审边（导入时模型没把握的）
+  edgeChecks: { type: Array, default: () => [] },     // 和这个点有关的已有边的校验结论（review 角色审的）
+  edgeRun: { type: Object, default: null },           // 正在跑的那一轮校验（任何范围的）
 })
 // 抽象层的七档，和 core.parser.LAYERS 同一张表
 const LAYERS = ['理论', '硬件', '体系结构', '汇编接口', '系统软件', '高级语言', 'AI应用']
 const emit = defineEmits([
-  'close', 'goto', 'open-article', 'decide-pending', 'edit-desc', 'set-layer', 'set-year', 'add-ref', 'review', 'quiz', 'rename', 'finalize',
+  'close', 'goto', 'open-article', 'decide-pending', 'check-edges', 'stop-edge-check', 'fix-edge', 'edit-desc', 'set-layer', 'set-year', 'add-ref', 'review', 'quiz', 'rename', 'finalize',
   'retype-edge', 'remove-edge', 'add-edge', 'drop-change',
   'preview-changes', 'apply-changes', 'clear-changes', 'save-body',
   'suggest', 'dismiss-suggestion',
@@ -250,7 +254,24 @@ const CHANGE_ICON = { add_edge: 'plus', remove_edge: 'trash', update_edge: 'penc
               <span class="t">先选一个节点</span>
             </div>
             <template v-else>
-              <div v-if="pendingEdges.length" class="section pend-section" style="margin-top: 0" data-section="pending">
+              <!-- 已有边的校验：review 角色判方向 / 类型 / 成不成立，结论存下来，边没改过就不重审 -->
+              <div class="section pend-section" style="margin-top: 0" data-section="edge-check">
+                <div class="section-head">
+                  <Icon name="checklist" :size="13" />关系校验
+                  <span v-if="edgeChecks.length" class="count" :title="`这个点的 ${outCount + inCount} 条关系里审过 ${edgeChecks.length} 条`">
+                    审过 {{ edgeChecks.length }}/{{ outCount + inCount }}</span>
+                  <button class="btn subtle tiny tail" :disabled="!!edgeRun || !(outCount + inCount)" data-act="check-edges"
+                          title="让 review 角色审一遍这个点的关系（一次调用）；审过没改过的跳过"
+                          @click="emit('check-edges', selected.id)">校验这个点的关系</button>
+                </div>
+                <EdgeRunBar :run="edgeRun" @stop="emit('stop-edge-check')" />
+                <ul v-if="edgeChecks.some((c) => c.verdict !== 'ok' && !c.ignored)" class="pend-list">
+                  <EdgeCheckRow v-for="c in edgeChecks.filter((x) => x.verdict !== 'ok' && !x.ignored)" :key="c.id"
+                                :item="c" :busy="!!edgeRun" @fix="emit('fix-edge', $event)" @goto="emit('goto', $event)" />
+                </ul>
+                <p v-else-if="edgeChecks.length" class="dim" style="font-size: 11.5px; margin: 4px 0 0">审过的都没问题。</p>
+              </div>
+              <div v-if="pendingEdges.length" class="section pend-section" data-section="pending">
                 <div class="section-head">
                   <Icon name="link" :size="13" />待审的边 <span class="count">{{ pendingEdges.length }}</span>
                 </div>

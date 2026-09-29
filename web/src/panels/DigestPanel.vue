@@ -8,6 +8,8 @@ import Drawer from '../ui/Drawer.vue'
 import Icon from '../ui/Icon.vue'
 import PendingEdgeRow from '../components/PendingEdgeRow.vue'
 import PendingTypeRow from '../components/PendingTypeRow.vue'
+import EdgeCheckRow from '../components/EdgeCheckRow.vue'
+import EdgeRunBar from '../components/EdgeRunBar.vue'
 
 const props = defineProps({
   digest: { type: Object, default: null },
@@ -15,9 +17,13 @@ const props = defineProps({
   // 待审边（2026-09-29）：导入时模型没把握的那些。以前进了 pending.json 就再也看不见
   pending: { type: Object, default: () => ({ edges: [], rejected: [] }) },
   relationTypes: { type: Array, default: () => [] },
+  // 已有边的校验（2026-09-29）：结论、正在跑的那一轮、算「要审几条」的函数（函数 prop，结果要当场拿回来）
+  edgeChecks: { type: Object, default: () => ({ checks: [], fields: [] }) },
+  edgeRun: { type: Object, default: null },
+  planEdgeCheck: { type: Function, default: null },
 })
 const emit = defineEmits(['goto', 'close', 'refresh', 'merge', 'link', 'suggest', 'years', 'misplace', 'regroup',
-                          'decide-pending', 'decide-type', 'open-article'])
+                          'decide-pending', 'decide-type', 'open-article', 'run-edge-check', 'stop-edge-check', 'fix-edge'])
 
 // 按出自哪篇文章分组：一篇进来一批，看完这篇的上下文就能整批判
 const pendingGroups = computed(() => {
@@ -31,6 +37,25 @@ const pendingGroups = computed(() => {
 })
 const showRejected = ref(false)
 const showRejectedTypes = ref(false)
+
+// 关系校验：先点一个范围，算出要审几条、分几批（不调模型），确认了再开始
+const edgeIssues = computed(() => (props.edgeChecks?.checks || []).filter((c) => c.verdict !== 'ok' && !c.ignored))
+const edgePlan = ref(null)          // { label, scope, plan }
+const edgeForce = ref(false)
+const edgeErr = ref('')
+async function askEdgePlan(label, scope) {
+  edgeErr.value = ''
+  try {
+    edgePlan.value = { label, scope, plan: await props.planEdgeCheck({ ...scope, force: edgeForce.value }) }
+  } catch (err) {
+    edgeErr.value = err.body?.detail || err.message
+  }
+}
+function startEdgeCheck() {
+  const p = edgePlan.value
+  edgePlan.value = null
+  emit('run-edge-check', { scope: { ...p.scope, force: edgeForce.value }, label: p.label, plan: p.plan })
+}
 const adoptAll = (items) => emit('decide-pending',
   items.filter((e) => e.state === 'ok').map((e) => ({ id: e.id, action: 'adopt' })))
 const rejectAll = (items) => emit('decide-pending',
@@ -115,6 +140,34 @@ const total = () => {
                               @decide="emit('decide-type', $event)" @open-article="emit('open-article', $event)" />
             </ul>
           </template>
+        </section>
+
+        <!-- 关系校验：图里已经在的边，review 角色判方向 / 类型 / 成不成立 -->
+        <section class="section pend-section" data-section="edge-check">
+          <div class="section-head">
+            <Icon name="checklist" :size="13" />关系校验 <span class="count">{{ edgeIssues.length }}</span>
+            <span class="tail dim" style="font-size: 11px">审过 {{ edgeChecks.checks.length }} 条，没改过的不重审</span>
+          </div>
+          <EdgeRunBar :run="edgeRun" @stop="emit('stop-edge-check')" />
+          <div v-if="!edgeRun" class="edge-scopes">
+            <button v-for="f in edgeChecks.fields" :key="f" class="btn subtle tiny" :data-scope="f"
+                    @click="askEdgePlan(f, { field: f })">审「{{ f }}」</button>
+            <button class="btn subtle tiny" data-scope="全图" @click="askEdgePlan('全图', {})">审全图</button>
+            <label class="dim edge-force"><input v-model="edgeForce" type="checkbox">连审过的也重审</label>
+          </div>
+          <div v-if="edgePlan && !edgeRun" class="art-move" data-edge-plan>
+            <span v-if="edgePlan.plan.total">「{{ edgePlan.label }}」要审 <b>{{ edgePlan.plan.total }}</b> 条关系，
+              分 {{ edgePlan.plan.batches.length }} 批（{{ edgePlan.plan.batches.length }} 次 review 调用）<template
+                v-if="edgePlan.plan.skipped">；{{ edgePlan.plan.skipped }} 条审过、没改过，跳过</template>。</span>
+            <span v-else>「{{ edgePlan.label }}」的 {{ edgePlan.plan.skipped }} 条关系都审过、也没改过，不用再审。</span>
+            <button v-if="edgePlan.plan.total" class="btn primary tiny" data-act="start-edge-check" @click="startEdgeCheck">开始</button>
+            <button class="btn subtle tiny" @click="edgePlan = null">取消</button>
+          </div>
+          <p v-if="edgeErr" class="imp-error">{{ edgeErr }}</p>
+          <ul v-if="edgeIssues.length" class="pend-list">
+            <EdgeCheckRow v-for="c in edgeIssues" :key="c.id" :item="c" :busy="!!edgeRun"
+                          @fix="emit('fix-edge', $event)" @goto="emit('goto', $event)" />
+          </ul>
         </section>
 
         <section v-if="digest.drafts.length" class="section" :style="pending?.edges?.length ? '' : 'margin-top: 0'">

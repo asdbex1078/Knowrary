@@ -2,7 +2,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, shallowRef, watch } from 'vue'
 import {
   fetchSettings, putSettings, fetchLLMConfig, putLLMConfig, testLLMConfig as postLLMConfigTest,
-  fetchPending, postPendingDecide, postTypeDecide, fetchVault, browseVault, initVault, putVault, forgetVault, fetchVaultConfig, putVaultConfig,
+  fetchPending, postPendingDecide, postTypeDecide, postEdgesPlan, postEdgesCheck, fetchEdgeChecks, postEdgeFix, fetchVault, browseVault, initVault, putVault, forgetVault, fetchVaultConfig, putVaultConfig,
   fetchCopySources, fetchCopyCatalog, postCopy, fetchCalendar, fetchCompareGroups, fetchCompareTable, postCompareFill, fetchDigest, postSyncToGlobal, fetchDue, fetchProjects, putProjects, postPlanPropose, fetchToday, fetchUsage, postMerge, postRename, postQuiz, postQuizDiagnose, postQuizGrade, fetchOpenQuiz, dropOpenQuiz, postRegroup, fetchIndex, fetchInbox, fetchLayout, fetchNode,
   patchLayout, postAudit, postChanges, postRelink, postRevise, postReviseUndo, postPlace, postReview, postSuggest, postSummarize, postYearsPropose,
 } from './api.js'
@@ -107,6 +107,9 @@ const edgesShown = ref(0)
 const aggShown = ref(0)
 const inboxCount = ref(0)
 // 待审边（pending.json）：导入时模型没把握、连到已有节点的边。欠账面板一栏 + 检查器按节点列
+// 已有边的校验结论（review 角色审的，存 .knowrary/edge-checks.json）和正在跑的那一轮
+const edgeChecks = shallowRef({ checks: [], fields: [] })
+const edgeRun = ref(null)
 const pendingEdges = shallowRef({ edges: [], rejected: [], types: [], rejected_types: [], families: [] })
 // 角标 = 待审的边 + 还没登记的新类型（两样都是「导入产出、等人一句话」）
 const pendingCount = computed(() => pendingEdges.value.edges.length + (pendingEdges.value.types?.length || 0))
@@ -618,6 +621,7 @@ async function load() {
   inboxCount.value = index.nodes.filter((n) => !n.virtual && !layout.layout.nodes[n.id]).length
   refreshInbox()
   refreshPending()
+  refreshEdgeChecks()
   refreshDue()
   refreshUsage()
   ready.value = false
@@ -2270,6 +2274,71 @@ async function decidePending(decisions) {
   }
 }
 
+async function refreshEdgeChecks() {
+  try { edgeChecks.value = await fetchEdgeChecks() } catch { /* 读不到就当没审过 */ }
+}
+
+/** 校验已有边：先算要审哪些、分几批，再**一批一批地发**——审一个领域要好几分钟，
+ *  每批回来就刷一次结论，屏幕上一直有东西在走；「停」是这批审完就停，审完的都留着。 */
+async function runEdgeCheck({ scope, label, plan }) {
+  if (edgeRun.value) return
+  let todo = plan
+  try {
+    todo = todo || await postEdgesPlan(scope)
+  } catch (err) {
+    setBanner(`没法校验：${err.body?.detail || err.message}`, 'error')
+    return
+  }
+  if (!todo.total) {
+    setBanner(`「${label}」的边都审过了、也没改过（${todo.skipped} 条），不重复花钱；要重审就点「全部重审」`, 'info')
+    return
+  }
+  edgeRun.value = { label, total: todo.total, done: 0, batch: 0, batches: todo.batches.length, started: Date.now(),
+                    stop: false }
+  let found = 0, missing = 0
+  try {
+    for (const [k, ids] of todo.batches.entries()) {
+      if (edgeRun.value.stop) break
+      edgeRun.value = { ...edgeRun.value, batch: k + 1, started: Date.now() }
+      const res = await postEdgesCheck(ids)
+      found += res.results.filter((r) => r.verdict !== 'ok').length
+      missing += res.missing.length
+      edgeRun.value = { ...edgeRun.value, done: edgeRun.value.done + ids.length }
+      await refreshEdgeChecks()
+    }
+    setBanner(`「${label}」审完 ${edgeRun.value.done} 条：${found ? `${found} 条有问题或拿不准` : '没发现问题'}`
+              + (missing ? `；模型漏了 ${missing} 条没给结论，下次还会再审` : ''), found ? 'info' : 'success')
+  } catch (err) {
+    setBanner(`校验中断：${err.body?.detail || err.message}（已经审完的结论都留着）`, 'error')
+  } finally {
+    edgeRun.value = null
+    refreshEdgeChecks()
+  }
+}
+
+/** 检查器上的「校验这个点的关系」：一个点平均 3~4 条边，一次调用审完。 */
+function checkNodeEdges(nid) {
+  const n = indexDoc.value?.nodes?.find((x) => x.id === nid)
+  runEdgeCheck({ scope: { node: nid }, label: n?.name || nid })
+}
+
+function stopEdgeCheck() {
+  if (edgeRun.value) edgeRun.value = { ...edgeRun.value, stop: true }
+}
+
+/** 按校验结论改一条边（换方向 / 改类型 / 删掉，写前备份）或者忽略它。改了 md 就重载图。 */
+async function fixEdge(req) {
+  try {
+    const res = await postEdgeFix(req)
+    if (res.action !== 'ignore') await load()
+    await refreshEdgeChecks()
+    const say = { reverse: '换了方向', retype: `改成了「${req.relation}」`, drop: '删掉了', ignore: '忽略了（这条边没改过就不再报）' }
+    setBanner(`这条边${say[res.action] || res.action}${res.backup ? `，原文备份在 ${res.backup}` : ''}`, 'success')
+  } catch (err) {
+    setBanner(`没改成：${err.body?.detail || err.message}`, 'error')
+  }
+}
+
 /** 新关系类型：登记会改 relation-types.json，边的族跟着变，所以要重载索引和画布。 */
 async function decideType(req) {
   try {
@@ -3657,6 +3726,8 @@ onBeforeUnmount(() => {
       <DigestPanel v-else-if="panel === 'digest'" :busy="status === 'saving'" @regroup="regroupDrafts" class="digest" :digest="digest"
                    :pending="pendingEdges" :relation-types="relationTypes" @decide-pending="decidePending"
                    @decide-type="decideType"
+                   :edge-checks="edgeChecks" :edge-run="edgeRun" :plan-edge-check="postEdgesPlan"
+                   @run-edge-check="runEdgeCheck" @stop-edge-check="stopEdgeCheck" @fix-edge="fixEdge"
                    @open-article="openArticle"
                    @goto="gotoNode" @refresh="refreshDigest" @merge="openMerge" @link="linkFromDigest"
                    @suggest="suggestFromDigest" @years="openYears" @misplace="fixMisplaced"
@@ -3804,6 +3875,8 @@ onBeforeUnmount(() => {
       <Inspector v-if="inspectorOpen" :selected="selected" :detail="detail" :relation-types="relationTypes"
                  :pending-edges="selected ? pendingEdges.edges.filter((e) => e.source === selected.id || e.target === selected.id) : []"
                  @decide-pending="decidePending"
+                 :edge-checks="selected ? edgeChecks.checks.filter((c) => c.source === selected.id || c.target === selected.id) : []"
+                 :edge-run="edgeRun" @check-edges="checkNodeEdges" @stop-edge-check="stopEdgeCheck" @fix-edge="fixEdge"
                  :all-node-ids="allNodeIds" :pending="pending" :change-preview="changePreview"
                  :is-due="!!selected && dueIds.has(selected.id)"
                  :suggestions="suggestions" :suggesting="suggesting"

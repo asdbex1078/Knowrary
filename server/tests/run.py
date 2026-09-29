@@ -2776,6 +2776,93 @@ def relink_导入时并进已有节点_不新建_边挂过去仍按置信度分�
     assert r.status_code == 422
 
 
+def stub_edge_check(checks: list[dict]):
+    from server import edge_check as ec_mod
+    original, calls = ec_mod.ask_meta, []
+    ec_mod.ask_meta = lambda vault, role, prompt, op="?": (calls.append((role, prompt)) or json.dumps(
+        {"checks": checks}, ensure_ascii=False), {"model": "假审校", "ms": 5})
+    return original, calls
+
+
+def restore_edge_check(original) -> None:
+    from server import edge_check as ec_mod
+    ec_mod.ask_meta = original
+
+
+EDGE_VAULT = {"nodes/组A/ASR.md": node_md("ASR", field="AI"),
+              "nodes/组A/CTC.md": node_md("CTC", rels="- 属于:: [[ASR]] — 早期端到端做法", field="AI"),
+              "nodes/组A/甲.md": node_md("甲", rels="- 依赖:: [[乙]]\n- 对比:: [[丙]]", field="计算机"),
+              "nodes/组A/乙.md": node_md("乙", field="计算机"), "nodes/组A/丙.md": node_md("丙", field="计算机")}
+
+
+@case
+def edge_check_分批规划_结论记下_边没改过不重审_改过就重审():
+    """2026-09-29：图里已经在的边从没人查过对不对。review 逐条判，结论存下来，边没改过就不重复花钱。"""
+    c, vault = client(EDGE_VAULT)
+    plan = c.post("/api/edges/plan", json={"node": "甲"}).json()
+    assert plan["total"] == 2 and plan["skipped"] == 0 and len(plan["batches"]) == 1, plan
+    assert c.post("/api/edges/plan", json={"field": "AI"}).json()["total"] == 1
+    assert c.post("/api/edges/plan", json={}).json()["total"] == 3
+    assert c.post("/api/edges/plan", json={"node": "没有这个"}).status_code == 422
+
+    original, calls = stub_edge_check([
+        {"id": "[甲->乙#依赖]", "verdict": "reverse", "why": "乙是甲的前提"},
+        {"id": "丙->甲#对比", "verdict": "retype", "suggest": "瞎编的类型", "why": "w"},
+        {"id": "ASR->CTC#包含", "verdict": "drop"}])
+    try:
+        r = c.post("/api/edges/check", json={"ids": plan["batches"][0] + ["ASR->CTC#包含"]})
+    finally:
+        restore_edge_check(original)
+    assert r.status_code == 200, r.text
+    got = {x["id"]: x for x in r.json()["results"]}
+    assert calls[0][0] == "review" and "早期端到端做法" in calls[0][1] and "CTC" in calls[0][1], "要给模型看备注和两端"
+    assert got["甲->乙#依赖"]["verdict"] == "reverse" and got["甲->乙#依赖"]["model"] == "假审校", "id 带括号也认"
+    assert got["丙->甲#对比"]["verdict"] == "unsure" and "不在类型表里" in got["丙->甲#对比"]["why"], "建议的类型没登记"
+    assert got["ASR->CTC#包含"]["verdict"] == "unsure", "报了问题却说不出依据的降成拿不准"
+
+    again = c.post("/api/edges/plan", json={"node": "甲"}).json()
+    assert again["total"] == 0 and again["skipped"] == 2, "审过没改过的不重审"
+    assert c.post("/api/edges/plan", json={"node": "甲", "force": True}).json()["total"] == 2
+    md = vault / "nodes/组A/甲.md"
+    md.write_text(md.read_text("utf-8").replace("- 依赖:: [[乙]]", "- 依赖:: [[乙]] — 补了一句备注"), "utf-8")
+    index_service.invalidate()
+    assert c.post("/api/edges/plan", json={"node": "甲"}).json()["total"] == 1, "改过的边旧结论不算数"
+    assert {x["id"] for x in c.get("/api/edges/checks").json()["checks"]} == {"丙->甲#对比", "ASR->CTC#包含"}
+
+
+@case
+def edge_check_一键修_换方向改类型删掉都落到md原本那一行上_忽略就不再报():
+    """70 条边写在**目标**文件里、类型是反向写法（CTC 里写的是「属于 ASR」，索引记成「ASR 包含 CTC」）——
+    修正要换算回 md 上的那一行，不然删不掉。"""
+    c, vault = client(EDGE_VAULT)
+    ctc = vault / "nodes/组A/CTC.md"
+    r = c.post("/api/edges/fix", json={"id": "ASR->CTC#包含", "action": "reverse"})
+    assert r.status_code == 200 and r.json()["backup"], r.text
+    text = core.read(ctc)
+    assert "属于:: [[ASR]]" not in text and "- 包含:: [[ASR]] — 早期端到端做法" in text, text[-160:]
+
+    r = c.post("/api/edges/fix", json={"id": "甲->乙#依赖", "action": "retype", "relation": "部件"})
+    assert r.status_code == 200 and "- 部件:: [[乙]]" in core.read(vault / "nodes/组A/甲.md"), r.text
+    r = c.post("/api/edges/fix", json={"id": "丙->甲#对比", "action": "drop"})
+    assert r.status_code == 200 and "对比" not in core.read(vault / "nodes/组A/甲.md").split("## 关系")[-1]
+
+    seed_vault = client(EDGE_VAULT)
+    c2, v2 = seed_vault
+    original, _ = stub_edge_check([{"id": "丙->甲#对比", "verdict": "drop", "why": "两者不是一类东西"}])
+    try:
+        c2.post("/api/edges/check", json={"ids": ["丙->甲#对比"]})
+    finally:
+        restore_edge_check(original)
+    assert c2.post("/api/edges/fix", json={"id": "丙->甲#对比", "action": "ignore"}).status_code == 200
+    row = next(x for x in c2.get("/api/edges/checks").json()["checks"] if x["id"] == "丙->甲#对比")
+    assert row["ignored"] is True and c2.post("/api/edges/plan", json={"node": "丙"}).json()["total"] == 0
+    for body, word in (({"id": "丙->甲#对比", "action": "reverse"}, "无方向"),
+                       ({"id": "甲->乙#依赖", "action": "retype", "relation": "瞎编"}, "类型表"),
+                       ({"id": "不存在->x#依赖", "action": "drop"}, "不在了")):
+        r = c2.post("/api/edges/fix", json=body)
+        assert r.status_code == 422 and word in r.json()["detail"], (body, r.text)
+
+
 @case
 def import_素材源列表与读取_挡住越界路径():
     c, vault = client()

@@ -17,10 +17,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
+from . import edge_check as edge_check_svc
 from . import pending_review as pending_svc
 from . import (articles as articles_svc, assets, audit, chat as chat_svc, compare as compare_svc, copying, curation, importing,
                projects as projects_svc, revise as revise_svc, summarize as summarize_svc, vaults, years as years_svc)
-from .contracts import (ArticleRead, ArticlesRead, RelinkRequest, RelinkResult, PendingDecide, PendingDecided, PendingRead, TypeDecide, TypeDecided, AuditReport, AuditRequest, ReviseRequest, ReviseResult, ReviseUndo, SourceRef, VaultConfigPatch, VaultConfigRead, CalendarRead, ChangeResult, ChangeSet, ChatRequest, CoachToday, FileDiff, ImportProposal,
+from .contracts import (ArticleRead, ArticlesRead, EdgeCheckPlan, EdgeCheckPlanned, EdgeCheckRan, EdgeCheckRun,
+                        EdgeChecksRead, EdgeFix, EdgeFixed, RelinkRequest, RelinkResult, PendingDecide, PendingDecided, PendingRead, TypeDecide, TypeDecided, AuditReport, AuditRequest, ReviseRequest, ReviseResult, ReviseUndo, SourceRef, VaultConfigPatch, VaultConfigRead, CalendarRead, ChangeResult, ChangeSet, ChatRequest, CoachToday, FileDiff, ImportProposal,
                         ImportProposeRequest, ImportRequest, ImportResult, SourceText, SourcesRead, SummarizeRequest, SummaryDraft,
                         InboxRead,
                         LayoutPatch, LayoutRead,
@@ -847,6 +849,41 @@ def post_revise(req: ReviseRequest) -> ReviseResult:
             "before": before, "summary": result.summary, "delta": result.delta,
             "skipped": [s.model_dump() for s in result.skipped], "model": result.model, "ms": result.ms})
     return result
+
+
+@app.post("/api/edges/plan", response_model=EdgeCheckPlanned)
+def post_edges_plan(req: EdgeCheckPlan) -> EdgeCheckPlanned:
+    """校验已有边第一步：这个范围（节点 / 领域 / 全图）要审哪些、分几批。审过没改过的跳过。不调模型。"""
+    try:
+        return edge_check_svc.plan(vault_path(), req)
+    except edge_check_svc.EdgeCheckRejected as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.post("/api/edges/check", response_model=EdgeCheckRan)
+def post_edges_check(req: EdgeCheckRun) -> EdgeCheckRan:
+    """审一批（一次 review 角色调用）。前端一批一批地发，每批回来就能看到结论。"""
+    try:
+        return edge_check_svc.run(vault_path(), req.ids)
+    except edge_check_svc.EdgeCheckRejected as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except LLMFailed as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@app.get("/api/edges/checks", response_model=EdgeChecksRead)
+def get_edges_checks() -> EdgeChecksRead:
+    """还算数的校验结论（边没改过的）。只读。"""
+    return edge_check_svc.read(vault_path())
+
+
+@app.post("/api/edges/fix", response_model=EdgeFixed)
+def post_edges_fix(req: EdgeFix) -> EdgeFixed:
+    """按校验结论改一条边：换方向 / 改类型 / 删掉（走写回层，写前备份）；或者忽略（不改，边没动就不再报）。"""
+    try:
+        return edge_check_svc.fix(vault_path(), req)
+    except edge_check_svc.EdgeCheckRejected as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 @app.post("/api/relink", response_model=RelinkResult)

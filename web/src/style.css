@@ -681,6 +681,10 @@ select:disabled { cursor: not-allowed; opacity: .5; }
 .pend-note { font-size: 11.5px; margin: 4px 0 0; line-height: 1.5; }
 .pend-acts { display: flex; gap: 6px; margin: 6px 0 0; }
 .pend-toggle { width: 100%; font-size: 11.5px; }
+.edge-scopes { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 4px 0 6px; }
+.edge-force { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; }
+.edge-run { flex-wrap: wrap; }
+.edge-check-row.drop { border-color: var(--danger); }
 .pend-type-form { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 6px 0 0; font-size: 11.5px; }
 .pend-type-form label { display: inline-flex; align-items: center; gap: 4px; }
 .pend-type-form input[type=text] { width: 80px; font-size: 11.5px; padding: 1px 4px; }
