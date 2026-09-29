@@ -2,7 +2,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, shallowRef, watch } from 'vue'
 import {
   fetchSettings, putSettings, fetchLLMConfig, putLLMConfig, testLLMConfig as postLLMConfigTest,
-  fetchPending, postPendingDecide, fetchVault, browseVault, initVault, putVault, forgetVault, fetchVaultConfig, putVaultConfig,
+  fetchPending, postPendingDecide, postTypeDecide, fetchVault, browseVault, initVault, putVault, forgetVault, fetchVaultConfig, putVaultConfig,
   fetchCopySources, fetchCopyCatalog, postCopy, fetchCalendar, fetchCompareGroups, fetchCompareTable, postCompareFill, fetchDigest, postSyncToGlobal, fetchDue, fetchProjects, putProjects, postPlanPropose, fetchToday, fetchUsage, postMerge, postRename, postQuiz, postQuizDiagnose, postQuizGrade, fetchOpenQuiz, dropOpenQuiz, postRegroup, fetchIndex, fetchInbox, fetchLayout, fetchNode,
   patchLayout, postAudit, postChanges, postRevise, postReviseUndo, postPlace, postReview, postSuggest, postSummarize, postYearsPropose,
 } from './api.js'
@@ -107,8 +107,9 @@ const edgesShown = ref(0)
 const aggShown = ref(0)
 const inboxCount = ref(0)
 // 待审边（pending.json）：导入时模型没把握、连到已有节点的边。欠账面板一栏 + 检查器按节点列
-const pendingEdges = shallowRef({ edges: [], rejected: [] })
-const pendingCount = computed(() => pendingEdges.value.edges.length)
+const pendingEdges = shallowRef({ edges: [], rejected: [], types: [], rejected_types: [], families: [] })
+// 角标 = 待审的边 + 还没登记的新类型（两样都是「导入产出、等人一句话」）
+const pendingCount = computed(() => pendingEdges.value.edges.length + (pendingEdges.value.types?.length || 0))
 const inboxItems = shallowRef([])        // GET /api/inbox：索引里有、画布上还没有的节点
 const digest = shallowRef(null)          // GET /api/digest：欠账清单
 const dueIds = shallowRef(new Set())     // 今天该复习的节点，画布上点一个金色小圆点
@@ -2269,6 +2270,22 @@ async function decidePending(decisions) {
   }
 }
 
+/** 新关系类型：登记会改 relation-types.json，边的族跟着变，所以要重载索引和画布。 */
+async function decideType(req) {
+  try {
+    const res = await postTypeDecide(req)
+    if (res.action === 'register') {
+      await load()
+      setBanner(`已登记 ${res.added.join('、')}（写进了 relation-types.json，原表备份在 ${res.backup}）`, 'success')
+    } else {
+      await refreshPending()
+      setBanner(res.action === 'reject' ? `已驳回「${req.name}」：以后导入不再提` : `「${req.name}」回到待审`, 'success')
+    }
+  } catch (err) {
+    setBanner(`登记没成：${err.body?.detail || err.message}`, 'error')
+  }
+}
+
 async function refreshInbox() {
   try {
     const data = await fetchInbox()
@@ -3604,6 +3621,7 @@ onBeforeUnmount(() => {
                      @goto="gotoNode" @refresh="refreshCalendar" @close="panel = ''" />
       <DigestPanel v-else-if="panel === 'digest'" :busy="status === 'saving'" @regroup="regroupDrafts" class="digest" :digest="digest"
                    :pending="pendingEdges" :relation-types="relationTypes" @decide-pending="decidePending"
+                   @decide-type="decideType"
                    @open-article="openArticle"
                    @goto="gotoNode" @refresh="refreshDigest" @merge="openMerge" @link="linkFromDigest"
                    @suggest="suggestFromDigest" @years="openYears" @misplace="fixMisplaced"

@@ -20,7 +20,7 @@ from fastapi.staticfiles import StaticFiles
 from . import pending_review as pending_svc
 from . import (articles as articles_svc, assets, audit, chat as chat_svc, compare as compare_svc, copying, curation, importing,
                projects as projects_svc, revise as revise_svc, summarize as summarize_svc, vaults, years as years_svc)
-from .contracts import (ArticleRead, ArticlesRead, PendingDecide, PendingDecided, PendingRead, AuditReport, AuditRequest, ReviseRequest, ReviseResult, ReviseUndo, SourceRef, VaultConfigPatch, VaultConfigRead, CalendarRead, ChangeResult, ChangeSet, ChatRequest, CoachToday, FileDiff, ImportProposal,
+from .contracts import (ArticleRead, ArticlesRead, PendingDecide, PendingDecided, PendingRead, TypeDecide, TypeDecided, AuditReport, AuditRequest, ReviseRequest, ReviseResult, ReviseUndo, SourceRef, VaultConfigPatch, VaultConfigRead, CalendarRead, ChangeResult, ChangeSet, ChatRequest, CoachToday, FileDiff, ImportProposal,
                         ImportProposeRequest, ImportRequest, ImportResult, SourceText, SourcesRead, SummarizeRequest, SummaryDraft,
                         InboxRead,
                         LayoutPatch, LayoutRead,
@@ -293,6 +293,15 @@ def get_digest() -> dict:
 def get_pending() -> PendingRead:
     """待审边：导入时模型没把握（置信度 < 0.8）、连到已有节点的那些，还有驳回过的。只读。"""
     return pending_svc.read(vault_path())
+
+
+@app.post("/api/pending/types/decide", response_model=TypeDecided)
+def post_pending_type_decide(req: TypeDecide) -> TypeDecided:
+    """新关系类型：登记进 relation-types.json（可改族、填互逆、设无方向，写前备份）/ 驳回 / 撤销驳回。"""
+    try:
+        return pending_svc.decide_type(vault_path(), req)
+    except pending_svc.PendingRejected as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 @app.post("/api/pending/decide", response_model=PendingDecided)

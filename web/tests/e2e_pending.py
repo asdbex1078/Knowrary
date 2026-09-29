@@ -132,6 +132,52 @@ async def case_inspector(page, ck, vault: Path) -> None:
     ck.add("在检查器里驳回也生效", gone == 0 and "丁->甲#相关" in [e["id"] for e in doc["rejected"]], str(doc)[:160])
 
 
+async def case_types(page, ck, vault: Path) -> None:
+    """新关系类型：一个模型提议的（对偶），一个 md 里手写了却没登记的（衍生出）。"""
+    doc = json.loads((vault / ".knowrary" / "pending.json").read_text("utf-8"))
+    doc["types"] = [{"name": "对偶", "family": "对照", "why": "两个互为镜像的概念", "origin": ORIGIN,
+                     "created_at": "2026-09-20T00:00:00Z"}]
+    (vault / ".knowrary" / "pending.json").write_text(json.dumps(doc, ensure_ascii=False), "utf-8")
+    md = vault / "nodes/组A/乙.md"
+    md.write_text(md.read_text("utf-8").rstrip() + "\n\n## 关系\n- 衍生出:: [[丁]]\n", "utf-8")
+    table = vault / "relation-types.json"
+    before = table.read_text("utf-8")
+    await page.call("Page.reload")
+    await asyncio.sleep(2)
+    await E.wait_render(page, 4)
+    badge = await E.poll(page, BADGE, lambda v: v == "3", timeout=8)
+    ck.add("角标把没登记的新类型也算上", badge == "3", f"{badge}（前面剩下的待审边 1 + 类型 2）")
+    await E.open_rail(page, "欠账")
+    got = await E.poll(page, """JSON.stringify([...document.querySelectorAll('aside [data-section="types"] .pend-row:not(.rejected)')]
+      .map((r) => [r.dataset.type, r.textContent.replace(/\\s+/g, '')]))""", lambda v: v and len(json.loads(v)) == 2, timeout=8)
+    got = dict(json.loads(got or "[]"))
+    ck.add("md 里手写的未登记类型列出来，带用了几条和样例", "md里在用1条" in got.get("衍生出", "")
+           and "乙→丁" in got.get("衍生出", ""), str(got))
+    ck.add("模型提议的带理由和出处", "两个互为镜像的概念" in got.get("对偶", "") and "《某文章》" in got.get("对偶", ""), str(got))
+
+    await page.ev("""(() => { const r = document.querySelector('aside [data-type="衍生出"]');
+      const set = (el, v, ev) => { el.value = v; el.dispatchEvent(new Event(ev, { bubbles: true })); };
+      set(r.querySelector('[data-field="family"]'), '演化', 'change');
+      set(r.querySelector('[data-field="inverse"]'), '衍生自', 'input'); })()""")
+    await asyncio.sleep(0.3)          # 选完族，「登记」要等下一次渲染才从禁用变成可点
+    await page.ev("""document.querySelector('aside [data-type="衍生出"] [data-act="register"]').click()""")
+    await E.poll(page, "!document.querySelector('aside [data-type=\"衍生出\"]')", lambda v: v, timeout=10)
+    rt = json.loads(table.read_text("utf-8"))["types"]
+    ck.add("登记写进 relation-types.json，互逆类型一起登记", rt.get("衍生出") == {"family": "演化", "inverse": "衍生自"}
+           and rt.get("衍生自", {}).get("canonical") == "衍生出", str({k: rt.get(k) for k in ("衍生出", "衍生自")}))
+    grown = [ln for ln in table.read_text("utf-8").splitlines() if ln not in before.splitlines()]
+    ck.add("表的排版不动，只多了两行", len(grown) == 2, str(grown))
+    fam = [e["family"] for e in E.get(page.api + "/api/index")["edges"] if e["type"] == "衍生出"]
+    ck.add("登记之后那条边的族跟着变", fam == ["演化"], str(fam))
+
+    await page.ev("""document.querySelector('aside [data-type="对偶"] [data-act="reject"]').click()""")
+    await E.poll(page, "!!document.querySelector('aside [data-act=\"toggle-rejected-types\"]')", lambda v: v, timeout=8)
+    doc = json.loads((vault / ".knowrary" / "pending.json").read_text("utf-8"))
+    ck.add("驳回的类型留一笔", doc["types"] == [] and [t["name"] for t in doc["rejected_types"]] == ["对偶"], str(doc)[:160])
+    badge = await E.poll(page, BADGE, lambda v: v == "1", timeout=6)
+    ck.add("角标跟着减", badge == "1", str(badge))
+
+
 async def run(api: str, cdp: str, vault: Path, results: list) -> None:
     import websockets
 
@@ -145,6 +191,7 @@ async def run(api: str, cdp: str, vault: Path, results: list) -> None:
             await E.wait_render(page, 4)
             await case_digest(page, ck, vault)
             await case_inspector(page, ck, vault)
+            await case_types(page, ck, vault)
         except Exception as exc:        # 断言炸了也把已经收集的结论打出来
             ck.add("流程跑完", False, f"{type(exc).__name__}: {exc}")
         results.extend(ck.items)

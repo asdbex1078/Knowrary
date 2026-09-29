@@ -40,7 +40,8 @@ def pending_path(vault: Path) -> Path:
 
 
 def empty_pending() -> dict:
-    return {"schema_version": SCHEMA_VERSION, "updated_at": None, "edges": [], "homes": [], "rejected": []}
+    return {"schema_version": SCHEMA_VERSION, "updated_at": None, "edges": [], "homes": [], "rejected": [],
+            "types": [], "rejected_types": []}
 
 
 def _now() -> str:
@@ -55,7 +56,7 @@ def load_pending(vault: Path) -> dict:
     if not isinstance(doc, dict) or not isinstance(doc.get("edges"), list):
         return empty_pending()
     doc.setdefault("schema_version", SCHEMA_VERSION)
-    for key in ("homes", "rejected"):
+    for key in ("homes", "rejected", "types", "rejected_types"):
         if not isinstance(doc.get(key), list):
             doc[key] = []
     return doc
@@ -140,6 +141,52 @@ def restore_rejected(vault: Path, ids: list[str]) -> int:
     doc["updated_at"] = _now()
     write_json_atomic(pending_path(vault), doc)
     return len(moved)
+
+
+# ---------------------------------------------------------------- 提议的新关系类型
+
+@_locked
+def add_type_proposals(vault: Path, proposals: list[dict], origin: dict, known: set[str]) -> list[dict]:
+    """记下导入时模型提的新关系类型（2026-09-29 之前只是导入卡上一条提醒，写完就没了）。
+
+    按类型名去重：已经登记的（`known`）、已经在待审里的、驳回过的，都不再记。返回真正新记的几条。
+    """
+    doc = load_pending(vault)
+    have = known | {t.get("name") for t in doc["types"]} | {t.get("name") for t in doc["rejected_types"]}
+    now = _now()
+    added: list[dict] = []
+    for p in proposals:
+        name = str(p.get("type") or p.get("name") or "").strip()
+        if not name or name in have:
+            continue
+        have.add(name)
+        entry = {"name": name, "family": str(p.get("family") or "").strip(),
+                 "why": str(p.get("why") or "").strip() or None, "origin": dict(origin), "created_at": now}
+        doc["types"].append(entry)
+        added.append(entry)
+    if added:
+        doc["updated_at"] = now
+        write_json_atomic(pending_path(vault), doc)
+    return added
+
+
+@_locked
+def settle_type(vault: Path, name: str, action: str) -> bool:
+    """一条类型提议的去向：`registered`（登记了，拿掉）/ `reject`（挪进驳回，以后不再提）/
+    `restore`（撤销驳回，放回待审）。返回有没有动到。"""
+    doc = load_pending(vault)
+    src, dst = ("rejected_types", "types") if action == "restore" else ("types", "rejected_types")
+    hit = [t for t in doc[src] if t.get("name") == name]
+    if not hit:
+        return False
+    doc[src] = [t for t in doc[src] if t.get("name") != name]
+    if action == "reject":
+        doc[dst] += [{**t, "rejected_at": _now()} for t in hit]
+    elif action == "restore":
+        doc[dst] += [{k: v for k, v in t.items() if k != "rejected_at"} for t in hit]
+    doc["updated_at"] = _now()
+    write_json_atomic(pending_path(vault), doc)
+    return True
 
 
 # ---------------------------------------------------------------- 归属建议（孤立节点该去哪）

@@ -382,9 +382,44 @@ class PendingItem(Strict):
     article: str = ""                  # 出自的原文在库里的路径（在的话），卡上能点开读
 
 
+class PendingType(Strict):
+    """一个还没登记的关系类型。`kind`：import = 导入时模型提的；md = md 里已经在用、却没登记
+    （索引只给一条 unknown_type 警告，边被当成默认族）。md 那种带用了几次和几条样例。"""
+
+    name: str
+    kind: str                          # import | md
+    family: str = ""
+    why: str | None = None
+    origin: dict[str, Any] = Field(default_factory=dict)
+    created_at: str | None = None
+    rejected_at: str | None = None
+    uses: int = 0
+    samples: list[str] = Field(default_factory=list)   # 用到它的几条边（源 → 目标）
+    article: str = ""
+
+
 class PendingRead(Strict):
     edges: list[PendingItem] = Field(default_factory=list)
     rejected: list[PendingItem] = Field(default_factory=list)
+    types: list[PendingType] = Field(default_factory=list)
+    rejected_types: list[PendingType] = Field(default_factory=list)
+    families: list[str] = Field(default_factory=list)   # 登记时能选的关系族
+
+
+class TypeDecide(Strict):
+    """对一个新类型的决定：register（可改族、填互逆、设无方向）/ reject / restore。"""
+
+    name: str
+    action: str
+    family: str | None = None
+    inverse: str = ""
+    symmetric: bool = False
+
+
+class TypeDecided(Strict):
+    action: str
+    added: list[str] = Field(default_factory=list)     # 登记进表的类型（填了互逆就是两个）
+    backup: str | None = None
 
 
 class PendingDecision(Strict):

@@ -81,6 +81,9 @@ def run(vault: Path, req: ImportRequest) -> ImportResult:
               **({"article": target.article.path} if target.article else {})}
     if tr.pending:
         core.add_pending(vault, tr.pending, origin)
+    if tr.proposed_types:
+        known = set(core.load_relation_types(vault).types)
+        core.add_type_proposals(vault, tr.proposed_types, origin, known)
     home = plan.get("suggest_home")
     if isinstance(home, dict):
         # 只记这次真建出来、又被模型点名孤立的那几个；Inbox 上显示，不自动建域 / 建项目

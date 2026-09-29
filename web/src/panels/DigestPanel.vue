@@ -7,6 +7,7 @@ import { computed, ref } from 'vue'
 import Drawer from '../ui/Drawer.vue'
 import Icon from '../ui/Icon.vue'
 import PendingEdgeRow from '../components/PendingEdgeRow.vue'
+import PendingTypeRow from '../components/PendingTypeRow.vue'
 
 const props = defineProps({
   digest: { type: Object, default: null },
@@ -16,7 +17,7 @@ const props = defineProps({
   relationTypes: { type: Array, default: () => [] },
 })
 const emit = defineEmits(['goto', 'close', 'refresh', 'merge', 'link', 'suggest', 'years', 'misplace', 'regroup',
-                          'decide-pending', 'open-article'])
+                          'decide-pending', 'decide-type', 'open-article'])
 
 // 按出自哪篇文章分组：一篇进来一批，看完这篇的上下文就能整批判
 const pendingGroups = computed(() => {
@@ -29,6 +30,7 @@ const pendingGroups = computed(() => {
   return [...by.entries()].map(([name, items]) => ({ name, items }))
 })
 const showRejected = ref(false)
+const showRejectedTypes = ref(false)
 const adoptAll = (items) => emit('decide-pending',
   items.filter((e) => e.state === 'ok').map((e) => ({ id: e.id, action: 'adopt' })))
 const rejectAll = (items) => emit('decide-pending',
@@ -39,7 +41,7 @@ const total = () => {
   if (!c) return 0
   // 孤点不计进总数：47 个孤点会把角标顶成一个吓人的数字，而它们是**长期欠账**，
   // 不是"今天冒出来的待办"。它有自己那一节的计数。
-  return (props.pending?.edges?.length || 0) + (c.drafts || 0) + (c.links || 0) + (c.duplicates || 0) + (c.stubs || 0)
+  return (props.pending?.edges?.length || 0) + (props.pending?.types?.length || 0) + (c.drafts || 0) + (c.links || 0) + (c.duplicates || 0) + (c.stubs || 0)
     + (c.cycles || 0) + (c.bad_years || 0) + (c.misplaced || 0) + (c.issues || 0)
 }
 </script>
@@ -88,6 +90,29 @@ const total = () => {
               <PendingEdgeRow v-for="e in pending.rejected" :key="e.id" :item="e" rejected :busy="busy"
                               @decide="emit('decide-pending', $event)" @goto="emit('goto', $event)"
                               @open-article="emit('open-article', $event)" />
+            </ul>
+          </template>
+        </section>
+
+        <!-- 新关系类型：模型提议的 + md 里已经在用却没登记的。以前前者只是导入卡上一条提醒 -->
+        <section v-if="pending?.types?.length || pending?.rejected_types?.length" class="section pend-section"
+                 data-section="types">
+          <div class="section-head">
+            <Icon name="table" :size="13" />新关系类型 <span class="count">{{ pending.types.length }}</span>
+            <span class="tail dim" style="font-size: 11px">登记进 relation-types.json 才算数</span>
+          </div>
+          <ul class="pend-list">
+            <PendingTypeRow v-for="t in pending.types" :key="t.name" :item="t" :families="pending.families" :busy="busy"
+                            @decide="emit('decide-type', $event)" @open-article="emit('open-article', $event)" />
+          </ul>
+          <template v-if="pending.rejected_types?.length">
+            <button class="pop-item pend-toggle" data-act="toggle-rejected-types" @click="showRejectedTypes = !showRejectedTypes">
+              <Icon :name="showRejectedTypes ? 'chevronDown' : 'chevronRight'" :size="12" />
+              已驳回 {{ pending.rejected_types.length }} 个<span class="dim">（以后导入不再提；点开能撤销）</span>
+            </button>
+            <ul v-if="showRejectedTypes" class="pend-list">
+              <PendingTypeRow v-for="t in pending.rejected_types" :key="t.name" :item="t" rejected :busy="busy"
+                              @decide="emit('decide-type', $event)" @open-article="emit('open-article', $event)" />
             </ul>
           </template>
         </section>

@@ -38,6 +38,7 @@ class Translation:
 
     changes: list[dict] = field(default_factory=list)
     pending: list[dict] = field(default_factory=list)
+    proposed_types: list[dict] = field(default_factory=list)   # 模型提的新关系类型：写入时进 pending.json 等人审
     warnings: list[str] = field(default_factory=list)
     new_ids: list[str] = field(default_factory=list)
     stub_ids: list[str] = field(default_factory=list)
@@ -103,7 +104,10 @@ def translate(plan: dict, index: dict, rt: RelationTypes, target: ImportTarget) 
             if more is not None:
                 out.changes.append(more)
     for t in plan.get("proposed_types") or []:
-        out.warnings.append(f"提议新类型 `{t.get('type')}`（{t.get('family')}）：{t.get('why', '')}")
+        if isinstance(t, dict) and str(t.get("type") or "").strip() and not rt.known(str(t["type"]).strip()):
+            out.proposed_types.append(t)
+            out.warnings.append(f"提议新类型 `{t.get('type')}`（{t.get('family')}）：{t.get('why', '')}"
+                                "——写入后在「欠账」里审")
     return out
 
 

@@ -12,11 +12,14 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from .contracts import PendingDecide, PendingDecided, PendingItem, PendingRead, PendingSkip
+from .contracts import (PendingDecide, PendingDecided, PendingItem, PendingRead, PendingSkip, PendingType,
+                        TypeDecide, TypeDecided)
 from .index_service import current_index, invalidate
 from .paths import core
 
 ACTIONS = ("adopt", "reject", "clear", "restore")
+TYPE_ACTIONS = ("register", "reject", "restore")
+MAX_SAMPLES = 3
 
 
 class PendingRejected(ValueError):
@@ -69,7 +72,51 @@ def read(vault: Path) -> PendingRead:
     rt = core.load_relation_types(vault)
     nodes = {n["id"]: n for n in index["nodes"]}
     return PendingRead(edges=[_item(e, nodes, index, rt, vault) for e in doc["edges"]],
-                       rejected=[_item(e, nodes, index, rt, vault) for e in doc["rejected"]])
+                       rejected=[_item(e, nodes, index, rt, vault) for e in doc["rejected"]],
+                       types=_types(vault, doc, index, rt), families=list(rt.families),
+                       rejected_types=[PendingType(kind="import", article=_article_of(vault, t.get("origin") or {}),
+                                                   **_type_fields(t)) for t in doc["rejected_types"]])
+
+
+def _type_fields(t: dict) -> dict:
+    return {k: t.get(k) for k in ("name", "family", "why", "origin", "created_at", "rejected_at") if t.get(k)}
+
+
+def _types(vault: Path, doc: dict, index: dict, rt) -> list[PendingType]:
+    """两种来源合在一栏：md 里已经在用却没登记的（从索引的边现算，不存）在前——它们已经在图上了；
+    导入提议的在后。已经登记了的提议（手动改过表）不再列。"""
+    used: dict[str, list[str]] = {}
+    for e in index["edges"]:
+        if not rt.known(e["type"]):
+            used.setdefault(e["type"], []).append(f"{e['source']} → {e['target']}")
+    out = [PendingType(name=n, kind="md", uses=len(v), samples=v[:MAX_SAMPLES]) for n, v in sorted(used.items())]
+    for t in doc["types"]:
+        if rt.known(t.get("name", "")) or t.get("name") in used:
+            continue
+        out.append(PendingType(kind="import", article=_article_of(vault, t.get("origin") or {}), **_type_fields(t)))
+    return out
+
+
+def decide_type(vault: Path, req: TypeDecide) -> TypeDecided:
+    """登记 / 驳回 / 撤销驳回一个新类型。登记写 relation-types.json（写前备份），写完索引作废重建。"""
+    if req.action not in TYPE_ACTIONS:
+        raise PendingRejected(f"不认识的动作：{req.action}（只有 {' / '.join(TYPE_ACTIONS)}）")
+    with core.PENDING_LOCK:
+        return _decide_type(vault, req)
+
+
+def _decide_type(vault: Path, req: TypeDecide) -> TypeDecided:
+    if req.action != "register":
+        if not core.settle_type(vault, req.name, req.action):
+            raise PendingRejected(f"没有 `{req.name}` 这条提议")
+        return TypeDecided(action=req.action)
+    try:
+        done = core.register_type(vault, req.name, req.family or "", req.inverse, req.symmetric)
+    except core.TypeRejected as exc:
+        raise PendingRejected(str(exc)) from exc
+    core.settle_type(vault, req.name, "registered")
+    invalidate(vault)
+    return TypeDecided(action="register", **done)
 
 
 def decide(vault: Path, req: PendingDecide) -> PendingDecided:

@@ -681,6 +681,10 @@ select:disabled { cursor: not-allowed; opacity: .5; }
 .pend-note { font-size: 11.5px; margin: 4px 0 0; line-height: 1.5; }
 .pend-acts { display: flex; gap: 6px; margin: 6px 0 0; }
 .pend-toggle { width: 100%; font-size: 11.5px; }
+.pend-type-form { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 6px 0 0; font-size: 11.5px; }
+.pend-type-form label { display: inline-flex; align-items: center; gap: 4px; }
+.pend-type-form input[type=text] { width: 80px; font-size: 11.5px; padding: 1px 4px; }
+.pend-type-form select { font-size: 11.5px; }
 .insp-pend-hint { display: flex; align-items: center; gap: 6px; width: 100%; margin: 0 0 8px; padding: 5px 8px;
   font-size: 11.5px; border-radius: 6px; border: 1px solid var(--warn); background: var(--warn-soft);
   color: var(--text-1); cursor: pointer; text-align: left; }

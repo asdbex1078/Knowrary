@@ -2614,6 +2614,71 @@ def pending_从导入进待审_列出来时带着原文():
 
 
 @case
+def pending_types_导入提议和md里手写的未登记类型都列出来_登记写进表_排版不乱():
+    """2026-09-29：模型提的新关系类型以前只是导入卡上一条提醒，写完就没了；
+    md 里手写了表里没有的类型，也只是索引里一条 unknown_type 警告。现在两种都有出口。"""
+    c, vault = client({"nodes/组A/a.md": node_md("A", rels="- 衍生出:: [[b]]"), "nodes/组A/b.md": node_md("B")})
+    table = vault / "relation-types.json"
+    before = table.read_text("utf-8")
+    plan = {"nodes": [{"id": "新点", "name": "新点", "desc": "d",
+                       "relations": [{"type": "依赖", "target": "a", "confidence": 0.9}]}],
+            "proposed_types": [{"type": "对偶", "family": "对照", "why": "两个互为镜像的概念"},
+                               {"type": "依赖", "family": "依赖", "why": "已经有了，不该记"}]}
+    r = c.post("/api/import", json={"plan": plan, "field": "测试", "source": "某文章", "dry_run": False})
+    assert r.status_code == 200 and any("在「欠账」里审" in w for w in r.json()["warnings"]), r.text
+    assert any(d["code"] == "unknown_type" for d in c.get("/api/index").json()["warnings"]), "前提：登记前有警告"
+    got = c.get("/api/pending").json()
+    kinds = {t["name"]: t for t in got["types"]}
+    assert set(kinds) == {"衍生出", "对偶"}, kinds
+    assert kinds["衍生出"]["kind"] == "md" and kinds["衍生出"]["uses"] == 1 and kinds["衍生出"]["samples"] == ["a → b"]
+    assert kinds["对偶"]["kind"] == "import" and kinds["对偶"]["why"] == "两个互为镜像的概念"
+    assert kinds["对偶"]["origin"]["source"] == "某文章" and "对照" in got["families"]
+
+    r = c.post("/api/pending/types/decide", json={"name": "衍生出", "action": "register", "family": "演化",
+                                                  "inverse": "衍生自"})
+    assert r.status_code == 200 and r.json()["added"] == ["衍生出", "衍生自"] and r.json()["backup"], r.text
+    rt = json.loads(table.read_text("utf-8"))["types"]
+    assert rt["衍生出"] == {"family": "演化", "inverse": "衍生自"}
+    assert rt["衍生自"] == {"family": "演化", "inverse": "衍生出", "canonical": "衍生出"}
+    added = [ln for ln in table.read_text("utf-8").splitlines() if ln not in before.splitlines()]
+    assert len(added) == 2 and all(ln.startswith("    \"衍生") for ln in added), "只该多两行，别的排版不动"
+    assert (vault / r.json()["backup"]).read_text("utf-8") == before, "登记前要把原表备份"
+    idx = c.get("/api/index").json()
+    assert not any(d.get("code") == "unknown_type" for d in idx["warnings"]), "登记之后索引里不该再有 unknown_type"
+    assert [e["family"] for e in idx["edges"] if e["type"] == "衍生出"] == ["演化"], "边的族该跟着变"
+
+    r = c.post("/api/pending/types/decide", json={"name": "对偶", "action": "reject"})
+    assert r.status_code == 200
+    got = c.get("/api/pending").json()
+    assert got["types"] == [] and [t["name"] for t in got["rejected_types"]] == ["对偶"], got
+    assert core.add_type_proposals(vault, [{"type": "对偶", "family": "对照"}], {"source": "另一篇"}, set()) == [], \
+        "驳回过的又回来了"
+    c.post("/api/pending/types/decide", json={"name": "对偶", "action": "restore"})
+    r = c.post("/api/pending/types/decide", json={"name": "对偶", "action": "register", "family": "对照",
+                                                  "symmetric": True})
+    assert r.status_code == 200 and json.loads(table.read_text("utf-8"))["types"]["对偶"] == \
+        {"family": "对照", "symmetric": True}
+    assert c.get("/api/pending").json()["types"] == [], "登记了的提议要从待审里拿掉"
+
+
+@case
+def pending_types_不合法的登记拒绝_表一个字不动():
+    c, vault = client({"nodes/组A/a.md": node_md("A")})
+    table = vault / "relation-types.json"
+    before = table.read_text("utf-8")
+    for body, word in (({"name": "依赖", "family": "依赖"}, "已经登记"),
+                       ({"name": "x y", "family": "演化"}, "不合法"),
+                       ({"name": "新", "family": "瞎编族"}, "不存在"),
+                       ({"name": "新", "family": "演化", "inverse": "依赖"}, "已经登记"),
+                       ({"name": "新", "family": "对照", "inverse": "反", "symmetric": True}, "只能选一个")):
+        r = c.post("/api/pending/types/decide", json={**body, "action": "register"})
+        assert r.status_code == 422 and word in r.json()["detail"], (body, r.text)
+    assert c.post("/api/pending/types/decide", json={"name": "x", "action": "乱来"}).status_code == 422
+    assert c.post("/api/pending/types/decide", json={"name": "没有这条", "action": "reject"}).status_code == 422
+    assert table.read_text("utf-8") == before, "拒绝了还改了表"
+
+
+@case
 def import_素材源列表与读取_挡住越界路径():
     c, vault = client()
     core.write(vault / "doc/笔记/一篇.md", "# 一篇\n正文")
