@@ -2555,6 +2555,30 @@ def pending_采纳写进md_可改类型换方向_驳回留一笔_以后不再进
 
 
 @case
+def pending_并发处理不丢更新():
+    """2026-09-29 e2e 抓到的：连着点「清掉」「驳回」，两个请求并发——都读到旧的那份 pending.json、
+    各改各的写回去，先写的那次就丢了（清掉的边又回来了）。这里把「读完到写回」的窗口人为拉长，
+    8 个线程各处理一条，一条都不许丢。"""
+    from concurrent.futures import ThreadPoolExecutor
+    pend_mod = sys.modules["core.pending"]
+    c, vault, _ = with_inbox_node()
+    core.add_pending(vault, [{"source": "a", "relation": "相关", "target": f"t{k}", "confidence": 0.5}
+                             for k in range(8)], {"source": "x"})
+    ids = [e["id"] for e in core.load_pending(vault)["edges"]]
+    real_load = pend_mod.load_pending
+    pend_mod.load_pending = lambda v: (lambda d: (time.sleep(0.03), d)[1])(real_load(v))
+    try:
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            list(pool.map(lambda k: (core.reject_pending if k % 2 else core.remove_pending)(vault, [ids[k]]),
+                          range(8)))
+    finally:
+        pend_mod.load_pending = real_load
+    doc = core.load_pending(vault)
+    assert doc["edges"] == [], [e["id"] for e in doc["edges"]]
+    assert sorted(e["id"] for e in doc["rejected"]) == sorted(ids[k] for k in range(8) if k % 2), doc["rejected"]
+
+
+@case
 def pending_写不进去的原样留在待审_说清原因():
     c, vault, _ = with_inbox_node()
     seed_pending(vault, ("b", "依赖", "d"), ("b", "依赖", "不存在的点"), ("a", "部件", "b"))

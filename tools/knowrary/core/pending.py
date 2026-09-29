@@ -12,11 +12,25 @@
 from __future__ import annotations
 
 import datetime as dt
+import functools
+import threading
 from pathlib import Path
 
 from .mdio import load_json, write_json_atomic
 
 SCHEMA_VERSION = 1
+# 所有「读整份 → 改一处 → 写回整份」都在这把锁里（2026-09-29）：服务端的请求在线程池里并发，
+# 连着点「清掉」「驳回」时，两个请求都读到旧的那份、各改各的写回去，先写的那次就丢了。
+# 可重入：服务端处理一批决定时整段持锁（先写 md 再改这里），里面再调这些函数不会自己把自己锁死。
+LOCK = threading.RLock()
+
+
+def _locked(fn):
+    @functools.wraps(fn)
+    def run(*args, **kwargs):
+        with LOCK:
+            return fn(*args, **kwargs)
+    return run
 STATUS_PENDING = "pending"
 STATUS_REJECTED = "rejected"
 
@@ -52,6 +66,7 @@ def edge_key(source: str, relation: str, target: str) -> str:
     return f"{source}->{target}#{relation}"
 
 
+@_locked
 def add_pending(vault: Path, edges: list[dict], origin: dict) -> list[dict]:
     """追加一批待审边。同一条（源、类型、目标）已在待审里就不重复记，只保留先到的那条。
 
@@ -80,6 +95,7 @@ def add_pending(vault: Path, edges: list[dict], origin: dict) -> list[dict]:
     return added
 
 
+@_locked
 def remove_pending(vault: Path, ids: list[str]) -> int:
     """审核完（不论采纳还是驳回）就从待审里拿掉；采纳的那条由调用方另行走 add_edge 写回 md。"""
     doc = load_pending(vault)
@@ -93,6 +109,7 @@ def remove_pending(vault: Path, ids: list[str]) -> int:
     return removed
 
 
+@_locked
 def reject_pending(vault: Path, ids: list[str]) -> int:
     """驳回：从待审挪进 `rejected`，留着原样（撤销时原样放回去）。返回挪了几条。"""
     doc = load_pending(vault)
@@ -108,6 +125,7 @@ def reject_pending(vault: Path, ids: list[str]) -> int:
     return len(moved)
 
 
+@_locked
 def restore_rejected(vault: Path, ids: list[str]) -> int:
     """撤销驳回：原样放回待审。返回放回几条。"""
     doc = load_pending(vault)
@@ -126,6 +144,7 @@ def restore_rejected(vault: Path, ids: list[str]) -> int:
 
 # ---------------------------------------------------------------- 归属建议（孤立节点该去哪）
 
+@_locked
 def add_home(vault: Path, node_ids: list[str], home: dict, origin: dict) -> dict | None:
     """记一条"这几个孤立节点该归到哪"的建议：导入时模型顺手给的 `suggest_home`，不另调模型。
 

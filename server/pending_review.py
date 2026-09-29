@@ -73,7 +73,13 @@ def read(vault: Path) -> PendingRead:
 
 
 def decide(vault: Path, req: PendingDecide) -> PendingDecided:
-    """一批决定。**先写 md、写成了再改 pending.json**：写不进去的那几条原样留在待审里。"""
+    """一批决定。**先写 md、写成了再改 pending.json**：写不进去的那几条原样留在待审里。
+    整段持 pending 的锁：两批决定并发的话，一批读到的「待审里有哪些」会被另一批改掉（同一条被采纳两次）。"""
+    with core.PENDING_LOCK:
+        return _decide(vault, req)
+
+
+def _decide(vault: Path, req: PendingDecide) -> PendingDecided:
     if not req.decisions:
         raise PendingRejected("没有要处理的边")
     bad = [d.action for d in req.decisions if d.action not in ACTIONS]
