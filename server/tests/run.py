@@ -3923,6 +3923,40 @@ def chat_第二轮的前缀和第一轮逐字节一样():
 
 
 @case
+def chat_会话中途关掉复习_续接时系统提示词跟着换_和schema是同一份():
+    """架构提升点 #1（2026-09-29）：续接会原样复用上一轮的系统提示词，工具 schema 却每轮按当前开关算。
+    中途关掉复习，提示词里还写着 quiz 能用、schema 里已经没有了——「表里写着能用、调了却说没有」。
+    系统提示词和上一轮不一样就整段重建；一样就照旧续（前缀不许动）。"""
+    c, vault, _ = with_inbox_node()
+
+    def 发一轮(msgs):
+        original, seen = stub_chat(["好"])
+        try:
+            c.post("/api/chat", json={"messages": msgs, "session": "s1", "stance": "教练"})
+        finally:
+            restore_chat(original)
+        return seen[0], [t["name"] for t in (seen.tools[0] or [])]
+
+    was = core.load_settings()
+    core.save_settings({"review_enabled": True, "review_in_chat": True})
+    try:
+        一, 工具一 = 发一轮([{"role": "user", "content": "第一句"}])
+        assert "quiz" in 工具一 and "`quiz`" in 一[0]["content"], "前提：复习开着时有 quiz"
+        core.save_settings({"review_in_chat": False})
+        二, 工具二 = 发一轮([{"role": "user", "content": "第一句"}, {"role": "assistant", "content": "好"},
+                        {"role": "user", "content": "第二句"}])
+        assert "quiz" not in 工具二, 工具二
+        assert "`quiz`" not in 二[0]["content"], "schema 里没有 quiz 了，系统提示词还在教它用"
+        assert [m["content"] for m in 二[1:4]] == ["第一句", "好", "第二句"], "重建时可见轮次一句不能丢"
+        三, _ = 发一轮([{"role": "user", "content": "第一句"}, {"role": "assistant", "content": "好"},
+                     {"role": "user", "content": "第二句"}, {"role": "assistant", "content": "好"},
+                     {"role": "user", "content": "第三句"}])
+        assert [m["content"] for m in 三[:len(二)]] == [m["content"] for m in 二], "开关没再变，照旧只追加"
+    finally:
+        core.save_settings({k: was[k] for k in ("review_enabled", "review_in_chat")})
+
+
+@case
 def chat_第二轮接着上一轮的完整上下文往下发():
     """**这一条是 §11.2 的护栏。**
 

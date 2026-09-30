@@ -1841,6 +1841,18 @@ def _rebuild(vault: Path, req: ChatRequest, history: list[dict], dropped: int) -
     return messages
 
 
+def _still_valid(prior: list[dict] | None, system: str) -> list[dict] | None:
+    """续接缓存里的系统提示词还是不是现在这份。
+
+    工具 schema 每轮按当前开关算，系统提示词却跟着缓存原样复用——中途关掉复习、改了档位、
+    登记了新关系类型，提示词里的工具表和规矩就和 schema 对不上了（架构提升点 #1）。
+    渲染是确定性的，逐字比一下就够；对不上就整段重建。工具一变缓存前缀本来就失效，重建不多花钱。
+    """
+    if not prior or prior[0].get("role") != "system" or prior[0].get("content") != system:
+        return None
+    return prior
+
+
 def _assemble(vault: Path, req: ChatRequest, history: list[dict], dropped: int) -> list[dict]:
     """拼这一轮要发的消息。**能续就只追加最后那句话**，续不上才整段重建（复盘 §11.2）。
 
@@ -1848,7 +1860,8 @@ def _assemble(vault: Path, req: ChatRequest, history: list[dict], dropped: int) 
     两条路要的是同一件事，前面那一截一个字都别动。
     前端回传的可见轮次不再用来重建上下文，只用来证明"这一段没被改过"（见 turns.resume）。
     """
-    prior = turns.resume(vault, llm_session_key(req), history)
+    prior = _still_valid(turns.resume(vault, llm_session_key(req), history),
+                         _system_prompt(vault, req.stance, req.project))
     messages = [*prior, history[-1]] if prior else _rebuild(vault, req, history, dropped)
     # 图谱现状挂在**队尾**，不进顶层 system（见 _graph_snapshot）。
     # 工具循环随后往后追加 assistant / 工具结果，它就夹在中间——这是允许的位置
