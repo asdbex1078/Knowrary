@@ -19,10 +19,11 @@ from fastapi.staticfiles import StaticFiles
 
 from . import curator as curator_svc
 from . import edge_check as edge_check_svc
+from . import models_catalog as models_svc
 from . import pending_review as pending_svc
 from . import (articles as articles_svc, assets, audit, chat as chat_svc, compare as compare_svc, copying, curation, importing,
                projects as projects_svc, revise as revise_svc, summarize as summarize_svc, vaults, years as years_svc)
-from .contracts import (ArticleRead, ArticlesRead, CurateRequest, CurateResult, EdgeCheckPlan, EdgeCheckPlanned, EdgeCheckRan, EdgeCheckRun,
+from .contracts import (ArticleRead, ArticlesRead, ModelsDirPatch, ModelsRead, CurateRequest, CurateResult, EdgeCheckPlan, EdgeCheckPlanned, EdgeCheckRan, EdgeCheckRun,
                         EdgeChecksRead, EdgeFix, EdgeFixed, RelinkRequest, RelinkResult, PendingDecide, PendingDecided, PendingRead, TypeDecide, TypeDecided, AuditReport, AuditRequest, ReviseRequest, ReviseResult, ReviseUndo, SourceRef, VaultConfigPatch, VaultConfigRead, CalendarRead, ChangeResult, ChangeSet, ChatRequest, CoachToday, FileDiff, ImportProposal,
                         ImportProposeRequest, ImportRequest, ImportResult, SourceText, SourcesRead, SummarizeRequest, SummaryDraft,
                         InboxRead,
@@ -570,6 +571,21 @@ def put_vault_config(req: VaultConfigPatch) -> VaultConfigRead:
         cfg = done["config"]
         return VaultConfigRead(**cfg, articles=len(core.list_articles(vault / cfg["articles_dir"])))
     return _vault_config_read(vault, {"moved": done["moved"], "backup": done["backup"]})
+
+
+@app.get("/api/models", response_model=ModelsRead)
+def get_models() -> ModelsRead:
+    """模型目录：家族、型号、型号之间的线、技术点对上的知识点。没指定目录时 `configured=false`，带候选目录。"""
+    return models_svc.read(vault_path())
+
+
+@app.put("/api/models/dir", response_model=ModelsRead)
+def put_models_dir(req: ModelsDirPatch) -> ModelsRead:
+    """指定 / 换 / 取消模型目录。只换读取位置、不搬文件。"""
+    try:
+        return models_svc.set_dir(vault_path(), req.models_dir, dry_run=req.dry_run)
+    except models_svc.ModelsDirRejected as exc:
+        raise HTTPException(status_code=422, detail={"message": str(exc)}) from exc
 
 
 @app.get("/api/settings", response_model=SettingsRead)

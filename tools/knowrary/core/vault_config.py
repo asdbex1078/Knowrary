@@ -20,6 +20,9 @@ from .mdio import NODE_DIRS, load_json, write_json_atomic
 SCHEMA_VERSION = 1
 DEFAULTS = {
     "articles_dir": "articles",     # 原文层：长文原样放这儿，不上图、不进复习
+    # 模型目录（2026-09-30）：家族文件（kind: family）放这儿，给「模型谱系」读。**默认不设**——
+    # 谱系是通用能力，不该默认绑在某个路径上；没设时页面给引导，让人自己指一个目录
+    "models_dir": "",
 }
 # 原文目录不能放的地方：节点层（会被扫成节点）、机器区、附件区、版本库与编辑器的目录
 RESERVED = ("nodes", "fields", ".knowrary", "assets", ".git", ".obsidian")
@@ -59,11 +62,40 @@ def load_vault_config(vault: Path) -> dict:
                 out["articles_dir"] = normalize_articles_dir(vault, data.get("articles_dir"))
             except VaultConfigRejected:
                 pass
+            try:
+                out["models_dir"] = normalize_models_dir(vault, data.get("models_dir"))
+            except VaultConfigRejected:
+                pass
     return out
 
 
 def normalize_articles_dir(vault: Path, raw) -> str:
     """把人填的路径收成库内相对的 posix 路径，不合法就抛 VaultConfigRejected。"""
+    return _normalize_dir(vault, raw, "原文")
+
+
+def normalize_models_dir(vault: Path, raw) -> str:
+    """模型目录：规则同原文目录（库内相对、不许落进 nodes/ fields/），但**可以不设**（空串）。"""
+    if not str(raw or "").strip().strip("/"):
+        return ""
+    return _normalize_dir(vault, raw, "模型")
+
+
+def save_models_dir(vault: Path, raw, dry_run: bool = False) -> dict:
+    """改模型目录。**只换读取位置、不搬文件**：别处链家族文件按文件名认（Obsidian 的最短路径），搬了也不断。"""
+    new = normalize_models_dir(vault, raw)
+    config = {**load_vault_config(vault), "models_dir": new}
+    if not dry_run:
+        write_json_atomic(config_path(vault), _doc(config))
+    return {"config": config}
+
+
+def _doc(config: dict) -> dict:
+    """写进 vault.json 的样子：没设的（空串）不写，库的配置文件里只留真指定过的东西。"""
+    return {"schema_version": SCHEMA_VERSION, **{k: v for k, v in config.items() if v != ""}}
+
+
+def _normalize_dir(vault: Path, raw, what: str) -> str:
     text = str(raw or "").strip().replace("\\", "/")
     # 先判绝对路径再剥斜杠：反过来的话 `/tmp/x` 剥完成了库里的 `tmp/x`，还真给建出来
     if text.startswith(("/", "~")) or ":" in text.split("/")[0]:
@@ -71,12 +103,12 @@ def normalize_articles_dir(vault: Path, raw) -> str:
                                   "库推给别人时，绝对路径在他那儿是断的")
     text = text.strip("/")
     if not text:
-        raise VaultConfigRejected("原文目录不能是空的，也不能是库根（库根下面就是 nodes/，原文会被当成节点）")
+        raise VaultConfigRejected(f"{what}目录不能是空的，也不能是库根（库根下面就是 nodes/，会被当成节点）")
     rel = PurePosixPath(text)
     if any(p in ("..", ".") for p in rel.parts):
-        raise VaultConfigRejected("路径里不能有 `..` 或 `.`：原文目录必须在这个库里面")
+        raise VaultConfigRejected(f"路径里不能有 `..` 或 `.`：{what}目录必须在这个库里面")
     if rel.parts[0] in RESERVED:
-        raise VaultConfigRejected(f"`{rel.parts[0]}/` 下面不能放原文："
+        raise VaultConfigRejected(f"`{rel.parts[0]}/` 下面不能放{what}："
                                   + ("那里的 md 全会被当成节点扫进图" if rel.parts[0] in ("nodes", "fields")
                                      else "那是程序自己的目录"))
     resolved = (vault / rel.as_posix()).resolve()
@@ -137,7 +169,7 @@ def save_articles_dir(vault: Path, raw, move: bool = False, dry_run: bool = Fals
     if dry_run:
         return {"config": {**load_vault_config(vault), "articles_dir": new}, "moved": [], "backup": ""}
     backup = _move(vault, old, new, plan) if plan else ""
-    doc = {"schema_version": SCHEMA_VERSION, **load_vault_config(vault), "articles_dir": new}
+    doc = _doc({**load_vault_config(vault), "articles_dir": new})
     (vault / new).mkdir(parents=True, exist_ok=True)
     write_json_atomic(config_path(vault), doc)
     return {"config": load_vault_config(vault), "moved": [t.relative_to(vault).as_posix() for _, t in plan],

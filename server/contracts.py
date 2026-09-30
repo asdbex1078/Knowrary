@@ -1345,10 +1345,89 @@ class VaultConfigRead(Strict):
     """库级配置（`<库>/.knowrary/vault.json`，跟着库进 git）+ 设置页要的旁证。"""
 
     articles_dir: str                  # 原文目录，库内相对路径
+    models_dir: str = ""               # 模型目录（家族文件），库内相对路径；空 = 还没指定
     articles: int = 0                  # 这个目录里现在有几篇原文（改目录时要不要搬，看它）
     candidates: list[str] = Field(default_factory=list)   # 库里现有的目录，给输入框当候选
     moved: list[str] = Field(default_factory=list)        # 这次一起搬过去的文章
     backup: str = ""                   # 搬之前的快照在哪
+
+
+class ModelTech(Strict):
+    text: str
+    link: str | None = None            # 写成 [[X]] 时的目标
+    node: str | None = None            # 对上了图里的哪个知识点（对不上就是 None，照样显示文字）
+
+
+class ModelEntry(Strict):
+    """一个型号。`*_n` 是解析出来的数值（画图、排序用），原文字段照原样给人看。"""
+
+    id: str                            # 家族 id/型号名
+    name: str
+    family: str
+    line: int = 0                      # 在家族文件里第几行（跳去改用）
+    date: str | None = None
+    year: int | None = None
+    month: int | None = None
+    day: int | None = None
+    t: float | None = None             # 小数年份，横轴用
+    params: str | None = None
+    params_n: float | None = None
+    active: str | None = None
+    active_n: float | None = None
+    context: str | None = None
+    context_n: float | None = None
+    tokens: str | None = None
+    tokens_n: float | None = None
+    prev: str | None = None
+    base: list[str] = Field(default_factory=list)
+    tech: list[ModelTech] = Field(default_factory=list)
+    highlight: str | None = None
+    breakthrough: str | None = None
+    paper: str | None = None
+    extra: dict[str, str] = Field(default_factory=dict)   # 没登记的字段，卡片底部列出
+
+
+class ModelFamily(Strict):
+    id: str
+    name: str
+    vendor: str = ""
+    open: bool | None = None
+    tagline: str = ""
+    path: str
+    sources: list[str] = Field(default_factory=list)
+    models: list[ModelEntry] = Field(default_factory=list)
+
+
+class ModelLink(Strict):
+    source: str
+    target: str
+    kind: str                          # prev（人写的前代）/ base（基于，可跨家族）/ next（同家族按时间补的走向）
+
+
+class ModelWarning(Strict):
+    path: str
+    line: int = 0
+    message: str
+
+
+class ModelsRead(Strict):
+    """模型目录（2026-09-30）。`configured` 为假时前端给引导：选一个目录、看格式样例。"""
+
+    dir: str = ""
+    configured: bool = False
+    exists: bool = False
+    families: list[ModelFamily] = Field(default_factory=list)
+    links: list[ModelLink] = Field(default_factory=list)
+    warnings: list[ModelWarning] = Field(default_factory=list)
+    candidates: list[str] = Field(default_factory=list)   # 库里现有的目录，没指定时给人挑
+    used_by: dict[str, list[str]] = Field(default_factory=dict)   # 知识点 id → 用到它的型号 id
+    sample: str = ""                   # 家族文件的格式样例（没指定目录 / 目录里还没有家族文件时给人看）
+    fields: list[str] = Field(default_factory=list)       # 登记过的字段，卡片按这个顺序排
+
+
+class ModelsDirPatch(Strict):
+    models_dir: str                    # 空串 = 取消指定
+    dry_run: bool = False
 
 
 class VaultConfigPatch(Strict):

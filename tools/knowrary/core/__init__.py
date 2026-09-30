@@ -42,7 +42,8 @@ from .sources import (Resolver as SourceResolver, article_link, backlink_refs as
                       backlinks as source_backlinks,
                       clean_sources, sources_of)
 from .vault_config import (ArticlesNeedMove, VaultConfigRejected, articles_dir, candidates as articles_dir_candidates,
-                           list_articles, load_vault_config, save_articles_dir)
+                           list_articles, load_vault_config, save_articles_dir, save_models_dir)
+from .catalog import FIELDS as CATALOG_FIELDS, SAMPLE as CATALOG_SAMPLE, is_family, link_models, load_catalog, parse_family
 from .article import (build_article_prompt, cards_from_index, cards_from_nodes, describe_points,
                       describe_related, select_linkable, select_related)
 from .sections import Heading, describe_outline, extract_section, find_heading, outline
@@ -85,7 +86,8 @@ __all__ = [
     "SETTINGS_DEFAULTS", "ArticleConflict", "ArticlePlan", "plan_article", "render_article", "safe_name",
     "write_article", "SourceResolver", "article_link", "source_backlink_refs", "source_backlinks", "clean_sources", "sources_of",
     "ArticlesNeedMove", "VaultConfigRejected", "articles_dir", "articles_dir_candidates", "list_articles",
-    "load_vault_config", "save_articles_dir",
+    "load_vault_config", "save_articles_dir", "save_models_dir",
+    "CATALOG_FIELDS", "CATALOG_SAMPLE", "is_family", "link_models", "load_catalog", "parse_family",
     "audit_precheck", "AUDIT_THIN_BODY",
     "CARD_KINDS", "card_applied", "card_is_applied", "card_audited", "card_audits", "card_last_audit", "card_proposed", "card_revised", "card_revisions", "card_stats", "cards_path",
     "load_cards", "new_card_id",

@@ -2924,6 +2924,80 @@ def probe_正常回流要量得出首字节():
 
 # ---------------------------------------------------------------- 执行
 
+# ---------------------------------------------------------------- 模型目录（2026-09-30）
+
+@case
+def 模型目录_家族文件读成型号_日期数字链接都解析出来():
+    """型号不是知识节点：一个家族一个 md（kind: family），一个型号一节 `## 型号名`、字段 `- 键:: 值`。"""
+    fam = core.parse_family(core.CATALOG_SAMPLE, "models/DeepSeek.md", "DeepSeek")
+    assert fam["name"] == "DeepSeek" and fam["open"] is True and fam["warnings"] == [], fam["warnings"]
+    v2, v3, r1 = fam["models"]
+    assert (v3["year"], v3["month"], v3["day"]) == (2024, 12, 26) and v2["month"] == 5 and v2["t"] < v3["t"] < r1["t"]
+    assert v3["params_n"] == 671e9 and v3["active_n"] == 37e9 and v3["context_n"] == 128e3, v3
+    assert v3["tokens_n"] == 14.8e12 and v3["prev"] == "DeepSeek-V2" and r1["base"] == ["DeepSeek-V3"]
+    assert {"text": "MLA", "link": "MLA"} in v3["tech"] and {"text": "FP8 混合精度", "link": None} in v3["tech"]
+    lines = core.CATALOG_SAMPLE.splitlines()
+    assert lines[v3["line"] - 1] == "## DeepSeek-V3", ("行号要对得上文件里的行", v3["line"])
+
+
+@case
+def 模型目录_一格写了好几个数取最大_未披露不算错_没登记的字段照收():
+    text = """---
+kind: family
+name: Qwen
+---
+## Qwen2.5
+- 发布:: 2024年12月19日
+- 参数:: 0.5B / 1.5B / 7B / 72B（稠密）
+- 上下文:: 32K → 128K
+- 训练数据:: 7T 扩到 18T tokens
+- 显存占用:: 很大
+
+## Kimi k1.5
+- 发布:: 2025.01
+- 参数:: 未披露
+- 激活:: 看不懂
+
+## Qwen2.5
+- 发布:: 2025/13
+"""
+    fam = core.parse_family(text, "models/Qwen.md", "Qwen")
+    q, k, _ = fam["models"]
+    assert q["params_n"] == 72e9 and q["context_n"] == 128e3 and q["tokens_n"] == 18e12, q
+    assert q["extra"] == {"显存占用": "很大"} and (q["year"], q["month"], q["day"]) == (2024, 12, 19)
+    assert k["params_n"] is None and k["month"] == 1
+    msgs = " / ".join(w["message"] for w in fam["warnings"])
+    assert "未披露" not in msgs and "「看不懂」里没有数字" in msgs, msgs
+    assert "两节都叫「Qwen2.5」" in msgs and "「2025/13」读不懂" in msgs, msgs
+
+
+@case
+def 模型目录_没指定就不读_只认kind_family_check报出指不到的前代():
+    vault = make_vault({"nodes/测试/a.md": node_md("a"),
+                        "lab/DeepSeek.md": core.CATALOG_SAMPLE.replace("- 前代:: DeepSeek-V2", "- 前代:: DeepSeek-V1"),
+                        "lab/随手笔记.md": "# 不是家族文件\n\n## 某节\n- 发布:: 2024\n"})
+    assert core.load_catalog(vault)["configured"] is False, "默认不设目录：谱系不该绑在某个路径上"
+    core.save_models_dir(vault, "lab")
+    cat = core.load_catalog(vault)
+    assert [f["id"] for f in cat["families"]] == ["DeepSeek"], "没写 kind: family 的 md 不是家族文件"
+    links = core.link_models(cat)
+    assert {"source": "DeepSeek/DeepSeek-V3", "target": "DeepSeek/DeepSeek-R1", "kind": "base"} in links
+    assert {"source": "DeepSeek/DeepSeek-V2", "target": "DeepSeek/DeepSeek-V3", "kind": "prev"} not in links
+    assert any("「DeepSeek-V1」对不上" in w["message"] for w in cat["warnings"]), cat["warnings"]
+    import knowrary as cli
+    diags = core.Diagnostics()
+    cli.check_catalog(vault, diags)
+    assert any(d.code == "model_catalog" and d.file == "lab/DeepSeek.md" for d in diags.warnings), diags.warnings
+    for bad in ("nodes/models", "/tmp/x", "../外面"):
+        try:
+            core.save_models_dir(vault, bad)
+            raise AssertionError(f"{bad} 不该被接受")
+        except core.VaultConfigRejected:
+            pass
+    core.save_models_dir(vault, "")
+    assert core.load_catalog(vault)["configured"] is False, "空串 = 取消指定"
+
+
 def main() -> None:
     keyword = sys.argv[1] if len(sys.argv) > 1 else ""
     picked = [c for c in CASES if keyword in c.__name__]

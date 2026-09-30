@@ -506,6 +506,37 @@ def inbox_列出未上画布的节点并给出建议分组():
 
 
 @case
+def models_没指定目录给引导_指定之后读出家族_技术点对到知识点并能反查():
+    """2026-09-30 模型谱系第 1 步：型号进模型目录（每家族一个 md），不当知识节点。
+    目录库级可配、默认不设；没设时接口给候选目录和格式样例，页面据此引导。"""
+    c, vault = client({**DEFAULT_FILES, "nodes/组A/MLA.md": node_md("MLA", extra="aliases: [多头潜在注意力]\n"),
+                       "nodes/组A/MoE.md": node_md("MoE")})
+    core.write(vault / "catalog/llm/DeepSeek.md", core.CATALOG_SAMPLE)
+    core.write(vault / "catalog/llm/笔记.md", "# 不是家族文件\n")
+    first = c.get("/api/models").json()
+    assert first["configured"] is False and first["families"] == [] and "catalog" in first["candidates"], first
+    assert "kind: family" in first["sample"] and first["fields"][:3] == ["发布", "参数", "激活"], first["fields"]
+    assert "上下文" in first["fields"] and "训练数据" in first["fields"], "上下文和训练数据是核心对比项"
+
+    assert c.put("/api/models/dir", json={"models_dir": "nodes/x"}).status_code == 422, "落进 nodes/ 会被扫成节点"
+    r = c.put("/api/models/dir", json={"models_dir": "catalog"})
+    assert r.status_code == 200, r.text
+    got = r.json()
+    assert got["configured"] and got["dir"] == "catalog" and [f["id"] for f in got["families"]] == ["DeepSeek"], got
+    v3 = next(m for m in got["families"][0]["models"] if m["name"] == "DeepSeek-V3")
+    assert v3["id"] == "DeepSeek/DeepSeek-V3" and v3["params_n"] == 671e9 and v3["line"] > 0, v3
+    tech = {t["text"]: t["node"] for t in v3["tech"]}
+    assert tech["MLA"] == "MLA" and tech["MoE"] == "MoE" and tech["FP8 混合精度"] is None, tech
+    assert got["used_by"]["MLA"] == ["DeepSeek/DeepSeek-V2", "DeepSeek/DeepSeek-V3"], got["used_by"]
+    assert {"source": "DeepSeek/DeepSeek-V3", "target": "DeepSeek/DeepSeek-R1", "kind": "base"} in got["links"]
+    assert got["candidates"] == [], "有家族了就不用再给候选"
+    assert c.get("/api/vault/config").json()["models_dir"] == "catalog", "跟着库走，存在 vault.json"
+    ids = {n["id"] for n in c.get("/api/index").json()["nodes"]}
+    assert not {"DeepSeek", "DeepSeek-V3"} & ids, "家族文件和型号都不许进知识图"
+    assert c.put("/api/models/dir", json={"models_dir": ""}).json()["configured"] is False, "空串 = 取消指定"
+
+
+@case
 def inbox_推荐带把握和理由_整块投票_判不出的可以问AI():
     """2026-09-29 Curator 说理由：自己有邻居在画布上的按邻居投票；自己零票就合整块投；
     整块也零票的，手动点「问 AI 该放哪」，review 给分组 + 理由，存下来显示，放不放人点。"""

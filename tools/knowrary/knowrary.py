@@ -37,6 +37,7 @@ from core import (build_project_layout, legacy_plans_path, load_projects, projec
 from core import (ChangeRejected, ImportTarget, Translation, WriteConflict, add_home, add_pending, commit,
                   rename_in_plan, translate)
 from core import plan as plan_changes
+from core import link_models, load_catalog
 from core import build_article_prompt, cards_from_index, cards_from_nodes, describe_related, select_linkable, select_related
 from core import check_length, isolated as isolated_blocks, near_misses, normalize_claims, project_points
 from core import parse_json
@@ -439,12 +440,22 @@ def cmd_digest(args: argparse.Namespace) -> None:
     sys.exit(0)
 
 
+def check_catalog(vault: Path, diags) -> None:
+    """模型目录（家族文件）的问题记成警告：读不懂的日期 / 数字、指不到的前代 / 基于、同名的两节。
+    目录是可选的，没指定就什么都不查。"""
+    catalog = load_catalog(vault)
+    link_models(catalog)                     # 连线时才查得出「前代指不到」，结论写回 catalog 的 warnings
+    for w in catalog["warnings"]:
+        diags.warn("model_catalog", f"第 {w.get('line') or '?'} 行：{w['message']}", file=w["path"])
+
+
 def cmd_check(args: argparse.Namespace) -> None:
     """按规范校验 vault：复用 index 的解析与诊断，额外查密钥泄露与索引契约。"""
     vault = Path(args.vault).resolve()
     result = build_index(vault)
     s = result.stats
     extra = check_secret_leak(vault) + [f"索引契约：{p}" for p in validate_index(result.data)]
+    check_catalog(vault, result.diags)
     print(f"节点 {s['nodes']}（stub {s['stubs']}），边 {s['edges']}，"
           f"错误 {s['errors'] + len(extra)}，警告 {s['warnings']}"
           + (f"，方向矛盾（环）{s['cycles']} 处" if s.get("cycles") else ""))
