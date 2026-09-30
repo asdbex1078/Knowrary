@@ -115,6 +115,8 @@ export const putModelsDir = (dir) => request('/api/models/dir', {
 export const postModelsExtract = (path) => postJSON('/api/models/extract', { path })
 export const postModelsVerify = (path, items) => postJSON('/api/models/verify', { path, items })
 export const postModelsApply = (body) => postJSON('/api/models/apply', body)
+/** 把一个其实是型号的知识点挪进模型目录（dry_run 默认真：先看影响面）。 */
+export const postModelFromNode = (body) => postJSON('/api/models/from-node', body)
 /** 把几个点概括成一个上位节点：让模型起草名字 / 摘要 / 正文（提议，不写盘）。 */
 export const postSummarize = (body) => postJSON('/api/summarize', body)
 export const fetchImportSource = (path) => request(`/api/import/source?path=${encodeURIComponent(path)}`)

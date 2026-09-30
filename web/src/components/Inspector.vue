@@ -27,6 +27,7 @@ const props = defineProps({
   pendingEdges: { type: Array, default: () => [] },   // 和这个点有关的待审边（导入时模型没把握的）
   edgeChecks: { type: Array, default: () => [] },     // 和这个点有关的已有边的校验结论（review 角色审的）
   edgeRun: { type: Object, default: null },           // 正在跑的那一轮校验（任何范围的）
+  models: { type: Array, default: () => [] },         // 技术点链着这个点的型号（模型目录反查）
 })
 // 抽象层的七档，和 core.parser.LAYERS 同一张表
 const LAYERS = ['理论', '硬件', '体系结构', '汇编接口', '系统软件', '高级语言', 'AI应用']
@@ -34,7 +35,7 @@ const emit = defineEmits([
   'close', 'goto', 'open-article', 'decide-pending', 'check-edges', 'stop-edge-check', 'fix-edge', 'edit-desc', 'set-layer', 'set-year', 'add-ref', 'review', 'quiz', 'rename', 'finalize',
   'retype-edge', 'remove-edge', 'add-edge', 'drop-change',
   'preview-changes', 'apply-changes', 'clear-changes', 'save-body',
-  'suggest', 'dismiss-suggestion',
+  'suggest', 'dismiss-suggestion', 'show-model', 'to-model',
 ])
 
 const tab = ref('detail')
@@ -212,11 +213,24 @@ const CHANGE_ICON = { add_edge: 'plus', remove_edge: 'trash', update_edge: 'penc
                     </template>
                   </dd>
                 </template>
+                <!-- 模型目录里哪些型号的「技术」链着这个点：点一下去模型谱系里看那一个 -->
+                <template v-if="models.length">
+                  <dt>用到它的型号</dt>
+                  <dd class="insp-models" data-models-using>
+                    <button v-for="m in models" :key="m.id" class="art-chip" :title="`${m.familyName} · ${m.date || ''}，去模型谱系里看`"
+                            data-act="show-model" @click="emit('show-model', m.id)">{{ m.name }}</button>
+                  </dd>
+                </template>
               </dl>
 
               <div v-if="detail" class="act-row">
                 <button class="btn subtle tiny" @click="writing ? (writing = false) : startWriting()">
                   <Icon name="file" :size="13" />{{ writing ? '收起正文' : '写内容' }}
+                </button>
+                <button class="btn subtle tiny" data-act="to-model"
+                        title="这个点其实是一个具体型号（DeepSeek-V3、GPT-4o 这种）：挪进模型目录，图上的点删掉，正文当笔记留着"
+                        @click="emit('to-model')">
+                  <Icon name="timeline" :size="13" />这是型号…
                 </button>
                 <button class="btn subtle tiny" @click="emit('edit-desc')">
                   <Icon name="pencil" :size="13" />改摘要

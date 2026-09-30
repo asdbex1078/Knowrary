@@ -22,6 +22,7 @@
 
 一个型号一节 `## 型号名`，字段沿用库里 `- 键:: 值` 的写法（同 `## 速查`）。
 登记过的字段驱动画图（FIELDS）；没登记的照收，放进 `extra`，悬停卡片底部列出来。
+一节里不是字段的文字（从知识点挪过来的正文、随手记的几段）原样收进 `notes`，卡片上能展开看——不丢。
 这里是纯解析：`[[链接]]` 对不对得上知识点、`前代` 指不指得到别的型号，由上层对着索引解析。
 """
 from __future__ import annotations
@@ -119,7 +120,7 @@ def _parse_models(body: str, offset: int) -> tuple[list[dict], list[dict]]:
     for i, line in enumerate(body.splitlines()):
         head = RE_H2.match(line)
         if head:
-            current = {"name": head.group("title").strip(), "line": offset + i + 1, "raw": {}}
+            current = {"name": head.group("title").strip(), "line": offset + i + 1, "raw": {}, "notes": []}
             if current["name"] in seen:
                 warnings.append({"line": current["line"], "message": f"同一个家族里有两节都叫「{current['name']}」"})
             seen.add(current["name"])
@@ -128,6 +129,8 @@ def _parse_models(body: str, offset: int) -> tuple[list[dict], list[dict]]:
         item = RE_ITEM.match(line)
         if current is not None and item and item.group("value"):
             current["raw"][item.group("key").strip()] = item.group("value")
+        elif current is not None:
+            current["notes"].append(line)
     out = [_model(m, warnings) for m in models]
     return out, warnings
 
@@ -135,7 +138,8 @@ def _parse_models(body: str, offset: int) -> tuple[list[dict], list[dict]]:
 def _model(m: dict, warnings: list[dict]) -> dict:
     """一节的原始键值 → 型号。登记过的按 FIELDS 取，数值字段再给一份 `_n`，其它进 `extra`。"""
     raw = m.pop("raw")
-    model = {**m, **{f: None for f in FIELDS.values()}, "base": [], "tech": [], "extra": {}}
+    notes = "\n".join(m.pop("notes")).strip("\n")
+    model = {**m, **{f: None for f in FIELDS.values()}, "base": [], "tech": [], "extra": {}, "notes": notes}
     for key, value in raw.items():
         field = FIELDS.get(key)
         if field is None:

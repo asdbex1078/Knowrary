@@ -21,10 +21,11 @@ from . import curator as curator_svc
 from . import edge_check as edge_check_svc
 from . import models_catalog as models_svc
 from . import models_extract as models_extract_svc
+from . import models_move as models_move_svc
 from . import pending_review as pending_svc
 from . import (articles as articles_svc, assets, audit, chat as chat_svc, compare as compare_svc, copying, curation, importing,
                projects as projects_svc, revise as revise_svc, summarize as summarize_svc, vaults, years as years_svc)
-from .contracts import (ArticleRead, ArticlesRead, ModelsApplied, ModelsApply, ModelsDirPatch, ModelsExtract,
+from .contracts import (ArticleRead, ArticlesRead, ModelFromNode, ModelFromNodeResult, ModelsApplied, ModelsApply, ModelsDirPatch, ModelsExtract,
                         ModelsProposal, ModelsRead, ModelsVerified, ModelsVerify, CurateRequest, CurateResult, EdgeCheckPlan, EdgeCheckPlanned, EdgeCheckRan, EdgeCheckRun,
                         EdgeChecksRead, EdgeFix, EdgeFixed, RelinkRequest, RelinkResult, PendingDecide, PendingDecided, PendingRead, TypeDecide, TypeDecided, AuditReport, AuditRequest, ReviseRequest, ReviseResult, ReviseUndo, SourceRef, VaultConfigPatch, VaultConfigRead, CalendarRead, ChangeResult, ChangeSet, ChatRequest, CoachToday, FileDiff, ImportProposal,
                         ImportProposeRequest, ImportRequest, ImportResult, SourceText, SourcesRead, SummarizeRequest, SummaryDraft,
@@ -611,6 +612,15 @@ def post_models_apply(req: ModelsApply) -> ModelsApplied:
     except models_extract_svc.ModelsStale as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except models_extract_svc.ModelsExtractRejected as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.post("/api/models/from-node", response_model=ModelFromNodeResult)
+def post_models_from_node(req: ModelFromNode) -> ModelFromNodeResult:
+    """把一个其实是型号的知识点挪进模型目录：字段搬过去、正文当笔记、节点删掉。默认只算影响面（dry_run）。"""
+    try:
+        return models_move_svc.move(vault_path(), req)
+    except (models_move_svc.ModelMoveRejected, models_extract_svc.ModelsExtractRejected) as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 

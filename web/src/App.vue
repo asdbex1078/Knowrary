@@ -3,7 +3,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, shallowR
 import {
   fetchSettings, putSettings, fetchLLMConfig, putLLMConfig, testLLMConfig as postLLMConfigTest,
   fetchPending, postPendingDecide, postTypeDecide, postEdgesPlan, postEdgesCheck, fetchEdgeChecks, postEdgeFix, fetchVault, browseVault, initVault, putVault, forgetVault, fetchVaultConfig, putVaultConfig,
-  fetchCopySources, fetchCopyCatalog, postCopy, fetchCalendar, fetchCompareGroups, fetchCompareTable, postCompareFill, fetchDigest, postSyncToGlobal, fetchDue, fetchProjects, putProjects, postPlanPropose, fetchToday, fetchUsage, postMerge, postRename, postQuiz, postQuizDiagnose, postQuizGrade, fetchOpenQuiz, dropOpenQuiz, postRegroup, fetchIndex, fetchInbox, fetchLayout, fetchNode,
+  fetchCopySources, fetchCopyCatalog, postCopy, fetchCalendar, fetchCompareGroups, fetchCompareTable, postCompareFill, fetchDigest, postSyncToGlobal, fetchDue, fetchProjects, putProjects, postPlanPropose, fetchToday, fetchUsage, postMerge, postRename, postQuiz, postQuizDiagnose, postQuizGrade, fetchOpenQuiz, dropOpenQuiz, postRegroup, fetchIndex, fetchInbox, fetchLayout, fetchModels, fetchNode,
   patchLayout, postAudit, postChanges, postRelink, postRevise, postReviseUndo, postPlace, postCurate, postReview, postSuggest, postSummarize, postYearsPropose,
 } from './api.js'
 import AppHeader from './components/AppHeader.vue'
@@ -21,6 +21,7 @@ import NodeDialog from './components/NodeDialog.vue'
 import QuizDialog from './components/QuizDialog.vue'
 import UsageDialog from './components/UsageDialog.vue'
 import RenameDialog from './components/RenameDialog.vue'
+import ModelMoveDialog from './components/ModelMoveDialog.vue'
 import MergeDialog from './components/MergeDialog.vue'
 import AuditDialog from './components/AuditDialog.vue'
 import YearDialog from './components/YearDialog.vue'
@@ -34,6 +35,7 @@ import DigestPanel from './panels/DigestPanel.vue'
 import StudyPanel from './panels/StudyPanel.vue'
 import CalendarPanel from './panels/CalendarPanel.vue'
 import StatsPanel from './panels/StatsPanel.vue'
+import ModelLineage from './components/ModelLineage.vue'
 import ChatView from './views/ChatView.vue'
 import MorningBrief from './components/MorningBrief.vue'
 import SettingsDialog from './components/SettingsDialog.vue'
@@ -218,7 +220,7 @@ const {
 // 它们共用同一条时间游标，所以是一个整体；这里只把画布那几样递进去。
 const {
   hist, histPlan, linPlan, timelines, histActiveCount, isPlaying, speed, tour,
-  histChain, timelineChoices, yearRange, layeredHint, lineageChains,
+  histChain, timelineChoices, yearRange, layeredHint,
   tourChain, tourStopId, tourStop, tourVia,
   renderHistory, renderLineage, paintTime, markHistoryContainer, setUpto,
   togglePlay, setSpeed, stopPlay, evoGap, startTour, tourGo, paintTour, scheduleTour,
@@ -527,6 +529,50 @@ const inspectorOpen = computed(() =>
 // —— 原文（原文层第 4 步）——
 const articleReq = shallowRef(null)      // 要打开哪一篇：{ path, section, nonce }；nonce 变一次开一次
 const importPreset = ref('')             // 原文面板上「拆成知识点」带给导入面板的那一篇（库内路径）
+
+// —— 模型谱系（2026-09-30）：谱系视图里「知识演化 / 模型谱系」两张图，型号在模型目录里、不在知识图上 ——
+const lineageKind = ref((() => { try { return localStorage.getItem('knowrary.lineageKind') || 'knowledge' } catch { return 'knowledge' } })())
+const modelsDoc = ref(null)              // /api/models：家族、型号、连线、知识点被哪些型号用到（检查器反查）
+const modelFocus = ref(null)             // 从检查器点过来的型号：{ id, nonce }，进模型谱系就钉住它
+
+async function loadModels() {
+  try { modelsDoc.value = await fetchModels() } catch { /* 目录读不到不影响画布，模型谱系页上会显示引导 */ }
+}
+function setLineageKind(kind) {
+  lineageKind.value = kind
+  try { localStorage.setItem('knowrary.lineageKind', kind) } catch { /* 记不住下次默认知识演化 */ }
+  if (kind === 'models') loadModels()
+}
+// 参数量面板读的也是模型目录：每次打开重读一遍（家族文件可能刚在 Obsidian 里改过）
+watch(panel, (p) => { if (p === 'stats') loadModels() })
+// 知识演化树的提示条（「演化族 N 条边…」）说的是画布上那张图，盖着模型谱系时不该挂着
+watch([mode, lineageKind], ([m, k]) => { if (m === 'lineage' && k === 'models') setBanner('') })
+/** 模型谱系里点了技术点 / 出处：这两样都在别的视图里，先切回全局图再去。 */
+async function modelGoto(id) { await switchMode('structure'); gotoNode(id) }
+async function modelArticle(path) { await switchMode('structure'); openArticle({ path }) }
+async function modelOpenArticles() { await switchMode('structure'); openPanel('articles', { force: true }) }
+async function showModel(id) {
+  setLineageKind('models')
+  modelFocus.value = { id, nonce: Date.now() }
+  if (mode.value !== 'lineage') await switchMode('lineage')
+}
+/** 「这是型号…」挪进模型目录：节点删掉了，画布和检查器都要重读；然后去模型谱系里看它。 */
+const movingModel = ref(null)
+async function afterModelMove(res) {
+  movingModel.value = null
+  selected.value = null
+  await load()
+  setBanner(`「${res.node}」挪进了 ${res.target}（写前的快照在 ${res.backup}）`, 'success')
+  await loadModels()
+  showModel(`${res.target.split('/').pop().replace(/\.md$/, '')}/${res.node}`)
+}
+
+/** 检查器里「用到它的型号」：这个知识点被哪些型号的技术点链着。 */
+const modelsUsing = computed(() => {
+  const ids = (selected.value && modelsDoc.value?.used_by?.[selected.value.id]) || []
+  const byId = new Map((modelsDoc.value?.families || []).flatMap((f) => f.models.map((m) => [m.id, { ...m, familyName: f.name }])))
+  return ids.map((id) => byId.get(id)).filter(Boolean)
+})
 
 /** 在应用里读一篇原文、滚到某一节。检查器的来源链接、别处的"看原文"都走这里。 */
 function openArticle({ path, section }) {
@@ -3616,6 +3662,7 @@ onMounted(async () => {
     },
   })
   bindEvents(g)
+  loadModels()                           // 检查器的「用到它的型号」要它；不等，读不到也不挡画布
   window.addEventListener('keydown', onKeydown)
   window.addEventListener('error', onGlobalError)
   window.addEventListener('unhandledrejection', onGlobalError)
@@ -3742,8 +3789,8 @@ onBeforeUnmount(() => {
                   @link="linkFromToday"
                   @plans="panel = 'plans'; refreshPlans()" @global="switchProject('')"
                   @refresh="refreshToday" @close="panel = ''" />
-      <StatsPanel v-else-if="panel === 'stats'" class="study" :index="indexDoc" :chains="lineageChains"
-                  @goto="gotoNode" @close="panel = ''" />
+      <StatsPanel v-else-if="panel === 'stats'" class="study" :models="modelsDoc"
+                  @show-model="showModel" @open-lineage="setLineageKind('models'); switchMode('lineage')" @close="panel = ''" />
       <CalendarPanel v-else-if="panel === 'calendar'" class="study" :data="calendar"
                      @goto="gotoNode" @refresh="refreshCalendar" @close="panel = ''" />
       <DigestPanel v-else-if="panel === 'digest'" :busy="status === 'saving'" @regroup="regroupDrafts" class="digest" :digest="digest"
@@ -3796,6 +3843,20 @@ onBeforeUnmount(() => {
         <div v-show="mode !== 'chat' || graphPane" ref="canvasEl" class="canvas"
              @dragover.prevent @drop="onCanvasDrop" />
 
+        <!-- 谱系视图两张图：知识演化（画布上的演化树）/ 模型谱系（盖在画布上的泳道图，画布不销毁） -->
+        <div v-if="mode === 'lineage'" class="sync-bar" data-lineage-switch>
+          <div class="seg" role="tablist">
+            <button :class="{ on: lineageKind === 'knowledge' }" data-lineage-kind="knowledge"
+                    @click="setLineageKind('knowledge')">知识演化</button>
+            <button :class="{ on: lineageKind === 'models' }" data-lineage-kind="models"
+                    @click="setLineageKind('models')">模型谱系</button>
+          </div>
+          <span class="dim">{{ lineageKind === 'models' ? '一个家族一条泳道，按发布顺序排；悬停看技术点、亮点、突破' : '只画演化族：谁长出谁' }}</span>
+        </div>
+        <ModelLineage v-if="mode === 'lineage' && lineageKind === 'models'" class="ml-overlay" :doc="modelsDoc"
+                      :focus="modelFocus" @goto="modelGoto" @article="modelArticle" @saved-dir="modelsDoc = $event"
+                      @refresh="loadModels" @open-articles="modelOpenArticles" />
+
         <!-- 项目画布是工作台，全局图才是成品图：成熟了再并进主图 -->
         <div v-if="mode === 'project' && currentProject" class="sync-bar">
           <span class="dim">项目画布 · 只有这个项目的点，还没建的画成幽灵（点一下就去建）</span>
@@ -3836,7 +3897,8 @@ onBeforeUnmount(() => {
                      @pick-layout="runLayout" @add-note="addNote" @add-image="panel = 'assets'"
                      @undo="undo" @redo="redo" />
 
-        <ZoomBar :zoom="zoom" :map="showMap && mode !== 'history'" @zoom-in="stepZoom(1.25)"
+        <!-- 模型谱系盖着画布时它管不到那张图（泳道图自己滚轮缩放），不摆出来 -->
+        <ZoomBar v-if="!(mode === 'lineage' && lineageKind === 'models')" :zoom="zoom" :map="showMap && mode !== 'history'" @zoom-in="stepZoom(1.25)"
                  @zoom-out="stepZoom(0.8)" @reset="resetZoom" @fit="fit" @toggle-map="toggleMap" />
 
         <HistoryPlayer v-if="mode === 'history'" :playing="isPlaying" :upto="hist.upto" :range="yearRange"
@@ -3903,6 +3965,7 @@ onBeforeUnmount(() => {
                  :all-node-ids="allNodeIds" :pending="pending" :change-preview="changePreview"
                  :is-due="!!selected && dueIds.has(selected.id)"
                  :suggestions="suggestions" :suggesting="suggesting"
+                 :models="modelsUsing" @show-model="showModel" @to-model="movingModel = { id: selected.id, name: selected.name }"
                  @close="inspectorHidden = true" @goto="gotoNode" @open-article="openArticle" @edit-desc="editDesc" @set-layer="setLayer" @set-year="setYear" @add-ref="addRef"
                  @review="markReviewed($event.id, $event.grade)" @quiz="startQuiz"
                  @rename="openRename"
@@ -3947,6 +4010,8 @@ onBeforeUnmount(() => {
     <MergeDialog v-if="merging" :pair="merging" :impact="mergeImpact" :busy="mergeBusy"
                  @preview="previewMerge" @apply="applyMerge" @swap="swapMerge"
                  @goto="gotoNode($event); merging = null" @close="merging = null; mergeImpact = null" />
+
+    <ModelMoveDialog v-if="movingModel" :node="movingModel" @close="movingModel = null" @done="afterModelMove" />
 
     <RenameDialog v-if="renaming" :source="renaming" :taken="takenIds" :impact="renameImpact"
                   :busy="renameBusy" @preview="previewRename" @apply="applyRename"

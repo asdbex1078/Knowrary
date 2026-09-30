@@ -1385,6 +1385,7 @@ class ModelEntry(Strict):
     breakthrough: str | None = None
     paper: str | None = None
     extra: dict[str, str] = Field(default_factory=dict)   # 没登记的字段，卡片底部列出
+    notes: str = ""                    # 这一节里不是字段的文字（比如从知识点挪过来的正文）
 
 
 class ModelFamily(Strict):
@@ -1443,6 +1444,7 @@ class ModelPlan(Strict):
     name: str
     status: str
     fields: dict[str, str] = Field(default_factory=dict)   # 要写进去的格子（中文键 → 值）
+    notes: str = ""                    # 接在这一节字段后面的正文（从知识点挪过来时才有）
     conflicts: list[ModelConflict] = Field(default_factory=list)
     suspicious: list[ModelSuspect] = Field(default_factory=list)
 
@@ -1506,6 +1508,29 @@ class ModelsApply(Strict):
 class ModelsApplied(Strict):
     files: list[str] = Field(default_factory=list)
     models: int = 0                    # 实际写了几个型号（新增 + 补了格子的）
+    backup: str = ""
+
+
+class ModelFromNode(Strict):
+    """把一个其实是「型号」的知识点挪进模型目录（2026-09-30）：字段搬过去、正文当这一节的笔记，节点删掉。"""
+
+    node: str
+    family: str = ""                   # 进哪个家族（名字）；空 = 按名字猜（DeepSeek-V3 → DeepSeek）
+    dry_run: bool = True
+
+
+class ModelFromNodeResult(Strict):
+    node: str
+    family: str
+    target: str                        # 家族文件
+    exists: bool = False               # 家族 / 型号是不是已经有了（有就只补空格）
+    model_exists: bool = False
+    fields: dict[str, str] = Field(default_factory=dict)
+    notes_chars: int = 0
+    layouts: list[str] = Field(default_factory=list)       # 哪几张画布上摆着它（挪完从画布上拿掉）
+    projects: list[str] = Field(default_factory=list)      # 哪几个项目的清单里有它（挪完从清单里拿掉）
+    reviews: int = 0                   # 复习记录几条（挪完一起拿掉：型号不进复习）
+    applied: bool = False
     backup: str = ""
 
 

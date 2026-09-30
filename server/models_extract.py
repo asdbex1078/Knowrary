@@ -31,6 +31,7 @@ CHECKED = ("发布", "参数", "激活", "上下文", "训练数据")   # 这几
 MAX_NODES = 400
 RE_NUM = re.compile(r"\d+(?:\.\d+)?")
 RE_SAFE = re.compile(r"[\\/:*?\"<>|\s]+")
+RE_FIELD_LINE = re.compile(r"^\s*[-*]\s+[^:：]+?\s*::")
 
 
 class ModelsExtractRejected(ValueError):
@@ -257,10 +258,11 @@ def _render(path: Path, fams: list, sources: list[str]) -> tuple[str, int]:
         for m in fam.models:
             current = _current_fields(have[m.name.lower()]) if m.name.lower() in have else None
             fields = {k: v for k, v in m.fields.items() if current is None or not current.get(k)}
-            if not fields:
+            notes = (getattr(m, "notes", "") or "").strip("\n")
+            if not fields and not notes:
                 continue
-            lines = _append_fields(lines, m.name, fields) if current is not None else \
-                _append_section(lines, m.name, fields)
+            lines = _append_fields(lines, m.name, fields, notes) if current is not None else \
+                _append_section(lines, m.name, fields, notes)
             written += 1
     fm["sources"] = list(dict.fromkeys([*(fm.get("sources") or []), *sources]))
     return core.dump_frontmatter(fm) + "\n" + "\n".join(lines).strip("\n") + "\n", written
@@ -273,13 +275,21 @@ def _new_family(fam) -> str:
     return core.dump_frontmatter(fm)
 
 
-def _append_section(lines: list[str], name: str, fields: dict[str, str]) -> list[str]:
-    return [*lines, "", f"## {name}", *(f"- {k}:: {v}" for k, v in fields.items())]
+def _append_section(lines: list[str], name: str, fields: dict[str, str], notes: str = "") -> list[str]:
+    return [*lines, "", f"## {name}", *(f"- {k}:: {v}" for k, v in fields.items()), *_note_lines(notes)]
 
 
-def _append_fields(lines: list[str], name: str, fields: dict[str, str]) -> list[str]:
-    """在 `## name` 那一节的最后一条 `- 键:: 值` 后面接上新的格子。"""
+def _note_lines(notes: str) -> list[str]:
+    return ["", *notes.split("\n")] if notes else []
+
+
+def _append_fields(lines: list[str], name: str, fields: dict[str, str], notes: str = "") -> list[str]:
+    """在 `## name` 那一节接上新的格子：格子接在最后一条 `- 键:: 值` 后面，笔记接在这一节末尾。"""
     start = next(i for i, ln in enumerate(lines) if re.match(rf"^##\s+{re.escape(name)}\s*#*\s*$", ln, re.I))
     end = next((i for i in range(start + 1, len(lines)) if lines[i].startswith("## ")), len(lines))
-    last = max((i for i in range(start, end) if lines[i].strip()), default=start)
-    return [*lines[:last + 1], *(f"- {k}:: {v}" for k, v in fields.items()), *lines[last + 1:]]
+    items = [i for i in range(start, end) if RE_FIELD_LINE.match(lines[i])]
+    at = (items[-1] if items else start) + 1
+    lines = [*lines[:at], *(f"- {k}:: {v}" for k, v in fields.items()), *lines[at:]]
+    end += len(fields)
+    tail = max((i for i in range(start, end) if lines[i].strip()), default=start) + 1
+    return [*lines[:tail], *_note_lines(notes), *lines[tail:]]

@@ -22,6 +22,7 @@ import { level, weekColumns } from '../src/panels/heat.js'
 import { forModel } from '../src/composables/useChat.js'
 import { localISO, todayISO } from '../src/today.js'
 import { applyBody, mergeProposals, pickedCount, suspectsByArticle } from '../src/modelsPlan.js'
+import { COL, LEFT, computeLanes, humanParams, techOptions } from '../src/canvas/modelLanes.js'
 
 const CASES = []
 const test = (name, fn) => CASES.push([name, fn])
@@ -603,6 +604,40 @@ test('没东西可写的型号默认不勾，写入请求里也不带；可疑�
   assert.deepEqual(body.families[0].models.map((m) => m.name), ['V3'])
   fams[0].models[0].pick = false
   assert.deepEqual(applyBody(fams, PROPOSALS).families, [], '一个都没勾的家族整个不带')
+})
+
+// ---------------------------------------------------------------- 模型谱系排版（2026-09-30）
+
+const m = (id, t, extra = {}) => ({ id, name: id.split('/')[1], t, year: t ? Math.floor(t) : null, tech: [], ...extra })
+const MODELS = {
+  families: [
+    { id: 'Qwen', name: 'Qwen', open: true, models: [m('Qwen/Q2', 2024.4), m('Qwen/Q1', 2023.6), m('Qwen/草稿', null)] },
+    { id: 'GPT', name: 'GPT', open: false, models: [m('GPT/G3', 2020.5, { params_n: 175e9 }), m('GPT/G4', 2023.2,
+      { tech: [{ text: 'MoE', link: 'MoE', node: 'MoE' }] })] },
+  ],
+  links: [{ source: 'Qwen/Q1', target: 'Qwen/Q2', kind: 'next' }, { source: 'GPT/G4', target: 'Qwen/Q2', kind: 'base' }],
+}
+
+test('模型谱系：家族按首发时间排，泳道里按发布顺序等距，没日期的排最后不丢', () => {
+  const plan = computeLanes(MODELS)
+  assert.deepEqual(plan.lanes.map((l) => l.family.id), ['GPT', 'Qwen'])
+  const qwen = plan.items.filter((it) => it.family.id === 'Qwen')
+  assert.deepEqual(qwen.map((it) => it.model.name), ['Q1', 'Q2', '草稿'])
+  assert.deepEqual(qwen.map((it) => it.x), [LEFT + COL / 2, LEFT + COL * 1.5, LEFT + COL * 2.5])
+  assert.deepEqual(qwen.map((it) => it.labelUp), [true, false, true], '名字一上一下交错')
+  assert.deepEqual(plan.lanes[1].ticks.map((t) => t.year), [2023, 2024], '跨进新的一年标一个刻度')
+  assert.equal(plan.items.find((it) => it.model.name === 'G3').label, 'G3 · 175B', '参数写在名字旁')
+})
+
+test('模型谱系：开源筛选、收起家族、按技术点高亮，连线只连两端都在的', () => {
+  assert.deepEqual(computeLanes(MODELS, { open: 'open' }).lanes.map((l) => l.family.id), ['Qwen'])
+  const folded = computeLanes(MODELS, { hidden: new Set(['GPT']) })
+  assert.ok(folded.lanes[0].folded && !folded.items.some((it) => it.family.id === 'GPT'))
+  assert.deepEqual(folded.links.map((l) => l.kind), ['next'], '收起的家族那头的线不画')
+  const lit = computeLanes(MODELS, { tech: 'node:MoE' })
+  assert.deepEqual(lit.items.filter((it) => !it.dim).map((it) => it.model.name), ['G4'])
+  assert.deepEqual(techOptions(MODELS), [{ key: 'node:MoE', label: 'MoE', count: 1 }])
+  assert.equal(humanParams(2.8e12), '2.8T'); assert.equal(humanParams(671e9), '671B'); assert.equal(humanParams(null), '')
 })
 
 // ---------------------------------------------------------------- 跑

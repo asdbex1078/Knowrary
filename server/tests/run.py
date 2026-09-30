@@ -615,6 +615,53 @@ def models_抽原文成计划_已有只补空格_数字对不上标可疑_写入
 
 
 @case
+def models_知识点挪进模型目录_字段只补空格_正文当笔记_节点和引用一起拿掉():
+    """2026-09-30：型号不是知识节点（DeepSeek-V3）。挪进模型目录：year / params / desc 搬过去、正文不丢，
+    节点、画布位置、项目清单里的这一项、复习记录一起拿掉；有别的点链着它就不挪（挪走就断链）。"""
+    v3 = ("---\nname: DeepSeek-V3\nfield: 测试\nyear: 2024\nparams: 671B\ndesc: 低成本 MoE 大模型\n---\n"
+          "# DeepSeek-V3\n\nDeepSeek-V3 是一个 MoE 模型。\n\n## 为什么需要它\n稠密模型太贵。\n#### 细节\nx\n\n## 关系\n- 依赖:: [[a]]\n")
+    c, vault = client({**DEFAULT_FILES, "nodes/组A/DeepSeek-V3.md": v3})
+    c.put("/api/models/dir", json={"models_dir": "models"})
+    core.write(vault / "models/DeepSeek.md", "---\nkind: family\nname: DeepSeek\n---\n## DeepSeek-V3\n"
+               "- 发布:: 2024-12-26\n- 参数:: 671B\n\n## DeepSeek-R1\n- 发布:: 2025-01\n")
+    rev = get_layout(c)["layout"]["revision"]
+    c.post("/api/place", json={"base_revision": rev, "ids": ["DeepSeek-V3"], "group": next(iter(get_layout(c)["layout"]["groups"]))})
+    c.put("/api/projects", json={"base_revision": 0, "projects": {"p": {"name": "p", "lists": [{"stages": [
+        {"name": "一", "points": [{"id": "DeepSeek-V3", "name": "DeepSeek-V3"}, {"id": "a", "name": "a"}]}]}]}}})
+
+    dry = c.post("/api/models/from-node", json={"node": "DeepSeek-V3"})
+    assert dry.status_code == 200, dry.text
+    d = dry.json()
+    assert d["family"] == "DeepSeek" and d["target"] == "models/DeepSeek.md" and d["model_exists"], d
+    assert d["fields"] == {"亮点": "低成本 MoE 大模型"}, ("发布 / 参数目录里已经有了，只补空格", d["fields"])
+    assert d["layouts"] == ["layout.json"] and d["projects"] == ["p"] and d["notes_chars"] > 0, d
+    assert (vault / "nodes/组A/DeepSeek-V3.md").exists(), "dry_run 不许动盘"
+
+    r = c.post("/api/models/from-node", json={"node": "DeepSeek-V3", "dry_run": False})
+    assert r.status_code == 200 and r.json()["applied"] and r.json()["backup"], r.text
+    assert (vault / r.json()["backup"] / "nodes/组A/DeepSeek-V3.md").is_file(), "写前要快照原节点"
+    assert not (vault / "nodes/组A/DeepSeek-V3.md").exists()
+    text = (vault / "models/DeepSeek.md").read_text("utf-8")
+    section = text.split("## DeepSeek-V3")[1].split("## DeepSeek-R1")[0]
+    assert "- 亮点:: 低成本 MoE 大模型" in section and "### 为什么需要它" in section and "稠密模型太贵" in section, text
+    assert "依赖:: [[a]]" not in text and section.index("- 亮点") < section.index("MoE 模型。"), "字段在前、笔记在后、关系不搬"
+    assert text.count("## DeepSeek-V3") == 1 and "##### 细节" in section, ("和名字一样的一级标题去掉，其余整体下挪", text)
+    got = c.get("/api/models").json()
+    m = next(x for f in got["families"] for x in f["models"] if x["name"] == "DeepSeek-V3")
+    assert "为什么需要它" in m["notes"] and [x["name"] for x in got["families"][0]["models"]] == ["DeepSeek-V3", "DeepSeek-R1"]
+    assert "DeepSeek-V3" not in {n["id"] for n in c.get("/api/index").json()["nodes"]}
+    assert "DeepSeek-V3" not in get_layout(c)["layout"]["nodes"]
+    points = c.get("/api/projects").json()["doc"]["projects"]["p"]["lists"][0]["stages"][0]["points"]
+    assert [pt["id"] for pt in points] == ["a"], points
+
+    core.write(vault / "nodes/组A/GPT-4.md", node_md("GPT-4"))
+    core.write(vault / "nodes/组A/b2.md", node_md("b2", rels="- 依赖:: [[GPT-4]]"))
+    index_service.invalidate()
+    bad = c.post("/api/models/from-node", json={"node": "GPT-4"})
+    assert bad.status_code == 422 and "b2.md" in bad.json()["detail"], ("有别的点链着就不挪", bad.text)
+
+
+@case
 def inbox_推荐带把握和理由_整块投票_判不出的可以问AI():
     """2026-09-29 Curator 说理由：自己有邻居在画布上的按邻居投票；自己零票就合整块投；
     整块也零票的，手动点「问 AI 该放哪」，review 给分组 + 理由，存下来显示，放不放人点。"""

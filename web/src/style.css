@@ -1707,6 +1707,10 @@ kbd.key {
 .chart .s4 .ln, .chart .s4 .pt { stroke: #b4332c; fill: #b4332c; }
 .chart .s5 .ln, .chart .s5 .pt { stroke: #4a5b6d; fill: #4a5b6d; }
 .chart .pt { stroke: var(--surface); }
+/* 上面几行给系列上色时顺带把 fill 也给了折线（比 .ln 的 fill: none 更具体），几个点一连就成了一块色块 */
+.chart g .ln { fill: none; }
+.stats-legend .s0 { color: var(--accent); } .stats-legend .s1 { color: #e0891f; } .stats-legend .s2 { color: #2f9e62; }
+.stats-legend .s3 { color: #9169cf; } .stats-legend .s4 { color: #b4332c; } .stats-legend .s5 { color: #4a5b6d; }
 
 .bars { margin: 4px 0 0; }
 .bar-row { display: flex; align-items: center; gap: 7px; padding: 3px 0; cursor: pointer;
@@ -1800,7 +1804,7 @@ kbd.key {
 .models-dir { font-size: 12px; line-height: 1.6; }
 .models-dir-row { display: flex; gap: 6px; margin: 6px 0; }
 .models-dir-row input { flex: 1; }
-.models-sample pre { font-size: 11px; background: var(--bg-2); padding: 8px; border-radius: 6px; overflow: auto; max-height: 280px; }
+.models-sample pre { font-size: 11px; background: var(--surface-2); padding: 8px; border-radius: 6px; overflow: auto; max-height: 280px; }
 .models-family h4 { margin: 12px 0 4px; font-size: 13px; }
 .models-family ul { list-style: none; padding: 0; margin: 0; }
 .model-plan { border-top: 1px solid var(--line); padding: 5px 0; font-size: 12px; }
@@ -1812,3 +1816,59 @@ kbd.key {
 .model-plan-warn { margin: 2px 0 0 22px; color: var(--warn); line-height: 1.55; }
 .model-plan-warn .chip { font-size: 10.5px; padding: 0 6px; margin: 0 4px; }
 .models-extract-foot { display: flex; align-items: center; gap: 8px; justify-content: flex-end; margin-top: 12px; }
+
+/* 模型谱系（2026-09-30）：盖在谱系视图的画布上，顶上留出「知识演化 / 模型谱系」那条切换 */
+.ml-overlay { position: absolute; inset: 0; z-index: 11; background: var(--bg); padding-top: 56px;
+  display: flex; flex-direction: column; }
+.model-lineage { display: flex; flex-direction: column; height: 100%; min-height: 0; }
+.ml-empty { max-width: 560px; margin: 40px auto; font-size: 12.5px; line-height: 1.7; }
+.ml-empty h3 { margin: 0 0 8px; font-size: 15px; }
+.ml-empty-tip { margin-top: 14px; display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.ml-bar { display: flex; align-items: center; gap: 8px; padding: 0 14px 8px; font-size: 11.5px; flex-wrap: wrap; }
+.ml-bar select { font-size: 11.5px; max-width: 220px; }
+.ml-warnings { margin: 0 14px 8px; padding: 6px 10px; font-size: 11.5px; background: var(--warn-soft, #fff7e0);
+  border-radius: 6px; max-height: 140px; overflow: auto; list-style: none; }
+.ml-stage { position: relative; flex: 1; min-height: 0; overflow: hidden; cursor: grab; user-select: none; }
+.ml-stage:active { cursor: grabbing; }
+.ml-svg { display: block; }
+.ml-lane.even { fill: var(--surface); }
+.ml-lane.odd { fill: var(--surface-2); }
+.ml-axis { stroke: var(--line); stroke-width: 1; }
+.ml-year { font-size: 10.5px; fill: var(--text-3); }
+.ml-link { fill: none; stroke-width: 1.6; opacity: .7; }
+.ml-link.base { stroke-dasharray: 5 4; opacity: .55; }
+.ml-item { cursor: pointer; }
+.ml-item circle { stroke: var(--surface); stroke-width: 2; }
+.ml-item.on circle { stroke: var(--text); }
+.ml-item.dim { opacity: .18; }
+.ml-label { font-size: 11.5px; fill: var(--text); paint-order: stroke; stroke: var(--surface); stroke-width: 3px; }
+.ml-names { position: absolute; left: 0; top: 0; width: 128px; pointer-events: none; }
+.ml-name { position: absolute; left: 0; width: 128px; display: flex; flex-direction: column; justify-content: center;
+  align-items: flex-start; padding: 0 10px; gap: 1px; border: none; background: linear-gradient(90deg, var(--surface) 80%, transparent);
+  font: inherit; font-size: 12px; text-align: left; cursor: pointer; pointer-events: auto; }
+.ml-name i { width: 18px; height: 3px; border-radius: 2px; }
+.ml-name .dim { font-size: 10.5px; }
+.ml-name.folded { opacity: .6; }
+.model-card { position: absolute; z-index: 20; width: 310px; max-height: 70%; overflow: auto; padding: 10px 12px;
+  background: var(--surface); border: 1px solid var(--line); border-radius: 10px; box-shadow: 0 10px 28px rgba(0, 0, 0, .14);
+  font-size: 12px; line-height: 1.6; pointer-events: none; }
+.model-card.pinned { pointer-events: auto; }
+.model-card header { display: flex; align-items: baseline; gap: 6px; }
+.model-card-line { margin: 2px 0 4px; font-weight: 600; }
+.model-card dl { display: grid; grid-template-columns: 4.5em 1fr; gap: 1px 6px; margin: 4px 0; }
+.model-card dt { color: var(--text-3); }
+.model-card dd { margin: 0; }
+.model-card p { margin: 4px 0; }
+.model-card .k { display: inline-block; min-width: 3em; color: var(--text-3); margin-right: 4px; }
+.model-card-tech { display: flex; flex-wrap: wrap; gap: 4px; margin: 6px 0; }
+.model-card-tech .chip { font-size: 11px; }
+.model-card-extra { border-top: 1px dashed var(--line); padding-top: 4px; }
+.model-card footer { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-top: 6px; font-size: 11px; }
+.insp-models { display: flex; flex-wrap: wrap; gap: 4px; }
+.stats-metric { margin-bottom: 2px; }
+.stats-legend { display: flex; flex-wrap: wrap; gap: 4px 10px; font-size: 11px; margin: 4px 0 0; color: var(--text-2); }
+.stats-legend i { display: inline-block; width: 12px; height: 3px; border-radius: 2px; margin-right: 4px; vertical-align: middle;
+  background: currentColor; }
+.bar-group { font-size: 11px; margin: 8px 0 2px; }
+.model-card-notes { margin: 6px 0; }
+.model-card-notes summary { cursor: pointer; color: var(--text-2); }

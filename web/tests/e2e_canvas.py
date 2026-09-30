@@ -2109,12 +2109,18 @@ async def case_compare(page: Page, ck: Check, vault: Path) -> None:
 # ---------------------------------------------------------------- 参数量图表
 
 async def case_stats(page: Page, ck: Check, vault: Path) -> None:
-    """params 字段 → 两张图。**只画填了的那些**，并且把"多少个没填"写在脸上。"""
-    for nid, path, val in (("甲", "nodes/组A/甲.md", "175B"), ("丙", "nodes/组B/丙.md", "340M"),
-                           ("庚", "nodes/组B/庚.md", "1.3万亿")):
-        f = vault / path
-        f.write_text(f.read_text("utf-8").replace("desc:", f"params: {val}\ndesc:", 1), "utf-8")
-    # 看不懂的写法：只警告，不该让这个点消失，也不该让 index 变成"有错误"
+    """参数量面板读模型目录（2026-09-30 起；型号不是知识节点）。**只画写了的那些**，并把"多少个没写"写在脸上；
+    参数 / 激活 / 上下文 / 训练数据能换着比。"""
+    (vault / "models").mkdir(exist_ok=True)
+    (vault / "models/甲家.md").write_text("---\nkind: family\nname: 甲家\nopen: true\n---\n"
+                                        "## 甲-1\n- 发布:: 2020-06\n- 参数:: 175B\n- 上下文:: 2K\n\n"
+                                        "## 甲-2\n- 发布:: 2023-03\n- 参数:: 1.3万亿\n- 激活:: 37B\n- 上下文:: 128K\n", "utf-8")
+    (vault / "models/乙家.md").write_text("---\nkind: family\nname: 乙家\nopen: false\n---\n"
+                                        "## 乙-1\n- 发布:: 2019-02\n- 参数:: 340M\n\n## 乙-2\n- 参数:: 未披露\n", "utf-8")
+    cfg = vault / ".knowrary/vault.json"
+    doc = json.loads(cfg.read_text("utf-8")) if cfg.exists() else {"schema_version": 1}
+    cfg.write_text(json.dumps({**doc, "models_dir": "models"}), "utf-8")
+    # 知识点上看不懂的 params：只警告，不该让这个点消失，也不该让 index 变成"有错误"
     bad = vault / "nodes/组B/丁.md"
     bad.write_text(bad.read_text("utf-8").replace("desc:", "params: 大概很多\ndesc:", 1), "utf-8")
     await menu_click(page, "重新加载")
@@ -2122,22 +2128,24 @@ async def case_stats(page: Page, ck: Check, vault: Path) -> None:
 
     await switch_mode(page, "全局图")
     await open_rail(page, "参数量")
-    got = json.loads(await poll(page, """JSON.stringify((() => {
+    probe = """JSON.stringify((() => {
       const box = document.querySelector('aside.study')
       if (!box || !box.querySelector('.chart')) return null
-      return { 点: box.querySelectorAll('.chart .pt').length,
-               线: box.querySelectorAll('.chart .ln').length,
+      return { 点: box.querySelectorAll('.chart .pt').length, 线: box.querySelectorAll('.chart path.ln').length,
                柱: [...box.querySelectorAll('.bar-row')].map((r) =>
                  [r.querySelector('.nm').textContent.trim(), r.querySelector('.val').textContent.trim()]),
                刻度: [...box.querySelectorAll('.chart .axis text')].map((t) => t.textContent.trim()),
-               说明: box.querySelector('.dim')?.textContent.replace(/\\s+/g, '') || '' };
-    })())""", lambda v: v and v != "null", timeout=12) or "{}")
-    ck.add("填了 params 的点都进了图", got.get("点") == 3, str(got.get("点")))
-    ck.add("柱状按参数量从大到小排",
-           [x[1] for x in got.get("柱", [])] == ["1.3T", "175B", "340M"], str(got.get("柱")))
+               说明: [...box.querySelectorAll('.dim')].map((d) => d.textContent).join('').replace(/\\s+/g, '') };
+    })())"""
+    got = json.loads(await poll(page, probe, lambda v: v and v != "null", timeout=12) or "{}")
+    ck.add("型号的参数量都进了图（一个家族一条线）", got.get("点") == 3 and got.get("线") == 1, f"{got.get('点')} 点 {got.get('线')} 线")
+    ck.add("柱状按参数量从大到小排", [x[1] for x in got.get("柱", [])] == ["1.3T", "175B", "340M"], str(got.get("柱")))
     ck.add("Y 轴是对数（刻度按 10 的幂走）",
            any(t in ("100M", "1B", "10B", "100B", "1T") for t in got.get("刻度", [])), str(got.get("刻度")))
-    ck.add("说清楚多少个没填", "个填了参数量" in got.get("说明", ""), got.get("说明", "")[:60])
+    ck.add("说清楚多少个没写", "4个型号里3个写了参数" in got.get("说明", ""), got.get("说明", "")[:80])
+    await page.ev("document.querySelector('aside.study [data-metric=\"context_n\"]').click()")
+    ctx = json.loads(await poll(page, probe, lambda v: v and "128K" in v, timeout=4) or "{}")
+    ck.add("换成比上下文", [x[1] for x in ctx.get("柱", [])] == ["128K", "2K"], str(ctx.get("柱")))
     idx = get(page.api + "/api/index")
     ck.add("看不懂的 params 只警告、不丢节点",
            any(d["code"] == "bad_params" for d in idx["warnings"]) and not idx["errors"],
