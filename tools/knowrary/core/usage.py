@@ -18,6 +18,7 @@ SCHEMA_VERSION = 1
 RECENT_KEEP = 200        # 明细留最近多少次调用
 DAYS_KEEP = 60           # 按天汇总留多少天
 TOKEN_KEYS = ("input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens")
+PREFIX_KEEP = 200        # 前缀诊断留最近多少轮
 
 
 def usage_path(vault: Path) -> Path:
@@ -26,7 +27,7 @@ def usage_path(vault: Path) -> Path:
 
 def empty_usage_log() -> dict:
     return {"schema_version": SCHEMA_VERSION, "updated_at": None,
-            "totals": _zero(), "by_day": {}, "by_op": {}, "recent": []}
+            "totals": _zero(), "by_day": {}, "by_op": {}, "recent": [], "prefix": []}
 
 
 def _zero() -> dict:
@@ -47,6 +48,8 @@ def load_usage(vault: Path) -> dict:
         data[key] = {**_zero(), **(data.get(key) or {})}
     data.setdefault("by_day", {})
     data.setdefault("by_op", {})
+    if not isinstance(data.get("prefix"), list):
+        data["prefix"] = []
     data["schema_version"] = SCHEMA_VERSION
     return data
 
@@ -82,6 +85,35 @@ def record(vault: Path, row: dict) -> dict:
     log["updated_at"] = row["ts"]
     write_json_atomic(usage_path(vault), log)
     return log
+
+
+def note_prefix(vault: Path, row: dict) -> None:
+    """记一轮对话的前缀诊断：{op, session, resumed, reason, changed, snapshot}。
+
+    读写比只能说"变贵了"，说不出为什么；这一条记下每轮是续上的还是整段重建的、
+    重建的原因、前缀里哪几块变了，告警时汇总出来（架构提升点 #9）。记不上不拖垮对话。
+    """
+    log = load_usage(vault)
+    ts = dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    log["prefix"] = ([{"ts": ts, **row}] + log["prefix"])[:PREFIX_KEEP]
+    try:
+        write_json_atomic(usage_path(vault), log)
+    except OSError:
+        pass
+
+
+def prefix_today(log: dict, today: str) -> dict:
+    """今天多少轮对话、几轮整段重建、按原因和变掉的块各计几次。新会话是正常的重建，单独数。"""
+    rows = [r for r in log.get("prefix") or [] if _local_day(r.get("ts") or "") == today]
+    why: dict[str, int] = {}
+    for r in rows:
+        keys = [f"{c}变了" for c in r.get("changed") or []] if r.get("reason") == "前缀变了" else [r.get("reason")]
+        for k in keys if not r.get("resumed") else []:
+            why[k or "?"] = why.get(k or "?", 0) + 1
+    return {"turns": len(rows), "rebuilt": sum(1 for r in rows if not r.get("resumed")),
+            "fresh": sum(1 for r in rows if r.get("reason") == "新会话"),
+            "snapshot": sum(1 for r in rows if r.get("snapshot")),
+            "why": dict(sorted(why.items(), key=lambda kv: -kv[1]))}
 
 
 # 缓存命中的常设监控 -------------------------------------------------
@@ -172,7 +204,7 @@ def cache_health(log: dict, today: str | None = None) -> dict:
     line = HEALTHY_RATIO if kind == "ratio" else HEALTHY_HIT
     return {"kind": kind, "ratio": _ratio(agg), "hit_rate": _hit_rate(agg),
             "worst": worst, "healthy": HEALTHY_RATIO, "healthy_hit": HEALTHY_HIT,
-            "window": today, "calls": agg.get("calls") or 0,
+            "window": today, "calls": agg.get("calls") or 0, "prefix": prefix_today(log, today),
             # 样本不够就不判——今天才聊两句就报红，跟累计桶一样没人会再看它
             # （`_worst_op` 里那道 MIN_CALLS 的闸就是这个意思，所以 worst 为空一律算好）
             "ok": worst is None or (worst[kind] or 0) >= line}

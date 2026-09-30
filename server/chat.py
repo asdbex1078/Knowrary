@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import asyncio
 import datetime as dt
+import hashlib
 import json
 import logging
 import os
@@ -1579,21 +1580,37 @@ def _system_prompt(vault: Path, stance: str | None, project: str | None = None) 
     复习关着时，标记块里那几条规矩整段不渲染（见 `_apply_review_switch`）——
     开关只存浏览器的话界面安静了、教练照样每轮催，这就是它要放进 vault 的原因。
     """
-    conf = stance_of(stance)
-    body = _prompt_file(conf["file"])
-    intro, _, rules = body.partition("## 规矩")
-    tools = tools_of(stance, vault)          # 复习关掉时这里已经少了 quiz / record_review
-    table = "\n".join(f"| `{t}` | {TOOL_DOC[t]} |" for t in tools if t in TOOL_DOC)
-    formats = "\n\n".join(FORMAT_DOC[t] for t in tools if t in FORMAT_DOC)
-    text = (_prompt_file("chat")
-            .replace("{{level}}", level_fragment(_project_level(vault, project), "chat"))
-            .replace("{{tools}}", table)
-            .replace("{{formats}}", formats)
-            .replace("{{relations}}", _relations_brief(vault))
-            .replace("{{me}}", _me_brief(vault, project))
-            .replace("{{stance_intro}}", intro.strip())
-            .replace("{{stance_rules}}", rules.strip() or "（没有额外规矩）"))
+    parts = _system_parts(vault, stance, project)
+    text = _prompt_file("chat")
+    for slot, label in SYSTEM_SLOTS.items():
+        text = text.replace(slot, parts[label])
     return _apply_review_switch(text, core.review_in_chat(), core.review_on())
+
+
+# 系统提示词里会变的那几块：占位符 → 给人看的名字。缓存告警按这张表说"是哪一块变了"（架构提升点 #9）
+SYSTEM_SLOTS = {"{{level}}": "档位", "{{tools}}": "工具表", "{{formats}}": "工具格式说明",
+                "{{relations}}": "关系类型", "{{me}}": "侧写", "{{stance_intro}}": "口径说明",
+                "{{stance_rules}}": "口径规矩"}
+
+
+def _system_parts(vault: Path, stance: str | None, project: str | None) -> dict[str, str]:
+    """系统提示词拆成块：按名字给出每一块渲染后的文字。拼提示词和算指纹用同一份。"""
+    intro, _, rules = _prompt_file(stance_of(stance)["file"]).partition("## 规矩")
+    tools = tools_of(stance, vault)          # 复习关掉时这里已经少了 quiz / record_review
+    return {"档位": level_fragment(_project_level(vault, project), "chat"),
+            "工具表": "\n".join(f"| `{t}` | {TOOL_DOC[t]} |" for t in tools if t in TOOL_DOC),
+            "工具格式说明": "\n\n".join(FORMAT_DOC[t] for t in tools if t in FORMAT_DOC),
+            "关系类型": _relations_brief(vault), "侧写": _me_brief(vault, project),
+            "口径说明": intro.strip(), "口径规矩": rules.strip() or "（没有额外规矩）"}
+
+
+def _prefix_parts(vault: Path, req: ChatRequest, tools: list[dict]) -> dict[str, str]:
+    """前缀里每一块的短指纹。两轮之间哪块指纹变了，缓存就断在哪块——告警直接说出名字，
+    不用再去猜"是时间、节点数还是没排序的 JSON"。"""
+    parts = _system_parts(vault, req.stance, req.project)
+    parts["复习开关"] = f"{core.review_in_chat()}/{core.review_on()}"
+    parts["工具 schema"] = json.dumps(tools, ensure_ascii=False, sort_keys=True)
+    return {k: hashlib.sha1(v.encode("utf-8")).hexdigest()[:10] for k, v in parts.items()}
 
 
 SNAP_HEAD = "## 我的图谱现在是什么样"
@@ -1860,9 +1877,10 @@ def _assemble(vault: Path, req: ChatRequest, history: list[dict], dropped: int) 
     两条路要的是同一件事，前面那一截一个字都别动。
     前端回传的可见轮次不再用来重建上下文，只用来证明"这一段没被改过"（见 turns.resume）。
     """
-    prior = _still_valid(turns.resume(vault, llm_session_key(req), history),
-                         _system_prompt(vault, req.stance, req.project))
+    cached = turns.resume(vault, llm_session_key(req), history)
+    prior = _still_valid(cached, _system_prompt(vault, req.stance, req.project))
     messages = [*prior, history[-1]] if prior else _rebuild(vault, req, history, dropped)
+    how = {"resumed": bool(prior), "matched": cached is not None, "snapshot": False}
     # 图谱现状挂在**队尾**，不进顶层 system（见 _graph_snapshot）。
     # 工具循环随后往后追加 assistant / 工具结果，它就夹在中间——这是允许的位置
     # （mid-conversation system message 要么是最后一条，要么后面跟着 assistant）。
@@ -1870,7 +1888,36 @@ def _assemble(vault: Path, req: ChatRequest, history: list[dict], dropped: int) 
     snapshot = _graph_snapshot(vault)
     if _last_snapshot(messages) != snapshot:
         messages.append({"role": "system", "content": snapshot})
-    return messages
+        how["snapshot"] = bool(prior)        # 续上了还得追加一条：不断前缀，但这一截要新写缓存
+    return messages, how
+
+
+def _note_prefix(vault: Path, req: ChatRequest, how: dict, parts: dict[str, str]) -> None:
+    """这一轮前缀是续上的还是整段重建的、重建是为什么、哪几块变了，记进用量账本。
+
+    读写比掉下来的时候，账本只能说"变贵了"；这里记下原因，告警时直接列出来（架构提升点 #9）。
+    原因只有三种：新会话（没有可续的）、可见轮次对不上（前端改过 / 删过历史）、前缀里某块变了。
+    """
+    key = llm_session_key(req)
+    before = turns.parts_of(vault, key)
+    changed = sorted(k for k in parts if before and before.get(k) != parts[k])
+    if how["resumed"]:
+        reason = ""
+    elif before is None:
+        reason = "新会话"
+    else:
+        reason = "前缀变了" if how["matched"] else "可见轮次对不上"
+    core.note_prefix(vault, {"op": f"chat-{req.stance or DEFAULT_STANCE}", "session": key,
+                             "resumed": how["resumed"], "reason": reason, "changed": changed,
+                             "snapshot": how["snapshot"]})
+
+
+def _try_note_prefix(vault: Path, req: ChatRequest, how: dict, parts: dict[str, str]) -> None:
+    """诊断是旁路：记不上、算炸了都不能让这一轮对话起不来（同用量账本那条纪律）。"""
+    try:
+        _note_prefix(vault, req, how, parts)
+    except Exception as exc:                  # noqa: BLE001
+        log.warning("前缀诊断没记上：%s: %s", type(exc).__name__, exc)
 
 
 def _invoke(vault: Path, name: str, args: dict, allowed: set, cached: str | None) -> tuple[str, dict]:
@@ -2027,7 +2074,8 @@ def _wrap_up(vault: Path, req: ChatRequest, history: list[dict], turn: dict):
     if turn["last_raw"] and answer.strip():
         turns.remember(vault, llm_session_key(req),
                        visible=[*history, {"role": "assistant", "content": answer}],
-                       messages=[*turn["messages"], {"role": "assistant", "content": turn["last_raw"]}])
+                       messages=[*turn["messages"], {"role": "assistant", "content": turn["last_raw"]}],
+                       parts=turn.get("parts"))
     ts = append_log(vault, "assistant", answer, node_ids=touched, project=req.project,
                     session=req.session, stance=req.stance or DEFAULT_STANCE, trace=trace,
                     cards=turn["cards"])
@@ -2052,11 +2100,13 @@ def _run(vault: Path, req: ChatRequest, cards: list[dict]):
         "said": [],            # 过程：每一次"还要接着调工具"的那段话
         "answer": "",
         "last_raw": "",        # 收尾那段的**原文**：存进续接缓存的是它，不是剥过工具块的版本
-        "messages": _assemble(vault, req, history, dropped),
         "usage": {},
         "cards": cards,        # 这一轮摆出来的卡，收尾时跟着回复一起留档
     }
     tools = tool_schemas(allowed)
+    turn["messages"], how = _assemble(vault, req, history, dropped)
+    turn["parts"] = _prefix_parts(vault, req, tools)
+    _try_note_prefix(vault, req, how, turn["parts"])
     for _ in range(MAX_STEPS):
         text, calls = "", []
         for ev in _stream(vault, turn["messages"], tools, op=f"chat-{req.stance or DEFAULT_STANCE}",

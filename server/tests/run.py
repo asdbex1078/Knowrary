@@ -4004,6 +4004,42 @@ def chat_会话中途关掉复习_续接时系统提示词跟着换_和schema是
 
 
 @case
+def chat_缓存告警能说出是哪一块变了():
+    """架构提升点 #9（2026-09-29）：读写比掉了只能说"变贵了"。每轮记下前缀是续上的还是重建的、
+    为什么重建、哪几块变了，用量接口按今天汇总——告警时直接列出来，不用猜。"""
+    c, vault, _ = with_inbox_node()
+
+    def 发一轮(msgs):
+        original, _ = stub_chat(["好"])
+        try:
+            c.post("/api/chat", json={"messages": msgs, "session": "s9", "stance": "教练"})
+        finally:
+            restore_chat(original)
+
+    one = [{"role": "user", "content": "第一句"}]
+    two = [*one, {"role": "assistant", "content": "好"}, {"role": "user", "content": "第二句"}]
+    three = [*two, {"role": "assistant", "content": "好"}, {"role": "user", "content": "第三句"}]
+    was = core.load_settings()
+    core.save_settings({"review_enabled": True, "review_in_chat": True})
+    try:
+        发一轮(one)
+        发一轮(two)
+        core.save_settings({"review_in_chat": False})
+        发一轮(three)
+        发一轮([*three[:-3], {"role": "assistant", "content": "被我改过的回答"}, *three[-2:]])
+    finally:
+        core.save_settings({k: was[k] for k in ("review_enabled", "review_in_chat")})
+    rows = list(reversed(core.load_usage(vault)["prefix"]))
+    assert [(r["resumed"], r["reason"]) for r in rows] == [
+        (False, "新会话"), (True, ""), (False, "前缀变了"), (False, "可见轮次对不上")], rows
+    assert {"工具表", "工具 schema", "复习开关"} <= set(rows[2]["changed"]), rows[2]["changed"]
+    assert "关系类型" not in rows[2]["changed"] and rows[1]["changed"] == [], "没变的块不许报"
+    pre = c.get("/api/llm/usage").json()["cache"]["prefix"]
+    assert pre["turns"] == 4 and pre["rebuilt"] == 3 and pre["fresh"] == 1, pre
+    assert pre["why"]["工具表变了"] == 1 and pre["why"]["可见轮次对不上"] == 1 and pre["why"]["新会话"] == 1, pre
+
+
+@case
 def chat_第二轮接着上一轮的完整上下文往下发():
     """**这一条是 §11.2 的护栏。**
 

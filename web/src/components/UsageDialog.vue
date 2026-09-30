@@ -53,6 +53,13 @@ const totalMetric = computed(() =>
 const hasTotal = computed(() =>
   (byHit.value ? props.usage.totals.cache_hit_rate != null : !!props.usage.totals.cache_ratio))
 
+/** 今天整段重建的原因，按次数排好：「工具表变了 2 · 可见轮次对不上 1」（架构提升点 #9）。新会话是正常的，排最后。 */
+const rebuildWhy = computed(() => {
+  const why = props.usage.cache?.prefix?.why || {}
+  const keys = Object.keys(why).sort((a, b) => (a === '新会话') - (b === '新会话') || why[b] - why[a])
+  return keys.map((k) => `${k} ${why[k]}`).join(' · ')
+})
+
 function onKey(ev) { if (ev.key === 'Escape') { ev.stopPropagation(); emit('close') } }
 onMounted(() => document.addEventListener('keydown', onKey, true))
 onBeforeUnmount(() => document.removeEventListener('keydown', onKey, true))
@@ -101,6 +108,15 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onKey, true))
           <span v-else-if="usage.cache" class="dim">
             · 今天 {{ usage.cache.calls }} 次多轮调用，还不够判</span>
           <span v-if="hasTotal" class="dim">　累计 {{ totalMetric }}</span></dd>
+        <!-- 缓存为什么断：每轮记下前缀是续上的还是整段重建的、重建的原因、哪几块变了 -->
+        <dt>前缀<span class="dim">（今天）</span></dt>
+        <dd v-if="usage.cache?.prefix?.turns" data-prefix>
+          {{ usage.cache.prefix.turns }} 轮对话，续上 {{ usage.cache.prefix.turns - usage.cache.prefix.rebuilt }} 轮<template
+            v-if="usage.cache.prefix.rebuilt">，整段重建 {{ usage.cache.prefix.rebuilt }} 轮<span
+            class="dim">（{{ rebuildWhy }}）</span></template>
+          <span v-if="usage.cache.prefix.snapshot" class="dim">
+            · 图谱快照追加 {{ usage.cache.prefix.snapshot }} 次（不断前缀）</span></dd>
+        <dd v-else class="dim">今天还没聊过</dd>
         <!-- 花了多少 vs 换来了什么。**这两个数来自两份互不相干的流水**（账本 + 卡片流水），
              在接口里才第一次拼到一起；这里不存任何摊派过的金额 -->
         <dt>卡片产出<span class="dim">（今天）</span></dt>
@@ -122,6 +138,7 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onKey, true))
         缓存失效不报错、答案也全对，只有账单在涨——健康的多轮循环应该在 5-10×。
         先查前缀里是不是混进了会变的东西（时间、节点数、未排序的 JSON）；
         要是聊天本来就隔了十几分钟一句，那只是 5 分钟缓存到期，不是前缀出了问题。
+        <template v-if="rebuildWhy">今天整段重建的原因：{{ rebuildWhy }}。</template>
       </p>
       <p v-else-if="usage.cache && !usage.cache.ok" class="warn-text"
          style="font-size: 11.5px; line-height: 1.6">
@@ -131,6 +148,7 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onKey, true))
         排除掉它之后再看这三条：换 provider 的第一次调用永远全价；上一次请求刚结束就紧接着发，
         对面的隐式缓存还没写进去；隔几分钟再发有时只命中系统提示那一截（这一路是 best-effort，
         不保证命中，不是你这边前缀变了）。
+        <template v-if="rebuildWhy">今天整段重建的原因：{{ rebuildWhy }}。</template>
       </p>
       <p v-if="!usage.cost_known" class="dim" style="font-size: 11.5px; line-height: 1.6">
         当前 provider 不返回花销，所以这里只有 token 数。**不按型号估价**——价目表会过期，

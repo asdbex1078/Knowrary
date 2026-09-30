@@ -1198,6 +1198,8 @@ class CacheHealth(Strict):
     window: str = ""                   # 这个比值算的是哪一天（本地日期）
     calls: int = 0                     # 这一天有几次多轮调用；太少就别急着信这个数
     ok: bool = True
+    # 前缀诊断（架构提升点 #9）：{turns, rebuilt, fresh, snapshot, why: {原因 / 「X变了」: 次数}}
+    prefix: dict[str, Any] = Field(default_factory=dict)
 
 
 class SettingsRead(Strict):
