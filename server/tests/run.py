@@ -1632,6 +1632,53 @@ def rename_落盘前整份备份():
     assert ".knowrary/layout.json" in kept, kept              # 机器数据也要带上，否则位置找不回来
 
 
+def _state(vault: Path) -> dict:
+    """md 全部内容 + 四份机器数据的字节——用来证明"恢复到了动手之前"。"""
+    side = {n: (vault / ".knowrary" / n).read_bytes() if (vault / ".knowrary" / n).exists() else None
+            for n in core.rename.SIDE_FILES}
+    return {"md": md_digest(vault), "files": sorted(str(p.relative_to(vault)) for p in core.walk_md(vault)), **side}
+
+
+@case
+def rename_合并写到一半失败_按快照恢复到动手之前():
+    """架构提升点 #2（2026-09-29）：改名 / 合并要改一串 md、挪文件、再改四份机器数据，没有事务。
+    以前改到机器数据那一步炸了，md 已经改了、文件已经挪了，只能自己翻 backup。现在自动恢复。"""
+    from core import merge as merge_mod, rename as rename_mod
+
+    def boom(*_a, **_k):
+        raise OSError("磁盘满了")
+
+    c, vault, _ = with_inbox_node()
+    c.get("/api/layout")
+    c.post("/api/quiz/grade", json={"answers": [{**q("A 是什么", ["a"]), "grade": "忘了"}]})
+    before = _state(vault)
+    rev = c.get("/api/index").json()["revision"]
+    original, rename_mod._rewrite_records = rename_mod._rewrite_records, boom
+    try:
+        r = c.post("/api/rename", json={"old_id": "a", "new_id": "甲", "base_revision": rev, "dry_run": False})
+    finally:
+        rename_mod._rewrite_records = original
+    assert r.status_code == 500 and "已经恢复到动手之前" in r.json()["detail"] and "磁盘满了" in r.json()["detail"], r.text
+    assert _state(vault) == before, "md、文件路径、layout、记录都要回到改名之前"
+    assert not (vault / "nodes/组A/甲.md").exists(), "改名后的新文件要删掉"
+    assert c.get("/api/node/a").status_code == 200, "索引也要跟着回来"
+    ok = c.post("/api/rename", json={"old_id": "a", "new_id": "甲", "base_revision": c.get("/api/index").json()["revision"],
+                                     "dry_run": False})
+    assert ok.status_code == 200 and ok.json()["applied"], "恢复之后能照常再改一次"
+
+    c, vault = dup_vault()
+    c.get("/api/layout")
+    before = _state(vault)
+    rev = c.get("/api/index").json()["revision"]
+    original, merge_mod._merge_records = merge_mod._merge_records, boom
+    try:
+        r = c.post("/api/merge", json={"keep_id": "a", "drop_id": "甲", "base_revision": rev, "dry_run": False})
+    finally:
+        merge_mod._merge_records = original
+    assert r.status_code == 500 and "合并写到一半失败" in r.json()["detail"], r.text
+    assert _state(vault) == before and (vault / "nodes/组A/甲.md").exists(), "被删的那张要回来"
+
+
 @case
 def index_挪动文件后路径跟着更新():
     """改名和移动都不改 mtime、也不改文件数——指纹只看这两样的话，索引会一直指向旧路径。"""

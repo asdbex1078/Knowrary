@@ -63,7 +63,7 @@ from .near import (candidates as near_candidates, for_changes as near_for_change
                    relink_in_plan)
 from .pending import (LOCK as PENDING_LOCK, add_curated, load_curated, add_home, add_pending, add_type_proposals, edge_key, settle_type, load_homes, load_pending, pending_path, reject_pending,
                       remove_pending, restore_rejected)
-from .rename import RenameRejected, apply_rename, backup_rename, plan_rename
+from .rename import RenameRejected, RolledBack, apply_rename, backup_rename, guarded, plan_rename
 from .review import GRADES, due_nodes, load_log, next_due_for, record_review
 from .schools import DOMAIN_TYPE, LINE_TYPES, SCHOOL_TYPE, line_homes, school_of, schools
 from .writer import (CHANGE_TYPES, EDITABLE_FIELDS, ChangeRejected, FileEdit, WriteConflict,
@@ -103,7 +103,7 @@ __all__ = [
     "normalize_claims", "project_points",
     "EDGE_VERDICTS", "edge_fix_changes", "fresh_edge_checks", "mark_edge_check", "record_edge_checks",
     "near_candidates", "near_for_changes", "relink_changes", "relink_in_plan", "PENDING_LOCK", "add_curated", "load_curated", "add_pending", "add_type_proposals", "settle_type", "TypeRejected", "register_type", "edge_key", "load_pending", "pending_path", "reject_pending", "remove_pending", "restore_rejected", "add_home", "load_homes", "plan_field_group",
-    "MergeRejected", "RenameRejected", "apply_merge", "apply_rename", "backup_rename",
+    "MergeRejected", "RenameRejected", "RolledBack", "guarded", "apply_merge", "apply_rename", "backup_rename",
     "plan_merge", "plan_rename",
     "save_projects", "target_group", "decide_group", "inbox_cluster", "wrong_nodes",
     "CELL_H", "LAYOUT_SCHEMA_VERSION", "build_project_layout", "NODE_H", "NODE_W", "WriteConflict", "apply_to_text", "backup", "commit", "digest_of", "plan",

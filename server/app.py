@@ -777,9 +777,12 @@ def post_rename(req: RenameRequest) -> RenameResult:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     if req.dry_run:
         return RenameResult(impact=RenameImpact(**impact), index_revision=index["revision"])
-    core.backup_rename(vault, impact)
-    core.apply_rename(vault, impact)
-    invalidate(vault)
+    try:
+        core.guarded(vault, impact, "rename", lambda: core.apply_rename(vault, impact), [impact["new_path"]])
+    except core.RolledBack as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    finally:
+        invalidate(vault)
     return RenameResult(impact=RenameImpact(**impact), applied=True,
                         index_revision=current_index(vault)["revision"])
 
@@ -802,10 +805,13 @@ def post_merge(req: MergeRequest) -> MergeResult:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     if req.dry_run:
         return MergeResult(impact=MergeImpact(**impact), index_revision=index["revision"])
-    core.backup_rename(vault, {"path": impact["drop_path"],
-                               "files": [impact["keep_path"], *impact["files"]]}, op="merge")
-    core.apply_merge(vault, impact)
-    invalidate(vault)
+    snapshot = {"path": impact["drop_path"], "files": [impact["keep_path"], *impact["files"]]}
+    try:
+        core.guarded(vault, snapshot, "merge", lambda: core.apply_merge(vault, impact), [])
+    except core.RolledBack as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    finally:
+        invalidate(vault)
     return MergeResult(impact=MergeImpact(**impact), applied=True,
                        index_revision=current_index(vault)["revision"])
 

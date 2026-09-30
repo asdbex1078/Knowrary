@@ -14,6 +14,7 @@ from pathlib import Path
 
 import datetime as dt
 import shutil
+from typing import Callable
 
 from .mdio import load_json, read, walk_md, write, write_json_atomic
 
@@ -177,8 +178,7 @@ def backup_rename(vault: Path, impact: dict, op: str = "rename") -> str:
     """
     stamp = dt.datetime.now().strftime("%Y%m%d-%H%M%S")
     root = vault / ".knowrary" / "backup" / f"{op}-{stamp}"
-    rels = [impact["path"], *impact["files"], *(f".knowrary/{n}" for n in SIDE_FILES)]
-    for rel in dict.fromkeys(rels):                  # 去重且保持顺序
+    for rel in _snapshot_rels(impact):
         src = vault / rel
         if not src.exists():
             continue
@@ -186,6 +186,50 @@ def backup_rename(vault: Path, impact: dict, op: str = "rename") -> str:
         dst.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(src, dst)
     return str(root.relative_to(vault))
+
+
+def _snapshot_rels(impact: dict) -> list[str]:
+    rels = [impact["path"], *impact["files"], *(f".knowrary/{n}" for n in SIDE_FILES)]
+    return list(dict.fromkeys(rels))                 # 去重且保持顺序
+
+
+class RolledBack(RuntimeError):
+    """改名 / 合并写到一半失败了，已经按快照恢复到动手之前。`backup` 是那份快照。"""
+
+    def __init__(self, message: str, backup: str):
+        super().__init__(message)
+        self.backup = backup
+
+
+def restore_snapshot(vault: Path, backup: str, impact: dict, created: list[str]) -> None:
+    """按快照恢复：快照里有的原样拷回去；快照里没有的（动手前不存在）和 `created` 里新建的删掉。"""
+    root = vault / backup
+    for rel in _snapshot_rels(impact):
+        src, dst = root / rel, vault / rel
+        if src.exists():
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src, dst)
+        elif dst.exists():
+            dst.unlink()
+    for rel in created:
+        (vault / rel).unlink(missing_ok=True)
+
+
+def guarded(vault: Path, snapshot: dict, op: str, apply: Callable[[], object], created: list[str]) -> str:
+    """先快照再动手；中途任何一步炸了，按快照恢复再抛 `RolledBack`（原始错误挂在 __cause__ 上）。
+
+    改名 / 合并要改一串 md、挪文件、再改四份机器数据，没有事务：以前失败了就停在半路，
+    md 改了、JSON 改了一半，只能自己翻 backup（架构提升点 #2）。快照本来就有，失败时读回来就行。
+    `created` 是这次会新建的文件（改名后的新路径），动手前不存在，恢复时要删掉。返回快照路径。
+    """
+    backup = backup_rename(vault, snapshot, op=op)
+    try:
+        apply()
+    except Exception as exc:
+        restore_snapshot(vault, backup, snapshot, created)
+        raise RolledBack(f"{'改名' if op == 'rename' else '合并'}写到一半失败了，已经恢复到动手之前"
+                         f"（{type(exc).__name__}: {exc}；快照在 {backup}）", backup) from exc
+    return backup
 
 
 def apply_rename(vault: Path, impact: dict) -> dict:
