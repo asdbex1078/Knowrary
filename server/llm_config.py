@@ -79,7 +79,9 @@ def _build(payload: dict) -> dict:
         prev = row.get(PREV_NAME) or name
         old_row = next((old_providers[k] for k in (name, prev)
                         if isinstance(old_providers.get(k), dict)), {})
-        provider = {k: old_row[k] for k in old_row if str(k).startswith("_")}
+        # 设置页不管的键（`_` 注释、手写的 first_byte_timeout / idle_timeout 等）原样留着，
+        # 不然在页面上点一次保存，手写进配置的东西就静默消失
+        provider = {k: old_row[k] for k in old_row if str(k).startswith("_") or k not in EDITABLE_KEYS}
         for key in EDITABLE_KEYS:
             if key not in row:
                 continue

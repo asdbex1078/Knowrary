@@ -14,6 +14,7 @@ import os
 import shutil
 import sys
 import tempfile
+import threading
 import time
 import traceback
 from pathlib import Path
@@ -31,7 +32,7 @@ os.environ.pop("KNOWRARY_LLM_CONFIG", None)
 
 from fastapi.testclient import TestClient  # noqa: E402
 
-from server import index_service  # noqa: E402
+from server import index_service, llm_breaker  # noqa: E402
 from server.app import app  # noqa: E402
 from server import assets as server_assets  # noqa: E402
 from server.paths import core  # noqa: E402
@@ -69,6 +70,7 @@ def make_vault(files: dict[str, str] | None = None) -> Path:
     # 共用一份的话，前一条关掉的复习会串到后一条——"今日"清单莫名其妙变空，查半天。
     os.environ["KNOWRARY_HOME"] = tempfile.mkdtemp(prefix="knowrary-home-")
     index_service.invalidate()
+    llm_breaker.reset()                 # 熔断记在进程内存里：前一条用例撞的 401 不能串到后一条
     return vault
 
 
@@ -4205,6 +4207,68 @@ def llm_换了provider之后缓存那盏灯不能跟着熄():
     assert cli["hit_rate"] is None, cli            # 5000× 那种假数不许出现在契约里
 
 
+def _flaky_openai(codes: list[int]):
+    """本地假 OpenAI 兼容接口：按 codes 依次回状态码（200 回一句「好」），记下被请求了几次。"""
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    hits = []
+
+    class H(BaseHTTPRequestHandler):
+        def do_POST(self):  # noqa: N802
+            self.rfile.read(int(self.headers["Content-Length"]))
+            code = codes[min(len(hits), len(codes) - 1)]
+            hits.append(code)
+            body = (json.dumps({"model": "m", "usage": {}, "choices": [{"message": {"content": "好"}}]})
+                    if code == 200 else '{"error":{"message":"invalid api key"}}').encode()
+            self.send_response(code)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *a):
+            pass
+
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), H)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    return f"http://127.0.0.1:{srv.server_port}/v1", hits, srv
+
+
+@case
+def llm_密钥被拒就熔断_之后不再白发请求_改了配置自动恢复():
+    """架构提升点 #15（2026-09-30）：401 本来不重试，但下一次照样发、照样失败——批量导入时每篇文章都撞一次。
+    现在第一次就说清去哪儿改、并熔断；之后不发请求直接报；配置文件一改就自动解除。"""
+    from server import llm_call
+    vault = make_vault()
+    base, hits, srv = _flaky_openai([401, 200])      # 第一次 401，之后再有请求进来就回 200
+    home = llm_home()
+    cfg = {"providers": {"q": {"type": "openai", "base_url": base, "model": "m", "api_key": "old-key"}},
+           "roles": {"learn": "q", "review": "q"}}
+    core.write(home / "llm.local.json", json.dumps(cfg, ensure_ascii=False))
+    try:
+        for i in range(2):
+            try:
+                llm_call.ask_meta(vault, "review", "在吗", op="t")
+                raise AssertionError("401 却没报错")
+            except llm_call.LLMFailed as exc:
+                msg = str(exc)
+            assert "设置 → 模型" in msg and "provider `q`" in msg and "HTTP 401" in msg, msg
+            assert ("没有发请求" in msg) == (i == 1), (i, msg)
+        assert hits == [401], ("熔断之后不该再发请求", hits)
+        try:
+            llm_call.chat(vault, "learn", [{"role": "user", "content": "在吗"}])
+            raise AssertionError("chat 那条路也该被挡住")
+        except llm_call.LLMFailed as exc:
+            assert "没有发请求" in str(exc), exc
+        assert hits == [401], hits
+
+        cfg["providers"]["q"]["api_key"] = "new-key"
+        core.write(home / "llm.local.json", json.dumps(cfg, ensure_ascii=False))
+        text, _ = llm_call.ask_meta(vault, "review", "在吗", op="t")
+        assert text == "好" and hits == [401, 200], ("改了配置就该放行", hits)
+    finally:
+        srv.shutdown()
+
+
 @case
 def usage_不报价的provider不该摆出一个0元():
     """`cost_known` **只看当前角色指向谁**，不看账本里有没有历史金额。
@@ -6596,7 +6660,7 @@ def llm_两家的流式工具调用都能跑通一整趟():
     sent: list = []
     original = backend._sse
 
-    def anthropic_stream(url, headers, payload):
+    def anthropic_stream(url, headers, payload, timeouts=None):
         sent.append(payload)
         yield "message_start", {"message": {"usage": {"input_tokens": 9}}}
         yield "content_block_delta", {"index": 0, "delta": {"text": "我查一下"}}
@@ -6620,7 +6684,7 @@ def llm_两家的流式工具调用都能跑通一整趟():
 
     sent.clear()
 
-    def openai_stream(url, headers, payload):
+    def openai_stream(url, headers, payload, timeouts=None):
         sent.append(payload)
         yield "", {"choices": [{"delta": {"content": "我查一下"}}]}
         yield "", {"choices": [{"delta": {"tool_calls": [
@@ -6863,6 +6927,26 @@ def 保存新增的provider不碰别人的密钥和注释():
     assert saved["providers"]["qwen3-plus"]["api_key"] == "sk-new", saved
     assert saved["_说明"] == LLM_CFG["_说明"] and "_说明" in saved["roles"], "注释行被吃了"
     assert (Path(os.environ["KNOWRARY_HOME"]) / "backup").exists(), "改配置前没留备份"
+
+
+@case
+def 设置页保存不吃掉手写进配置的键_清空的字段照样清空():
+    """2026-09-30：超时（first_byte_timeout / idle_timeout）只能手写进配置，设置页没有这两格。
+    原来保存时只留设置页认识的字段，点一次保存手写的东西就静默消失。"""
+    c, _ = llm_client()
+    path = Path(os.environ["KNOWRARY_HOME"]) / "llm.local.json"
+    cfg = json.loads(path.read_text("utf-8"))
+    cfg["providers"]["bailian"].update({"idle_timeout": 240, "first_byte_timeout": 400})
+    core.write_json_atomic(path, cfg)
+    draft = [dict(p, api_key="") for p in c.get("/api/llm/config").json()["providers"]]
+    for row in draft:
+        if row["name"] == "bailian":
+            row["max_tokens"] = None                 # 在页面上把这格清空
+    r = c.put("/api/llm/config", json={"providers": draft, "roles": {"learn": "bailian", "review": "bailian"}})
+    assert r.status_code == 200, r.text
+    saved = json.loads(path.read_text("utf-8"))["providers"]["bailian"]
+    assert saved["idle_timeout"] == 240 and saved["first_byte_timeout"] == 400, saved
+    assert "max_tokens" not in saved and saved["api_key"] == "sk-old", saved
 
 
 @case

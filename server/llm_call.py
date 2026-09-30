@@ -10,6 +10,7 @@ import logging
 import time
 from pathlib import Path
 
+from . import llm_breaker
 from .paths import core  # 副作用：把 tools/knowrary/ 注入 sys.path；同时用它的 record_usage
 
 import llm_backend  # noqa: E402  （必须在 paths 之后）
@@ -43,6 +44,7 @@ def ask_meta(vault: Path, role: str, prompt: str, op: str = "?") -> tuple[str, d
     """
     cfg, _ = llm_backend.load_config()
     name, provider = llm_backend.resolve_provider(cfg, role)
+    _halted(role, name, provider)
     started = time.monotonic()
     row = {"op": op, "role": role, "provider": name, "model": provider.get("model")}
     try:
@@ -73,6 +75,7 @@ def chat(vault: Path, role: str, messages: list[dict], tools: list[dict] | None 
     llm_backend.use_session_store(vault / ".knowrary" / "cli-sessions.json")
     cfg, _ = llm_backend.load_config()
     name, provider = llm_backend.resolve_provider(cfg, role)
+    _halted(role, name, provider)
     started = time.monotonic()
     row = {"op": op, "role": role, "provider": name, "model": provider.get("model")}
     try:
@@ -92,10 +95,23 @@ def _with_context(exc: BaseException, role: str, name: str, provider: dict) -> B
     原来只有一句 "LLM 请求失败 HTTP 503（某个 url）"，而 url 上看不出这是 learn 还是 review、
     用的是配置里哪一条——配了多个 provider 时，第一件事就是猜"到底是谁炸了"。
     """
-    head = f"[{role} 角色 · provider `{name}` · 模型 {provider.get('model') or '(默认)'}] "
+    head = _head(role, name, provider)
     if isinstance(exc, SystemExit):
-        return LLMFailed(head + str(exc))
+        # 认证 / 欠费：先说该去哪儿改，原始报错跟在后面；并且熔断，之后不再白发请求
+        tip = llm_breaker.trip(name, exc)
+        return LLMFailed(head + (f"{tip}\n" if tip else "") + str(exc))
     return exc
+
+
+def _head(role: str, name: str, provider: dict) -> str:
+    return f"[{role} 角色 · provider `{name}` · 模型 {provider.get('model') or '(默认)'}] "
+
+
+def _halted(role: str, name: str, provider: dict) -> None:
+    """这个 provider 因为认证 / 欠费熔断着：不发请求，直接说去哪儿改（架构提升点 #15）。"""
+    tip = llm_breaker.check(name)
+    if tip:
+        raise LLMFailed(_head(role, name, provider) + tip)
 
 
 def _ms(started: float) -> int:

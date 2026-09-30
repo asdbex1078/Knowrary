@@ -18,13 +18,19 @@ anthropic / openai 走原生 tool use；claude-cli 是子进程、没有结构�
 """
 from __future__ import annotations
 
+import atexit
+import datetime as dt
+import email.utils
 import hashlib
 import http.client
 import importlib.util
 import json
 import os
+import random
 import re
+import signal
 import subprocess
+import threading
 import time
 import urllib.error
 import uuid
@@ -42,9 +48,39 @@ DEFAULT_CONFIG = {
     "providers": {"claude-cli": {"type": "claude-cli"}},
     "roles": {"learn": "claude-cli", "review": "claude-cli"},
 }
-TIMEOUT = 900
-RETRY_WAITS = (1.0, 3.0)                 # 连接类失败重试两次，之间等这么久
-RETRY_STATUS = frozenset({408, 425, 429, 500, 502, 503, 504})
+TIMEOUT = 900                            # 总上限；非流式请求只有这一道（整段生成完才有第一个字节）
+# 流式的两道（架构提升点 #13）：原来 900 秒一刀切，连接卡住要干等 15 分钟才报错。
+# 默认值比实测最慢的一次（claude-cli 190 秒）还宽，只拦真卡死的；provider 上可用同名键覆盖
+FIRST_BYTE_TIMEOUT = 300                 # 发出请求到收到第一段
+IDLE_TIMEOUT = 180                       # 两段输出之间
+CLI_IDLE_TIMEOUT = 300                   # claude -p 多久没有任何 stdout 就结束它
+RETRY_WAITS = (1.0, 3.0)                 # 瞬时失败重试两次的基础等待；实际再加最多 25% 的随机抖动
+RETRY_JITTER = 0.25
+RETRY_AFTER_CAP = 60.0                   # 对方让等超过这么久就不等了，直接报出来（别让人干等几分钟）
+# 529 是 Anthropic 的「过载」：原来不在这张表里，走 REST 的 anthropic 一过载就一次都不重试
+RETRY_STATUS = frozenset({408, 425, 429, 500, 502, 503, 504, 529})
+_sleep = time.sleep                      # 用例替换它，量等了多久而不真等
+
+
+def error_kind(code: int | None, detail: str = "") -> str:
+    """一次失败属于哪一类：auth / billing / rate_limit / overload / transient / other。
+
+    重试、熔断、界面提示都按这一个分类走，不各自去猜报错文案。
+    欠费有的家回 402，有的回 400 / 429 再在正文里说（OpenAI `insufficient_quota`、
+    百炼 `Arrearage`、Anthropic `credit balance`），所以正文也要看一眼。
+    """
+    low = (detail or "").lower()
+    if code == 402 or any(k in low for k in ("insufficient_quota", "arrearage", "credit balance", "余额不足", "欠费")):
+        return "billing"
+    if code in (401, 403):
+        return "auth"
+    if code == 429:
+        return "rate_limit"
+    if code in (503, 529):
+        return "overload"
+    if code is None or code in RETRY_STATUS:
+        return "transient"
+    return "other"
 
 
 class LLMConfigError(SystemExit):
@@ -52,13 +88,29 @@ class LLMConfigError(SystemExit):
 
 
 class LLMTransient(SystemExit):
-    """这一次没通，但**再试一次多半就通**：连接被掐、读到一半断、429 / 5xx。
+    """这一次没通，但**再试一次多半就通**：连接被掐、读到一半断、429 / 5xx / 529。
 
     单列一类是为了让重试有个准确的判据。按报错文案去猜"这是不是网络问题"迟早猜错，
     而把配置错、4xx 也重试一遍，只是把同一个错再犯两遍、白等四秒。
     仍然继承 `SystemExit`：CLI 那侧的行为一个字没变，服务侧照旧在 `llm_call` 里
     换成 `LLMFailed`，顺带盖上角色 / provider / 模型的前缀。
+
+    `kind` 是 `error_kind` 的分类（rate_limit / overload / transient），
+    `retry_after` 是对方在 `Retry-After` 里说的秒数（没说就是 None）。
     """
+
+    def __init__(self, msg: str, kind: str = "transient", retry_after: float | None = None):
+        super().__init__(msg)
+        self.kind = kind
+        self.retry_after = retry_after
+
+
+class LLMRejected(SystemExit):
+    """不是抖动、再试也一样：认证失败、欠费、参数错。`kind` 同 `error_kind`（auth / billing / other）。"""
+
+    def __init__(self, msg: str, kind: str = "other"):
+        super().__init__(msg)
+        self.kind = kind
 
 
 # ---------------------------------------------------------------- 配置
@@ -203,10 +255,26 @@ def _retrying(run, spoke: dict | None = None):
     for wait in RETRY_WAITS + (None,):
         try:
             return run()
-        except LLMTransient:
-            if wait is None or (spoke or {}).get("n"):
+        except LLMTransient as exc:
+            delay = _retry_delay(exc, wait)
+            if delay is None or (spoke or {}).get("n"):
                 raise
-            time.sleep(wait)
+            _sleep(delay)
+
+
+def _retry_delay(exc: "LLMTransient", base: float | None) -> float | None:
+    """这次该等多久再试；None = 别试了。
+
+    对方给了 `Retry-After` 就照它等——原来固定等 1 秒、3 秒，碰上 `Retry-After: 20`
+    两次重试 4 秒内就用完了，白白多失败两次。让等太久（超过 RETRY_AFTER_CAP）就不等，直接报。
+    没给就按基础等待加随机抖动，免得几路请求同一刻一起撞回去。
+    """
+    if base is None or getattr(exc, "kind", "") == "timeout":
+        return None                      # 超时不重试：再等一轮 300 秒，比原来一刀切的 900 秒还糟
+    after = getattr(exc, "retry_after", None)
+    if after is not None:
+        return after if after <= RETRY_AFTER_CAP else None
+    return base * (1 + random.uniform(0, RETRY_JITTER))
 
 
 def ask_detailed(prompt: str, provider: dict,
@@ -299,7 +367,8 @@ def _ask_anthropic_sdk(prompt: str, api_key: str, base: str, model: str, max_tok
             msg = stream.get_final_message()
     except (anthropic.APIConnectionError, anthropic.RateLimitError,
             anthropic.InternalServerError) as exc:     # SDK 的连接错误不是 OSError，接不住
-        raise LLMTransient(f"LLM 连接失败（{base}）：{type(exc).__name__}: {exc}") from None
+        kind = "rate_limit" if isinstance(exc, anthropic.RateLimitError) else "transient"
+        raise LLMTransient(f"LLM 连接失败（{base}）：{type(exc).__name__}: {exc}", kind) from None
     if msg.stop_reason == "refusal":
         raise SystemExit("模型拒绝了这次请求")
     text = "".join(b.text for b in msg.content if b.type == "text")
@@ -361,17 +430,42 @@ def _post_json(url: str, headers: dict, payload: dict) -> dict:
         req.add_header(k, v)
     try:
         with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:
-            return json.loads(resp.read().decode("utf-8"))
+            raw = resp.read().decode("utf-8", "replace")
     except urllib.error.HTTPError as e:
         raise _http_failed(url, e)
     except (OSError, http.client.HTTPException) as e:      # URLError 也是 OSError
         raise _conn_failed(url, e)
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        # 200 却不是 JSON：多半是代理 / 网关回了一张网页。原来裸抛 JSONDecodeError，url 和 provider 全丢
+        raise LLMRejected(f"LLM 返回的不是 JSON（{url}）：{raw[:200]}") from None
 
 
 def _http_failed(url: str, e: urllib.error.HTTPError) -> SystemExit:
     detail = e.read().decode("utf-8", "replace")[:800]
     msg = f"LLM 请求失败 HTTP {e.code}（{url}）：\n{detail}"
-    return LLMTransient(msg) if e.code in RETRY_STATUS else SystemExit(msg)
+    kind = error_kind(e.code, detail)
+    if kind in ("rate_limit", "overload", "transient"):
+        return LLMTransient(msg, kind, _retry_after(e.headers))
+    return LLMRejected(msg, kind)
+
+
+def _retry_after(headers) -> float | None:
+    """`Retry-After` 可能是秒数，也可能是一个 HTTP 日期。读不出来就当没给。"""
+    raw = (headers.get("Retry-After") if headers else None) or ""
+    raw = raw.strip()
+    if not raw:
+        return None
+    try:
+        return max(0.0, float(raw))
+    except ValueError:
+        pass
+    try:
+        when = email.utils.parsedate_to_datetime(raw)
+    except (TypeError, ValueError):
+        return None
+    return max(0.0, (when - dt.datetime.now(dt.timezone.utc)).total_seconds())
 
 
 def _conn_failed(url: str, exc: BaseException) -> SystemExit:
@@ -730,8 +824,9 @@ def _chat_claude_cli(messages: list[dict], model: str | None, on_delta, session:
     sent = _with_fence_spec(messages, tools)
     try:
         raw, usage = _run_claude_cli(sent, model, on_delta, session)
-    except SystemExit:
-        if not session or not _CLI_SESSIONS.get(session, {}).get("sent"):
+    except SystemExit as exc:
+        # 卡死被看门狗结束的不重发：重发全文只会再等一轮
+        if getattr(exc, "kind", "") == "timeout" or not session or not _CLI_SESSIONS.get(session, {}).get("sent"):
             raise
         drop_cli_session(session)               # 续不上就当没有过这段会话，重发一次全文
         raw, usage = _run_claude_cli(sent, model, on_delta, None)
@@ -765,25 +860,56 @@ def _parse_fence(raw: str) -> list[dict]:
              "args": args if isinstance(args, dict) else {}}]
 
 
-def _run_claude_cli(messages: list[dict], model: str | None, on_delta,
-                    session: str | None) -> tuple[str, dict]:
-    extra, start = _cli_session(session, messages, model)
-    prompt = _render_transcript(messages[start:])
-    if on_delta is None:
-        return _ask_claude_cli(prompt, model, extra)
-    cmd = ["claude", "-p", "--output-format", "stream-json", "--verbose"] + extra
-    if model:
-        cmd += ["--model", model]
-    try:
-        proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                stderr=subprocess.PIPE, text=True)
-    except FileNotFoundError:
-        raise LLMConfigError("找不到 `claude` 命令：安装 Claude Code，或在 llm.local.json 里配置 anthropic / openai 类型的 provider")
-    proc.stdin.write(prompt)
-    proc.stdin.close()
+_LIVE_DOGS: set = set()
 
+
+@atexit.register
+def _kill_live_cli() -> None:
+    """进程要退了（Ctrl+C、uvicorn 重载）：还在跑的 claude -p 进程组一起结束。
+    它们在单独的进程组里，终端的信号传不到；读它们的又是守护线程，异常分支跑不到。"""
+    for dog in list(_LIVE_DOGS):
+        dog.kill()
+
+
+class _Watchdog:
+    """子进程多久没吐一行就结束它。`feed()` 每收到一行喂一次；`fired` 表示是它动的手。"""
+
+    def __init__(self, proc, seconds: float):
+        self.proc, self.seconds, self.fired = proc, seconds, False
+        self.last = time.monotonic()
+        self._done = threading.Event()
+        _LIVE_DOGS.add(self)
+        threading.Thread(target=self._watch, daemon=True).start()
+
+    def feed(self) -> None:
+        self.last = time.monotonic()
+
+    def stop(self) -> None:
+        self._done.set()
+        _LIVE_DOGS.discard(self)
+
+    def _watch(self) -> None:
+        while not self._done.wait(min(1.0, self.seconds / 4)):
+            if time.monotonic() - self.last > self.seconds:
+                self.fired = True
+                self.kill()
+                return
+
+    def kill(self) -> None:
+        """结束整个进程组（见 Popen 的 start_new_session）。"""
+        if self.proc.poll() is not None:
+            return
+        try:
+            os.killpg(self.proc.pid, signal.SIGKILL)
+        except (OSError, AttributeError):         # 组已经没了 / 平台不支持进程组
+            self.proc.kill()
+
+
+def _read_cli_stream(proc, on_delta, dog: "_Watchdog") -> tuple[list[str], dict, str | None]:
+    """逐行读 `claude -p --output-format stream-json`：返回 (流里的正文段, 用量, result 事件的全文)。"""
     parts, usage, result_text = [], empty_usage(), None
     for line in proc.stdout:
+        dog.feed()
         line = line.strip()
         if not line:
             continue
@@ -800,7 +926,40 @@ def _run_claude_cli(messages: list[dict], model: str | None, on_delta,
         elif kind == "result":
             result_text = ev.get("result")
             usage = _claude_cli_usage(ev)
+    return parts, usage, result_text
+
+
+def _run_claude_cli(messages: list[dict], model: str | None, on_delta,
+                    session: str | None) -> tuple[str, dict]:
+    extra, start = _cli_session(session, messages, model)
+    prompt = _render_transcript(messages[start:])
+    if on_delta is None:
+        return _ask_claude_cli(prompt, model, extra)
+    cmd = ["claude", "-p", "--output-format", "stream-json", "--verbose"] + extra
+    if model:
+        cmd += ["--model", model]
+    try:
+        # 单独一个进程组：看门狗要结束的是整组——只杀 claude 本身的话，它带起来的子进程
+        # 还占着 stdout 管道，读的那头照样等到它们自己退出
+        proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE, text=True, start_new_session=True)
+    except FileNotFoundError:
+        raise LLMConfigError("找不到 `claude` 命令：安装 Claude Code，或在 llm.local.json 里配置 anthropic / openai 类型的 provider")
+    proc.stdin.write(prompt)
+    proc.stdin.close()
+
+    dog = _Watchdog(proc, CLI_IDLE_TIMEOUT)
+    try:
+        parts, usage, result_text = _read_cli_stream(proc, on_delta, dog)
+    except BaseException:
+        # 进程组是单独的，Ctrl+C / 中断传不到它：这边出了任何岔子都得亲手结束，不然留下孤儿进程
+        dog.kill()
+        raise
+    finally:
+        dog.stop()
     proc.wait(timeout=TIMEOUT)
+    if dog.fired:
+        raise LLMTransient(f"claude -p 已经 {CLI_IDLE_TIMEOUT:g} 秒没有任何输出，已结束它", "timeout")
     if proc.returncode != 0:
         raise SystemExit(f"claude -p 失败（{proc.returncode}）：{(proc.stderr.read() or '')[:500]}")
     # result 事件里的全文才是权威；流里没收到就用拼起来的
@@ -967,7 +1126,7 @@ def _post_anthropic(messages: list[dict], provider: dict, model: str, on_delta,
     parts, usage = [], empty_usage()
     usage["model"] = model
     pending: dict[int, dict] = {}          # 流式的 tool_use：参数是一片一片来的，按块号攒
-    for ev, data in _sse(f"{base}/v1/messages", headers, payload):
+    for ev, data in _sse(f"{base}/v1/messages", headers, payload, _timeouts(provider)):
         if ev == "content_block_start":
             block = data.get("content_block") or {}
             if block.get("type") == "tool_use":
@@ -1068,7 +1227,7 @@ def _chat_openai(messages: list[dict], provider: dict, model: str, on_delta,
     parts, usage = [], empty_usage()
     usage["model"] = model
     pending: dict[int, dict] = {}        # 流式的 tool_calls：name 只来一次，arguments 是碎片
-    for _, data in _sse(f"{base}/chat/completions", headers, payload):
+    for _, data in _sse(f"{base}/chat/completions", headers, payload, _timeouts(provider)):
         for ch in data.get("choices") or []:
             delta = ch.get("delta") or {}
             piece = delta.get("content") or ""
@@ -1097,18 +1256,50 @@ def _loads_args(raw) -> dict:
     return data if isinstance(data, dict) else {}
 
 
-def _sse(url: str, headers: dict, payload: dict):
-    """读 SSE 流，逐条 yield (事件名, 已解析的 JSON)。`[DONE]` 与心跳行跳过。"""
+def _timeouts(provider: dict) -> tuple[float, float]:
+    """(首包超时, 空闲超时)。provider 上写了正数的 `first_byte_timeout` / `idle_timeout` 就用它的。"""
+    def pick(key: str, default: float) -> float:
+        try:
+            value = float(provider.get(key) or 0)
+        except (TypeError, ValueError):
+            return default
+        return value if value > 0 else default
+    return pick("first_byte_timeout", FIRST_BYTE_TIMEOUT), pick("idle_timeout", IDLE_TIMEOUT)
+
+
+def _set_read_timeout(resp, seconds: float) -> None:
+    """收到第一段之后把 socket 超时换成空闲超时。取不到底层 socket 就保持首包那道（只是宽一点）。"""
+    sock = getattr(getattr(getattr(resp, "fp", None), "raw", None), "_sock", None)
+    if sock is not None:
+        sock.settimeout(seconds)
+
+
+def _is_timeout(exc: BaseException) -> bool:
+    return isinstance(exc, TimeoutError) or isinstance(getattr(exc, "reason", None), TimeoutError)
+
+
+def _sse(url: str, headers: dict, payload: dict, timeouts: tuple[float, float] | None = None):
+    """读 SSE 流，逐条 yield (事件名, 已解析的 JSON)。`[DONE]` 与心跳行跳过。
+
+    三道时限：首包（发出请求到第一段）、空闲（两段之间）、总上限 TIMEOUT。
+    撞上哪道就报哪道，`kind="timeout"`，不重试。
+    """
     body = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(url, data=body, method="POST")
     req.add_header("Content-Type", "application/json")
     req.add_header("Accept", "text/event-stream")
     for k, v in headers.items():
         req.add_header(k, v)
-    event = ""
+    first, idle = timeouts or (FIRST_BYTE_TIMEOUT, IDLE_TIMEOUT)
+    event, started, got = "", time.monotonic(), False
     try:
-        with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:
+        with urllib.request.urlopen(req, timeout=first) as resp:
             for raw in resp:
+                if not got:
+                    got = True
+                    _set_read_timeout(resp, idle)
+                if time.monotonic() - started > TIMEOUT:
+                    raise LLMTransient(f"LLM 流式输出超过 {TIMEOUT} 秒总上限，已中止（{url}）", "timeout")
                 line = raw.decode("utf-8", "replace").strip()
                 if line.startswith("event:"):
                     event = line[6:].strip()
@@ -1123,4 +1314,7 @@ def _sse(url: str, headers: dict, payload: dict):
     except urllib.error.HTTPError as e:
         raise _http_failed(url, e)
     except (OSError, http.client.HTTPException) as e:      # 流读到一半断，抛的也是这一类
+        if _is_timeout(e):
+            what = f"两段输出之间停了 {idle:g} 秒" if got else f"{first:g} 秒没等到第一段"
+            raise LLMTransient(f"LLM {what}，已中止（{url}）", "timeout") from None
         raise _conn_failed(url, e)

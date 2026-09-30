@@ -16,6 +16,7 @@ import json
 import os
 import sys
 import tempfile
+import time
 import traceback
 from pathlib import Path
 
@@ -2630,7 +2631,20 @@ def _dead_upstream(plan: list[str]):
                     buf += chunk
                 how = plan[len(hits)] if len(hits) < len(plan) else plan[-1]
                 hits.append(how)
-                if how == "sse":
+                if how == "hang":
+                    time.sleep(3)                  # 收了请求一个字节都不回：等首包的那道时限
+                elif how == "stall":
+                    one = 'data: {"choices":[{"delta":{"content":"\u55e8"}}]}\n\n'.encode()
+                    conn.sendall(b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\r\n" + one)
+                    time.sleep(3)                  # 吐了一段就停住：等空闲的那道时限
+                elif how.startswith("status:"):
+                    # "status:429:5" = 回 429、带 Retry-After: 5；第三段可省；第四段是错误正文
+                    _, code, after, *rest = (how.split(":", 3) + ["", ""])[:4]
+                    body = (rest[0] if rest else "").encode() or b'{"error":"x"}'
+                    head = f"HTTP/1.1 {code} X\r\nContent-Type: application/json\r\nConnection: close\r\n"
+                    head += f"Retry-After: {after}\r\n" if after else ""
+                    conn.sendall(head.encode() + b"Content-Length: " + str(len(body)).encode() + b"\r\n\r\n" + body)
+                elif how == "sse":
                     body = ('data: {"choices":[{"delta":{"content":"\u55e8"}}]}\n\n'
                             "data: [DONE]\n\n").encode()
                     conn.sendall(b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n"
@@ -2706,7 +2720,7 @@ def 已经吐过字再断就不重试():
 
     real_sse = backend._sse
 
-    def half(url, headers, payload):
+    def half(url, headers, payload, timeouts=None):
         """吐一段正文，然后在流中间断开——半截 SSE 最真实的样子。"""
         yield "", {"choices": [{"delta": {"content": "我先说半"}}]}
         raise backend._conn_failed(url, ConnectionResetError("Remote end closed connection"))
@@ -2747,6 +2761,125 @@ def 配置错和4xx一次都不重试():
         assert len(tries) == 1, (tries, "4xx 也被重试了")
     finally:
         backend._post_json = real
+
+
+def _retry_run(plan: list[str]):
+    """按 plan 起假上游跑一次 chat，返回 (结果或异常, 每次重试前等了几秒, 连接记录)。sleep 换成记账，不真等。"""
+    import llm_backend as backend
+
+    base, hits, srv = _dead_upstream(plan)
+    slept, real = [], backend._sleep
+    backend._sleep = slept.append
+    try:
+        return backend.chat([{"role": "user", "content": "在吗"}], _openai_provider(base), on_delta=lambda t: None), slept, hits
+    except SystemExit as exc:
+        return exc, slept, hits
+    finally:
+        backend._sleep = real
+        srv.close()
+
+
+@case
+def 过载529要重试_限流按Retry_After等_让等太久就直接报():
+    """架构提升点 #11（2026-09-30）：529（Anthropic 的过载）原来不在重试表里，一过载就一次都不重试；
+    固定等 1 秒、3 秒，碰上 `Retry-After: 20` 两次重试 4 秒内就用完了。"""
+    import llm_backend as backend
+
+    got, slept, hits = _retry_run(["status:529", "sse"])
+    assert not isinstance(got, SystemExit) and got[0] == "嗨", got
+    assert len(hits) == 2 and len(slept) == 1, (hits, slept)
+    base = backend.RETRY_WAITS[0]
+    assert base <= slept[0] <= base * (1 + backend.RETRY_JITTER), ("没 Retry-After 就基础等待 + 抖动", slept)
+
+    got, slept, hits = _retry_run(["status:429:5", "sse"])
+    assert not isinstance(got, SystemExit) and slept == [5.0], (got, slept)
+
+    got, slept, hits = _retry_run(["status:429:120", "sse"])
+    assert isinstance(got, backend.LLMTransient) and got.kind == "rate_limit" and got.retry_after == 120, got
+    assert len(hits) == 1 and slept == [], ("让等两分钟就别等了，直接报", hits, slept)
+
+    got, slept, hits = _retry_run(["status:529", "status:529", "status:529", "sse"])
+    assert isinstance(got, backend.LLMTransient) and got.kind == "overload" and len(hits) == 3, (got, hits)
+
+
+@case
+def 认证和欠费分得出来_都不重试():
+    """重试、熔断、界面提示都按同一个分类走。欠费有的家回 402，有的回 429 / 400 再在正文里说。"""
+    import llm_backend as backend
+
+    for plan, kind in ((["status:401", "sse"], "auth"), (["status:403", "sse"], "auth"),
+                       (["status:402", "sse"], "billing"),
+                       (['status:429::{"error":{"code":"insufficient_quota"}}', "sse"], "billing"),
+                       (['status:400::{"code":"Arrearage","message":"Access denied"}', "sse"], "billing"),
+                       (["status:400", "sse"], "other")):
+        got, slept, hits = _retry_run(plan)
+        assert isinstance(got, backend.LLMRejected) and got.kind == kind, (plan, got, getattr(got, "kind", None))
+        assert len(hits) == 1 and slept == [], (plan, "不该重试", hits)
+    assert backend.error_kind(503) == "overload" and backend.error_kind(502) == "transient"
+    assert backend.error_kind(None) == "transient", "连接层失败（没有状态码）算瞬时"
+
+
+@case
+def 流式首包和空闲超时分开_撞上就报哪道_不重试():
+    """架构提升点 #13（2026-09-30）：原来 900 秒一刀切，连接卡住要干等 15 分钟。
+    首包、空闲分开两道（provider 上可覆盖），撞上就说是哪道；超时不重试——再等一轮只会更久。"""
+    import llm_backend as backend
+
+    for plan, key, say in ((["hang", "sse"], "first_byte_timeout", "秒没等到第一段"),
+                           (["stall", "sse"], "idle_timeout", "两段输出之间停了")):
+        base, hits, srv = _dead_upstream(plan)
+        provider = {**_openai_provider(base), key: 0.5}
+        started = time.monotonic()
+        try:
+            backend.chat([{"role": "user", "content": "在吗"}], provider, on_delta=lambda t: None)
+            raise AssertionError(f"{key} 没生效")
+        except SystemExit as exc:
+            assert isinstance(exc, backend.LLMTransient) and exc.kind == "timeout" and say in str(exc), exc
+        finally:
+            srv.close()
+        assert time.monotonic() - started < 2.5, ("该在 0.5 秒左右报", time.monotonic() - started)
+        assert len(hits) == 1, (plan, "超时不该重试", hits)
+    assert backend._timeouts({}) == (backend.FIRST_BYTE_TIMEOUT, backend.IDLE_TIMEOUT) == (300, 180)
+    assert backend._timeouts({"idle_timeout": "乱写"}) == (300, 180), "写错了就用默认值"
+
+
+@case
+def claude_cli_太久没输出就结束它_不重发全文():
+    """claude -p 卡住时原来要等满 900 秒。看门狗：CLI_IDLE_TIMEOUT 秒没有任何 stdout 就结束进程。"""
+    import llm_backend as backend
+
+    bin_dir = Path(tempfile.mkdtemp(prefix="knowrary-fakeclaude-"))
+    fake = bin_dir / "claude"
+    fake.write_text("#!/bin/sh\ncat > /dev/null\necho '{\"type\":\"system\"}'\nsleep 5\n", "utf-8")
+    fake.chmod(0o755)
+    path, idle = os.environ["PATH"], backend.CLI_IDLE_TIMEOUT
+    os.environ["PATH"] = f"{bin_dir}{os.pathsep}{path}"
+    backend.CLI_IDLE_TIMEOUT = 0.8
+    started = time.monotonic()
+    try:
+        backend.chat([{"role": "user", "content": "在吗"}], {"type": "claude-cli"}, on_delta=lambda t: None)
+        raise AssertionError("卡住了却没报错")
+    except SystemExit as exc:
+        assert getattr(exc, "kind", "") == "timeout" and "没有任何输出" in str(exc), exc
+    finally:
+        os.environ["PATH"], backend.CLI_IDLE_TIMEOUT = path, idle
+    assert time.monotonic() - started < 3.5, ("该在 1 秒左右结束，而不是等脚本睡完", time.monotonic() - started)
+
+
+@case
+def 回了200却不是JSON_报错要带url而不是裸JSONDecodeError():
+    """代理 / 网关回一张网页时，原来非流式那条路裸抛 JSONDecodeError，url 和 provider 全丢。"""
+    import llm_backend as backend
+
+    base, hits, srv = _dead_upstream(["sse"])      # 非流式请求收到 SSE 正文 = 不是 JSON
+    try:
+        backend.chat([{"role": "user", "content": "在吗"}], _openai_provider(base))
+        raise AssertionError("不是 JSON 却没报错")
+    except SystemExit as exc:
+        assert isinstance(exc, backend.LLMRejected) and "不是 JSON" in str(exc) and base in str(exc), exc
+        assert len(hits) == 1, "不重试"
+    finally:
+        srv.close()
 
 
 @case
