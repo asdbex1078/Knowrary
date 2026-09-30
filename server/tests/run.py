@@ -32,7 +32,7 @@ os.environ.pop("KNOWRARY_LLM_CONFIG", None)
 
 from fastapi.testclient import TestClient  # noqa: E402
 
-from server import index_service, llm_breaker  # noqa: E402
+from server import index_service, llm_breaker, turns as turns_mod  # noqa: E402
 from server.app import app  # noqa: E402
 from server import assets as server_assets  # noqa: E402
 from server.paths import core  # noqa: E402
@@ -6169,16 +6169,85 @@ def 两层合一层时清单上的旧难度抬到项目上():
     assert all("level" not in ls for p in doc["projects"].values() for ls in p["lists"]), doc
 
 
+def _long_turns(c, history: list[dict], rounds: int, session: str = "long") -> list[dict]:
+    """在已有历史上接着聊 rounds 轮（每轮我说 500 字，假模型回「好」），返回每轮的前缀诊断。"""
+    for i in range(rounds):
+        history = [*history, {"role": "user", "content": f"第{i}句" + "u" * 500}]
+        original, _ = stub_chat(["好"])
+        try:
+            c.post("/api/chat", json={"messages": history, "session": session, "stance": "教练"})
+        finally:
+            restore_chat(original)
+        history = [*history, {"role": "assistant", "content": "好"}]
+    return history
+
+
+@case
+def chat_长对话超过上限后_只在跨过块边界时重建一次():
+    """架构提升点 #16（2026-09-30）：原来超限后从最早的一条逐条丢，每新增一轮开头就多丢一两条，
+    续接缓存每一轮都对不上、整段重建（模拟 60 轮：28 次重建、68 万字）。起点按块取整之后，
+    只有跨过块边界的那一轮重建，诊断里记成「裁剪起点动了」。"""
+    from server import chat as chat_mod
+    c, vault, _ = with_inbox_node()
+    start = [{"role": "user" if i % 2 == 0 else "assistant", "content": "s" * 500} for i in range(50)]
+    _long_turns(c, start, 20)             # 第 1 轮越界落到 20，大约第 16 轮再跨到 40
+    rows = list(reversed(core.load_usage(vault)["prefix"]))
+    reasons = [r["reason"] for r in rows]
+    assert reasons[0] == "新会话" and reasons.count("裁剪起点动了") == 1, reasons
+    assert all(r["resumed"] for r in rows[1:] if r["reason"] != "裁剪起点动了"), reasons
+    trim = turns_mod.trim_of(vault, "_scratch|long|教练")
+    assert trim["start"] % chat_mod.TRIM_CHUNK == 0 and trim["start"] >= 2 * chat_mod.TRIM_CHUNK, trim
+
+
+@case
+def chat_缓存过期时顺手把起点往前推一块_下一轮照常续上():
+    """距上一轮超过 CACHE_TTL_SEC，模型那边的缓存本来就过期了：这一轮反正全价重写，
+    顺手多推一块，下一次越界来得晚一点。起点记进续接缓存，下一轮不能按纯规则算回去（那样又断一次）。"""
+    c, vault, _ = with_inbox_node()
+    start = [{"role": "user" if i % 2 == 0 else "assistant", "content": "s" * 500} for i in range(50)]
+    history = _long_turns(c, start, 8)    # 起点 20、留下的已经过半，推一块之后还剩一整块以上
+    before = turns_mod.trim_of(vault, "_scratch|long|教练")["start"]
+    doc = json.loads(turns_mod.store_path(vault).read_text("utf-8"))
+    doc["keys"]["_scratch|long|教练"]["at"] = "2026-01-01T00:00:00Z"        # 上一轮是很久以前
+    turns_mod.store_path(vault).write_text(json.dumps(doc, ensure_ascii=False), "utf-8")
+    history = _long_turns(c, history, 1)
+    pushed = turns_mod.trim_of(vault, "_scratch|long|教练")["start"]
+    _long_turns(c, history, 1)
+    rows = list(reversed(core.load_usage(vault)["prefix"]))
+    assert pushed == before + 20, (before, pushed)
+    assert rows[-2]["reason"] == "裁剪起点动了（缓存已过期，顺手推了一块）", rows[-2]
+    assert rows[-1]["resumed"], ("推过之后下一轮要照常续上", rows[-1])
+    assert turns_mod.trim_of(vault, "_scratch|long|教练")["start"] == pushed, "起点只许往后挪，不许算回去"
+
+    short = [{"role": "user", "content": "短"}]
+    original, _ = stub_chat(["好"])
+    try:
+        c.post("/api/chat", json={"messages": short, "session": "short", "stance": "教练"})
+    finally:
+        restore_chat(original)
+    doc = json.loads(turns_mod.store_path(vault).read_text("utf-8"))
+    doc["keys"]["_scratch|short|教练"]["at"] = "2026-01-01T00:00:00Z"
+    turns_mod.store_path(vault).write_text(json.dumps(doc, ensure_ascii=False), "utf-8")
+    _long_turns(c, [*short, {"role": "assistant", "content": "好"}], 1, session="short")
+    assert turns_mod.trim_of(vault, "_scratch|short|教练")["start"] == 0, "短对话过期了也不许丢上下文"
+
+
 @case
 def chat_长对话按条数和字数两道闸裁_并且说出来():
     """产品本身是把**整段历史**发过去的（不是每句话单发）；超长时从最早的开始丢，
     但**必须告诉模型丢了**——它不知道自己少了上下文时，会拿半截记忆当完整的用。"""
     c, vault, _ = with_inbox_node()
     from server import chat as chat_mod
-    kept, dropped = chat_mod._fit_history(
+    kept, dropped, base = chat_mod._fit_history(
         [{"role": "user", "content": "x" * 2000} for _ in range(30)])
-    assert dropped == 18 and sum(len(m["content"]) for m in kept) <= chat_mod.MAX_HISTORY_CHARS
+    # 起点按块取整（架构提升点 #16）：原来逐条丢是 18，现在落在 TRIM_CHUNK 的整数倍上
+    assert dropped == base == chat_mod.TRIM_CHUNK and sum(len(m["content"]) for m in kept) <= chat_mod.MAX_HISTORY_CHARS
     assert chat_mod._fit_history([{"role": "user", "content": "短"}] * 5)[1] == 0
+    talk = [{"role": "user" if i % 2 == 0 else "assistant", "content": "z" * 700} for i in range(41)]
+    kept, dropped, base = chat_mod._fit_history(talk[:21] + [{"role": "assistant", "content": "z"}] + talk[21:])
+    assert base % chat_mod.TRIM_CHUNK == 0 and kept[0]["role"] == "user", "起点落在回复上要挪到下一句我说的话"
+    huge = [{"role": "user", "content": "h" * 30000}, {"role": "user", "content": "最后"}]
+    assert chat_mod._fit_history(huge)[:2] == ([huge[-1]], 1), "一块都过不了字数闸时退回逐条丢"
 
     long_talk = [{"role": "user" if i % 2 == 0 else "assistant", "content": "y" * 3000}
                  for i in range(20)] + [{"role": "user", "content": "接着说"}]

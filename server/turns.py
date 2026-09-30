@@ -99,15 +99,24 @@ def parts_of(vault: Path, key: str) -> dict | None:
     return row.get("parts") if isinstance(row.get("parts"), dict) else {}
 
 
+def trim_of(vault: Path, key: str) -> dict | None:
+    """上一轮的裁剪起点：{start, head（起点那条的开头，校验用）, at（上一轮结束的时间）}。"""
+    row = (_load(vault).get("keys") or {}).get(key)
+    if not isinstance(row, dict) or not isinstance(row.get("trim"), dict):
+        return None
+    return {**row["trim"], "at": row.get("at")}
+
+
 def remember(vault: Path, key: str, visible: list[dict], messages: list[dict],
-             parts: dict | None = None) -> None:
+             parts: dict | None = None, trim: dict | None = None) -> None:
     """记下这一轮结束时的两份列表：给人看的（校验用）和给模型看的（续接用），外加前缀各块的指纹。"""
     if not key or not messages or _chars(messages) > MAX_CHARS:
         return
     doc = _load(vault)
     keys = doc["keys"]
     keys[key] = {"at": dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-                 "visible": visible, "messages": messages, "parts": parts or {}}
+                 "visible": visible, "messages": messages, "parts": parts or {},
+                 "trim": {k: (trim or {}).get(k) for k in ("start", "head")}}
     if len(keys) > MAX_KEYS:             # 先进先出，别无限涨
         for old in sorted(keys, key=lambda k: keys[k].get("at") or "")[:len(keys) - MAX_KEYS]:
             keys.pop(old, None)

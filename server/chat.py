@@ -55,6 +55,11 @@ MAX_STEPS = 8
 # 字数那道是必须的——20 条里夹着几段长正文，光看条数会把 prompt 撑爆。
 MAX_MESSAGES = 60
 MAX_HISTORY_CHARS = 24000
+# 裁剪的起点只落在 TRIM_CHUNK 条的整数倍上（架构提升点 #16）。原来超限后从最早的一条逐条丢，
+# 每新增一轮开头就多丢一两条，续接缓存每一轮都对不上、整段重建；按块取整之后只在跨过块边界时重建一次
+TRIM_CHUNK = 20
+# 距上一轮超过这么久，模型那边的前缀缓存已经过期了：这一轮反正要全价重写，顺手把起点再往前推一块
+CACHE_TTL_SEC = 300
 # 模型这么多秒不吐字就往 SSE 里发一次心跳。上游想久一点很正常（2026-09-21 那次等了 63 秒），
 # 但这段静默里一个字节都不发的话：页面上看不出是在等还是已经挂了，
 # 而且但凡中间隔一层反代，空闲超时（nginx 默认 60s）会把连接掐掉——症状和模型挂掉一模一样。
@@ -1735,17 +1740,70 @@ def pull_checks(text: str, default_points: list[str]) -> tuple[str, list[dict]]:
     return _CHECK_RE.sub(take, text or "").strip(), out
 
 
-def _fit_history(msgs: list[dict]) -> tuple[list[dict], int]:
-    """按条数和字数两道闸裁上下文，返回 (留下的, 丢掉几轮)。
+def _fit_history(msgs: list[dict], floor: int = 0, stale: bool = False) -> tuple[list[dict], int, int]:
+    """按条数和字数两道闸裁上下文，返回 (留下的, 丢掉几条, 起点)。末尾那几轮一定留着。
 
-    **从最早的开始丢**，末尾那几轮一定留着——正在说的话比开头重要。
+    **起点只取 TRIM_CHUNK 的整数倍**：取能同时过两道闸、又不小于 `floor`（上一轮的起点，只许往后挪）
+    的最小那个。起点落在模型的回复上就往后挪到下一句我说的话。
+    `stale`（缓存已过期）且留下的已经占了一半预算时，再多推一块——这一轮反正要全价重写，
+    推一块能让下一次越界来得晚一点。连最后一块都过不了闸（几条超长正文）才退回逐条丢，起点记 0。
     """
+    fits = lambda s: len(msgs) - s <= MAX_MESSAGES and _chars(msgs[s:]) <= MAX_HISTORY_CHARS  # noqa: E731
+    base = next((s for s in range(0, len(msgs), TRIM_CHUNK) if s >= floor and fits(s)), None)
+    if base is None:
+        return (*_fit_by_message(msgs), 0)
+    if stale and _crowded(msgs[base:]) and len(msgs) - base - TRIM_CHUNK >= TRIM_CHUNK:
+        base += TRIM_CHUNK
+    kept = msgs[base:]
+    while len(kept) > 1 and kept[0].get("role") != "user":
+        kept = kept[1:]
+    return kept, len(msgs) - len(kept), base
+
+
+def _chars(msgs: list[dict]) -> int:
+    return sum(len(m.get("content") or "") for m in msgs)
+
+
+def _crowded(msgs: list[dict]) -> bool:
+    return len(msgs) > MAX_MESSAGES // 2 or _chars(msgs) > MAX_HISTORY_CHARS // 2
+
+
+def _fit_by_message(msgs: list[dict]) -> tuple[list[dict], int]:
+    """兜底：从最早的一条逐条丢。只在最后一块都过不了字数闸时用（一块里夹着几段超长正文）。"""
     kept = msgs[-MAX_MESSAGES:]
-    total = sum(len(m.get("content") or "") for m in kept)
+    total = _chars(kept)
     while len(kept) > 1 and total > MAX_HISTORY_CHARS:
         total -= len(kept[0].get("content") or "")
         kept = kept[1:]
     return kept, len(msgs) - len(kept)
+
+
+def _trim(vault: Path, req: ChatRequest, msgs: list[dict]) -> tuple[list[dict], int, dict]:
+    """裁这一轮的历史，返回 (留下的, 丢掉几条, 起点记录)。
+
+    起点记录存进续接缓存，下一轮只许往后挪：缓存过期时推过一块，下一轮不能再按纯规则算回去，
+    不然前缀又断一次。`moved` / `pushed` 给前缀诊断用（起点动了是不是因为顺手推了一块）。
+    """
+    floor, stale, known = _trim_state(vault, req, msgs)
+    kept, dropped, base = _fit_history(msgs, floor, stale)
+    plain = _fit_history(msgs, floor, False)[2] if stale else base
+    return kept, dropped, {"start": base, "head": (msgs[base].get("content") or "")[:200] if base else "",
+                           "moved": known and base != floor, "pushed": base != plain}
+
+
+def _trim_state(vault: Path, req: ChatRequest, msgs: list[dict]) -> tuple[int, bool, bool]:
+    """(上一轮的起点, 缓存过没过期, 上一轮的记录作不作数)。起点那条对不上（历史改过、梳理换了基点）就当没有。"""
+    prev = turns.trim_of(vault, llm_session_key(req))
+    if not prev:
+        return 0, False, False
+    start = prev.get("start") or 0
+    if not (0 <= start < len(msgs)) or (start and (msgs[start].get("content") or "")[:200] != prev.get("head")):
+        return 0, False, False
+    try:
+        at = dt.datetime.fromisoformat(str(prev.get("at")).replace("Z", "+00:00"))
+    except ValueError:
+        return start, False, True
+    return start, (dt.datetime.now(dt.timezone.utc) - at).total_seconds() > CACHE_TTL_SEC, True
 
 
 def llm_session_key(req: ChatRequest) -> str:
@@ -1896,7 +1954,8 @@ def _note_prefix(vault: Path, req: ChatRequest, how: dict, parts: dict[str, str]
     """这一轮前缀是续上的还是整段重建的、重建是为什么、哪几块变了，记进用量账本。
 
     读写比掉下来的时候，账本只能说"变贵了"；这里记下原因，告警时直接列出来（架构提升点 #9）。
-    原因只有三种：新会话（没有可续的）、可见轮次对不上（前端改过 / 删过历史）、前缀里某块变了。
+    原因：新会话（没有可续的）、裁剪起点动了（历史越过一块，或缓存过期顺手推了一块）、
+    可见轮次对不上（前端改过 / 删过历史）、前缀里某块变了。
     """
     key = llm_session_key(req)
     before = turns.parts_of(vault, key)
@@ -1905,6 +1964,8 @@ def _note_prefix(vault: Path, req: ChatRequest, how: dict, parts: dict[str, str]
         reason = ""
     elif before is None:
         reason = "新会话"
+    elif not how["matched"] and (how.get("trim") or {}).get("moved"):
+        reason = "裁剪起点动了（缓存已过期，顺手推了一块）" if how["trim"]["pushed"] else "裁剪起点动了"
     else:
         reason = "前缀变了" if how["matched"] else "可见轮次对不上"
     core.note_prefix(vault, {"op": f"chat-{req.stance or DEFAULT_STANCE}", "session": key,
@@ -2075,7 +2136,7 @@ def _wrap_up(vault: Path, req: ChatRequest, history: list[dict], turn: dict):
         turns.remember(vault, llm_session_key(req),
                        visible=[*history, {"role": "assistant", "content": answer}],
                        messages=[*turn["messages"], {"role": "assistant", "content": turn["last_raw"]}],
-                       parts=turn.get("parts"))
+                       parts=turn.get("parts"), trim=turn.get("trim"))
     ts = append_log(vault, "assistant", answer, node_ids=touched, project=req.project,
                     session=req.session, stance=req.stance or DEFAULT_STANCE, trace=trace,
                     cards=turn["cards"])
@@ -2086,7 +2147,7 @@ def _wrap_up(vault: Path, req: ChatRequest, history: list[dict], turn: dict):
 
 
 def _run(vault: Path, req: ChatRequest, cards: list[dict]):
-    history, dropped = _fit_history([m.model_dump() for m in req.messages])
+    history, dropped, trim = _trim(vault, req, [m.model_dump() for m in req.messages])
     if not history or history[-1]["role"] != "user":
         raise ChatRejected("最后一条必须是我说的话")
     allowed = tools_of(req.stance, vault)        # 和说明书、schema 同一份数据，复习关掉就真的调不动
@@ -2102,9 +2163,11 @@ def _run(vault: Path, req: ChatRequest, cards: list[dict]):
         "last_raw": "",        # 收尾那段的**原文**：存进续接缓存的是它，不是剥过工具块的版本
         "usage": {},
         "cards": cards,        # 这一轮摆出来的卡，收尾时跟着回复一起留档
+        "trim": trim,
     }
     tools = tool_schemas(allowed)
     turn["messages"], how = _assemble(vault, req, history, dropped)
+    how["trim"] = turn["trim"]
     turn["parts"] = _prefix_parts(vault, req, tools)
     _try_note_prefix(vault, req, how, turn["parts"])
     for _ in range(MAX_STEPS):
