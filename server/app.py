@@ -20,10 +20,12 @@ from fastapi.staticfiles import StaticFiles
 from . import curator as curator_svc
 from . import edge_check as edge_check_svc
 from . import models_catalog as models_svc
+from . import models_extract as models_extract_svc
 from . import pending_review as pending_svc
 from . import (articles as articles_svc, assets, audit, chat as chat_svc, compare as compare_svc, copying, curation, importing,
                projects as projects_svc, revise as revise_svc, summarize as summarize_svc, vaults, years as years_svc)
-from .contracts import (ArticleRead, ArticlesRead, ModelsDirPatch, ModelsRead, CurateRequest, CurateResult, EdgeCheckPlan, EdgeCheckPlanned, EdgeCheckRan, EdgeCheckRun,
+from .contracts import (ArticleRead, ArticlesRead, ModelsApplied, ModelsApply, ModelsDirPatch, ModelsExtract,
+                        ModelsProposal, ModelsRead, ModelsVerified, ModelsVerify, CurateRequest, CurateResult, EdgeCheckPlan, EdgeCheckPlanned, EdgeCheckRan, EdgeCheckRun,
                         EdgeChecksRead, EdgeFix, EdgeFixed, RelinkRequest, RelinkResult, PendingDecide, PendingDecided, PendingRead, TypeDecide, TypeDecided, AuditReport, AuditRequest, ReviseRequest, ReviseResult, ReviseUndo, SourceRef, VaultConfigPatch, VaultConfigRead, CalendarRead, ChangeResult, ChangeSet, ChatRequest, CoachToday, FileDiff, ImportProposal,
                         ImportProposeRequest, ImportRequest, ImportResult, SourceText, SourcesRead, SummarizeRequest, SummaryDraft,
                         InboxRead,
@@ -577,6 +579,39 @@ def put_vault_config(req: VaultConfigPatch) -> VaultConfigRead:
 def get_models() -> ModelsRead:
     """模型目录：家族、型号、型号之间的线、技术点对上的知识点。没指定目录时 `configured=false`，带候选目录。"""
     return models_svc.read(vault_path())
+
+
+@app.post("/api/models/extract", response_model=ModelsProposal)
+def post_models_extract(req: ModelsExtract) -> ModelsProposal:
+    """抽一篇原文（一次 learn 调用）：家族、型号，和目录里已有的合并成计划（只补空格），带确定性核对。不写盘。"""
+    try:
+        return models_extract_svc.propose(vault_path(), req.path)
+    except models_extract_svc.ModelsExtractRejected as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except LLMFailed as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@app.post("/api/models/verify", response_model=ModelsVerified)
+def post_models_verify(req: ModelsVerify) -> ModelsVerified:
+    """可疑的格子（数字在原文里没原样出现）让 review 对着原文逐格判一次。"""
+    try:
+        return models_extract_svc.verify(vault_path(), req.path, [i.model_dump() for i in req.items])
+    except models_extract_svc.ModelsExtractRejected as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except LLMFailed as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@app.post("/api/models/apply", response_model=ModelsApplied)
+def post_models_apply(req: ModelsApply) -> ModelsApplied:
+    """写入勾选的型号：只补不覆盖，写前快照；预览之后家族文件被改过就 409。"""
+    try:
+        return models_extract_svc.apply(vault_path(), req)
+    except models_extract_svc.ModelsStale as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except models_extract_svc.ModelsExtractRejected as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 @app.put("/api/models/dir", response_model=ModelsRead)

@@ -1425,6 +1425,90 @@ class ModelsRead(Strict):
     fields: list[str] = Field(default_factory=list)       # 登记过的字段，卡片按这个顺序排
 
 
+class ModelConflict(Strict):
+    key: str
+    article: str                       # 文章里写的
+    catalog: str                       # 目录里现在写的（不改它）
+
+
+class ModelSuspect(Strict):
+    key: str
+    value: str
+    why: str                           # 确定性核对：原文里找不到哪几个数
+
+
+class ModelPlan(Strict):
+    """一个型号要怎么写：new 整条新增 / update 只补空格 / same 没东西可补（有冲突才列出来给人看）。"""
+
+    name: str
+    status: str
+    fields: dict[str, str] = Field(default_factory=dict)   # 要写进去的格子（中文键 → 值）
+    conflicts: list[ModelConflict] = Field(default_factory=list)
+    suspicious: list[ModelSuspect] = Field(default_factory=list)
+
+
+class FamilyPlan(Strict):
+    name: str
+    target: str                        # 写到哪个家族文件（库内相对路径）
+    exists: bool = False
+    digest: str = ""                   # 预览时那个文件的指纹；写入时对不上就 409
+    vendor: str = ""
+    tagline: str = ""
+    open: bool | None = None
+    models: list[ModelPlan] = Field(default_factory=list)
+
+
+class ModelsExtract(Strict):
+    path: str                          # 哪篇原文
+
+
+class ModelsProposal(Strict):
+    path: str
+    title: str = ""
+    source: str = ""                   # 写进家族 frontmatter sources 的那条链接
+    families: list[FamilyPlan] = Field(default_factory=list)
+    model: str = ""
+    ms: int = 0
+
+
+class ModelCheckItem(Strict):
+    model: str
+    key: str
+    value: str
+
+
+class ModelsVerify(Strict):
+    path: str
+    items: list[ModelCheckItem]
+
+
+class ModelCheck(Strict):
+    model: str
+    key: str
+    value: str
+    verdict: str                       # ok / wrong / unsure
+    why: str = ""
+    quote: str = ""
+    suggest: str = ""                  # wrong 时按原文该写的值
+
+
+class ModelsVerified(Strict):
+    checks: list[ModelCheck] = Field(default_factory=list)
+    model: str = ""
+    ms: int = 0
+
+
+class ModelsApply(Strict):
+    families: list[FamilyPlan]         # 人勾过之后剩下的
+    sources: list[str] = Field(default_factory=list)      # 这批出自哪几篇原文（进家族的 sources）
+
+
+class ModelsApplied(Strict):
+    files: list[str] = Field(default_factory=list)
+    models: int = 0                    # 实际写了几个型号（新增 + 补了格子的）
+    backup: str = ""
+
+
 class ModelsDirPatch(Strict):
     models_dir: str                    # 空串 = 取消指定
     dry_run: bool = False

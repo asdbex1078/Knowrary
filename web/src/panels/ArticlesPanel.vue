@@ -15,6 +15,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import Drawer from '../ui/Drawer.vue'
 import Icon from '../ui/Icon.vue'
 import Markdown from '../ui/Markdown.vue'
+import ModelsExtract from '../components/ModelsExtract.vue'
 import { fetchArticle, fetchArticles } from '../api.js'
 
 const props = defineProps({
@@ -28,6 +29,24 @@ const reading = ref(null)         // ArticleRead
 const loading = ref(false)
 const error = ref('')
 const body = ref(null)            // 阅读页的滚动容器
+const extracting = ref(null)      // 抽成模型谱系：[{ path, title }]，有值时整块面板换成抽取流程
+
+/** 列表按原文目录下的第一级子目录分组（`llm/deepseek/x.md` 归 `llm`），给「整组一起抽」用。 */
+const groups = computed(() => {
+  const dir = list.value?.dir || ''
+  const out = new Map()
+  for (const a of list.value?.articles || []) {
+    const rel = a.path.startsWith(dir + '/') ? a.path.slice(dir.length + 1) : a.path
+    const key = rel.includes('/') ? rel.split('/')[0] : ''
+    if (!out.has(key)) out.set(key, [])
+    out.get(key).push(a)
+  }
+  return [...out.entries()].map(([name, articles]) => ({ name, articles }))
+    .sort((x, y) => (x.name === '') - (y.name === '') || x.name.localeCompare(y.name))
+})
+
+function extract(articles) { extracting.value = articles.map((a) => ({ path: a.path, title: a.title })) }
+function endExtract() { extracting.value = null; if (!reading.value) loadList() }
 
 async function loadList() {
   error.value = ''
@@ -132,8 +151,13 @@ const HEAD_TAG = (level) => `h${Math.min(Math.max(level, 1), 6)}`
 
     <p v-if="error" class="imp-error">{{ error }}</p>
 
+    <!-- 抽成模型谱系：就地走完指定目录 → 抽 → 预览 → 核对 → 写入 -->
+    <div v-if="extracting" class="art-list scroll-thin">
+      <ModelsExtract :articles="extracting" @close="endExtract" />
+    </div>
+
     <!-- 阅读页 -->
-    <div v-if="reading" ref="body" class="art-read scroll-thin">
+    <div v-else-if="reading" ref="body" class="art-read scroll-thin">
       <header class="art-head">
         <h2 class="art-title">{{ reading.title }}</h2>
         <div class="art-meta dim">
@@ -157,6 +181,9 @@ const HEAD_TAG = (level) => `h${Math.min(Math.max(level, 1), 6)}`
             <Icon name="search" :size="12" />拆成知识点
           </button>
         </div>
+        <p class="art-note">讲的是一串型号的迭代？
+          <button class="btn tiny" data-act="extract-models" title="把这篇里的型号抽进模型目录（预览后再写）"
+                  @click="extract([reading])"><Icon name="timeline" :size="12" />抽成模型谱系</button></p>
       </header>
 
       <section v-for="b in blocks" :key="b.id" class="art-sec">
@@ -177,16 +204,26 @@ const HEAD_TAG = (level) => `h${Math.min(Math.max(level, 1), 6)}`
       <template v-else-if="list">
         <p class="dim art-list-head">原文目录 <code>{{ list.dir }}/</code> · {{ list.articles.length }} 篇（设置 → 知识库里能改）</p>
         <p v-if="!list.articles.length" class="dim">还没有原文。导入时勾着「保留原文」，原文就会存到这里。</p>
-        <div v-for="a in list.articles" :key="a.path" class="art-row" :class="{ fresh: !a.nodes }">
-          <button class="art-open" :title="a.path" @click="openArticle(a.path)">
-            <Icon name="book" :size="13" />
-            <span class="art-name">{{ a.title }}</span>
-            <span v-if="a.nodes" class="chip m-mastered">{{ a.nodes }} 个点</span>
-            <span v-else class="chip m-unbuilt">还没拆</span>
-          </button>
-          <button v-if="!a.nodes" class="btn tiny" data-act="import" title="打开导入面板，把这篇带过去（就地引用，不复制）"
-                  @click="emit('import', a.path)">拆成知识点</button>
-        </div>
+        <section v-for="g in groups" :key="g.name" class="art-group" :data-group="g.name">
+          <div v-if="g.name" class="art-group-head">
+            <Icon name="folder" :size="13" /><b>{{ g.name }}/</b><span class="dim">{{ g.articles.length }} 篇</span>
+            <button class="btn tiny" style="margin-left: auto" data-act="extract-models-all"
+                    :title="`把 ${g.name}/ 下这 ${g.articles.length} 篇一篇一篇抽进模型目录，最后一起预览`"
+                    @click="extract(g.articles)"><Icon name="timeline" :size="12" />这 {{ g.articles.length }} 篇一起抽成模型谱系</button>
+          </div>
+          <div v-for="a in g.articles" :key="a.path" class="art-row" :class="{ fresh: !a.nodes }" :data-article="a.path">
+            <button class="art-open" :title="a.path" @click="openArticle(a.path)">
+              <Icon name="book" :size="13" />
+              <span class="art-name">{{ a.title }}</span>
+              <span v-if="a.nodes" class="chip m-mastered">{{ a.nodes }} 个点</span>
+              <span v-else class="chip m-unbuilt">还没拆</span>
+            </button>
+            <button v-if="!a.nodes" class="btn tiny" data-act="import" title="打开导入面板，把这篇带过去（就地引用，不复制）"
+                    @click="emit('import', a.path)">拆成知识点</button>
+            <button class="btn subtle tiny" data-act="extract-models" title="把这篇里的型号抽进模型目录（预览后再写）"
+                    @click="extract([a])">抽成谱系</button>
+          </div>
+        </section>
       </template>
     </div>
   </Drawer>

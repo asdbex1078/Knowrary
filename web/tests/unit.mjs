@@ -21,6 +21,7 @@ import { timelineOptions, bandCurve, buildTimeline, lineageOf, BY_SCHOOL, BY_DOM
 import { level, weekColumns } from '../src/panels/heat.js'
 import { forModel } from '../src/composables/useChat.js'
 import { localISO, todayISO } from '../src/today.js'
+import { applyBody, mergeProposals, pickedCount, suspectsByArticle } from '../src/modelsPlan.js'
 
 const CASES = []
 const test = (name, fn) => CASES.push([name, fn])
@@ -569,6 +570,39 @@ test('事件绑到带默认参数的函数上，必须写成 fn()', () => {
     }
   }
   assert.deepEqual(bad, [], `这些绑定会把事件载荷当第一个参数塞进去：\n${bad.join('\n')}`)
+})
+
+// ---------------------------------------------------------------- 抽成模型谱系（2026-09-30）
+
+const PROPOSALS = [
+  { path: 'a.md', source: '[[a]]', families: [{ name: 'DeepSeek', target: 'm/DeepSeek.md', digest: 'd1', exists: true,
+    models: [{ name: 'V3', status: 'new', fields: { 参数: '671B' }, conflicts: [], suspicious: [{ key: '参数', value: '671B', why: 'x' }] },
+      { name: 'V2', status: 'same', fields: {}, conflicts: [{ key: '发布', article: '2024-06', catalog: '2024-05' }], suspicious: [] }] }] },
+  { path: 'b.md', source: '[[b]]', families: [{ name: 'DeepSeek', target: 'm/DeepSeek.md', digest: 'd1', exists: true,
+    models: [{ name: 'v3', status: 'new', fields: { 参数: '670B', 激活: '37B' }, conflicts: [],
+      suspicious: [{ key: '参数', value: '670B', why: 'y' }, { key: '激活', value: '37B', why: 'z' }] }] }] },
+]
+
+test('两篇都抽到同一个型号：并成一条，先出现的格子为准、后面的只补空格', () => {
+  const fams = mergeProposals(PROPOSALS)
+  assert.equal(fams.length, 1)
+  const v3 = fams[0].models.find((m) => m.name === 'V3')
+  assert.deepEqual(v3.fields, { 参数: '671B', 激活: '37B' })
+  assert.deepEqual(v3.from, ['a.md', 'b.md'])
+})
+
+test('没东西可写的型号默认不勾，写入请求里也不带；可疑的格子按出自哪篇分组', () => {
+  const fams = mergeProposals(PROPOSALS)
+  assert.equal(fams[0].models.find((m) => m.name === 'V2').pick, false)
+  assert.equal(pickedCount(fams), 1)
+  // b.md 对「参数 670B」的可疑不相干（留下的是 a.md 的 671B）；它对「激活」的可疑要归到 b.md
+  assert.deepEqual(suspectsByArticle(fams), { 'a.md': [{ model: 'V3', key: '参数', value: '671B' }],
+                                              'b.md': [{ model: 'V3', key: '激活', value: '37B' }] })
+  const body = applyBody(fams, PROPOSALS)
+  assert.deepEqual(body.sources, ['[[a]]', '[[b]]'])
+  assert.deepEqual(body.families[0].models.map((m) => m.name), ['V3'])
+  fams[0].models[0].pick = false
+  assert.deepEqual(applyBody(fams, PROPOSALS).families, [], '一个都没勾的家族整个不带')
 })
 
 // ---------------------------------------------------------------- 跑

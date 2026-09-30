@@ -536,6 +536,84 @@ def models_没指定目录给引导_指定之后读出家族_技术点对到知�
     assert c.put("/api/models/dir", json={"models_dir": ""}).json()["configured"] is False, "空串 = 取消指定"
 
 
+MODELS_ARTICLE = """# DeepSeek 迭代史
+
+## DeepSeek-V2
+2024年5月发布，236B总参数，21B激活，上下文 128K，引入 MLA。
+
+## DeepSeek-V3
+2024年12月26日发布，671B 总参数、37B 激活，预训练 14.8T tokens。
+"""
+
+
+def stub_models(extract: dict, verify: dict | None = None):
+    from server import models_extract as mx
+    original, calls = mx.ask_meta, []
+
+    def fake(vault, role, prompt, op="?"):
+        calls.append((role, op, prompt))
+        return json.dumps(extract if op == "models-extract" else verify, ensure_ascii=False), {"model": "假模型", "ms": 3}
+    mx.ask_meta = fake
+    return original, calls
+
+
+@case
+def models_抽原文成计划_已有只补空格_数字对不上标可疑_写入只补不覆盖():
+    """模型谱系第 2 步（2026-09-30）：learn 抽一篇原文 → 和目录合并成计划 → 可疑的格子问 review → 勾完写入。"""
+    from server import models_extract as mx
+    c, vault = client({**DEFAULT_FILES, "nodes/组A/MLA.md": node_md("MLA")})
+    core.write(vault / "articles/llm/ds.md", MODELS_ARTICLE)
+    assert c.post("/api/models/extract", json={"path": "articles/llm/ds.md"}).status_code == 422, "没指定目录先别抽"
+    c.put("/api/models/dir", json={"models_dir": "models"})
+    core.write(vault / "models/DeepSeek.md", "---\nkind: family\nname: DeepSeek\n---\n## DeepSeek-V2\n"
+               "- 发布:: 2024-05\n- 参数:: 236B\n\n## 别的\n- 发布:: 2023\n")
+    extract = {"families": [
+        {"name": "deepseek", "models": [
+            {"name": "DeepSeek-V2", "params": "236B总参数", "active": "21B", "context": "128K", "date": "2024-06"},
+            {"name": "DeepSeek-V3", "date": "2024-12-26", "params": "671B", "active": "37B",
+             "tokens": "15T tokens", "tech": ["[[MLA]]", "FP8"], "prev": "DeepSeek-V2", "extra": {"开源协议": "MIT"}}]},
+        {"name": "Qwen", "open": True, "models": [{"name": "Qwen2.5", "params": "72B"}]}]}
+    original, calls = stub_models(extract, {"checks": [{"i": 0, "verdict": "wrong", "why": "原文是 14.8T",
+                                                        "quote": "预训练 14.8T tokens", "suggest": "14.8T tokens"}]})
+    try:
+        r = c.post("/api/models/extract", json={"path": "articles/llm/ds.md"})
+        assert r.status_code == 200, r.text
+        prop = r.json()
+        role, _, prompt = calls[0]
+        assert role == "learn" and "DeepSeek：DeepSeek-V2、别的" in prompt and "MLA" in prompt and "14.8T" in prompt
+        ds, qw = prop["families"]
+        assert ds["exists"] and ds["target"] == "models/DeepSeek.md" and ds["name"] == "DeepSeek", ds
+        v2, v3 = ds["models"]
+        assert v2["status"] == "update" and v2["fields"] == {"激活": "21B", "上下文": "128K"}, v2
+        assert [x["key"] for x in v2["conflicts"]] == ["发布"], ("236B 和 236B总参数 是同一个数，不算冲突", v2)
+        assert v3["status"] == "new" and v3["fields"]["技术"] == "[[MLA]]、FP8" and v3["fields"]["开源协议"] == "MIT"
+        assert [x["key"] for x in v3["suspicious"]] == ["训练数据"], ("原文是 14.8T，15 找不到", v3["suspicious"])
+        assert qw["exists"] is False and qw["target"] == "models/Qwen.md" and qw["models"][0]["suspicious"], qw
+        ver = c.post("/api/models/verify", json={"path": "articles/llm/ds.md", "items": [
+            {"model": "DeepSeek-V3", "key": "训练数据", "value": "15T tokens"}]}).json()
+        assert calls[-1][0] == "review" and ver["checks"][0]["verdict"] == "wrong", ver
+        assert ver["checks"][0]["suggest"] == "14.8T tokens" and ver["model"] == "假模型", ver
+    finally:
+        mx.ask_meta = original
+
+    v3["fields"]["训练数据"] = "14.8T tokens"             # 人按 review 的建议改了这一格
+    body = {"families": [ds, {**qw, "models": []}], "sources": [prop["source"]]}
+    done = c.post("/api/models/apply", json=body)
+    assert done.status_code == 200, done.text
+    assert done.json()["files"] == ["models/DeepSeek.md"] and done.json()["models"] == 2, done.json()
+    assert (vault / done.json()["backup"] / "models/DeepSeek.md").is_file(), "写前要快照"
+    text = (vault / "models/DeepSeek.md").read_text("utf-8")
+    v2_block = text.split("## DeepSeek-V2")[1].split("## 别的")[0]
+    assert "- 激活:: 21B" in v2_block and "- 上下文:: 128K" in v2_block, ("补的格子要落在 V2 那一节里", text)
+    assert "- 发布:: 2024-05" in v2_block and "2024-06" not in text, "冲突的格子不改"
+    assert "[[articles/llm/ds]]" in text and not (vault / "models/Qwen.md").exists(), "勾掉的家族不写"
+    got = c.get("/api/models").json()
+    v3_read = next(m for f in got["families"] for m in f["models"] if m["name"] == "DeepSeek-V3")
+    assert v3_read["tokens_n"] == 14.8e12 and v3_read["tech"][0]["node"] == "MLA" and v3_read["extra"] == {"开源协议": "MIT"}
+    stale = c.post("/api/models/apply", json=body)
+    assert stale.status_code == 409 and "重新抽" in stale.json()["detail"], "预览之后文件变了就别写"
+
+
 @case
 def inbox_推荐带把握和理由_整块投票_判不出的可以问AI():
     """2026-09-29 Curator 说理由：自己有邻居在画布上的按邻居投票；自己零票就合整块投；

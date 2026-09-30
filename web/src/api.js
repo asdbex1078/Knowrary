@@ -107,6 +107,14 @@ export const postTypeDecide = (body) => postJSON('/api/pending/types/decide', bo
 /** 原文阅读（只读）：原文目录里的全部原文 / 读一篇（带从它拆出的点、各自链的是哪一节）。 */
 export const fetchArticles = () => request('/api/articles')
 export const fetchArticle = (path) => request(`/api/article?path=${encodeURIComponent(path)}`)
+/** 模型目录（家族文件）：读 / 指定目录 / 抽一篇原文成计划 / 可疑格子问 review / 写入勾选的型号。 */
+export const fetchModels = () => request('/api/models')
+export const putModelsDir = (dir) => request('/api/models/dir', {
+  method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ models_dir: dir }),
+})
+export const postModelsExtract = (path) => postJSON('/api/models/extract', { path })
+export const postModelsVerify = (path, items) => postJSON('/api/models/verify', { path, items })
+export const postModelsApply = (body) => postJSON('/api/models/apply', body)
 /** 把几个点概括成一个上位节点：让模型起草名字 / 摘要 / 正文（提议，不写盘）。 */
 export const postSummarize = (body) => postJSON('/api/summarize', body)
 export const fetchImportSource = (path) => request(`/api/import/source?path=${encodeURIComponent(path)}`)
