@@ -536,6 +536,16 @@ def models_没指定目录给引导_指定之后读出家族_技术点对到知�
     assert c.put("/api/models/dir", json={"models_dir": ""}).json()["configured"] is False, "空串 = 取消指定"
 
 
+@case
+def models_确定性核对_原文写成2022点08也认得出年和月():
+    """HunDun 初始化时撞上的：文章写 `**2022.08**`，按小数读成 2022.08，「发布 2022-08」就找不到 2022 了。"""
+    from server import models_extract as mx
+    nums = mx._numbers("| **2022.08** | GLM-130B | 130B |")
+    assert {2022.0, 8.0, 130.0} <= nums, nums
+    assert mx._suspicious({"发布": "2022-08", "参数": "130B"}, nums) == []
+    assert mx._suspicious({"参数": "131B"}, nums)[0]["why"] == "原文里找不到 131"
+
+
 MODELS_ARTICLE = """# DeepSeek 迭代史
 
 ## DeepSeek-V2
@@ -597,7 +607,8 @@ def models_抽原文成计划_已有只补空格_数字对不上标可疑_写入
         mx.ask_meta = original
 
     v3["fields"]["训练数据"] = "14.8T tokens"             # 人按 review 的建议改了这一格
-    body = {"families": [ds, {**qw, "models": []}], "sources": [prop["source"]]}
+    assert ds["sources"] == ["[[articles/llm/ds]]"], ds.get("sources")
+    body = {"families": [ds, {**qw, "models": []}]}
     done = c.post("/api/models/apply", json=body)
     assert done.status_code == 200, done.text
     assert done.json()["files"] == ["models/DeepSeek.md"] and done.json()["models"] == 2, done.json()

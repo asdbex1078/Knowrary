@@ -109,6 +109,7 @@ async def case_write(page, ck, vault: Path) -> None:
     md = (vault / "models/DeepSeek.md").read_text("utf-8")
     ck.add("家族文件：kind: family、型号一节、按原文改过的值、出处", "kind: family" in md and "## DeepSeek-V3" in md
            and "- 训练数据:: 14.8T tokens" in md and "[[articles/llm/deepseek/ds]]" in md, md[:300])
+    ck.add("出处跟着家族走：一起抽的另一篇不挂到这个家族上", "qwen/qw" not in md, md[:200])
     ck.add("勾掉的家族不写", not (vault / "models/Qwen.md").exists(), "")
     got = E.get(ck.api + "/api/models")
     v3 = next((m for f in got["families"] for m in f["models"] if m["name"] == "DeepSeek-V3"), {})

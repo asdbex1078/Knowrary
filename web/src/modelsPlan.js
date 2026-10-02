@@ -12,8 +12,10 @@ export function mergeProposals(proposals) {
   const byTarget = new Map()
   for (const p of proposals) {
     for (const fam of p.families || []) {
-      const have = byTarget.get(fam.target) || { ...fam, models: [] }
+      const have = byTarget.get(fam.target) || { ...fam, models: [], sources: [] }
       for (const m of fam.models || []) mergeModel(have.models, m, p)
+      // 出处跟着家族走：这个家族是从哪几篇里抽出来的
+      for (const s of fam.sources || [p.source]) if (s && !have.sources.includes(s)) have.sources.push(s)
       byTarget.set(fam.target, have)
     }
   }
@@ -58,12 +60,12 @@ export function applyBody(families, proposals) {
   const picked = families
     .map((fam) => ({
       name: fam.name, target: fam.target, exists: fam.exists, digest: fam.digest,
-      vendor: fam.vendor || '', tagline: fam.tagline || '', open: fam.open ?? null,
+      vendor: fam.vendor || '', tagline: fam.tagline || '', open: fam.open ?? null, sources: fam.sources || [],
       models: fam.models.filter((m) => m.pick && Object.keys(m.fields).length)
         .map((m) => ({ name: m.name, status: m.status, fields: m.fields, conflicts: [], suspicious: [] })),
     }))
     .filter((fam) => fam.models.length)
-  return { families: picked, sources: [...new Set(proposals.map((p) => p.source).filter(Boolean))] }
+  return { families: picked }
 }
 
 export function pickedCount(families) {

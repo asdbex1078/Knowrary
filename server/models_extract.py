@@ -61,7 +61,7 @@ def propose(vault: Path, path: str) -> ModelsProposal:
     numbers = _numbers(art.text)
     families = [_plan_family(vault, f, catalog, numbers) for f in (data.get("families") or [])
                 if isinstance(f, dict) and str(f.get("name") or "").strip()]
-    families = [f for f in families if f["models"]]
+    families = [{**f, "sources": [_source_link(art.path)]} for f in families if f["models"]]
     if not families:
         raise ModelsExtractRejected(f"《{art.title}》里没抽出任何型号（它可能不是讲模型迭代的文章）")
     return ModelsProposal(path=art.path, title=art.title, source=_source_link(art.path), families=families, **meta)
@@ -87,7 +87,14 @@ def _describe_nodes(vault: Path) -> str:
 
 
 def _numbers(text: str) -> set[float]:
-    return {float(x) for x in RE_NUM.findall(text or "")}
+    """原文里出现过的数。`2022.08` 这种日期写法既当 2022.08，也拆成 2022 和 8——
+    不拆的话「发布 2022-08」在原文里永远找不到 2022，每一格都成了可疑（HunDun 初始化时 37 格里几乎全是这个）。"""
+    out: set[float] = set()
+    for x in RE_NUM.findall(text or ""):
+        out.add(float(x))
+        if "." in x:
+            out.update(float(part) for part in x.split(".") if part)
+    return out
 
 
 def _source_link(path: str) -> str:
@@ -232,7 +239,8 @@ def apply(vault: Path, req: ModelsApply) -> ModelsApplied:
     backup = _snapshot(vault, list(groups))
     written = 0
     for target, fams in groups.items():
-        text, n = _render(vault / target, fams, req.sources)
+        # 出处按家族走：一批抽了六篇，DeepSeek 的出处只该是讲 DeepSeek 的那一篇（HunDun 初始化时六篇全挂到了每个家族上）
+        text, n = _render(vault / target, fams, list(dict.fromkeys(s for f in fams for s in f.sources)))
         core.write(vault / target, text)
         written += n
     return ModelsApplied(files=list(groups), models=written, backup=backup)

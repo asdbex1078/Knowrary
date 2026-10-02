@@ -600,7 +600,7 @@ test('没东西可写的型号默认不勾，写入请求里也不带；可疑�
   assert.deepEqual(suspectsByArticle(fams), { 'a.md': [{ model: 'V3', key: '参数', value: '671B' }],
                                               'b.md': [{ model: 'V3', key: '激活', value: '37B' }] })
   const body = applyBody(fams, PROPOSALS)
-  assert.deepEqual(body.sources, ['[[a]]', '[[b]]'])
+  assert.deepEqual(body.families[0].sources, ['[[a]]', '[[b]]'], '出处跟着家族走（两篇都抽到了这个家族）')
   assert.deepEqual(body.families[0].models.map((m) => m.name), ['V3'])
   fams[0].models[0].pick = false
   assert.deepEqual(applyBody(fams, PROPOSALS).families, [], '一个都没勾的家族整个不带')

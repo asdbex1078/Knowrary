@@ -1458,6 +1458,7 @@ class FamilyPlan(Strict):
     tagline: str = ""
     open: bool | None = None
     models: list[ModelPlan] = Field(default_factory=list)
+    sources: list[str] = Field(default_factory=list)      # 这个家族出自哪几篇原文（进它自己的 frontmatter sources）
 
 
 class ModelsExtract(Strict):
@@ -1501,8 +1502,7 @@ class ModelsVerified(Strict):
 
 
 class ModelsApply(Strict):
-    families: list[FamilyPlan]         # 人勾过之后剩下的
-    sources: list[str] = Field(default_factory=list)      # 这批出自哪几篇原文（进家族的 sources）
+    families: list[FamilyPlan]         # 人勾过之后剩下的；出处跟着各自的家族走（FamilyPlan.sources）
 
 
 class ModelsApplied(Strict):
