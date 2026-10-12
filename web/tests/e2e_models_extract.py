@@ -23,15 +23,17 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+sys.path.insert(0, str(REPO / "tools" / "knowrary"))
 import e2e_canvas as E  # noqa: E402
+import core  # noqa: E402
 
 DS = "# DeepSeek 迭代史\n\n## V3\n2024年12月26日发布，671B 总参数、37B 激活，预训练 14.8T tokens，用了 MLA。\n"
 QW = "# Qwen 迭代史\n\n## Qwen2.5\n2024年12月19日发布，最大 72B。\n"
 EXTRACT = {
     "DeepSeek": {"families": [{"name": "DeepSeek", "open": True, "tagline": "极致 MoE", "models": [
-        {"name": "DeepSeek-V3", "date": "2024-12-26", "params": "671B", "active": "37B",
-         "tokens": "15T tokens", "tech": ["[[甲]]", "FP8"], "highlight": "训练成本很低"}]}]},
-    "Qwen": {"families": [{"name": "Qwen", "models": [{"name": "Qwen2.5", "date": "2024-12-19", "params": "72B"}]}]},
+        {"name": "DeepSeek-V3", "date": "2024-12-26", "values": {"参数": "671B", "激活": "37B", "训练数据": "15T tokens"},
+         "tech": ["[[甲]]", "FP8"], "highlight": "训练成本很低"}]}]},
+    "Qwen": {"families": [{"name": "Qwen", "models": [{"name": "Qwen2.5", "date": "2024-12-19", "values": {"参数": "72B"}}]}]},
 }
 VERIFY = {"checks": [{"i": 0, "verdict": "wrong", "why": "原文是 14.8T", "quote": "预训练 14.8T tokens",
                       "suggest": "14.8T tokens"}]}
@@ -78,7 +80,7 @@ async def text(page, sel: str) -> str:
 async def case_extract(page, ck, vault: Path) -> None:
     await E.open_rail(page, "原文")
     head = await E.poll(page, f"({TEXT})('aside [data-group=\"llm\"] .art-group-head')", bool, timeout=8)
-    ck.add("原文按子目录分组，组上给「这 2 篇一起抽成模型谱系」", "llm/" in (head or "") and "这2篇一起抽成模型谱系" in (head or ""), str(head))
+    ck.add("原文按子目录分组，组上给「这 2 篇一起抽成谱系」", "llm/" in (head or "") and "这2篇一起抽成谱系" in (head or ""), str(head))
     await page.ev("document.querySelector('aside [data-group=\"llm\"] [data-act=\"extract-models-all\"]').click()")
     await E.poll(page, "!!document.querySelector('aside [data-models-dir]')", bool, timeout=6)
     ck.add("没指定模型目录：先让人选目录，带格式样例", "kind:family" in await text(page, "aside .models-sample pre"), "")
@@ -104,13 +106,13 @@ async def case_write(page, ck, vault: Path) -> None:
     ck.add("勾掉一个，写入按钮跟着变成 1 个", "写入1个型号" in (btn or ""), str(btn))
     await page.ev("document.querySelector('aside [data-act=\"write-models\"]').click()")
     done = await E.poll(page, f"({TEXT})('aside [data-models-done]')", bool, timeout=8)
-    ck.add("写完说清写了几个、写进哪、快照在哪", "1个型号" in (done or "") and "models/DeepSeek.md" in (done or "")
+    ck.add("写完说清写了几个、写进哪、快照在哪", "1个型号" in (done or "") and "models/大模型/DeepSeek.md" in (done or "")
            and ".knowrary/backup/models-" in (done or ""), str(done))
-    md = (vault / "models/DeepSeek.md").read_text("utf-8")
+    md = (vault / "models/大模型/DeepSeek.md").read_text("utf-8")
     ck.add("家族文件：kind: family、型号一节、按原文改过的值、出处", "kind: family" in md and "## DeepSeek-V3" in md
            and "- 训练数据:: 14.8T tokens" in md and "[[articles/llm/deepseek/ds]]" in md, md[:300])
     ck.add("出处跟着家族走：一起抽的另一篇不挂到这个家族上", "qwen/qw" not in md, md[:200])
-    ck.add("勾掉的家族不写", not (vault / "models/Qwen.md").exists(), "")
+    ck.add("勾掉的家族不写", not (vault / "models/大模型/Qwen.md").exists(), "")
     got = E.get(ck.api + "/api/models")
     v3 = next((m for f in got["families"] for m in f["models"] if m["name"] == "DeepSeek-V3"), {})
     ck.add("写完就读得出来，技术点对上了图里的知识点", v3.get("tech", [{}])[0].get("node") == "甲", str(v3.get("tech")))
@@ -143,7 +145,9 @@ def main() -> None:
     with tempfile.TemporaryDirectory(prefix="knowrary-e2e-models-") as tmpdir:
         tmp = Path(tmpdir)
         vault = E.make_vault(tmp)
-        for rel, body in (("articles/llm/deepseek/ds.md", DS), ("articles/llm/qwen/qw.md", QW)):
+        # 目录里只有「大模型」一张图：不用选图，直接抽（选图那一步在服务端用例里测）
+        for rel, body in (("articles/llm/deepseek/ds.md", DS), ("articles/llm/qwen/qw.md", QW),
+                          ("models/大模型/谱系.md", core.CATALOG_SAMPLE_LINEAGE)):
             (vault / rel).parent.mkdir(parents=True, exist_ok=True)
             (vault / rel).write_text(body, "utf-8")
         env = {**os.environ, "KNOWRARY_VAULT": str(vault), "KNOWRARY_HOME": str(tmp / "home"),

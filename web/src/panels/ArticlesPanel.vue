@@ -183,7 +183,7 @@ const HEAD_TAG = (level) => `h${Math.min(Math.max(level, 1), 6)}`
         </div>
         <p class="art-note">讲的是一串型号的迭代？
           <button class="btn tiny" data-act="extract-models" title="把这篇里的型号抽进模型目录（预览后再写）"
-                  @click="extract([reading])"><Icon name="timeline" :size="12" />抽成模型谱系</button></p>
+                  @click="extract([reading])"><Icon name="timeline" :size="12" />抽成谱系</button></p>
       </header>
 
       <section v-for="b in blocks" :key="b.id" class="art-sec">
@@ -209,7 +209,7 @@ const HEAD_TAG = (level) => `h${Math.min(Math.max(level, 1), 6)}`
             <Icon name="folder" :size="13" /><b>{{ g.name }}/</b><span class="dim">{{ g.articles.length }} 篇</span>
             <button class="btn tiny" style="margin-left: auto" data-act="extract-models-all"
                     :title="`把 ${g.name}/ 下这 ${g.articles.length} 篇一篇一篇抽进模型目录，最后一起预览`"
-                    @click="extract(g.articles)"><Icon name="timeline" :size="12" />这 {{ g.articles.length }} 篇一起抽成模型谱系</button>
+                    @click="extract(g.articles)"><Icon name="timeline" :size="12" />这 {{ g.articles.length }} 篇一起抽成谱系</button>
           </div>
           <div v-for="a in g.articles" :key="a.path" class="art-row" :class="{ fresh: !a.nodes }" :data-article="a.path">
             <button class="art-open" :title="a.path" @click="openArticle(a.path)">

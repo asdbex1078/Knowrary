@@ -28,11 +28,31 @@ const props = defineProps({
   edgeChecks: { type: Array, default: () => [] },     // 和这个点有关的已有边的校验结论（review 角色审的）
   edgeRun: { type: Object, default: null },           // 正在跑的那一轮校验（任何范围的）
   models: { type: Array, default: () => [] },         // 技术点链着这个点的型号（模型目录反查）
+  lineOptions: { type: Object, default: () => ({ 流派: [], 领域线: [] }) },   // 库里有哪些流派 / 领域线
 })
+/** 这个点的几层：第一个是主层。索引里 `layer` 永远是主层、`layers` 是几层时的全量。 */
+const myLayers = computed(() => props.selected?.layers || (props.selected?.layer ? [props.selected.layer] : []))
+function setPrimaryLayer(value) {
+  // 换主层时原来的其它几层留着；选「未分层」就整个清空（没有主层，副层也没地方挂）
+  const rest = myLayers.value.filter((x) => x !== value && x !== myLayers.value[0])
+  emit('set-layer', { id: props.selected.id, layer: value ? [value, ...rest] : [] })
+}
+function toggleAlsoLayer(l) {
+  const have = myLayers.value
+  emit('set-layer', { id: props.selected.id, layer: have.includes(l) ? have.filter((x) => x !== l) : [...have, l] })
+}
+
+/** 加 / 去掉一条线：已有的顺序不动（第一个是主道），新加的接在最后。 */
+function toggleLine(key, field, line) {
+  const have = props.selected?.[field] || []
+  const on = have.includes(line.name) || have.includes(line.id)
+  const names = on ? have.filter((x) => x !== line.name && x !== line.id) : [...have, line.id]
+  emit('set-lines', { id: props.selected.id, key, names })
+}
 // 抽象层的七档，和 core.parser.LAYERS 同一张表
 const LAYERS = ['理论', '硬件', '体系结构', '汇编接口', '系统软件', '高级语言', 'AI应用']
 const emit = defineEmits([
-  'close', 'goto', 'open-article', 'decide-pending', 'check-edges', 'stop-edge-check', 'fix-edge', 'edit-desc', 'set-layer', 'set-year', 'add-ref', 'review', 'quiz', 'rename', 'finalize',
+  'close', 'goto', 'open-article', 'decide-pending', 'check-edges', 'stop-edge-check', 'fix-edge', 'edit-desc', 'set-layer', 'set-lines', 'set-year', 'add-ref', 'review', 'quiz', 'rename', 'finalize',
   'retype-edge', 'remove-edge', 'add-edge', 'drop-change',
   'preview-changes', 'apply-changes', 'clear-changes', 'save-body',
   'suggest', 'dismiss-suggestion', 'show-model', 'to-model',
@@ -172,14 +192,34 @@ const CHANGE_ICON = { add_edge: 'plus', remove_edge: 'trash', update_edge: 'penc
                 <!-- 抽象层：历史视图按它分泳道，新点也按它归位。空着的话这个点只能待在领域大框里 -->
                 <dt>抽象层</dt>
                 <dd>
-                  <select class="layer-pick" :value="detail?.meta?.layer || ''"
-                          :title="detail ? '改它会写回 md（走变更卡）' : '先打开这个节点'"
+                  <select class="layer-pick" :value="myLayers[0] || ''"
+                          :title="detail ? '主层：画布上落在哪条道。改它会写回 md（走变更卡）' : '先打开这个节点'"
                           :disabled="!detail"
-                          @change="emit('set-layer', { id: selected.id, layer: $event.target.value })">
+                          @change="setPrimaryLayer($event.target.value)">
                     <option value="">未分层</option>
                     <option v-for="l in LAYERS" :key="l" :value="l">{{ l }}</option>
                   </select>
+                  <!-- 跨层（2026-10-12）：CPU 既是硬件又是体系结构。主层之外再勾的几层，历史「按抽象层」时画影子 -->
+                  <div v-if="myLayers[0]" class="line-picks layer-also" data-layer-also>
+                    <span class="dim">也在</span>
+                    <button v-for="l in LAYERS.filter((x) => x !== myLayers[0])" :key="l" class="chip tiny"
+                            :class="{ on: myLayers.includes(l) }" :disabled="!detail" :data-layer="l"
+                            @click="toggleAlsoLayer(l)">{{ l }}</button>
+                  </div>
                 </dd>
+                <!-- 归属（2026-10-12）：流派 / 领域线是点自己的字段，点一下加 / 去掉；先勾的是主道（真身画在那条道上） -->
+                <template v-for="[key, field] in [['流派', 'schools'], ['领域线', 'domains']]" :key="key">
+                  <template v-if="lineOptions[key]?.length">
+                    <dt>{{ key }}</dt>
+                    <dd class="line-picks" :data-line-key="key">
+                      <button v-for="l in lineOptions[key]" :key="l.id" class="chip tiny"
+                              :class="{ on: (selected[field] || []).includes(l.name) || (selected[field] || []).includes(l.id) }"
+                              :disabled="!detail" :data-line="l.id"
+                              :title="detail ? '改它会写回 md（走变更卡）；写在前面的是主道' : '先打开这个节点'"
+                              @click="toggleLine(key, field, l)">{{ l.name }}</button>
+                    </dd>
+                  </template>
+                </template>
                 <template v-if="selected.weight">
                   <dt>权重</dt><dd class="tnum">{{ (selected.weight * 100).toFixed(0) }}% · pageRank</dd>
                 </template>

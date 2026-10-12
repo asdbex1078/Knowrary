@@ -512,11 +512,12 @@ def models_没指定目录给引导_指定之后读出家族_技术点对到知�
     c, vault = client({**DEFAULT_FILES, "nodes/组A/MLA.md": node_md("MLA", extra="aliases: [多头潜在注意力]\n"),
                        "nodes/组A/MoE.md": node_md("MoE")})
     core.write(vault / "catalog/llm/DeepSeek.md", core.CATALOG_SAMPLE)
+    core.write(vault / "catalog/llm/谱系.md", core.CATALOG_SAMPLE_LINEAGE)
     core.write(vault / "catalog/llm/笔记.md", "# 不是家族文件\n")
     first = c.get("/api/models").json()
     assert first["configured"] is False and first["families"] == [] and "catalog" in first["candidates"], first
-    assert "kind: family" in first["sample"] and first["fields"][:3] == ["发布", "参数", "激活"], first["fields"]
-    assert "上下文" in first["fields"] and "训练数据" in first["fields"], "上下文和训练数据是核心对比项"
+    assert "kind: family" in first["sample"] and "kind: lineage" in first["sample_lineage"], first
+    assert first["fields"][:3] == ["发布", "前代", "基于"] and "参数" not in first["fields"], ("公共字段不含任何一张图特有的", first["fields"])
 
     assert c.put("/api/models/dir", json={"models_dir": "nodes/x"}).status_code == 422, "落进 nodes/ 会被扫成节点"
     r = c.put("/api/models/dir", json={"models_dir": "catalog"})
@@ -524,11 +525,15 @@ def models_没指定目录给引导_指定之后读出家族_技术点对到知�
     got = r.json()
     assert got["configured"] and got["dir"] == "catalog" and [f["id"] for f in got["families"]] == ["DeepSeek"], got
     v3 = next(m for m in got["families"][0]["models"] if m["name"] == "DeepSeek-V3")
-    assert v3["id"] == "DeepSeek/DeepSeek-V3" and v3["params_n"] == 671e9 and v3["line"] > 0, v3
+    assert v3["id"] == "DeepSeek/DeepSeek-V3" and v3["numbers"]["参数"] == 671e9 and v3["line"] > 0, v3
+    assert v3["values"]["上下文"] == "128K" and v3["numbers"]["训练数据"] == 14.8e12, "上下文和训练数据是核心对比项"
+    assert got["families"][0]["lineage"] == "llm", got["families"][0]
+    llm = got["lineages"][0]
+    assert llm["id"] == "llm" and llm["badge"] == "参数" and [f["key"] for f in llm["fields"]] == ["参数", "激活", "上下文", "训练数据"], llm
     tech = {t["text"]: t["node"] for t in v3["tech"]}
     assert tech["MLA"] == "MLA" and tech["MoE"] == "MoE" and tech["FP8 混合精度"] is None, tech
     assert got["used_by"]["MLA"] == ["DeepSeek/DeepSeek-V2", "DeepSeek/DeepSeek-V3"], got["used_by"]
-    assert {"source": "DeepSeek/DeepSeek-V3", "target": "DeepSeek/DeepSeek-R1", "kind": "base"} in got["links"]
+    assert {"source": "DeepSeek/DeepSeek-V3", "target": "DeepSeek/DeepSeek-R1", "kind": "base", "label": ""} in got["links"]
     assert got["candidates"] == [], "有家族了就不用再给候选"
     assert c.get("/api/vault/config").json()["models_dir"] == "catalog", "跟着库走，存在 vault.json"
     ids = {n["id"] for n in c.get("/api/index").json()["nodes"]}
@@ -542,8 +547,9 @@ def models_确定性核对_原文写成2022点08也认得出年和月():
     from server import models_extract as mx
     nums = mx._numbers("| **2022.08** | GLM-130B | 130B |")
     assert {2022.0, 8.0, 130.0} <= nums, nums
-    assert mx._suspicious({"发布": "2022-08", "参数": "130B"}, nums) == []
-    assert mx._suspicious({"参数": "131B"}, nums)[0]["why"] == "原文里找不到 131"
+    keys = ("发布", "参数")
+    assert mx._suspicious({"发布": "2022-08", "参数": "130B"}, nums, keys) == []
+    assert mx._suspicious({"参数": "131B"}, nums, keys)[0]["why"] == "原文里找不到 131"
 
 
 MODELS_ARTICLE = """# DeepSeek 迭代史
@@ -575,14 +581,15 @@ def models_抽原文成计划_已有只补空格_数字对不上标可疑_写入
     core.write(vault / "articles/llm/ds.md", MODELS_ARTICLE)
     assert c.post("/api/models/extract", json={"path": "articles/llm/ds.md"}).status_code == 422, "没指定目录先别抽"
     c.put("/api/models/dir", json={"models_dir": "models"})
-    core.write(vault / "models/DeepSeek.md", "---\nkind: family\nname: DeepSeek\n---\n## DeepSeek-V2\n"
+    core.write(vault / "models/大模型/谱系.md", core.CATALOG_SAMPLE_LINEAGE)
+    core.write(vault / "models/大模型/DeepSeek.md", "---\nkind: family\nname: DeepSeek\n---\n## DeepSeek-V2\n"
                "- 发布:: 2024-05\n- 参数:: 236B\n\n## 别的\n- 发布:: 2023\n")
     extract = {"families": [
         {"name": "deepseek", "models": [
-            {"name": "DeepSeek-V2", "params": "236B总参数", "active": "21B", "context": "128K", "date": "2024-06"},
-            {"name": "DeepSeek-V3", "date": "2024-12-26", "params": "671B", "active": "37B",
-             "tokens": "15T tokens", "tech": ["[[MLA]]", "FP8"], "prev": "DeepSeek-V2", "extra": {"开源协议": "MIT"}}]},
-        {"name": "Qwen", "open": True, "models": [{"name": "Qwen2.5", "params": "72B"}]}]}
+            {"name": "DeepSeek-V2", "values": {"参数": "236B总参数", "激活": "21B", "上下文": "128K"}, "date": "2024-06"},
+            {"name": "DeepSeek-V3", "date": "2024-12-26", "values": {"参数": "671B", "激活": "37B", "训练数据": "15T tokens"},
+             "tech": ["[[MLA]]", "FP8"], "prev": "DeepSeek-V2", "extra": {"开源协议": "MIT"}}]},
+        {"name": "Qwen", "open": True, "models": [{"name": "Qwen2.5", "values": {"参数": "72B"}}]}]}
     original, calls = stub_models(extract, {"checks": [{"i": 0, "verdict": "wrong", "why": "原文是 14.8T",
                                                         "quote": "预训练 14.8T tokens", "suggest": "14.8T tokens"}]})
     try:
@@ -591,14 +598,16 @@ def models_抽原文成计划_已有只补空格_数字对不上标可疑_写入
         prop = r.json()
         role, _, prompt = calls[0]
         assert role == "learn" and "DeepSeek：DeepSeek-V2、别的" in prompt and "MLA" in prompt and "14.8T" in prompt
+        assert "「大模型」" in prompt and "`训练数据`（数值）" in prompt and "拆成 参数 和 激活" in prompt, "字段和抽取说明来自 谱系.md"
+        assert prop["lineage"] == "大模型", "目录里只有一张图时不用选"
         ds, qw = prop["families"]
-        assert ds["exists"] and ds["target"] == "models/DeepSeek.md" and ds["name"] == "DeepSeek", ds
+        assert ds["exists"] and ds["target"] == "models/大模型/DeepSeek.md" and ds["name"] == "DeepSeek", ds
         v2, v3 = ds["models"]
         assert v2["status"] == "update" and v2["fields"] == {"激活": "21B", "上下文": "128K"}, v2
         assert [x["key"] for x in v2["conflicts"]] == ["发布"], ("236B 和 236B总参数 是同一个数，不算冲突", v2)
         assert v3["status"] == "new" and v3["fields"]["技术"] == "[[MLA]]、FP8" and v3["fields"]["开源协议"] == "MIT"
         assert [x["key"] for x in v3["suspicious"]] == ["训练数据"], ("原文是 14.8T，15 找不到", v3["suspicious"])
-        assert qw["exists"] is False and qw["target"] == "models/Qwen.md" and qw["models"][0]["suspicious"], qw
+        assert qw["exists"] is False and qw["target"] == "models/大模型/Qwen.md" and qw["models"][0]["suspicious"], qw
         ver = c.post("/api/models/verify", json={"path": "articles/llm/ds.md", "items": [
             {"model": "DeepSeek-V3", "key": "训练数据", "value": "15T tokens"}]}).json()
         assert calls[-1][0] == "review" and ver["checks"][0]["verdict"] == "wrong", ver
@@ -611,18 +620,108 @@ def models_抽原文成计划_已有只补空格_数字对不上标可疑_写入
     body = {"families": [ds, {**qw, "models": []}]}
     done = c.post("/api/models/apply", json=body)
     assert done.status_code == 200, done.text
-    assert done.json()["files"] == ["models/DeepSeek.md"] and done.json()["models"] == 2, done.json()
-    assert (vault / done.json()["backup"] / "models/DeepSeek.md").is_file(), "写前要快照"
-    text = (vault / "models/DeepSeek.md").read_text("utf-8")
+    assert done.json()["files"] == ["models/大模型/DeepSeek.md"] and done.json()["models"] == 2, done.json()
+    assert (vault / done.json()["backup"] / "models/大模型/DeepSeek.md").is_file(), "写前要快照"
+    text = (vault / "models/大模型/DeepSeek.md").read_text("utf-8")
     v2_block = text.split("## DeepSeek-V2")[1].split("## 别的")[0]
     assert "- 激活:: 21B" in v2_block and "- 上下文:: 128K" in v2_block, ("补的格子要落在 V2 那一节里", text)
     assert "- 发布:: 2024-05" in v2_block and "2024-06" not in text, "冲突的格子不改"
-    assert "[[articles/llm/ds]]" in text and not (vault / "models/Qwen.md").exists(), "勾掉的家族不写"
+    assert "[[articles/llm/ds]]" in text and not (vault / "models/大模型/Qwen.md").exists(), "勾掉的家族不写"
     got = c.get("/api/models").json()
     v3_read = next(m for f in got["families"] for m in f["models"] if m["name"] == "DeepSeek-V3")
-    assert v3_read["tokens_n"] == 14.8e12 and v3_read["tech"][0]["node"] == "MLA" and v3_read["extra"] == {"开源协议": "MIT"}
+    assert v3_read["numbers"]["训练数据"] == 14.8e12 and v3_read["tech"][0]["node"] == "MLA" and v3_read["extra"] == {"开源协议": "MIT"}
     stale = c.post("/api/models/apply", json=body)
     assert stale.status_code == 409 and "重新抽" in stale.json()["detail"], "预览之后文件变了就别写"
+
+
+CPU_LINEAGE = """---
+kind: lineage
+name: CPU
+badge: 位宽
+---
+## 字段
+- 制程:: 数值，单位 nm
+- 晶体管:: 数值
+- 位宽
+- 指令集:: 可多个
+- 发布:: 数值
+
+## 抽取说明
+- 一代微架构一条，产品型号写进 extra。
+"""
+
+
+@case
+def models_一级子目录一张谱系图_各图自声明字段_抽取要选图_同名家族不跨图合并():
+    """2026-10-12：模型目录扩成通用谱系目录。CPU、操作系统和大模型一样是「型号」，各占一个一级子目录，
+    `谱系.md` 声明这张图登记哪些字段；代码里不写死任何一张图。"""
+    from server import models_extract as mx
+    c, vault = client({**DEFAULT_FILES, "nodes/组A/保护模式.md": node_md("保护模式")})
+    c.put("/api/models/dir", json={"models_dir": "models"})
+    core.write(vault / "models/大模型/谱系.md", core.CATALOG_SAMPLE_LINEAGE)
+    core.write(vault / "models/大模型/Intel.md", "---\nkind: family\nname: Intel\n---\n## 某个模型\n- 参数:: 7B\n")
+    core.write(vault / "models/CPU/谱系.md", CPU_LINEAGE.replace("badge: 位宽", "badge: 主频"))
+    core.write(vault / "models/CPU/x86/Intel.md", "---\nkind: family\nname: Intel\n---\n## 80386\n"
+               "- 发布:: 1985\n- 制程:: 1.5μm 即 1500nm\n- 晶体管:: 27.5万\n- 位宽:: 32 位\n- 参数:: 无\n"
+               "- 技术:: [[保护模式]]、分页\n")
+    core.write(vault / "models/操作系统/Linux.md", "---\nkind: family\nname: Linux\n---\n## Linux 0.11\n- 发布:: 1991-12\n")
+    got = c.get("/api/models").json()
+    assert [x["id"] for x in got["lineages"]] == ["CPU", "大模型", "操作系统"], got["lineages"]
+    cpu = got["lineages"][0]
+    assert cpu["badge"] == "" and [f["key"] for f in cpu["fields"]] == ["制程", "晶体管", "位宽", "指令集"], cpu
+    msgs = " / ".join(w["message"] for w in got["warnings"])
+    assert "badge「主频」" in msgs and "「发布」是公共字段" in msgs, msgs
+    fams = {f["lineage"]: f for f in got["families"]}
+    assert set(fams) == {"CPU", "大模型", "操作系统"} and fams["CPU"]["path"] == "models/CPU/x86/Intel.md", "更深的子目录也归一级那张图"
+    assert fams["CPU"]["id"] != fams["大模型"]["id"], "两张图里各有一个 Intel.md，家族 id 不能撞"
+    i386 = fams["CPU"]["models"][0]
+    assert i386["numbers"] == {"制程": 1500.0, "晶体管": 275000.0} and i386["values"]["位宽"] == "32 位", i386
+    assert i386["extra"] == {"参数": "无"}, "别的图的字段在这张图里只是没登记的"
+    assert i386["tech"][0]["node"] == "保护模式" and got["used_by"]["保护模式"] == [i386["id"]], i386["tech"]
+    assert fams["操作系统"]["models"][0]["year"] == 1991 and got["lineages"][2]["fields"] == [], "没有 谱系.md 也是一张图"
+
+    # 第 2 步：跨图关系字段。操作系统声明「运行在 指向 CPU」，版本里写 CPU 图里的型号名
+    core.write(vault / "models/操作系统/谱系.md", "---\nkind: lineage\nname: 操作系统\n---\n## 字段\n"
+               "- 运行在:: 指向 CPU\n- 宿主:: 指向 主机\n")
+    core.write(vault / "models/操作系统/Linux.md", "---\nkind: family\nname: Linux\n---\n## Linux 0.11\n- 发布:: 1991-12\n"
+               "- 运行在:: [[80386]]、80486\n- 宿主:: 某台机器\n")
+    got = c.get("/api/models").json()
+    os_ = next(x for x in got["lineages"] if x["id"] == "操作系统")
+    assert os_["fields"][0] == {"key": "运行在", "numeric": False, "list": True, "unit": "", "min": None, "max": None,
+                                "target": "CPU"}, os_["fields"]
+    linux = next(f for f in got["families"] if f["lineage"] == "操作系统")["models"][0]
+    assert linux["refs"] == {"运行在": ["80386", "80486"], "宿主": ["某台机器"]}, linux["refs"]
+    assert {"source": i386["id"], "target": linux["id"], "kind": "ref", "label": "运行在"} in got["links"], got["links"]
+    msgs = " / ".join(w["message"] for w in got["warnings"])
+    assert "「Linux 0.11」的运行在「80486」在「CPU」那张图里对不上" in msgs, msgs
+    assert "指向「主机」，谱系目录里没有这张图" in msgs, msgs
+    from server import models_extract as mx2
+    described = mx2._describe_fields(os_, core.load_catalog(vault))
+    assert "`运行在`（可多个）：写「CPU」那张图里的型号名" in described and "现有：80386" in described, described
+
+    art = "# x86\n80386 于 1985 年发布，27.5 万晶体管，1.5μm 工艺。80486 于 1989 年发布，120 万晶体管。"
+    core.write(vault / "articles/硬件/CPU.md", art)
+    no = c.post("/api/models/extract", json={"path": "articles/硬件/CPU.md"})
+    assert no.status_code == 422 and "先选抽进哪一张" in no.json()["detail"], no.text
+    bad = c.post("/api/models/extract", json={"path": "articles/硬件/CPU.md", "lineage": "数据库"})
+    assert bad.status_code == 422 and "models/数据库/谱系.md" in bad.json()["detail"], bad.text
+    original, calls = stub_models({"families": [
+        {"name": "Intel", "models": [{"name": "80386", "values": {"晶体管": "27.5万"}},
+                                     {"name": "80486", "date": "1989", "values": {"晶体管": "130万"}}]},
+        {"name": "AMD", "models": [{"name": "K5", "values": {"制程": "350nm"}}]}]})
+    try:
+        r = c.post("/api/models/extract", json={"path": "articles/硬件/CPU.md", "lineage": "CPU"})
+    finally:
+        mx.ask_meta = original
+    assert r.status_code == 200, r.text
+    prompt = calls[0][2]
+    assert "「CPU」" in prompt and "`制程`（数值，单位 nm）" in prompt and "`指令集`（可多个）" in prompt, prompt[:600]
+    assert "一代微架构一条" in prompt and "Intel：80386" in prompt and "某个模型" not in prompt, "只列这张图里已有的"
+    intel, amd = r.json()["families"]
+    assert intel["target"] == "models/CPU/x86/Intel.md" and intel["exists"], ("同名家族只在本图里找", intel)
+    assert [m["name"] for m in intel["models"]] == ["80486"], "80386 的晶体管已经有了，没东西可补"
+    assert [s["key"] for s in intel["models"][0]["suspicious"]] == ["晶体管"], "数值字段要核原文：130 万对不上"
+    assert amd["target"] == "models/CPU/AMD.md" and not amd["exists"], "新家族建在这张图的子目录里"
 
 
 @case

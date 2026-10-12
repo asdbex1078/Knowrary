@@ -26,6 +26,9 @@
 CISC 和 RISC（前端 CISC 指令集、后端拆成类似 RISC 的 μops），而 layout 的分组框
 是一棵树，一个节点只能有一个家——表达不了。`包含` 是结构族的边，没有唯一性约束。
 
+**2026-10-12 起归属是点上的字段**（`流派: ["[[CISC]]"]`、`领域线: ["[[NLP]]", "[[CV]]"]`，见 core/lines.py），
+不再靠 `属于::` 边。旧写法（点里的 `- 属于::`、线文档里的 `- 包含::`）照读，没迁的库不会坏。
+
 这一层不读盘：成员顺序按**年份**排（流派本身就是时间概念），不像对比表那样要回 md
 拿书写顺序。所以它是一个纯函数，只吃索引。
 """
@@ -93,12 +96,7 @@ def schools(index: dict, kind: str | None = None) -> list[dict]:
     症状，所以列出来让人自己判。
     """
     by_id = {n["id"]: n for n in index["nodes"]}
-    members: dict[str, list[str]] = {}
-    for e in index["edges"]:
-        if e["type"] != MEMBER_RELATION:
-            continue
-        if by_id.get(e["source"], {}).get("type") in LINE_TYPES:
-            members.setdefault(e["source"], []).append(e["target"])
+    members = _members(index, by_id)
 
     out = []
     want = (kind,) if kind else LINE_TYPES
@@ -130,6 +128,37 @@ def schools(index: dict, kind: str | None = None) -> list[dict]:
     return out
 
 
+def _declared(index: dict, by_id: dict) -> dict[str, list[str]]:
+    """点上的字段声明：点 id → 它写的线 id 列表（按书写顺序）。字段里写的是线的名字或 id，都认。"""
+    lookup = {}
+    for n in index["nodes"]:
+        if n.get("type") in LINE_TYPES:
+            for key in (n["id"], n.get("name")):
+                if key:
+                    lookup.setdefault((n["type"], str(key).strip().lower()), n["id"])
+    out: dict[str, list[str]] = {}
+    for n in index["nodes"]:
+        # 种类要对上：`流派` 里写了个领域线（CV）不算——索引那边报 unknown_line
+        wanted = [(SCHOOL_TYPE, x) for x in n.get("schools") or []] + [(DOMAIN_TYPE, x) for x in n.get("domains") or []]
+        ids = [lookup[(t, x.lower())] for t, x in wanted if (t, x.lower()) in lookup]
+        if ids:
+            out[n["id"]] = list(dict.fromkeys(ids))
+    return out
+
+
+def _members(index: dict, by_id: dict) -> dict[str, list[str]]:
+    """线 id → 成员。字段声明在前，旧写法的 `包含` 边（点里写 `属于` 也归一成它）补在后面。"""
+    members: dict[str, list[str]] = {}
+    for nid, ids in _declared(index, by_id).items():
+        for lid in ids:
+            members.setdefault(lid, []).append(nid)
+    for e in index["edges"]:
+        if e["type"] == MEMBER_RELATION and by_id.get(e["source"], {}).get("type") in LINE_TYPES:
+            if e["target"] not in members.setdefault(e["source"], []):
+                members[e["source"]].append(e["target"])
+    return members
+
+
 def school_of(index: dict, node_id: str) -> list[str]:
     """一个节点属于哪几个流派。**返回列表不是单值**——重叠是常态，不是例外。"""
     return [s["id"] for s in schools(index) if node_id in s["members"]]
@@ -147,10 +176,11 @@ def line_homes(vault: Path, index: dict, kind: str | None = None) -> dict[str, s
     这些箭头会汇聚到一条它根本没出生在那儿的道上，看起来就是
     **「语音这条线发明了 Transformer」**。
 
-    所以口径和对比组的行序一致：**按节点 md 里 `- 属于::` 的书写顺序，第一条就是主道**。
-    想换就去 md 里挪那两行。只读跨线的那几个节点，不跨线的没有歧义。
+    所以口径和对比组的行序一致：**字段里写在前面的就是主道**（`领域线: ["[[NLP]]", "[[CV]]"]`）；
+    没迁的旧写法按 md 里 `- 属于::` 的书写顺序。只读跨线的那几个节点，不跨线的没有歧义。
     """
     lines = {s["id"]: s for s in schools(index, kind)}
+    declared = _declared(index, {n["id"]: n for n in index["nodes"]})
     by_node: dict[str, list[str]] = {}
     for lid, line in lines.items():
         for nid in line["members"]:
@@ -160,17 +190,21 @@ def line_homes(vault: Path, index: dict, kind: str | None = None) -> dict[str, s
     for nid, ids in by_node.items():
         if len(ids) < 2:
             continue                      # 只属于一条线：没有歧义，不用读盘
+        mine = [d for d in declared.get(nid, []) if d in ids]
+        if mine:
+            out[nid] = mine[0]            # 字段写在前面的就是主道，不用读盘
+            continue
         path = paths.get(nid)
-        declared = []
+        legacy = []
         if path and (vault / path).exists():
             node, _ = load_node(vault, vault / path)
             # `属于` 归一成 `包含`，但 md 里写的是 `属于`，所以两个都认
-            declared = [e.target for e in node.edges
-                        if e.type in ("属于", MEMBER_RELATION) and e.target in lines]
+            legacy = [e.target for e in node.edges
+                      if e.type in ("属于", MEMBER_RELATION) and e.target in lines]
         # 没声明就落到**起始年最早的那条线**。这只是个稳定的默认值，不是判断：
         # 成员写在线那侧（`- 包含:: [[点]]`）时，点自己的 md 里没有书写顺序可查。
         # 想指定就在点的 md 里写 `- 属于:: [[那条线]]`，写在最前面的那条就是主道。
         fallback = sorted(ids, key=lambda i: (lines[i]["start"] is None,
                                               lines[i]["start"] or 0, i))[0]
-        out[nid] = next((d for d in declared if d in ids), fallback)
+        out[nid] = next((d for d in legacy if d in ids), fallback)
     return out

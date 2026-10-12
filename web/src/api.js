@@ -112,7 +112,7 @@ export const fetchModels = () => request('/api/models')
 export const putModelsDir = (dir) => request('/api/models/dir', {
   method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ models_dir: dir }),
 })
-export const postModelsExtract = (path) => postJSON('/api/models/extract', { path })
+export const postModelsExtract = (path, lineage = null) => postJSON('/api/models/extract', { path, lineage })
 export const postModelsVerify = (path, items) => postJSON('/api/models/verify', { path, items })
 export const postModelsApply = (body) => postJSON('/api/models/apply', body)
 /** 把一个其实是型号的知识点挪进模型目录（dry_run 默认真：先看影响面）。 */

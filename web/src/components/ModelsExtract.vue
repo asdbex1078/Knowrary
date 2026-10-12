@@ -19,7 +19,8 @@ const props = defineProps({
 })
 const emit = defineEmits(['close'])
 
-const stage = ref('loading')          // loading / dir / extract / preview / verify / write / done
+const stage = ref('loading')          // loading / dir / lineage / extract / preview / verify / write / done
+const lineage = ref('')               // 抽进哪张谱系图（2026-10-12：目录里不止一张时先选）
 const catalog = ref(null)
 const run = ref(null)                 // { i, n, title, started, stop, what }
 const proposals = ref([])
@@ -40,11 +41,26 @@ function msgOf(err) { return err?.body?.detail?.message || err?.body?.detail || 
 
 onMounted(async () => {
   try { catalog.value = await fetchModels() } catch (err) { error.value = msgOf(err) }
-  if (catalog.value?.configured) extractAll()
+  if (catalog.value?.configured) start()
   else stage.value = 'dir'
 })
 
-function onDir(read) { catalog.value = read; extractAll() }
+function onDir(read) { catalog.value = read; start() }
+
+/** 目录里只有一张图（或还没有）就直接抽；不止一张先选，默认猜一张：这批原文和哪张图里家族的出处在同一个文件夹。 */
+function start() {
+  const lineages = catalog.value?.lineages || []
+  if (lineages.length <= 1) { lineage.value = lineages[0]?.id ?? ''; extractAll(); return }
+  lineage.value = guessLineage(lineages)
+  stage.value = 'lineage'
+}
+
+function guessLineage(lineages) {
+  const dirOf = (p) => p.replace(/\[\[|\]\]/g, '').split('/').slice(0, -1).join('/')
+  const mine = new Set(props.articles.map((a) => dirOf(a.path)))
+  const hit = (catalog.value.families || []).find((f) => f.sources.some((s) => mine.has(dirOf(s))))
+  return hit ? hit.lineage : lineages[0].id
+}
 
 async function extractAll() {
   stage.value = 'extract'
@@ -53,7 +69,7 @@ async function extractAll() {
     if (run.value?.stop) break
     const a = props.articles[i]
     run.value = { i: i + 1, n, title: a.title, started: Date.now(), stop: run.value?.stop || false, what: 'learn 在抽' }
-    try { proposals.value.push(await postModelsExtract(a.path)) } catch (err) { failed.value.push({ title: a.title, error: msgOf(err) }) }
+    try { proposals.value.push(await postModelsExtract(a.path, lineage.value)) } catch (err) { failed.value.push({ title: a.title, error: msgOf(err) }) }
   }
   run.value = null
   families.value = mergeProposals(proposals.value)
@@ -96,14 +112,23 @@ async function write() {
 <template>
   <div class="models-extract" data-models-extract>
     <header class="models-extract-head">
-      <b>抽成模型谱系</b>
-      <span class="dim">{{ articles.length }} 篇原文<template v-if="catalog?.dir"> → <code>{{ catalog.dir }}/</code></template></span>
+      <b>抽成谱系</b>
+      <span class="dim">{{ articles.length }} 篇原文<template v-if="catalog?.dir"> → <code>{{ catalog.dir }}/{{ lineage ? `${lineage}/` : '' }}</code></template></span>
       <button class="icon-btn ghost tiny" style="margin-left: auto" title="不抽了，回到原文列表" data-act="close-extract"
               :disabled="stage === 'write'" @click="emit('close')"><Icon name="x" :size="13" /></button>
     </header>
 
     <ModelsDirPick v-if="stage === 'dir'" :candidates="catalog?.candidates || []" :sample="catalog?.sample || ''"
-                   @saved="onDir" />
+                   :sample-lineage="catalog?.sample_lineage || ''" @saved="onDir" />
+
+    <div v-if="stage === 'lineage'" class="models-lineage-pick" data-lineage-pick>
+      <p class="dim">抽进哪张谱系图？要抽哪些字段、哪几格核原文数字，都按那张图的 <code>谱系.md</code> 来。</p>
+      <div class="seg" role="tablist">
+        <button v-for="l in catalog.lineages" :key="l.id" :class="{ on: lineage === l.id }" :data-lineage="l.id"
+                @click="lineage = l.id">{{ l.name }}</button>
+      </div>
+      <button class="btn primary tiny" data-act="start-extract" @click="extractAll">开始抽</button>
+    </div>
 
     <div v-if="run" class="cc-audit busy" data-models-run>
       <Icon name="clock" :size="13" />

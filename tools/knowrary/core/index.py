@@ -19,10 +19,11 @@ from .analysis import find_cycles, pagerank
 from .diagnostics import Diagnostics
 from .mdio import RE_LINK, json_safe, load_json
 from .compare import COMPARE_TYPE, MEMBER_RELATION
+from .lines import DOMAIN_KEY, SCHOOL_KEY, line_names
 from .schools import LINE_TYPES
 from .facts import (COMPARE_HEADING, FACTS_HEADING, FM_DIMENSIONS, bare_compare_headings,
                     compare_targets, facts_of, section_bounds, stray_facts)
-from .parser import Node, is_aggregate, load_vault, validate_frontmatter, parse_params
+from .parser import Node, is_aggregate, layers_of, load_vault, validate_frontmatter, parse_params
 from .sources import sources_of
 from .relations import NormalizedEdge, RelationTypes, load_relation_types, normalize_direction
 
@@ -202,6 +203,7 @@ def _check_compare(ctx: BuildContext) -> None:
         if edge.symmetric:                       # 对比是对称边，索引按 id 排序定向，两头都算
             out_by_type[edge.target][edge.type].add(edge.source)
 
+    declared = _line_fields(ctx)
     for node in ctx.nodes.values():
         rel = node.path.relative_to(ctx.vault).as_posix()
         loc = {"file": rel, "node": node.id}
@@ -209,8 +211,41 @@ def _check_compare(ctx: BuildContext) -> None:
             _check_compare_group(node, out_by_type[node.id].get(MEMBER_RELATION, set()),
                                  ctx.diags, loc)
         if node.fm.get("type") in LINE_TYPES:
-            _check_school(node, out_by_type[node.id].get(MEMBER_RELATION, set()), ctx.diags, loc)
+            _check_school(node, out_by_type[node.id].get(MEMBER_RELATION, set()) | declared.get(node.id, set()),
+                          ctx.diags, loc)
         _check_node_facts(node, out_by_type[node.id].get("对比", set()), ctx.diags, loc)
+
+
+def _line_fields(ctx: BuildContext) -> dict[str, set[str]]:
+    """点上的 `流派` / `领域线` 字段（2026-10-12）：线 id → 声明了它的点。顺手报写错的线名。
+
+    写错的线名是**静默失败**：点照常入索引，只是哪条泳道里都不出现——所以要报出来。
+    """
+    lookup = {}
+    for n in ctx.nodes.values():
+        if n.fm.get("type") in LINE_TYPES:
+            for key in (n.id, n.fm.get("name")):
+                if key:
+                    lookup.setdefault(str(key).strip().lower(), (n.id, n.fm.get("type")))
+    out: dict[str, set[str]] = defaultdict(set)
+    for node in ctx.nodes.values():
+        for key in (SCHOOL_KEY, DOMAIN_KEY):
+            for name in line_names(node.fm.get(key)):
+                hit = lookup.get(name.lower())
+                if hit is None or hit[1] != key:
+                    ctx.diags.warn("unknown_line", f"`{key}` 里的「{name}」不是一个{key}（fields/ 下 type: {key} 的文档）",
+                                   file=node.path.relative_to(ctx.vault).as_posix(), node=node.id)
+                    continue
+                out[hit[0]].add(node.id)
+    legacy = sorted({(e.source, e.target) for e in ctx.edges.values()
+                     if e.type == MEMBER_RELATION and ctx.nodes.get(e.source) is not None
+                     and ctx.nodes[e.source].fm.get("type") in LINE_TYPES})
+    if legacy:
+        # 旧写法照读，但检查器里勾不掉它（勾选改的是字段，删不了边），所以提醒迁一次
+        ctx.diags.warn("legacy_line_membership",
+                       f"{len(legacy)} 条流派 / 领域线归属还是旧写法（`- 属于:: [[线]]` 边），"
+                       "跑一次 `knowrary.py lines --apply` 迁成点上的字段（先不加 --apply 看 diff）")
+    return out
 
 
 def _check_compare_group(node: Node, members: set[str], diags: Diagnostics, loc: dict) -> None:
@@ -242,7 +277,7 @@ def _check_school(node: Node, members: set[str], diags: Diagnostics, loc: dict) 
     if len(members) < MIN_MEMBERS:
         diags.warn("school_too_few_members",
                    f"`{node.fm.get('type')}` 只有 {len(members)} 个成员（建议 ≥{MIN_MEMBERS}）。"
-                   f"成员写成 `- 包含:: [[节点]]`——**一个技术可以同时属于两个流派**，"
+                   f"成员在点上写 `{node.fm.get('type')}: [\"[[{node.id}]]\"]`——**一个技术可以同时属于两个流派**，"
                    f"结构族不限制这个，重叠是这套东西本来就要表达的事", **loc)
 
 
@@ -285,6 +320,13 @@ def _node_payload(vault: Path, node: Node) -> dict:
         v = node.fm.get(k)
         if v not in (None, "", []):
             d[k] = json_safe(v)
+    # 抽象层：`layer` 永远是主层（字符串，画布 / 归位 / 前端各处照旧读它），几层的话全量在 `layers`
+    layers = layers_of(node.fm)
+    d.pop("layer", None)
+    if layers:
+        d["layer"] = layers[0]
+    if len(layers) > 1:
+        d["layers"] = layers
     # 参数量在索引里存**解析好的数值**：前端画图不该各写一遍"175B 是多少"，
     # 而 md 里仍然是人写得顺手的那种写法
     n = parse_params(node.fm.get("params"))
@@ -292,6 +334,11 @@ def _node_payload(vault: Path, node: Node) -> dict:
         d["params_n"] = n
     # 来源：`sources` 列表和旧的单值 `source` 合并成一份。只存原始字符串，
     # 是不是库里的原文、文件在不在，要用时再解析（core/sources.py）
+    # 流派 / 领域线归属（2026-10-12 起是点上的字段）：索引里存成名字列表，`[[链接]]` 剥掉
+    for key, out_key in ((SCHOOL_KEY, "schools"), (DOMAIN_KEY, "domains")):
+        names = line_names(node.fm.get(key))
+        if names:
+            d[out_key] = names
     srcs = sources_of(node.fm)
     if srcs:
         d["sources"] = srcs

@@ -2,30 +2,33 @@
 /**
  * 模型谱系里一个型号的卡片：悬停出来，点一下钉住（钉住了才点得到里面的技术点和链接）。
  *
- * 顺序按登记字段：时间、参数（总 / 激活）、上下文、训练数据、技术点、亮点、突破、论文；
- * 没登记的字段放最底下「其它」。技术点对上了图里的知识点就能点过去，对不上的只是文字。
+ * 顺序：时间、这张图 `谱系.md` 声明的字段（大模型的参数 / 激活 / 上下文 / 训练数据，CPU 的制程 / 晶体管…）、
+ * 前代 / 基于、技术点、亮点、突破、论文；没登记的字段放最底下「其它」。
+ * 技术点对上了图里的知识点就能点过去，对不上的只是文字。
  */
 import { computed } from 'vue'
-import { humanParams } from '../canvas/modelLanes.js'
+import { humanNumber } from '../canvas/modelLanes.js'
 import Icon from '../ui/Icon.vue'
 import Markdown from '../ui/Markdown.vue'
 
 const props = defineProps({
   item: { type: Object, required: true },         // modelLanes 算出来的点：{ model, family }
+  spec: { type: Object, default: null },          // 这张图的声明（/api/models 的 lineages 里那一项）
   pinned: { type: Boolean, default: false },
   style: { type: Object, default: () => ({}) },
 })
 const emit = defineEmits(['goto', 'article', 'close'])
 
 const m = computed(() => props.item.model)
-const size = computed(() => {
-  const total = m.value.params_n ? humanParams(m.value.params_n) : m.value.params
-  const active = m.value.active_n ? humanParams(m.value.active_n) : m.value.active
-  return [total && `${total} 总参`, active && `${active} 激活`].filter(Boolean).join(' / ')
-})
+/** 声明过的字段照声明顺序列；数值的写原文，原文和量级不一样时括号里补一个读得快的写法。 */
+const declared = computed(() => (props.spec?.fields || []).map((f) => {
+  const raw = m.value.values?.[f.key]
+  const n = m.value.numbers?.[f.key]
+  const short = f.numeric && typeof n === 'number' ? humanNumber(n, f.unit) : ''
+  return [f.key, raw && short && !raw.replace(/\s/g, '').includes(short) ? `${raw}（≈${short}）` : raw]
+}))
 const rows = computed(() => [
-  ['上下文', m.value.context], ['训练数据', m.value.tokens],
-  ['前代', m.value.prev], ['基于', (m.value.base || []).join('、')],
+  ...declared.value, ['前代', m.value.prev], ['基于', (m.value.base || []).join('、')],
 ].filter(([, v]) => v))
 /** 家族 frontmatter 里的出处：`[[articles/…]]` 拆成可以在原文面板打开的路径。 */
 const sources = computed(() => (props.item.family.sources || []).map((s) => {
@@ -42,7 +45,7 @@ const sources = computed(() => (props.item.family.sources || []).map((s) => {
       <button v-if="pinned" class="icon-btn ghost tiny" style="margin-left: auto" title="关掉（Esc）" @click="emit('close')">
         <Icon name="x" :size="12" /></button>
     </header>
-    <p class="model-card-line">{{ m.date || '发布时间没写' }}<template v-if="size"> · {{ size }}</template></p>
+    <p class="model-card-line">{{ m.date || '发布时间没写' }}</p>
     <dl>
       <template v-for="[k, v] in rows" :key="k"><dt>{{ k }}</dt><dd>{{ v }}</dd></template>
     </dl>

@@ -11,6 +11,7 @@ import { putModelsDir } from '../api.js'
 const props = defineProps({
   candidates: { type: Array, default: () => [] },
   sample: { type: String, default: '' },
+  sampleLineage: { type: String, default: '' },   // 谱系.md 的样例（2026-10-12：一级子目录一张图）
   current: { type: String, default: '' },
 })
 const emit = defineEmits(['saved'])
@@ -48,6 +49,12 @@ async function save() {
     <details v-if="sample" class="models-sample">
       <summary>家族文件长什么样</summary>
       <pre>{{ sample }}</pre>
+    </details>
+    <details v-if="sampleLineage" class="models-sample">
+      <summary>一张谱系图怎么声明（子目录里的 谱系.md）</summary>
+      <p class="dim">一级子目录就是一张图：<code>大模型/</code>、<code>CPU/</code>、<code>操作系统/</code>。
+        <code>谱系.md</code> 写这张图除了公共字段还登记哪些字段，没有它也照样是一张图。</p>
+      <pre>{{ sampleLineage }}</pre>
     </details>
   </div>
 </template>

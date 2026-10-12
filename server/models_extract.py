@@ -4,10 +4,14 @@
 
 1. `propose`：learn 读一篇文章，吐出家族和型号；和目录里已有的**合并成计划**——新型号整条新增，
    已有型号**只补空着的格子**，和目录里写的不一样的格子列成冲突、不改。
-   同时做**确定性核对**：参数 / 激活 / 上下文 / 训练数据 / 发布里的数字必须在原文里原样出现，对不上的标可疑。
+   同时做**确定性核对**：发布和这张图声明成「数值」的格子（大模型的参数 / 激活 / 上下文 / 训练数据，
+   CPU 的制程 / 晶体管…）里的数字必须在原文里原样出现，对不上的标可疑。
 2. `verify`：只有可疑的格子才让 review 逐格判一次（ok / 写错了 / 拿不准，带原文引句）。全对得上就不调模型。
 3. `apply`：人勾掉不要的型号之后写入。按目标文件分组，预览之后文件被改过就拒（409），
    写前把要动的家族文件整份快照；写入时对着**当时的文件**重新合并一遍，只补不覆盖。
+
+**抽进哪张谱系图要说清楚**（2026-10-12 起一级子目录一张图）：要抽哪些字段、哪几格核数字、
+这张图特有的抽法（`谱系.md` 的「抽取说明」），都从那张图的声明来，提示词本身不写死任何一张图。
 
 家族文件的格式见 `core.catalog`。这里只管「文章 → 计划 → 文件」。
 """
@@ -25,9 +29,9 @@ from .index_service import current_index
 from .llm_call import ask_meta, parse_json
 from .paths import core
 
-# 模型吐的 JSON 键 → 家族文件里的中文键（反查 core.catalog.FIELDS，顺序即写入顺序）
+# 模型吐的 JSON 键 → 家族文件里的中文键（公共字段，反查 core.catalog.COMMON，顺序即写入顺序）。
+# 各图自己声明的字段，模型直接用中文键写在 `values` 里
 KEYS = {v: k for k, v in core.CATALOG_FIELDS.items()}
-CHECKED = ("发布", "参数", "激活", "上下文", "训练数据")   # 这几格的数字要在原文里原样出现
 MAX_NODES = 400
 RE_NUM = re.compile(r"\d+(?:\.\d+)?")
 RE_SAFE = re.compile(r"[\\/:*?\"<>|\s]+")
@@ -48,37 +52,75 @@ def _prompt(name: str) -> str:
 
 # ---------------------------------------------------------------- 1. 抽 + 合并成计划
 
-def propose(vault: Path, path: str) -> ModelsProposal:
+def propose(vault: Path, path: str, lineage: str | None = None) -> ModelsProposal:
     catalog = _catalog(vault)
+    spec = pick_lineage(catalog, lineage)
     try:
         art = articles_svc.read_article(vault, path)
     except articles_svc.ArticleRejected as exc:
         raise ModelsExtractRejected(str(exc)) from exc
-    prompt = (_prompt("models.md").replace("{{existing}}", _describe_existing(catalog))
+    prompt = (_prompt("models.md").replace("{{lineage}}", spec["name"]).replace("{{fields}}", _describe_fields(spec, catalog))
+              .replace("{{guide}}", spec["guide"] or "（这张图没有额外的抽取说明）")
+              .replace("{{existing}}", _describe_existing(catalog, spec["id"]))
               .replace("{{nodes}}", _describe_nodes(vault)).replace("{{article}}", art.text))
     raw, meta = ask_meta(vault, "learn", prompt, op="models-extract")
     data = parse_json(raw, "models-extract", vault=vault) or {}
     numbers = _numbers(art.text)
-    families = [_plan_family(vault, f, catalog, numbers) for f in (data.get("families") or [])
+    families = [_plan_family(vault, f, catalog, numbers, spec) for f in (data.get("families") or [])
                 if isinstance(f, dict) and str(f.get("name") or "").strip()]
     families = [{**f, "sources": [_source_link(art.path)]} for f in families if f["models"]]
     if not families:
-        raise ModelsExtractRejected(f"《{art.title}》里没抽出任何型号（它可能不是讲模型迭代的文章）")
-    return ModelsProposal(path=art.path, title=art.title, source=_source_link(art.path), families=families, **meta)
+        raise ModelsExtractRejected(f"《{art.title}》里没抽出任何「{spec['name']}」的型号（它可能不是讲这条线迭代的文章）")
+    return ModelsProposal(path=art.path, lineage=spec["id"], title=art.title, source=_source_link(art.path),
+                          families=families, **meta)
 
 
 def _catalog(vault: Path) -> dict:
     catalog = core.load_catalog(vault)
     if not catalog["configured"]:
-        raise ModelsExtractRejected("还没指定模型目录：先选一个目录，家族文件写到那里")
+        raise ModelsExtractRejected("还没指定谱系目录：先选一个目录，家族文件写到那里")
     return catalog
 
 
-def _describe_existing(catalog: dict) -> str:
-    if not catalog["families"]:
-        return "（目录还是空的）"
-    return "\n".join(f"- {f['name']}：{'、'.join(m['name'] for m in f['models']) or '（还没有型号）'}"
-                     for f in catalog["families"])
+def pick_lineage(catalog: dict, lineage: str | None) -> dict:
+    """抽进哪张图。给了就必须是目录里有的；没给时目录里只有一张图（或一张都还没有）才替人定。"""
+    known = {x["id"]: x for x in catalog["lineages"]}
+    if lineage is not None and lineage in known:
+        return known[lineage]
+    if lineage:
+        raise ModelsExtractRejected(f"谱系目录里没有「{lineage}」这张图：先建 `{catalog['dir']}/{lineage}/{core.LINEAGE_FILE}`")
+    if len(known) == 1:
+        return next(iter(known.values()))
+    if not known:
+        return core.bare_lineage("")
+    raise ModelsExtractRejected(f"谱系目录里有 {len(known)} 张图（{'、'.join(x['name'] for x in known.values())}），先选抽进哪一张")
+
+
+def _describe_fields(spec: dict, catalog: dict) -> str:
+    if not spec["fields"]:
+        return "（这张图除了公共字段没有登记别的字段）"
+    def one(f: dict) -> str:
+        tags = [t for t in ("数值" if f["numeric"] else "", f"单位 {f['unit']}" if f["unit"] else "",
+                            "可多个" if f["list"] else "") if t]
+        line = f"- `{f['key']}`" + (f"（{'，'.join(tags)}）" if tags else "")
+        return line + (_describe_target(f["target"], catalog) if f.get("target") else "")
+    return "\n".join(one(f) for f in spec["fields"])
+
+
+def _describe_target(target: str, catalog: dict) -> str:
+    """跨图关系字段：值是另一张图里的型号名，名字要照那张图里的抄，不然连不上线。"""
+    names = [m["name"] for f in catalog["families"]
+             for x in catalog["lineages"] if x["id"] == f["lineage"] and target in (x["id"], x["name"])
+             for m in f["models"]]
+    have = "、".join(names[:80]) if names else "（那张图还是空的，照文章写）"
+    return f"：写「{target}」那张图里的型号名，名字照那张图里的抄。那张图现有：{have}"
+
+
+def _describe_existing(catalog: dict, lineage: str) -> str:
+    mine = [f for f in catalog["families"] if f["lineage"] == lineage]
+    if not mine:
+        return "（这张图还是空的）"
+    return "\n".join(f"- {f['name']}：{'、'.join(m['name'] for m in f['models']) or '（还没有型号）'}" for f in mine)
 
 
 def _describe_nodes(vault: Path) -> str:
@@ -101,14 +143,18 @@ def _source_link(path: str) -> str:
     return f"[[{path[:-3] if path.endswith('.md') else path}]]"
 
 
-def _plan_family(vault: Path, raw: dict, catalog: dict, numbers: set[float]) -> dict:
-    """一个家族的计划：写到哪个文件、那个文件现在的指纹、每个型号是新增 / 补格 / 不变。"""
+def _plan_family(vault: Path, raw: dict, catalog: dict, numbers: set[float], spec: dict) -> dict:
+    """一个家族的计划：写到哪个文件、那个文件现在的指纹、每个型号是新增 / 补格 / 不变。
+
+    只在**这张图里**找同名家族：CPU 图里的「Intel」和别处同名的家族不是一回事。新家族建在这张图的子目录里。
+    """
     name = str(raw["name"]).strip()
-    have = next((f for f in catalog["families"] if f["name"].lower() == name.lower()
-                 or f["id"].lower() == name.lower()), None)
-    target = have["path"] if have else _new_path(vault, catalog["dir"], name)
+    have = next((f for f in catalog["families"] if f["lineage"] == spec["id"]
+                 and (f["name"].lower() == name.lower() or f["id"].lower() == name.lower())), None)
+    folder = f"{catalog['dir']}/{spec['id']}" if spec["id"] else catalog["dir"]
+    target = have["path"] if have else _new_path(vault, folder, name)
     existing = {m["name"].lower(): m for m in (have or {}).get("models", [])}
-    models = [_plan_model(m, existing, numbers) for m in (raw.get("models") or [])
+    models = [_plan_model(m, existing, numbers, spec) for m in (raw.get("models") or [])
               if isinstance(m, dict) and str(m.get("name") or "").strip()]
     return {"name": have["name"] if have else name, "target": target, "exists": bool(have),
             "digest": _digest(vault / target), "vendor": str(raw.get("vendor") or ""),
@@ -130,46 +176,59 @@ def _digest(path: Path) -> str:
     return hashlib.sha1(path.read_bytes()).hexdigest()[:16] if path.is_file() else ""
 
 
-def _plan_model(raw: dict, existing: dict, numbers: set[float]) -> dict:
+def checked(spec: dict) -> tuple[str, ...]:
+    """这几格的数字要在原文里原样出现：发布 + 这张图声明成「数值」的字段。"""
+    return ("发布", *(f["key"] for f in spec["fields"] if f["numeric"]))
+
+
+def _plan_model(raw: dict, existing: dict, numbers: set[float], spec: dict) -> dict:
     fields = _fields(raw)
+    keys = checked(spec)
     have = existing.get(str(raw["name"]).strip().lower())
     if have is None:
         return {"name": str(raw["name"]).strip(), "status": "new", "fields": fields, "conflicts": [],
-                "suspicious": _suspicious(fields, numbers)}
+                "suspicious": _suspicious(fields, numbers, keys)}
     current = _current_fields(have)
     added = {k: v for k, v in fields.items() if not current.get(k)}
     conflicts = [{"key": k, "article": v, "catalog": current[k]} for k, v in fields.items()
-                 if current.get(k) and not _same(k, current[k], v)]
+                 if current.get(k) and not _same(k, current[k], v, keys)]
     return {"name": have["name"], "status": "update" if added else "same", "fields": added,
-            "conflicts": conflicts, "suspicious": _suspicious(added, numbers)}
+            "conflicts": conflicts, "suspicious": _suspicious(added, numbers, keys)}
 
 
 def _fields(raw: dict) -> dict[str, str]:
-    """模型给的一条 → {中文键: 写进文件的值}。列表用「、」接起来；空的不要；extra 的键原样收。"""
+    """模型给的一条 → {中文键: 写进文件的值}。公共字段按 KEYS 取；`values`（本图声明的）和 `extra` 的键原样收。
+    列表用「、」接起来；空的不要。"""
     out: dict[str, str] = {}
     for key, label in KEYS.items():
-        value = raw.get(key)
-        text = "、".join(str(v).strip() for v in value if str(v).strip()) if isinstance(value, list) \
-            else str(value or "").strip()
+        text = _text(raw.get(key))
         if text:
             out[label] = text
-    for key, value in (raw.get("extra") or {}).items() if isinstance(raw.get("extra"), dict) else []:
-        if str(key).strip() and str(value or "").strip() and str(key).strip() not in core.CATALOG_FIELDS:
-            out[str(key).strip()] = str(value).strip()
+    for bag in ("values", "extra"):
+        for key, value in (raw.get(bag) or {}).items() if isinstance(raw.get(bag), dict) else []:
+            key, text = str(key).strip(), _text(value)
+            if key and text and key not in core.CATALOG_FIELDS and key not in out:
+                out[key] = text
     return out
 
 
+def _text(value) -> str:
+    if isinstance(value, list):
+        return "、".join(str(v).strip() for v in value if str(v).strip())
+    return str(value or "").strip()
+
+
 def _current_fields(model: dict) -> dict[str, str]:
-    """目录里这个型号现在各格写的是什么（中文键 → 原文字）。"""
+    """目录里这个型号现在各格写的是什么（中文键 → 原文字）：公共字段 + 本图声明的 + 没登记的。"""
     out = {label: model.get(key) for label, key in core.CATALOG_FIELDS.items() if key not in ("tech", "base")}
     out["技术"] = "、".join(t["text"] for t in model.get("tech") or []) or None
     out["基于"] = "、".join(model.get("base") or []) or None
-    return {**{k: str(v) for k, v in out.items() if v}, **(model.get("extra") or {})}
+    return {**{k: str(v) for k, v in out.items() if v}, **(model.get("values") or {}), **(model.get("extra") or {})}
 
 
-def _same(key: str, a: str, b: str) -> bool:
+def _same(key: str, a: str, b: str, keys: tuple[str, ...]) -> bool:
     """同一个意思就不算冲突：数字类的格子比里面的数（`236B` 和 `236B总参数`），别的去掉空白和括号比。"""
-    if key in CHECKED:
+    if key in keys:
         na, nb = {float(x) for x in RE_NUM.findall(a)}, {float(x) for x in RE_NUM.findall(b)}
         if na and na == nb:
             return True
@@ -180,10 +239,10 @@ def _norm(text: str) -> str:
     return re.sub(r"[\s\[\]]+", "", str(text or "")).lower()
 
 
-def _suspicious(fields: dict[str, str], numbers: set[float]) -> list[dict]:
+def _suspicious(fields: dict[str, str], numbers: set[float], keys: tuple[str, ...]) -> list[dict]:
     """确定性核对：这几格里出现的每个数字，原文里都得有同一个数。`05` 和 `5月` 算同一个数。"""
     out = []
-    for key in CHECKED:
+    for key in keys:
         value = fields.get(key)
         if not value or re.search(r"未(披露|公开)", value):
             continue

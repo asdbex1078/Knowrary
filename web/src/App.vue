@@ -538,6 +538,29 @@ const modelFocus = ref(null)             // 从检查器点过来的型号：{ i
 async function loadModels() {
   try { modelsDoc.value = await fetchModels() } catch { /* 目录读不到不影响画布，模型谱系页上会显示引导 */ }
 }
+// —— 历史入口合一（2026-10-12）：顶栏一个「历史」，里面三档。内部仍是 history / lineage 两个 mode
+// （时间线和演化树都画在 X6 画布上、各有一套渲染），这里只管「从哪个门进、进哪一档」 ——
+const HISTORY_VIEWS = [['timeline', '时间线', '有 year 的知识点，X 轴是年份'],
+                       ['tree', '演化树', '只画演化族：谁长出谁，枝越粗挂的东西越多'],
+                       ['models', '谱系图', '型号 / 版本按家族排成泳道：大模型、CPU、操作系统…']]
+const historyView = computed(() => (mode.value === 'history' ? 'timeline'
+  : mode.value === 'lineage' ? (lineageKind.value === 'models' ? 'models' : 'tree') : null))
+const historyHint = computed(() => HISTORY_VIEWS.find(([k]) => k === historyView.value)?.[2] || '')
+async function openHistory(view) {
+  try { localStorage.setItem('knowrary.historyView', view) } catch { /* 记不住下次进时间线 */ }
+  if (view === 'timeline') return switchMode('history')
+  setLineageKind(view === 'models' ? 'models' : 'knowledge')
+  return switchMode('lineage')
+}
+/** 顶栏「历史」/ 快捷键 4：回到上次看的那一档。 */
+function enterHistory() {
+  if (historyView.value) return
+  let last = 'timeline'
+  try { last = localStorage.getItem('knowrary.historyView') || 'timeline' } catch { /* 无痕模式 */ }
+  openHistory(HISTORY_VIEWS.some(([k]) => k === last) ? last : 'timeline')
+}
+function onHeaderMode(next) { if (next === 'history-entry') enterHistory(); else switchMode(next) }
+
 function setLineageKind(kind) {
   lineageKind.value = kind
   try { localStorage.setItem('knowrary.lineageKind', kind) } catch { /* 记不住下次默认知识演化 */ }
@@ -2061,6 +2084,12 @@ const relationTypes = computed(() =>
   (indexDoc.value?.families || []).map((f) => ({ family: f.name, types: f.types, meta: f.meta || {} })))
 
 const allNodeIds = computed(() => (indexDoc.value?.nodes || []).map((n) => n.id))
+/** 流派 / 领域线（2026-10-12 起归属是点上的字段）：检查器里给勾选用。 */
+const lineOptions = computed(() => {
+  const nodes = (indexDoc.value?.nodes || []).filter((n) => !n.virtual)
+  const of = (type) => nodes.filter((n) => n.type === type).map((n) => ({ id: n.id, name: n.name || n.id }))
+  return { 流派: of('流派'), 领域线: of('领域线') }
+})
 
 function queueChange(change) {
   pending.value = [...pending.value, change]
@@ -2142,7 +2171,15 @@ async function regroupDrafts() {
 /** 改抽象层：和改摘要一样走变更卡，人看过 diff 再写盘（4.4 只提议不越权）。 */
 function setLayer({ id, layer }) {
   if (!id) return
-  queueChange({ type: 'update_frontmatter', source: id, fields: { layer: layer || '' } })
+  // 一层写成字符串（和以前的 md 一样），几层写成列表、第一个是主层（2026-10-12 跨层）
+  const list = Array.isArray(layer) ? layer : layer ? [layer] : []
+  queueChange({ type: 'update_frontmatter', source: id, fields: { layer: list.length > 1 ? list : (list[0] || '') } })
+}
+
+/** 改流派 / 领域线归属：和改抽象层一样走变更卡。`names` 的顺序就是主道口径（写在前面的是主道）。 */
+function setLines({ id, key, names }) {
+  if (!id || !key) return
+  queueChange({ type: 'update_frontmatter', source: id, fields: { [key]: names } })
 }
 
 /** 采纳 AI 建议的年份。同样走变更卡——机器给的年份更要经人过目，
@@ -3439,8 +3476,7 @@ function onKeydown(e) {
   else if (e.key === '1') switchMode('chat')
   else if (e.key === '2') switchMode('project')
   else if (e.key === '3') switchMode('structure')
-  else if (e.key === '4') switchMode('history')
-  else if (e.key === '5') switchMode('lineage')
+  else if (e.key === '4') enterHistory()
   else if (e.key.toLowerCase() === 'f') fit()
   else if (e.key.toLowerCase() === 'i' && mode.value === 'structure') openPanel('inbox')
   else if (e.key.toLowerCase() === 'd') openPanel('digest')
@@ -3739,7 +3775,7 @@ onBeforeUnmount(() => {
     <AppHeader ref="headerEl" :mode="mode" :hits="searchHits" :status="status" :status-text="statusText"
                :theme="theme" :busy="placing"
                :projects="plansDoc?.projects || {}" :project="currentProject"
-               @switch-mode="switchMode" @switch-project="switchProject" @settings="openSettings"
+               @switch-mode="onHeaderMode" @switch-project="switchProject" @settings="openSettings"
                @search="search = $event" @goto="gotoNode"
                @toggle-theme="toggleTheme" @reload="reload" @rebuild="rebuildGraph('手动重建')"
                @help="showHelp = true" />
@@ -3843,15 +3879,13 @@ onBeforeUnmount(() => {
         <div v-show="mode !== 'chat' || graphPane" ref="canvasEl" class="canvas"
              @dragover.prevent @drop="onCanvasDrop" />
 
-        <!-- 谱系视图两张图：知识演化（画布上的演化树）/ 模型谱系（盖在画布上的泳道图，画布不销毁） -->
-        <div v-if="mode === 'lineage'" class="sync-bar" data-lineage-switch>
+        <!-- 历史的三档（2026-10-12 入口合一）：时间线 / 演化树（都画在画布上）/ 谱系图（盖在画布上的泳道图，画布不销毁） -->
+        <div v-if="historyView" class="sync-bar" data-history-switch>
           <div class="seg" role="tablist">
-            <button :class="{ on: lineageKind === 'knowledge' }" data-lineage-kind="knowledge"
-                    @click="setLineageKind('knowledge')">知识演化</button>
-            <button :class="{ on: lineageKind === 'models' }" data-lineage-kind="models"
-                    @click="setLineageKind('models')">模型谱系</button>
+            <button v-for="[k, label] in HISTORY_VIEWS" :key="k" :class="{ on: historyView === k }" :data-history-view="k"
+                    @click="openHistory(k)">{{ label }}</button>
           </div>
-          <span class="dim">{{ lineageKind === 'models' ? '一个家族一条泳道，按发布顺序排；悬停看技术点、亮点、突破' : '只画演化族：谁长出谁' }}</span>
+          <span class="dim">{{ historyHint }}</span>
         </div>
         <ModelLineage v-if="mode === 'lineage' && lineageKind === 'models'" class="ml-overlay" :doc="modelsDoc"
                       :focus="modelFocus" @goto="modelGoto" @article="modelArticle" @saved-dir="modelsDoc = $event"
@@ -3962,11 +3996,11 @@ onBeforeUnmount(() => {
                  @decide-pending="decidePending"
                  :edge-checks="selected ? edgeChecks.checks.filter((c) => c.source === selected.id || c.target === selected.id) : []"
                  :edge-run="edgeRun" @check-edges="checkNodeEdges" @stop-edge-check="stopEdgeCheck" @fix-edge="fixEdge"
-                 :all-node-ids="allNodeIds" :pending="pending" :change-preview="changePreview"
+                 :all-node-ids="allNodeIds" :line-options="lineOptions" :pending="pending" :change-preview="changePreview"
                  :is-due="!!selected && dueIds.has(selected.id)"
                  :suggestions="suggestions" :suggesting="suggesting"
                  :models="modelsUsing" @show-model="showModel" @to-model="movingModel = { id: selected.id, name: selected.name }"
-                 @close="inspectorHidden = true" @goto="gotoNode" @open-article="openArticle" @edit-desc="editDesc" @set-layer="setLayer" @set-year="setYear" @add-ref="addRef"
+                 @close="inspectorHidden = true" @goto="gotoNode" @open-article="openArticle" @edit-desc="editDesc" @set-layer="setLayer" @set-lines="setLines" @set-year="setYear" @add-ref="addRef"
                  @review="markReviewed($event.id, $event.grade)" @quiz="startQuiz"
                  @rename="openRename"
                  @finalize="finalize" @retype-edge="retypeEdge"

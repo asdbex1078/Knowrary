@@ -43,7 +43,8 @@ from .sources import (Resolver as SourceResolver, article_link, backlink_refs as
                       clean_sources, sources_of)
 from .vault_config import (ArticlesNeedMove, VaultConfigRejected, articles_dir, candidates as articles_dir_candidates,
                            list_articles, load_vault_config, save_articles_dir, save_models_dir)
-from .catalog import FIELDS as CATALOG_FIELDS, SAMPLE as CATALOG_SAMPLE, is_family, link_models, load_catalog, parse_family
+from .catalog import (COMMON as CATALOG_FIELDS, LINEAGE_FILE, SAMPLE as CATALOG_SAMPLE, SAMPLE_LINEAGE as CATALOG_SAMPLE_LINEAGE,
+                      bare_lineage, is_family, is_lineage, link_models, load_catalog, parse_family, parse_lineage)
 from .article import (build_article_prompt, cards_from_index, cards_from_nodes, describe_points,
                       describe_related, select_linkable, select_related)
 from .sections import Heading, describe_outline, extract_section, find_heading, outline
@@ -87,7 +88,8 @@ __all__ = [
     "write_article", "SourceResolver", "article_link", "source_backlink_refs", "source_backlinks", "clean_sources", "sources_of",
     "ArticlesNeedMove", "VaultConfigRejected", "articles_dir", "articles_dir_candidates", "list_articles",
     "load_vault_config", "save_articles_dir", "save_models_dir",
-    "CATALOG_FIELDS", "CATALOG_SAMPLE", "is_family", "link_models", "load_catalog", "parse_family",
+    "CATALOG_FIELDS", "CATALOG_SAMPLE", "CATALOG_SAMPLE_LINEAGE", "LINEAGE_FILE", "bare_lineage", "is_family", "is_lineage",
+    "link_models", "load_catalog", "parse_family", "parse_lineage",
     "audit_precheck", "AUDIT_THIN_BODY",
     "CARD_KINDS", "card_applied", "card_is_applied", "card_audited", "card_audits", "card_last_audit", "card_proposed", "card_revised", "card_revisions", "card_stats", "cards_path",
     "load_cards", "new_card_id",

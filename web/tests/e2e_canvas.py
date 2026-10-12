@@ -21,6 +21,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -701,6 +702,15 @@ async def switch_mode(page: Page, text: str) -> None:
     await asyncio.sleep(0.6)
 
 
+async def history_view(page: Page, view: str) -> None:
+    """历史的三档（2026-10-12 入口合一）：顶栏「历史」进去，再在顶上切 timeline / tree / models。
+    顶栏「历史」回的是上次那一档，所以测哪一档都要显式点一下。"""
+    await switch_mode(page, "历史")
+    await poll(page, f"!!document.querySelector('[data-history-view=\"{view}\"]')", bool, timeout=6)
+    await page.ev(f"document.querySelector('[data-history-view=\"{view}\"]').click()")
+    await asyncio.sleep(0.6)
+
+
 async def insp_tab(page: Page, text: str) -> None:
     """右侧检查器的分页：详情 / 关系 / 变更。"""
     await click_text(page, ".insp .tabs button", text)
@@ -911,7 +921,7 @@ async def case_modes(page: Page, ck: Check) -> None:
            await page.ev("""[...document.querySelectorAll('.chat-bar .icon-btn')]
              .some(b => (b.title || '').includes('收起对话'))"""), "会话条上有 ✕")
 
-    await switch_mode(page, "历史")
+    await history_view(page, "timeline")
     ck.add("切得到历史视图",
            await page.ev("""document.querySelector('.topbar .seg button.on')?.textContent.trim() === '历史'"""),
            "历史 tab 生效")
@@ -957,8 +967,8 @@ async def case_project_view(page: Page, ck: Check, api: str) -> None:
            "" in json.loads(opts or "[]"), str(opts))
     scopes = await page.ev("""JSON.stringify([...document.querySelectorAll('.topbar .seg')]
       .map(g => [...g.querySelectorAll('button')].map(b => b.textContent.trim())))""")
-    ck.add("顶栏按作用域分成两组（项目级 / 全局级）",
-           json.loads(scopes or "[]") == [["对话", "项目图"], ["全局图", "历史", "谱系"]], str(scopes))
+    ck.add("顶栏按作用域分成两组（项目级 / 全局级），历史只有一个入口",
+           json.loads(scopes or "[]") == [["对话", "项目图"], ["全局图", "历史"]], str(scopes))
 
     ck.add("顶栏只有一个「全局图」（tab 自己就是那座桥，不另设按钮）",
            await page.ev("""[...document.querySelectorAll('.topbar button')]
@@ -1751,7 +1761,7 @@ async def case_history(page: Page, ck: Check, vault: Path) -> None:
     await wait_render(page, 4)
     before = ck.layout()["revision"]
 
-    await switch_mode(page, "历史")
+    await history_view(page, "timeline")
     lanes = await poll(page, "document.querySelectorAll('[data-shape=\"kg-lane\"]').length",
                        lambda v: (v or 0) >= 2, timeout=15)
     ck.add("按 field 分出泳道", (lanes or 0) == 2, f"{lanes} 条泳道（测试 / 另一域）")
@@ -1937,7 +1947,7 @@ async def case_lineage(page: Page, ck: Check) -> None:
 
     和历史视图的区别要钉住：历史的 X 轴是年份，谱系的 Y 轴是"从什么长出什么"。
     """
-    await switch_mode(page, "谱系")
+    await history_view(page, "tree")
     got = json.loads(await poll(page, """JSON.stringify((() => {
       const g = __kg.graph
       const ns = g.getNodes()
@@ -2109,13 +2119,15 @@ async def case_compare(page: Page, ck: Check, vault: Path) -> None:
 # ---------------------------------------------------------------- 参数量图表
 
 async def case_stats(page: Page, ck: Check, vault: Path) -> None:
-    """参数量面板读模型目录（2026-09-30 起；型号不是知识节点）。**只画写了的那些**，并把"多少个没写"写在脸上；
-    参数 / 激活 / 上下文 / 训练数据能换着比。"""
-    (vault / "models").mkdir(exist_ok=True)
-    (vault / "models/甲家.md").write_text("---\nkind: family\nname: 甲家\nopen: true\n---\n"
+    """数值对比面板读谱系目录（2026-09-30 起；型号不是知识节点）。**只画写了的那些**，并把"多少个没写"写在脸上；
+    能比的项是各张图 谱系.md 里声明成「数值」的字段（2026-10-12 起不写死）。"""
+    (vault / "models/大模型").mkdir(parents=True, exist_ok=True)
+    (vault / "models/大模型/谱系.md").write_text("---\nkind: lineage\nname: 大模型\n---\n## 字段\n"
+                                            "- 参数:: 数值，范围 1K~1000T\n- 激活:: 数值\n- 上下文:: 数值\n", "utf-8")
+    (vault / "models/大模型/甲家.md").write_text("---\nkind: family\nname: 甲家\nopen: true\n---\n"
                                         "## 甲-1\n- 发布:: 2020-06\n- 参数:: 175B\n- 上下文:: 2K\n\n"
                                         "## 甲-2\n- 发布:: 2023-03\n- 参数:: 1.3万亿\n- 激活:: 37B\n- 上下文:: 128K\n", "utf-8")
-    (vault / "models/乙家.md").write_text("---\nkind: family\nname: 乙家\nopen: false\n---\n"
+    (vault / "models/大模型/乙家.md").write_text("---\nkind: family\nname: 乙家\nopen: false\n---\n"
                                         "## 乙-1\n- 发布:: 2019-02\n- 参数:: 340M\n\n## 乙-2\n- 参数:: 未披露\n", "utf-8")
     cfg = vault / ".knowrary/vault.json"
     doc = json.loads(cfg.read_text("utf-8")) if cfg.exists() else {"schema_version": 1}
@@ -2127,7 +2139,7 @@ async def case_stats(page: Page, ck: Check, vault: Path) -> None:
     await asyncio.sleep(1.2)
 
     await switch_mode(page, "全局图")
-    await open_rail(page, "参数量")
+    await open_rail(page, "数值对比")
     probe = """JSON.stringify((() => {
       const box = document.querySelector('aside.study')
       if (!box || !box.querySelector('.chart')) return null
@@ -2143,14 +2155,14 @@ async def case_stats(page: Page, ck: Check, vault: Path) -> None:
     ck.add("Y 轴是对数（刻度按 10 的幂走）",
            any(t in ("100M", "1B", "10B", "100B", "1T") for t in got.get("刻度", [])), str(got.get("刻度")))
     ck.add("说清楚多少个没写", "4个型号里3个写了参数" in got.get("说明", ""), got.get("说明", "")[:80])
-    await page.ev("document.querySelector('aside.study [data-metric=\"context_n\"]').click()")
+    await page.ev("document.querySelector('aside.study [data-metric=\"大模型|上下文\"]').click()")
     ctx = json.loads(await poll(page, probe, lambda v: v and "128K" in v, timeout=4) or "{}")
     ck.add("换成比上下文", [x[1] for x in ctx.get("柱", [])] == ["128K", "2K"], str(ctx.get("柱")))
     idx = get(page.api + "/api/index")
     ck.add("看不懂的 params 只警告、不丢节点",
            any(d["code"] == "bad_params" for d in idx["warnings"]) and not idx["errors"],
            f"warnings={str(idx['warnings'])[:80]} | errors={str(idx['errors'])[:120]}")
-    await open_rail(page, "参数量")
+    await open_rail(page, "数值对比")
 
 
 async def case_schools(page: Page, ck: Check, vault: Path) -> None:
@@ -2177,7 +2189,7 @@ async def case_schools(page: Page, ck: Check, vault: Path) -> None:
         "---\nname: 丙\nfield: 测试\ndesc: 丙说明\nyear: 2005\nlayer: 理论\n---\n# 丙\n\n正文\n\n"
         "## 关系\n- 属于:: [[新派]]\n- 演化为:: [[庚]] (2015)\n", "utf-8")
     await menu_click(page, "重新加载")
-    await switch_mode(page, "历史")
+    await history_view(page, "timeline")
 
     # **默认视图里不该有流派**：试过在顶上摆一排时间带，结论是割裂 ——
     # 带子在顶上、成员散在下面各条道里，中间没有任何线索，读起来是两张互不相干的图。
@@ -2190,7 +2202,8 @@ async def case_schools(page: Page, ck: Check, vault: Path) -> None:
 
     # 流派只作为**左侧筛选里的一档**存在
     opened = await page.ev("""(() => {
-      const b = [...document.querySelectorAll('.topbar .icon-btn, .tool-btn, button')]
+      // 只认活动栏里那个：历史顶上的三档切换（2026-10-12）也有一个叫「时间线」的按钮
+      const b = [...document.querySelectorAll('.rail-btn')]
         .find((x) => (x.title || '').includes('时间线') || (x.textContent || '').includes('时间线'))
       b?.click(); return !!b
     })()""")
@@ -2253,12 +2266,91 @@ async def case_schools(page: Page, ck: Check, vault: Path) -> None:
     ck.add("影子空心虚线、真身实心",
            sh['影子'][0] == '3 3' and sh['影子'][1] == 'transparent' and not sh['真身'][0],
            f"[dasharray, fill] → {shadow}")
+
+
+async def confirm_changes(page: Page) -> None:
+    """检查器「变更」页：先预览 diff（不预览「确认写入」是灰的），再确认写入。"""
+    await insp_tab(page, "变更")
+    await click_text(page, ".insp .act-row button", "预览 diff")
+    await poll(page, "!!document.querySelector('.insp .act-row .btn.primary:not([disabled])')", bool, timeout=8)
+    await click_text(page, ".insp .act-row button", "确认写入")
+
+
+async def case_line_fields(page: Page, ck: Check, vault: Path) -> None:
+    """2026-10-12 归属整理：流派是点自己的字段，检查器里点一下就加——走变更卡、写回 frontmatter、泳道跟着变。"""
+    await switch_mode(page, "全局图")
+    await page.ev("""(() => { const i = document.querySelector('.search input');
+      i.value = '甲'; i.dispatchEvent(new Event('input', { bubbles: true })); })()""")
+    pick = "[...document.querySelectorAll('.search .hits li')].find((l) => l.textContent.replace(/\\s+/g, '') === '甲测试')"
+    await poll(page, f"!!{pick}", bool, timeout=8)
+    hits = await page.ev("JSON.stringify([...document.querySelectorAll('.search .hits li')].map((l) => l.textContent.trim()))")
+    # 前面的用例建过一个「甲乙对比」对比组，它排在第一个——点名字正好是「甲」的那一条
+    await page.ev(f"{pick}?.dispatchEvent(new MouseEvent('mousedown', {{ bubbles: true }}))")
+    title = await poll(page, "document.querySelector('.insp .node-title')?.textContent || ''", lambda v: "甲" in (v or ""), timeout=8)
+    if "甲" not in (title or ""):
+        state = await page.ev("""JSON.stringify({ toasts: [...document.querySelectorAll('[class*=toast]')].map((t) => t.textContent.trim()).join(' | '),
+          hits: [...document.querySelectorAll('.search .hits li')].map((l) => l.textContent.trim()).slice(0, 5),
+          mode: document.querySelector('.topbar .seg button.on')?.textContent.trim(), insp: !!document.querySelector('.insp') })""")
+        ck.add("搜索选中甲、检查器打开", False, f"hits={hits} {state}")
+        return
+    await insp_tab(page, "详情")
+    chip = await poll(page, """(() => { const b = document.querySelector('.insp [data-line-key="流派"] [data-line="新派"]');
+      return b && !b.disabled ? 'ok' : '' })()""", bool, timeout=8)
+    ck.add("检查器里列出库里的流派，可以勾（甲不在新派里）", chip == "ok", str(chip))
+    if chip != "ok":
+        return
+    await page.ev("""document.querySelector('.insp [data-line-key="流派"] [data-line="新派"]').click()""")
+    md = next(vault.glob("nodes/*/甲.md"))
+    await confirm_changes(page)
+    text = ""
+    for _ in range(30):                     # 写盘是异步的，等它落下来
+        text = md.read_text("utf-8")
+        if "流派" in text:
+            break
+        await asyncio.sleep(0.3)
+    ck.add("写回 frontmatter，写成链接（改名才跟得上）", "[[新派]]" in text.split("---")[1], text[:160])
+    got = []
+    for _ in range(20):                     # 索引是写盘后重建的，等它跟上
+        got = next(x["members"] for x in get(page.api + "/api/schools")["schools"] if x["id"] == "新派")
+        if "甲" in got:
+            break
+        await asyncio.sleep(0.5)
+    ck.add("泳道成员跟着变（字段和旧写法的 包含 边并存）", got and "甲" in got and "庚" in got, str(got))
+
+    # 跨层：先选主层，再勾「也在」——两次都走变更卡
+    async def write_and_wait(want: str) -> str:
+        await confirm_changes(page)
+        body = ""
+        for _ in range(30):
+            body = md.read_text("utf-8")
+            if want in body.split("---")[1]:
+                break
+            await asyncio.sleep(0.3)
+        await insp_tab(page, "详情")
+        return body
+    await insp_tab(page, "详情")             # 上面写流派时停在了「变更」页
+    await poll(page, "!!document.querySelector('.insp .layer-pick:not([disabled])')", bool, timeout=8)
+    await page.ev("""(() => { const s = document.querySelector('.insp .layer-pick');
+      s.value = '硬件'; s.dispatchEvent(new Event('change')); })()""")
+    text = await write_and_wait("硬件")
+    also = await poll(page, """(() => { const b = document.querySelector('.insp [data-layer-also] [data-layer="体系结构"]');
+      return b && !b.disabled ? 'ok' : '' })()""", bool, timeout=10)
+    ck.add("选了主层之后出现「也在」那一排", also == "ok", text.split("---")[1][-80:])
+    if also != "ok":
+        return
+    await page.ev("""document.querySelector('.insp [data-layer-also] [data-layer="体系结构"]').click()""")
+    text = await write_and_wait("体系结构")
+    meta = get(page.api + "/api/node/" + urllib.parse.quote("甲"))["meta"]
+    ck.add("跨层写回 md、索引里 layer 是主层、layers 是全量",
+           meta.get("layer") == "硬件" and meta.get("layers") == ["硬件", "体系结构"], str({k: meta.get(k) for k in ("layer", "layers")}))
+
+
 async def case_tour(page: Page, ck: Check) -> None:
     """沿演化链导览：跟着最长的那条「谁接谁」一站站走，镜头推过去、游标跟着走。
 
     fixture 里的链是 甲(1990) —被激活→ 丙(2005) —演化为→ 庚(2015)，共 3 站。
     """
-    await switch_mode(page, "历史")
+    await history_view(page, "timeline")
     await wait_render(page, 4, shape="kg-dot")
     chain = await poll(page, "JSON.stringify(__kg.histPlan?.chain || [])",
                        lambda v: v and v != "[]", timeout=12)
@@ -2328,7 +2420,7 @@ async def case_one_line(page: Page, ck: Check, vault: Path) -> None:
         "---\nname: 壬\nfield: 另一域\ndesc: 壬\nyear: 2018\n---\n# 壬\n\n正文\n\n"
         "## 关系\n- 源自:: [[丙]] (2018)\n", "utf-8")
     await menu_click(page, "重新加载")
-    await switch_mode(page, "历史")
+    await history_view(page, "timeline")
     await wait_render(page, 5, shape="kg-dot")
     before = ck.layout()["revision"]
 
@@ -2844,6 +2936,7 @@ async def scenarios(page: Page, api: str, results: list) -> None:
     await case_inbox_new_field(page, ck, VAULT_HOLDER[0])   # 放最后：它往 vault 里加了个零边新领域节点，会改「今日」面板的形状
     # 和上面一条同理，甚至更重：它往 vault 里加两个流派文档，会把两个圆点变成带子、改掉最长演化链 —— 导览和谱系那几条用例全靠那条链
     await case_schools(page, ck, VAULT_HOLDER[0])
+    await case_line_fields(page, ck, VAULT_HOLDER[0])
     results.extend(ck.items)
 
 

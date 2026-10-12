@@ -87,17 +87,13 @@ defineExpose({ focus: () => inputEl.value?.focus() })
               @click="emit('switch-mode', 'structure')">
         <Icon name="map" :size="14" />全局图
       </button>
-      <button :class="{ on: mode === 'history' }" role="tab"
-              title="全局 · 只看有 year 的节点，X 轴是年份（4）"
-              @click="emit('switch-mode', 'history')">
+      <!-- 2026-10-12 历史入口合一：原来「历史」「谱系」两个按钮，要先想清楚某条历史在哪个视图。
+           现在只有一个「历史」，进去顶上切 时间线 / 演化树 / 谱系图（回到上次看的那档）。
+           三张图坐标轴不同（年份 / 谁长出谁 / 家族泳道），所以还是三张图，只是同一个门。 -->
+      <button :class="{ on: mode === 'history' || mode === 'lineage' }" role="tab"
+              title="全局 · 历史：时间线 / 演化树 / 谱系图（4）"
+              @click="emit('switch-mode', 'history-entry')">
         <Icon name="clock" :size="14" />历史
-      </button>
-      <!-- 谱系和历史不是同一张图的两种皮肤：历史的 X 轴锁死在年份上，
-           同一年冒出来的三个分支会挤成一列；谱系树才看得出那是三条独立的枝。 -->
-      <button :class="{ on: mode === 'lineage' }" role="tab"
-              title="全局 · 只画演化族：从什么长出什么，枝越粗挂的东西越多（5）"
-              @click="emit('switch-mode', 'lineage')">
-        <Icon name="network" :size="14" />谱系
       </button>
     </div>
 

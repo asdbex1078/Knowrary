@@ -16,13 +16,15 @@ from pathlib import Path
 from .facts import FACTS_HEADING, FM_DIMENSIONS, RE_FACT, section_bounds
 from .mdio import (RE_ID_OK, RE_NEXT_H2, RE_REL_HEADER, dump_frontmatter, read, split_frontmatter,
                     write)
-from .parser import LAYERS, LAYOUT_KEYS, STATUS_VALUES, digest_of
+from .lines import DOMAIN_KEY, SCHOOL_KEY, line_names
+from .parser import LAYERS, LAYOUT_KEYS, STATUS_VALUES, digest_of, layers_of
 from .relations import Edge, parse_relations
 from .sources import clean_sources
 
 # 允许通过 ChangeSet 修改的 frontmatter 字段；布局字段和 id 永远不许改
 EDITABLE_FIELDS = ("name", "field", "layer", "params", "type", "status", "year", "start_year", "end_year",
-                   "aliases", "tags", "desc", "learned", "source", "sources", "color", "timeless")
+                   "aliases", "tags", "desc", "learned", "source", "sources", "color", "timeless",
+                   "流派", "领域线")
 CHANGE_TYPES = ("add_edge", "remove_edge", "update_edge", "update_frontmatter", "create_node",
                 "update_body", "append_body", "set_fact", "move_node")
 # 新建的知识点只允许落在这两棵树下（规范 2：nodes/ 是知识点，fields/ 是领域总览）
@@ -227,11 +229,19 @@ def apply_to_text(text: str, node_id: str, changes: list[dict]) -> tuple[str, li
                 # layer 和 create_node 那边同一把尺子。原来只有新建校验、改的时候不校验，
                 # 于是 propose_changes 能从这条路写进一个不存在的层名——
                 # 它不报错，只会让这个节点在历史视图上凭空消失（泳道按 LAYERS 建，对不上的没地方去）。
-                if key == "layer" and value and value not in LAYERS:
-                    raise ChangeRejected(f"layer `{value}` 不在已知的抽象层里（{' / '.join(LAYERS)}）")
+                if key == "layer":
+                    value = _layer_value(value)
                 if key == "sources":
                     value = _sources_value(value)
                     _drop_legacy_source(fm, notes)
+                if key in (SCHOOL_KEY, DOMAIN_KEY):
+                    # 归属字段（2026-10-12）：统一写成 `[[链接]]`（改名时才跟得上），空的就整个键拿掉
+                    value = [f"[[{x}]]" for x in line_names(value)]
+                    if not value:
+                        if fm.pop(key, None) is not None:
+                            fm_changed = True
+                            notes.append(f"frontmatter 去掉 {key}")
+                        continue
                 fm[key] = value
                 fm_changed = True
                 notes.append(f"frontmatter {key} = {value!r}")
@@ -298,8 +308,8 @@ def _create_node_edit(vault: Path, change: dict, taken: set[str]) -> FileEdit:
             raise ChangeRejected(f"`{key}` 是必填字段（规范 3）")
     if fields.get("status") and fields["status"] not in STATUS_VALUES:
         raise ChangeRejected(f"status `{fields['status']}` 不合法")
-    if fields.get("layer") and fields["layer"] not in LAYERS:
-        raise ChangeRejected(f"layer `{fields['layer']}` 不在已知的抽象层里（{' / '.join(LAYERS)}）")
+    if "layer" in fields:
+        fields["layer"] = _layer_value(fields["layer"])
     if "sources" in fields:
         fields["sources"] = _sources_value(fields["sources"])
         fields.pop("source", None)
@@ -450,3 +460,12 @@ def commit(vault: Path, edits: list[FileEdit]) -> str:
         if edit.moved_from is not None and edit.moved_from.exists():
             edit.moved_from.unlink()
     return snapshot
+
+
+def _layer_value(value):
+    """`layer` 一层写成字符串、几层写成列表（第一个是主层）；每一层都得在 LAYERS 里，空的就是「未分层」。"""
+    layers = layers_of({"layer": value})
+    bad = [x for x in layers if x not in LAYERS]
+    if bad:
+        raise ChangeRejected(f"layer `{'、'.join(bad)}` 不在已知的抽象层里（{' / '.join(LAYERS)}）")
+    return layers[0] if len(layers) == 1 else (layers or "")

@@ -462,6 +462,29 @@ def cmd_check(args: argparse.Namespace) -> None:
     sys.exit(1 if print_diagnostics(result.diags, extra, args.max_warn) else 0)
 
 
+def cmd_lines(args: argparse.Namespace) -> None:
+    """流派 / 领域线归属迁成点上的字段（2026-10-12）。默认只看 diff，`--apply` 才写（写前整份快照）。"""
+    import difflib
+    from core import lines as line_fields
+    vault = Path(args.vault).resolve()
+    plan = line_fields.plan_migration(vault, build_index(vault).data)
+    if not plan:
+        print("没有要迁的：没有旧写法的流派 / 领域线归属（`- 属于:: [[线]]` / 线文档里的 `- 包含::`）")
+        return
+    moved = sum(len(it["moved"]) for it in plan)
+    notes = sum(1 for it in plan for m in it["moved"] if m["note"])
+    for it in plan:
+        print("\n".join(difflib.unified_diff(it["before"].splitlines(), it["after"].splitlines(),
+                                            fromfile=it["path"], tofile=it["path"], lineterm="", n=1)))
+    print(f"\n{'' if args.apply else '(预览) '}{len(plan)} 个文件，{moved} 条归属迁成字段，"
+          f"{notes} 句边上的注释进「## 归属」小节")
+    if args.apply:
+        backup = line_fields.apply_migration(vault, plan)
+        print(f"已写入；写前快照在 {backup}")
+    else:
+        print("确认无误加 --apply 写入")
+
+
 # ---------------------------------------------------------------- LLM 输出解析
 
 def extract_json(text: str, vault: Path | None = None, context: str = "") -> dict:
@@ -753,6 +776,11 @@ def add_data_parsers(sub: argparse._SubParsersAction) -> None:
     c.add_argument("vault", nargs="?", default=None, help=VAULT_HELP)
     c.add_argument("--max-warn", type=int, default=40)
     c.set_defaults(fn=cmd_check)
+
+    ln = sub.add_parser("lines", help="流派 / 领域线归属迁成点上的字段（默认只预览）")
+    ln.add_argument("--vault", default=None, help=VAULT_HELP)
+    ln.add_argument("--apply", action="store_true", help="写入（写前整份快照）")
+    ln.set_defaults(fn=cmd_lines)
 
     r = sub.add_parser("review", help="到期复习列表 / 记一次复习")
     r.add_argument("action", choices=["due", "done"], nargs="?", default="due")

@@ -441,6 +441,30 @@ def frontmatter_白名单():
 
 
 @case
+def 抽象层可以跨层_第一个是主层_每一层都要合法():
+    """2026-10-12 归属整理：`layer: [硬件, 体系结构]`。索引里 `layer` 永远是主层（画布 / 归位 / 前端照旧读它），
+    `layers` 给全量；改的时候每一层都得在 LAYERS 里；归属字段同理写成链接、空的就去掉键。"""
+    vault, r = rich_vault()
+    edits = core.plan(vault, [{"type": "update_frontmatter", "source": "a", "fields": {"layer": ["硬件", "体系结构"]}}], r.data)
+    after = edits[0].after
+    assert "layer:" in after and "硬件" in after and "体系结构" in after, after
+    core.write(vault / edits[0].rel, after)
+    node = next(n for n in core.build_index(vault).data["nodes"] if n["id"] == "a")
+    assert node["layer"] == "硬件" and node["layers"] == ["硬件", "体系结构"], node
+    one = core.plan(vault, [{"type": "update_frontmatter", "source": "a", "fields": {"layer": ["理论"]}}],
+                    core.build_index(vault).data)[0].after
+    assert "layer: 理论" in one, ("只剩一层就写回字符串，和以前的 md 一样", one)
+    try:
+        core.plan(vault, [{"type": "update_frontmatter", "source": "a", "fields": {"layer": ["硬件", "瞎写的层"]}}],
+                  core.build_index(vault).data)
+        raise AssertionError("有一层不合法就整个拒绝")
+    except core.ChangeRejected as exc:
+        assert "瞎写的层" in str(exc), exc
+    v2, r2 = build({"nodes/x/a.md": node_md("a", extra="layer: [硬件, 不存在]\n")})
+    assert [d.code for d in r2.diags.warnings].count("unknown_layer") == 1, "每一层都校验"
+
+
+@case
 def 预览不写盘_确认才写并备份():
     vault, r = rich_vault()
     before = (vault / "nodes/a.md").read_text("utf-8")
@@ -1558,6 +1582,70 @@ def 流派按起始年排序而且允许重叠():
     # **同一个节点同时属于两派**
     assert core.school_of(index, "现代Intel微架构") == ["CISC派", "RISC派"], \
         core.school_of(index, "现代Intel微架构")
+
+
+@case
+def 归属是点上的字段_链接和纯文字都认_写在前面的是主道_写错的线名要报():
+    """2026-10-12 归属整理：流派 / 领域线不再靠 `属于::` 边挂，是点自己的 frontmatter 字段。
+    旧写法照读（没迁的库不坏），字段和旧边可以混着；写错的线名是静默失败，要报出来。"""
+    def line(name, kind, start):
+        return f"---\nname: {name}\nfield: AI\ntype: {kind}\nstart_year: {start}\ndesc: x\n---\n# {name}\n\n正文\n"
+    vault = make_vault({
+        "fields/领域线/NLP.md": line("NLP", "领域线", 1954), "fields/领域线/CV.md": line("CV", "领域线", 1966),
+        "fields/领域线/ASR.md": line("ASR", "领域线", 1952), "fields/流派/连接派.md": line("连接派", "流派", 1943),
+        "nodes/x/变换器.md": node_md("变换器", extra='year: 2017\n领域线: ["[[NLP]]", "[[CV]]", "[[ASR]]"]\n'),
+        "nodes/x/卷积网.md": node_md("卷积网", extra="year: 2012\n领域线: CV\n流派: [连接派]\n"),
+        "nodes/x/老写法.md": node_md("老写法", extra="year: 2015\n", rels="- 属于:: [[ASR]]"),
+        "nodes/x/写错了.md": node_md("写错了", extra='year: 2016\n流派: ["[[CV]]"]\n领域线: [不存在的线]\n'),
+        "nodes/x/没加引号.md": node_md("没加引号", extra="year: 2018\n领域线: [[NLP]]\n"),
+    })
+    result = core.build_index(vault)
+    index = result.data
+    got = {x["id"]: x["members"] for x in core.schools(index)}
+    assert got["CV"] == ["卷积网", "变换器"] and got["ASR"] == ["老写法", "变换器"], got
+    assert got["连接派"] == ["卷积网"], "单个字符串、不带链接的写法也认"
+    assert got["NLP"] == ["变换器", "没加引号"], "Obsidian 里不加引号的 [[NLP]] 被 YAML 读成嵌套列表，也认"
+    assert next(n for n in index["nodes"] if n["id"] == "变换器")["domains"] == ["NLP", "CV", "ASR"]
+    homes = core.line_homes(vault, index)
+    assert homes["变换器"] == "NLP", ("字段里写在前面的是主道——ASR 起步最早也不能抢走", homes)
+    msgs = [d.message for d in result.diags.warnings if d.code == "unknown_line"]
+    assert any("「CV」不是一个流派" in m for m in msgs) and any("「不存在的线」" in m for m in msgs), msgs
+    assert not [d for d in result.diags.warnings if d.code == "school_too_few_members" and d.node == "CV"], \
+        "字段声明的成员也算成员"
+
+
+@case
+def 旧写法一键迁成字段_顺序不变_注释进归属小节_再跑一次什么都不改():
+    """`knowrary.py lines`：点里的 `- 属于:: [[线]]` 和线文档里的 `- 包含::` 迁成字段。
+    边上的注释是他写的话，不许丢，进正文 `## 归属`。迁完泳道成员、主道都不能变。"""
+    from core import lines as L
+    S = sys.modules["core.schools"]
+    line = "---\nname: {n}\nfield: AI\ntype: {k}\nstart_year: {y}\ndesc: x\n---\n# {n}\n\n正文\n{r}"
+    vault = make_vault({
+        "fields/领域线/NLP.md": line.format(n="NLP", k="领域线", y=1954, r=""),
+        "fields/领域线/ASR.md": line.format(n="ASR", k="领域线", y=1952, r=""),
+        "fields/流派/符号派.md": line.format(n="符号派", k="流派", y=1956, r="\n## 关系\n- 包含:: [[逻辑机]] — 线这边写的成员\n"),
+        "nodes/x/变换器.md": node_md("变换器", extra="year: 2017\n",
+                                    rels="- 属于:: [[NLP]]\n- 源自:: [[逻辑机]]\n- 属于:: [[ASR]] — 语音也统一了"),
+        "nodes/x/逻辑机.md": node_md("逻辑机", extra="year: 1956\n"),
+    })
+    before = core.build_index(vault).data
+    snap = lambda idx: ({x["id"]: x["members"] for x in S.schools(idx)}, S.line_homes(vault, idx))
+    was = snap(before)                     # line_homes 会读盘，必须在写之前取
+    assert was[1] == {"变换器": "NLP"}, was
+    plan = L.plan_migration(vault, before)
+    assert sorted(x["path"] for x in plan) == ["fields/流派/符号派.md", "nodes/x/变换器.md", "nodes/x/逻辑机.md"], plan
+    tf = next(x for x in plan if x["path"] == "nodes/x/变换器.md")["after"]
+    assert '领域线: ["[[NLP]]", "[[ASR]]"]' in tf and "属于::" not in tf and "- 源自:: [[逻辑机]]" in tf, tf
+    assert "## 归属\n- ASR：语音也统一了\n\n## 关系" in tf, ("注释进归属小节、放在关系前面", tf)
+    lj = next(x for x in plan if x["path"] == "nodes/x/逻辑机.md")["after"]
+    assert '流派: ["[[符号派]]"]' in lj and "- 符号派：线这边写的成员" in lj, lj
+    assert "属于:: [[NLP]]" in (vault / "nodes/x/变换器.md").read_text("utf-8"), "plan 不许动盘"
+    backup = L.apply_migration(vault, plan)
+    assert (vault / backup / "nodes/x/变换器.md").is_file(), "写前要快照"
+    after = core.build_index(vault).data
+    assert snap(after) == was, ("迁完泳道成员、主道都不能变", was, snap(after))
+    assert L.plan_migration(vault, after) == [], "再跑一次什么都不改"
 
 
 @case
@@ -2929,12 +3017,14 @@ def probe_正常回流要量得出首字节():
 @case
 def 模型目录_家族文件读成型号_日期数字链接都解析出来():
     """型号不是知识节点：一个家族一个 md（kind: family），一个型号一节 `## 型号名`、字段 `- 键:: 值`。"""
-    fam = core.parse_family(core.CATALOG_SAMPLE, "models/DeepSeek.md", "DeepSeek")
-    assert fam["name"] == "DeepSeek" and fam["open"] is True and fam["warnings"] == [], fam["warnings"]
+    spec = core.parse_lineage(core.CATALOG_SAMPLE_LINEAGE, "大模型", "models/大模型/谱系.md")
+    fam = core.parse_family(core.CATALOG_SAMPLE, "models/大模型/DeepSeek.md", "DeepSeek", spec)
+    assert fam["lineage"] == "大模型" and fam["name"] == "DeepSeek" and fam["open"] is True and fam["warnings"] == [], fam["warnings"]
     v2, v3, r1 = fam["models"]
     assert (v3["year"], v3["month"], v3["day"]) == (2024, 12, 26) and v2["month"] == 5 and v2["t"] < v3["t"] < r1["t"]
-    assert v3["params_n"] == 671e9 and v3["active_n"] == 37e9 and v3["context_n"] == 128e3, v3
-    assert v3["tokens_n"] == 14.8e12 and v3["prev"] == "DeepSeek-V2" and r1["base"] == ["DeepSeek-V3"]
+    n = v3["numbers"]
+    assert n["参数"] == 671e9 and n["激活"] == 37e9 and n["上下文"] == 128e3 and n["训练数据"] == 14.8e12, v3
+    assert v3["values"]["参数"] == "671B" and v3["prev"] == "DeepSeek-V2" and r1["base"] == ["DeepSeek-V3"]
     assert {"text": "MLA", "link": "MLA"} in v3["tech"] and {"text": "FP8 混合精度", "link": None} in v3["tech"]
     lines = core.CATALOG_SAMPLE.splitlines()
     assert lines[v3["line"] - 1] == "## DeepSeek-V3", ("行号要对得上文件里的行", v3["line"])
@@ -2961,14 +3051,47 @@ name: Qwen
 ## Qwen2.5
 - 发布:: 2025/13
 """
-    fam = core.parse_family(text, "models/Qwen.md", "Qwen")
+    spec = core.parse_lineage(core.CATALOG_SAMPLE_LINEAGE, "大模型", "")
+    fam = core.parse_family(text, "models/Qwen.md", "Qwen", spec)
     q, k, _ = fam["models"]
-    assert q["params_n"] == 72e9 and q["context_n"] == 128e3 and q["tokens_n"] == 18e12, q
+    assert q["numbers"] == {"参数": 72e9, "上下文": 128e3, "训练数据": 18e12}, q
     assert q["extra"] == {"显存占用": "很大"} and (q["year"], q["month"], q["day"]) == (2024, 12, 19)
-    assert k["params_n"] is None and k["month"] == 1
+    assert "参数" not in k["numbers"] and k["values"]["参数"] == "未披露" and k["month"] == 1
+    bare = core.parse_family(text, "models/Qwen.md", "Qwen")
+    assert bare["models"][0]["extra"]["参数"].startswith("0.5B"), "没有 谱系.md 的图：图特有的字段都是没登记的"
     msgs = " / ".join(w["message"] for w in fam["warnings"])
     assert "未披露" not in msgs and "「看不懂」里没有数字" in msgs, msgs
     assert "两节都叫「Qwen2.5」" in msgs and "「2025/13」读不懂" in msgs, msgs
+
+
+@case
+def 谱系声明_字段写在正文_认数值单位范围可多个_声明公共字段和未声明的badge要报():
+    """2026-10-12：一级子目录一张谱系图，谱系.md 声明字段。声明写正文不写 frontmatter 嵌套（PyYAML 不是依赖）。"""
+    text = """---
+kind: lineage
+name: CPU
+badge: 主频
+---
+## 字段
+- 制程:: 数值，单位 nm
+- 晶体管:: 数值，范围 1K~100T
+- 位宽
+- 指令集:: 可多个
+- 前代:: 文字
+
+## 抽取说明
+一代微架构一条。
+"""
+    spec = core.parse_lineage(text, "CPU", "models/CPU/谱系.md")
+    assert [f["key"] for f in spec["fields"]] == ["制程", "晶体管", "位宽", "指令集"], spec["fields"]
+    tr = spec["fields"][1]
+    assert spec["fields"][0]["unit"] == "nm" and (tr["min"], tr["max"]) == (1e3, 100e12) and spec["fields"][3]["list"]
+    assert spec["guide"] == "一代微架构一条。" and spec["badge"] == "", spec
+    msgs = " / ".join(w["message"] for w in spec["warnings"])
+    assert "「前代」是公共字段" in msgs and "badge「主频」" in msgs, msgs
+    fam = core.parse_family("---\nkind: family\nname: Intel\n---\n## 8086\n- 晶体管:: 29000\n## 错的\n- 晶体管:: 3\n",
+                            "x", "Intel", spec)
+    assert fam["models"][0]["numbers"] == {"晶体管": 29000.0} and fam["models"][1]["numbers"] == {}, "超出范围当没填"
 
 
 @case

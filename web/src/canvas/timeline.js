@@ -489,6 +489,8 @@ export function buildTimeline(index, layout, opts = {}) {
   let y = AXIS_H + LANE_GAP
   let lastBlock = null
   const byLayer = timelines.includes(BY_LAYER)
+  // 跨几层的点（2026-10-12 `layer: [硬件, 体系结构]`）：主层是真身，其余几层的道也得开出来放影子
+  if (byLayer) for (const { node } of kept) for (const l of (node.layers || []).slice(1)) laneNames.set(l, true)
   // 按层时用固定次序（底层在下 → 数组倒过来铺），别用字典序——
   // 「AI应用」排在「体系结构」前面这种事，一眼就看得出是错的。
   // 按流派时**不排字典序，排起始年**——"出现早的在上面"是这一档的全部意义。
@@ -502,6 +504,12 @@ export function buildTimeline(index, layout, opts = {}) {
   // 属于第二派起的点：在那条道上补一个**影子**（合成 id、空心、不带边）。
   // 不补的话，`现代Intel微架构` 只会出现在 CISC 道里，"它也是 RISC"这件事就消失了。
   const shadows = []
+  if (byLayer) {
+    // 和跨流派同一个画法：主层画真身，其余几层画影子（空心、不带边），「它也是体系结构」才看得见
+    for (const { node, lane } of kept) {
+      for (const l of (node.layers || []).slice(1)) if (l !== lane) shadows.push({ node, lane: l })
+    }
+  }
   if (bySchool) {
     for (const { node } of kept) {
       const home = kept.find((k) => k.node.id === node.id)?.lane

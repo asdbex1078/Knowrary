@@ -1837,6 +1837,12 @@ kbd.key {
 .ml-year { font-size: 10.5px; fill: var(--text-3); }
 .ml-link { fill: none; stroke-width: 1.6; opacity: .7; }
 .ml-link.base { stroke-dasharray: 5 4; opacity: .55; }
+/* 叠加看几张图（2026-10-12）：共用年份轴的竖线、图名行、跨图关系（运行在…）用更长的虚线、颜色统一，和「基于」区分开 */
+.ml-grid { stroke: var(--line); stroke-width: 1; stroke-dasharray: 2 4; opacity: .7; }
+.ml-head { fill: var(--surface-3, var(--surface-2)); }
+.ml-head-name { position: absolute; left: 0; width: 128px; padding-left: 10px; display: flex; align-items: center;
+  font-size: 12px; font-weight: 600; color: var(--text-2); background: var(--surface-3, var(--surface-2)); }
+.ml-link.ref { stroke: var(--accent) !important; stroke-dasharray: 8 4; opacity: .75; stroke-width: 1.4; }
 .ml-item { cursor: pointer; }
 .ml-item circle { stroke: var(--surface); stroke-width: 2; }
 .ml-item.on circle { stroke: var(--text); }
@@ -1872,3 +1878,11 @@ kbd.key {
 .bar-group { font-size: 11px; margin: 8px 0 2px; }
 .model-card-notes { margin: 6px 0; }
 .model-card-notes summary { cursor: pointer; color: var(--text-2); }
+
+/* 检查器里的流派 / 领域线勾选（2026-10-12 归属改成点上的字段） */
+.line-picks { display: flex; flex-wrap: wrap; gap: 4px; }
+.line-picks .chip { cursor: pointer; border: 1px solid var(--line); background: transparent; font: inherit; font-size: 11px; padding: 0 7px; }
+.line-picks .chip.on { background: var(--accent-soft); color: var(--accent-text); border-color: var(--accent); }
+.line-picks .chip:disabled { cursor: default; opacity: .6; }
+.layer-also { margin-top: 5px; align-items: center; }
+.layer-also .dim { font-size: 11px; margin-right: 2px; }

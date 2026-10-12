@@ -586,7 +586,7 @@ def get_models() -> ModelsRead:
 def post_models_extract(req: ModelsExtract) -> ModelsProposal:
     """抽一篇原文（一次 learn 调用）：家族、型号，和目录里已有的合并成计划（只补空格），带确定性核对。不写盘。"""
     try:
-        return models_extract_svc.propose(vault_path(), req.path)
+        return models_extract_svc.propose(vault_path(), req.path, req.lineage)
     except models_extract_svc.ModelsExtractRejected as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except LLMFailed as exc:

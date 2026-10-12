@@ -1359,7 +1359,7 @@ class ModelTech(Strict):
 
 
 class ModelEntry(Strict):
-    """一个型号。`*_n` 是解析出来的数值（画图、排序用），原文字段照原样给人看。"""
+    """一个型号（或一个版本：80386、Linux 0.11）。公共字段是固定的键，各图自己的字段在 `values` / `numbers`。"""
 
     id: str                            # 家族 id/型号名
     name: str
@@ -1370,20 +1370,15 @@ class ModelEntry(Strict):
     month: int | None = None
     day: int | None = None
     t: float | None = None             # 小数年份，横轴用
-    params: str | None = None
-    params_n: float | None = None
-    active: str | None = None
-    active_n: float | None = None
-    context: str | None = None
-    context_n: float | None = None
-    tokens: str | None = None
-    tokens_n: float | None = None
     prev: str | None = None
     base: list[str] = Field(default_factory=list)
     tech: list[ModelTech] = Field(default_factory=list)
     highlight: str | None = None
     breakthrough: str | None = None
     paper: str | None = None
+    values: dict[str, str] = Field(default_factory=dict)  # 这张谱系图声明过的字段（谱系.md），原文照给
+    numbers: dict[str, float] = Field(default_factory=dict)  # 其中声明成「数值」的解析结果（画图、排序用）
+    refs: dict[str, list[str]] = Field(default_factory=dict)  # 跨图关系字段指向的型号名（运行在 → [80386]）
     extra: dict[str, str] = Field(default_factory=dict)   # 没登记的字段，卡片底部列出
     notes: str = ""                    # 这一节里不是字段的文字（比如从知识点挪过来的正文）
 
@@ -1395,14 +1390,37 @@ class ModelFamily(Strict):
     open: bool | None = None
     tagline: str = ""
     path: str
+    lineage: str = ""                  # 在哪张谱系图里（谱系目录的一级子目录名；空 = 直接放在目录根上）
     sources: list[str] = Field(default_factory=list)
     models: list[ModelEntry] = Field(default_factory=list)
+
+
+class LineageField(Strict):
+    key: str
+    numeric: bool = False
+    list: bool = False
+    unit: str = ""
+    min: float | None = None
+    max: float | None = None
+    target: str = ""                   # 指向哪张图（跨图关系字段，比如操作系统的「运行在」指向 CPU）
+
+
+class Lineage(Strict):
+    """一张谱系图（2026-10-12）：谱系目录的一级子目录，`谱系.md` 声明它登记哪些字段。"""
+
+    id: str
+    name: str
+    path: str = ""                     # 谱系.md 在哪（没有声明文件就是空）
+    badge: str = ""                    # 写在型号名旁边的那一格
+    fields: list[LineageField] = Field(default_factory=list)
+    guide: str = ""                    # 抽取说明（给 learn 的，这张图特有的抽法）
 
 
 class ModelLink(Strict):
     source: str
     target: str
-    kind: str                          # prev（人写的前代）/ base（基于，可跨家族）/ next（同家族按时间补的走向）
+    kind: str                          # prev（人写的前代）/ base（基于，可跨家族）/ next（同家族按时间补的走向）/ ref（跨图关系）
+    label: str = ""                    # ref 的字段名（运行在）
 
 
 class ModelWarning(Strict):
@@ -1417,13 +1435,15 @@ class ModelsRead(Strict):
     dir: str = ""
     configured: bool = False
     exists: bool = False
+    lineages: list[Lineage] = Field(default_factory=list)
     families: list[ModelFamily] = Field(default_factory=list)
     links: list[ModelLink] = Field(default_factory=list)
     warnings: list[ModelWarning] = Field(default_factory=list)
     candidates: list[str] = Field(default_factory=list)   # 库里现有的目录，没指定时给人挑
     used_by: dict[str, list[str]] = Field(default_factory=dict)   # 知识点 id → 用到它的型号 id
     sample: str = ""                   # 家族文件的格式样例（没指定目录 / 目录里还没有家族文件时给人看）
-    fields: list[str] = Field(default_factory=list)       # 登记过的字段，卡片按这个顺序排
+    sample_lineage: str = ""           # 谱系.md 的格式样例
+    fields: list[str] = Field(default_factory=list)       # 公共字段（每张图都有），卡片按这个顺序排
 
 
 class ModelConflict(Strict):
@@ -1463,10 +1483,12 @@ class FamilyPlan(Strict):
 
 class ModelsExtract(Strict):
     path: str                          # 哪篇原文
+    lineage: str | None = None         # 抽进哪张谱系图；目录里只有一张时可以不给
 
 
 class ModelsProposal(Strict):
     path: str
+    lineage: str = ""                  # 抽进了哪张谱系图
     title: str = ""
     source: str = ""                   # 写进家族 frontmatter sources 的那条链接
     families: list[FamilyPlan] = Field(default_factory=list)
@@ -1516,6 +1538,7 @@ class ModelFromNode(Strict):
 
     node: str
     family: str = ""                   # 进哪个家族（名字）；空 = 按名字猜（DeepSeek-V3 → DeepSeek）
+    lineage: str = ""                  # 家族还不存在时建在哪张谱系图里；空 = 目录里只有一张图时就是它
     dry_run: bool = True
 
 

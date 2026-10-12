@@ -1,4 +1,4 @@
-"""模型目录的服务层（2026-09-30）：读家族文件、把技术点对到知识点、型号之间连线。
+"""谱系目录的服务层（2026-09-30，2026-10-12 起一级子目录一张谱系图）：读家族文件、把技术点对到知识点、型号之间连线。
 
 解析在 `core.catalog`（纯函数，CLI 的 check 也用）；这里多做的是**对着索引**的那一步：
 `[[MLA]]` 是不是图里的知识点、知识点被哪些型号用到（检查器里反查）。每次请求现读——
@@ -35,9 +35,10 @@ def read(vault: Path) -> ModelsRead:
                            "tech": tech})
         families.append({**fam, "models": models})
     return ModelsRead(dir=catalog["dir"], configured=catalog["configured"], exists=catalog["exists"],
-                      families=families, links=links, warnings=catalog["warnings"], used_by=used_by,
-                      candidates=[] if catalog["families"] else core.articles_dir_candidates(vault),
-                      sample=core.CATALOG_SAMPLE, fields=list(core.CATALOG_FIELDS))
+                      lineages=catalog["lineages"], families=families, links=links, warnings=catalog["warnings"],
+                      used_by=used_by, candidates=[] if catalog["families"] else core.articles_dir_candidates(vault),
+                      sample=core.CATALOG_SAMPLE, sample_lineage=core.CATALOG_SAMPLE_LINEAGE,
+                      fields=list(core.CATALOG_FIELDS))
 
 
 def _node_lookup(index: dict) -> dict[str, str]:

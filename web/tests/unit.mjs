@@ -16,13 +16,13 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { blankMenu, buildMenu, edgeMenu, groupMenu, nodeMenu } from '../src/canvas/menus.js'
 import { ancestors, computeCollapsed } from '../src/canvas/lod.js'
-import { timelineOptions, bandCurve, buildTimeline, lineageOf, BY_SCHOOL, BY_DOMAIN }
+import { timelineOptions, bandCurve, buildTimeline, lineageOf, BY_LAYER, BY_SCHOOL, BY_DOMAIN }
   from '../src/canvas/timeline.js'
 import { level, weekColumns } from '../src/panels/heat.js'
 import { forModel } from '../src/composables/useChat.js'
 import { localISO, todayISO } from '../src/today.js'
 import { applyBody, mergeProposals, pickedCount, suspectsByArticle } from '../src/modelsPlan.js'
-import { COL, LEFT, computeLanes, humanParams, techOptions } from '../src/canvas/modelLanes.js'
+import { COL, LEFT, MIN_GAP, YEAR_PX, badgeOf, computeLanes, humanNumber, humanParams, techOptions } from '../src/canvas/modelLanes.js'
 
 const CASES = []
 const test = (name, fn) => CASES.push([name, fn])
@@ -355,6 +355,20 @@ test('流派分道：跨两派的点每道一份，第二份是影子', () => {
   assert.ok(!plan.placed.get('现代Intel').shadow)
 })
 
+test('按抽象层（2026-10-12 跨层）：主层画真身，其余几层画影子，那几层的道也开出来', () => {
+  const index = { nodes: [
+    { id: 'CPU', name: 'CPU', year: 1971, layer: '硬件', layers: ['硬件', '体系结构'] },
+    { id: '图灵机', name: '图灵机', year: 1936, layer: '理论' },
+  ], edges: [{ source: '图灵机', target: 'CPU', type: '演化为', family: '演化', year: 1971 }] }
+  const plan = buildTimeline(index, { nodes: {}, groups: {} }, { timelines: [BY_LAYER] })
+  assert.deepEqual(plan.lanes.map((l) => l.name), ['体系结构', '硬件', '理论'], '只在副层出现的「体系结构」也要开道，次序照旧底层在下')
+  assert.equal(plan.placed.get('CPU').lane, '硬件', '真身在主层')
+  assert.equal(plan.placed.get('CPU@体系结构').shadow, true)
+  assert.equal(plan.placed.get('CPU@体系结构').realId, 'CPU')
+  const noLayer = buildTimeline(index, { nodes: {}, groups: {} }, { timelines: [] })
+  assert.ok(![...noLayer.placed.keys()].some((k) => k.includes('@')), '不按层时不画影子')
+})
+
 test('流派走势：阶梯不是折线，平台就是停摆', () => {
   const scale = { at: (y) => y, width: 100 }
   const school = { start: 1940, end: null, open: true,
@@ -610,17 +624,22 @@ test('没东西可写的型号默认不勾，写入请求里也不带；可疑�
 
 const m = (id, t, extra = {}) => ({ id, name: id.split('/')[1], t, year: t ? Math.floor(t) : null, tech: [], ...extra })
 const MODELS = {
+  lineages: [{ id: 'llm', name: '大模型', badge: '参数', fields: [{ key: '参数', numeric: true, unit: '' }] },
+             { id: 'cpu', name: 'CPU', badge: '位宽', fields: [{ key: '位宽', numeric: false, unit: '' }] }],
   families: [
-    { id: 'Qwen', name: 'Qwen', open: true, models: [m('Qwen/Q2', 2024.4), m('Qwen/Q1', 2023.6), m('Qwen/草稿', null)] },
-    { id: 'GPT', name: 'GPT', open: false, models: [m('GPT/G3', 2020.5, { params_n: 175e9 }), m('GPT/G4', 2023.2,
+    { id: 'Qwen', name: 'Qwen', lineage: 'llm', open: true, models: [m('Qwen/Q2', 2024.4), m('Qwen/Q1', 2023.6), m('Qwen/草稿', null)] },
+    { id: 'GPT', name: 'GPT', lineage: 'llm', open: false, models: [m('GPT/G3', 2020.5,
+      { values: { 参数: '175B' }, numbers: { 参数: 175e9 } }), m('GPT/G4', 2023.2,
       { tech: [{ text: 'MoE', link: 'MoE', node: 'MoE' }] })] },
+    { id: 'Intel', name: 'Intel', lineage: 'cpu', models: [m('Intel/80386', 1985, { values: { 位宽: '32 位' },
+      tech: [{ text: 'MoE', link: 'MoE', node: 'MoE' }] })] },
   ],
   links: [{ source: 'Qwen/Q1', target: 'Qwen/Q2', kind: 'next' }, { source: 'GPT/G4', target: 'Qwen/Q2', kind: 'base' }],
 }
 
 test('模型谱系：家族按首发时间排，泳道里按发布顺序等距，没日期的排最后不丢', () => {
-  const plan = computeLanes(MODELS)
-  assert.deepEqual(plan.lanes.map((l) => l.family.id), ['GPT', 'Qwen'])
+  const plan = computeLanes(MODELS, { lineage: 'llm' })
+  assert.deepEqual(plan.lanes.map((l) => l.family.id), ['GPT', 'Qwen'], '只排这张图里的家族')
   const qwen = plan.items.filter((it) => it.family.id === 'Qwen')
   assert.deepEqual(qwen.map((it) => it.model.name), ['Q1', 'Q2', '草稿'])
   assert.deepEqual(qwen.map((it) => it.x), [LEFT + COL / 2, LEFT + COL * 1.5, LEFT + COL * 2.5])
@@ -630,14 +649,52 @@ test('模型谱系：家族按首发时间排，泳道里按发布顺序等距�
 })
 
 test('模型谱系：开源筛选、收起家族、按技术点高亮，连线只连两端都在的', () => {
-  assert.deepEqual(computeLanes(MODELS, { open: 'open' }).lanes.map((l) => l.family.id), ['Qwen'])
-  const folded = computeLanes(MODELS, { hidden: new Set(['GPT']) })
+  assert.deepEqual(computeLanes(MODELS, { lineage: 'llm', open: 'open' }).lanes.map((l) => l.family.id), ['Qwen'])
+  const folded = computeLanes(MODELS, { lineage: 'llm', hidden: new Set(['GPT']) })
   assert.ok(folded.lanes[0].folded && !folded.items.some((it) => it.family.id === 'GPT'))
   assert.deepEqual(folded.links.map((l) => l.kind), ['next'], '收起的家族那头的线不画')
-  const lit = computeLanes(MODELS, { tech: 'node:MoE' })
+  const lit = computeLanes(MODELS, { lineage: 'llm', tech: 'node:MoE' })
   assert.deepEqual(lit.items.filter((it) => !it.dim).map((it) => it.model.name), ['G4'])
-  assert.deepEqual(techOptions(MODELS), [{ key: 'node:MoE', label: 'MoE', count: 1 }])
-  assert.equal(humanParams(2.8e12), '2.8T'); assert.equal(humanParams(671e9), '671B'); assert.equal(humanParams(null), '')
+  assert.deepEqual(techOptions(MODELS, 'llm'), [{ key: 'node:MoE', label: 'MoE', count: 1 }], '只数这张图里的')
+  assert.deepEqual(techOptions(MODELS)[0].count, 2)
+  assert.equal(humanParams(2.8e12), '2.8T');
+  assert.equal(humanNumber(65, 'nm'), '65nm'); assert.equal(humanNumber(1.9e9), '1.9B'); assert.equal(humanNumber(32), '32')
+  assert.equal(humanParams(671e9), '671B'); assert.equal(humanParams(null), '')
+})
+
+test('谱系图（2026-10-12）：一张图一个一级子目录，名字旁写 谱系.md 的 badge，跨图的线不画', () => {
+  const cpu = computeLanes(MODELS, { lineage: 'cpu' })
+  assert.deepEqual(cpu.items.map((it) => it.label), ['80386 · 32 位'], '文字 badge 照抄原文')
+  assert.equal(badgeOf({ values: {}, numbers: {} }, MODELS.lineages[0]), '', '没写这一格就不写')
+  const linked = { ...MODELS, links: [{ source: 'Intel/80386', target: 'GPT/G3', kind: 'base' }] }
+  assert.deepEqual(computeLanes(linked, { lineage: 'llm' }).links, [], '另一张图里的那头不在，线不画')
+})
+
+test('谱系图叠加（2026-10-12 第 2 步）：两张以上换共用真实年份轴，每张图一行图名，跨图关系连得上', () => {
+  const doc = { ...MODELS, links: [{ source: 'Intel/80386', target: 'GPT/G3', kind: 'ref', label: '运行在' }] }
+  const one = computeLanes(doc, { lineages: ['llm'] })
+  assert.equal(one.timed, false, '只选一张还是等距')
+  const plan = computeLanes(doc, { lineages: ['cpu', 'llm'] })
+  assert.ok(plan.timed)
+  assert.deepEqual(plan.heads.map((h) => h.name), ['CPU', '大模型'])
+  assert.ok(plan.heads[1].y > plan.lanes[0].y, '大模型的图名行在 CPU 的泳道下面')
+  const x = (name) => plan.items.find((it) => it.model.name === name).x
+  assert.equal(x('G3') - x('80386'), (2020.5 - 1985) * YEAR_PX, '横坐标按真实年份差')
+  assert.equal(x('G4') - x('G3'), (2023.2 - 2020.5) * YEAR_PX)
+  assert.equal(plan.axis[0].year, 1985, '年份轴从最早那一年起')
+  assert.deepEqual(plan.links.map((l) => [l.kind, l.label]), [['ref', '运行在']], '跨图的线两头都在才画')
+  const crowd = { lineages: MODELS.lineages, links: [], families: [{ id: 'X', name: 'X', lineage: 'llm', models:
+    [m('X/a', 2020.1), m('X/b', 2020.1), m('X/c', null)] }, { id: 'Y', name: 'Y', lineage: 'cpu', models: [m('Y/z', 2019)] }] }
+  const c = computeLanes(crowd, { lineages: ['llm', 'cpu'] })
+  const cx = (name) => c.items.find((it) => it.model.name === name).x
+  assert.equal(cx('b') - cx('a'), MIN_GAP, '同一年的两个让开，不叠成一个点')
+  assert.equal(cx('c') - cx('b'), COL, '没日期的接在最后')
+  const shownLabels = c.items.filter((it) => it.showLabel).map((it) => it.model.name)
+  assert.deepEqual(shownLabels, ['a', 'b', 'c', 'z'], '短名字隔 34px 写得下（上下交错）')
+  const long = { lineages: MODELS.lineages, links: [], families: [{ id: 'L', name: 'L', lineage: 'llm', models:
+    [m('L/DeepSeek-V2-长名字', 2024.3), m('L/DeepSeek-V3-长名字', 2024.9), m('L/DeepSeek-R1-长名字', 2025.0)] }] }
+  const lc = computeLanes(long, { lineages: ['llm', 'cpu'] })
+  assert.deepEqual(lc.items.map((it) => it.showLabel), [true, true, false], '同一侧撞了的后一个不写，留给悬停')
 })
 
 // ---------------------------------------------------------------- 跑

@@ -93,6 +93,28 @@ def parse_params(value) -> float | None:
     return out if 1e3 <= out <= 1e15 else None
 
 
+def layers_of(fm: dict) -> list[str]:
+    """`layer` 可以是一层，也可以是几层（2026-10-12 归属整理）：`layer: [硬件, 体系结构]`。
+
+    **第一个是主层**：画布上它落在哪条泳道、按层归位、misplaced 的判据都只看主层；
+    其余几层只在历史视图「按抽象层」时画影子（同跨流派的点一个画法），筛选按任一层都算。
+    CPU 这种既是硬件又是体系结构的点，以前只能二选一，选哪个另一层的视图里它都消失。
+    """
+    raw = fm.get("layer")
+    items = raw if isinstance(raw, list) else [raw]
+    out = []
+    for x in items:
+        text = str(x or "").strip()
+        if text and text not in out:
+            out.append(text)
+    return out
+
+
+def primary_layer(fm: dict) -> str:
+    layers = layers_of(fm)
+    return layers[0] if layers else ""
+
+
 @dataclass
 class Node:
     id: str
@@ -174,12 +196,12 @@ def validate_frontmatter(vault: Path, node: Node, diags: Diagnostics) -> None:
     for k in LAYOUT_KEYS:
         if k in node.fm:
             diags.error("layout_in_frontmatter", f"frontmatter 混入布局字段 `{k}`，布局只存 layout.json", **loc)
-    layer = node.fm.get("layer")
-    if layer and layer not in LAYERS:
-        # 只警告不报错：`layer` 是给历史视图分泳道用的可选提示，写错了那个节点自己单开一条道，
-        # 不该因此让整份 index 变成"有错误"。但拼错必须看得见，否则会静静多出一条泳道。
-        diags.warn("unknown_layer", f"layer `{layer}` 不在已知的抽象层里"
-                                    f"（{' / '.join(LAYERS)}）", **loc)
+    for layer in layers_of(node.fm):
+        if layer not in LAYERS:
+            # 只警告不报错：`layer` 是给历史视图分泳道用的可选提示，写错了那个节点自己单开一条道，
+            # 不该因此让整份 index 变成"有错误"。但拼错必须看得见，否则会静静多出一条泳道。
+            diags.warn("unknown_layer", f"layer `{layer}` 不在已知的抽象层里"
+                                        f"（{' / '.join(LAYERS)}）", **loc)
     _validate_years(node, diags, loc)
     if node.fm.get("params") is not None and parse_params(node.fm["params"]) is None:
         diags.warn("bad_params", f"params `{node.fm['params']}` 看不懂"

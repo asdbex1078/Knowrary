@@ -40,7 +40,7 @@ export const ITEMS = [
   { id: 'compare', icon: 'table', name: '对比', group: 'see', scopes: ['global'],
     tip: '横向对比组：一组技术按同几个维度摆成一张表',
     modes: ['chat', 'project', 'structure', 'compare'] },
-  { id: 'stats', icon: 'chart', name: '参数量', group: 'see', scopes: ['global'],
+  { id: 'stats', icon: 'chart', name: '数值对比', group: 'see', scopes: ['global'],
     tip: '模型目录里的型号：参数 / 激活 / 上下文 / 训练数据怎么涨上来的、谁更大', modes: ['structure', 'history'] },
   { id: 'calendar', icon: 'clock', name: '日历', group: 'see', scopes: ['global'],
     tip: '每天建了多少、复习了多少（全是算出来的）', modes: ['chat', 'project', 'structure'] },

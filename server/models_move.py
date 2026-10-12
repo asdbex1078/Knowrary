@@ -36,7 +36,7 @@ def move(vault: Path, req: ModelFromNode) -> ModelFromNodeResult:
         raise ModelMoveRejected(f"还有 {sum(links.values())} 处链着「{req.node}」（{'、'.join(sorted(links))}），"
                                 "挪走就成了断链：先把这几处改成纯文字或者删掉")
     family = (req.family or _guess_family(node["name"] or node["id"])).strip()
-    plan = _plan(vault, catalog, node, family)
+    plan = _plan(vault, catalog, node, family, _lineage_of(catalog, family, req.lineage))
     impact = _impact(vault, req.node)
     out = ModelFromNodeResult(node=req.node, family=plan.name, target=plan.target, exists=plan.exists,
                               model_exists=plan.models[0].status != "new", fields=plan.models[0].fields,
@@ -60,14 +60,23 @@ def _guess_family(name: str) -> str:
     return hit.group(0) if hit else name
 
 
-def _plan(vault: Path, catalog: dict, node: dict, family: str) -> FamilyPlan:
+def _lineage_of(catalog: dict, family: str, lineage: str) -> dict:
+    """家族已经在某张图里就是那张；还没有这个家族时按请求里给的图（或目录里唯一的那张）新建。"""
+    have = next((f for f in catalog["families"] if f["name"].lower() == family.lower()), None)
+    try:
+        return mx.pick_lineage(catalog, have["lineage"] if have else (lineage or None))
+    except mx.ModelsExtractRejected as exc:
+        raise ModelMoveRejected(f"「{family}」还不在任何一张谱系图里：{exc}") from exc
+
+
+def _plan(vault: Path, catalog: dict, node: dict, family: str, spec: dict) -> FamilyPlan:
     text = core.read(vault / node["path"])
     fm, body = core.split_frontmatter(text)
     fields = {k: str(v) for k, v in (("发布", fm.get("year")), ("参数", fm.get("params")), ("亮点", fm.get("desc")))
               if v not in (None, "")}
     notes = _notes(_strip_relations(body), node["name"] or node["id"])
     raw = {"name": family, "models": [{"name": node["name"] or node["id"]}]}
-    fam = mx._plan_family(vault, raw, catalog, set())
+    fam = mx._plan_family(vault, raw, catalog, set(), spec)
     have = fam["models"][0] if fam["models"] else {"name": node["name"] or node["id"], "status": "same"}
     current = _current(catalog, fam["name"], have["name"])
     keep = {k: v for k, v in fields.items() if not current.get(k)}
