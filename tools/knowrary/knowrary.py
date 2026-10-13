@@ -485,6 +485,40 @@ def cmd_lines(args: argparse.Namespace) -> None:
         print("确认无误加 --apply 写入")
 
 
+def cmd_zones(args: argparse.Namespace) -> None:
+    """层子分组降为层区块（2026-10-12）。全局图和各项目画布都扫；默认只列清单，`--apply` 才写（写前快照）。"""
+    import datetime as dt
+    import shutil
+    from core import load_json, write_json_atomic, zones
+    vault = Path(args.vault).resolve()
+    root = vault / ".knowrary"
+    files = [root / "layout.json", *sorted((root / "layouts").glob("*.json"))]
+    todo = []
+    for path in files:
+        if not path.exists():
+            continue
+        doc = load_json(path)
+        plan = zones.plan_migration(doc)
+        if plan["zones"]:
+            todo.append((path, doc, plan))
+            names = [f"{doc['groups'][doc['groups'][z]['parent']]['name']}/{doc['groups'][z]['name']}" for z in plan["zones"]]
+            moved = len(plan["nodes"]) + sum(len(v) for v in plan["items"].values())
+            print(f"{path.relative_to(vault)}：{len(names)} 个层框标成区块（{'、'.join(names)}），"
+                  f"{moved} 个点改归领域框（坐标不动），{sum(1 for v in plan['groups'].values() if 'parent' in v)} 个子簇改挂领域框")
+    if not todo:
+        print("没有要迁的：没有「父是顶层框、名字是层名」的子分组")
+        return
+    if not args.apply:
+        print("确认无误加 --apply 写入")
+        return
+    backup = root / "backup" / f"zones-{dt.datetime.now().strftime('%Y%m%d-%H%M%S')}"
+    for path, doc, plan in todo:
+        (backup / path.relative_to(root)).parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(path, backup / path.relative_to(root))
+        write_json_atomic(path, zones.apply_migration(doc, plan))
+    print(f"已写入；写前快照在 {backup.relative_to(vault)}")
+
+
 # ---------------------------------------------------------------- LLM 输出解析
 
 def extract_json(text: str, vault: Path | None = None, context: str = "") -> dict:
@@ -776,6 +810,11 @@ def add_data_parsers(sub: argparse._SubParsersAction) -> None:
     c.add_argument("vault", nargs="?", default=None, help=VAULT_HELP)
     c.add_argument("--max-warn", type=int, default=40)
     c.set_defaults(fn=cmd_check)
+
+    zn = sub.add_parser("zones", help="层子分组降为层区块（默认只列清单）")
+    zn.add_argument("--vault", default=None, help=VAULT_HELP)
+    zn.add_argument("--apply", action="store_true", help="写入（写前整份快照）")
+    zn.set_defaults(fn=cmd_zones)
 
     ln = sub.add_parser("lines", help="流派 / 领域线归属迁成点上的字段（默认只预览）")
     ln.add_argument("--vault", default=None, help=VAULT_HELP)

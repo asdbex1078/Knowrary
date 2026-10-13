@@ -16,6 +16,7 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { blankMenu, buildMenu, edgeMenu, groupMenu, nodeMenu } from '../src/canvas/menus.js'
 import { ancestors, computeCollapsed } from '../src/canvas/lod.js'
+import { bucketOf, realGroups, zoneOf } from '../src/canvas/zones.js'
 import { timelineOptions, bandCurve, buildTimeline, lineageOf, BY_LAYER, BY_SCHOOL, BY_DOMAIN }
   from '../src/canvas/timeline.js'
 import { level, weekColumns } from '../src/panels/heat.js'
@@ -367,6 +368,36 @@ test('按抽象层（2026-10-12 跨层）：主层画真身，其余几层画影
   assert.equal(plan.placed.get('CPU@体系结构').realId, 'CPU')
   const noLayer = buildTimeline(index, { nodes: {}, groups: {} }, { timelines: [] })
   assert.ok(![...noLayer.placed.keys()].some((k) => k.includes('@')), '不按层时不画影子')
+})
+
+test('层区块（2026-10-12）：不进选择器、不是分组；选领域框时泳道按层分；取色 / 捆边按点落在哪个区块', () => {
+  const layout = {
+    groups: {
+      'g-计': { name: '计算机系统', x: 0, y: 0, w: 1000, h: 600, parent: null },
+      'g-计--理论': { name: '理论', x: 20, y: 40, w: 400, h: 200, parent: 'g-计', kind: 'zone' },
+      'g-计--硬件': { name: '硬件', x: 450, y: 40, w: 400, h: 200, parent: 'g-计', kind: 'zone' },
+      'g-AI': { name: 'AI', x: 0, y: 700, w: 600, h: 300, parent: null },
+      'g-AI--理论': { name: '理论', x: 20, y: 740, w: 300, h: 200, parent: 'g-AI', kind: 'zone' },
+      'g-我的': { name: '我的子簇', x: 460, y: 300, w: 200, h: 200, parent: 'g-计' },
+    },
+    nodes: {
+      图灵机: { x: 40, y: 80, w: 180, h: 60, group: 'g-计' },
+      CPU: { x: 500, y: 80, w: 180, h: 60, group: 'g-计' },
+      散点: { x: 40, y: 400, w: 180, h: 60, group: 'g-计' },
+    },
+  }
+  const opts = timelineOptions(layout).map((o) => o.name)
+  assert.deepEqual(opts, ['计算机系统', '我的子簇', 'AI'], '区块不进选择器，同名的「理论」不再并排站两个')
+  assert.deepEqual(Object.keys(realGroups(layout.groups)), ['g-计', 'g-AI', 'g-我的'])
+  assert.equal(zoneOf(layout, 'CPU'), 'g-计--硬件')
+  assert.equal(bucketOf(layout, '散点'), 'g-计', '不在任何区块里的按所属分组')
+  const index = { nodes: [
+    { id: '图灵机', name: '图灵机', year: 1936, layer: '理论' }, { id: 'CPU', name: 'CPU', year: 1971, layer: '硬件' },
+    { id: '散点', name: '散点', year: 2000 },
+  ], edges: [] }
+  const plan = buildTimeline(index, layout, { timelines: ['g-计'] })
+  assert.deepEqual(plan.lanes.map((l) => l.name), ['计算机系统／未分层', '计算机系统／硬件', '计算机系统／理论'],
+                   '直属领域框的点按层分道（上层在上），不全挤进「直属」')
 })
 
 test('流派走势：阶梯不是折线，平台就是停摆', () => {

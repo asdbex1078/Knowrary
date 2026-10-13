@@ -10,6 +10,7 @@ import math
 
 from .layout import CELL_H, FIELD_GAP, NODE_H, NODE_W, PAD_BOT, PAD_TOP, PAD_X, group_size
 from .parser import UNLAYERED
+from .zones import LAYER_NAMES, ZONE, home_of, is_zone, refine, zone_at, zone_for, zones_in
 
 FAMILY_WEIGHT = {"演化": 3.0, "依赖": 2.0, "结构": 2.0, "对照": 1.0, "弱关联": 0.5}
 GAP = 16.0            # 候选位置与已有元素之间至少留这么多空
@@ -44,8 +45,17 @@ def _occupied(layout: dict, gid: str, box: dict | None = None) -> list[tuple[flo
 
 
 def target_group(node_id: str, index: dict, layout: dict) -> str | None:
-    """该去哪个分组（`decide_group` 的结论）。放置和 Inbox 上显示的推荐走同一套，不会显示 A、落进 B。"""
-    return decide_group(node_id, index, layout)["group"]
+    """该去哪个分组（`decide_group` 的结论）。放置和 Inbox 上显示的推荐走同一套，不会显示 A、落进 B。
+
+    有层区块的领域框会换成这个点主层的那个区块（落进自己那一层）；写进 layout 的 group 仍是领域框（见 place_node）。
+    """
+    node = next((n for n in index["nodes"] if n["id"] == node_id), None) or {}
+    groups = layout.get("groups") or {}
+    gid = decide_group(node_id, index, layout)["group"]
+    # 投到了某个区块、但它自己有 layer：同一个领域框里换成它自己那一层（md 的 layer 说了算）
+    if is_zone(groups.get(gid)) and node.get("layer"):
+        gid = zone_for(groups[gid]["parent"], node["layer"], groups) or gid
+    return refine(gid, node, groups)
 
 
 STRONG = 2.0          # 至少一条结构 / 依赖 / 演化边的分量，才算「有把握」
@@ -70,7 +80,11 @@ def _votes(ids: list[str], index: dict, layout: dict) -> tuple[dict[str, float],
         for other, family in _neighbours(nid, index):
             if other in mine:
                 continue
-            gid = layout.get("nodes", {}).get(other, {}).get("group")
+            place = layout.get("nodes", {}).get(other) or {}
+            gid = place.get("group")
+            # 领域框里有层区块的，票投给邻居所在的那个区块（2026-10-12）：没分层的新点才能跟着邻居落进同一层
+            if gid in layout.get("groups", {}) and zones_in(gid, layout["groups"]):
+                gid = zone_at(place, gid, layout["groups"]) or gid
             if gid in layout.get("groups", {}):
                 votes[gid] = votes.get(gid, 0) + FAMILY_WEIGHT.get(family, 0.5)
                 who.setdefault(gid, []).append(f"{names.get(other, other)}（{family}）")
@@ -171,10 +185,21 @@ def anchor_for(node_id: str, gid: str, index: dict, layout: dict) -> str | None:
         if other is None:
             continue
         place = layout.get("nodes", {}).get(other)
-        if not place or place.get("group") != gid or place.get("state") == "draft":
+        if not place or not in_box(place, gid, layout) or place.get("state") == "draft":
             continue
         scores[other] = scores.get(other, 0) + FAMILY_WEIGHT.get(e["family"], 0.5)
     return max(sorted(scores), key=lambda k: scores[k]) if scores else None
+
+
+def in_box(place: dict, gid: str, layout: dict) -> bool:
+    """这个已摆好的点算不算 `gid` 里的：真分组看 group；层区块看「归属它的领域框、且中心落在区块里」。"""
+    groups = layout.get("groups") or {}
+    z = groups.get(gid)
+    if not is_zone(z):
+        return place.get("group") == gid
+    cx, cy = place["x"] + (place.get("w") or NODE_W) / 2, place["y"] + (place.get("h") or NODE_H) / 2
+    return (place.get("group") == z.get("parent")
+            and z["x"] <= cx <= z["x"] + z["w"] and z["y"] <= cy <= z["y"] + z["h"])
 
 
 def _overlaps(a: tuple, b: tuple) -> bool:
@@ -239,7 +264,9 @@ def place_node(node_id: str, index: dict, layout: dict, today: str | None = None
     slot = find_slot(box, occupied, start)
     if slot is None:
         return None
-    return {"x": float(slot[0]), "y": float(slot[1]), "w": NODE_W, "h": NODE_H, "group": gid,
+    # 区块只是「往哪块空地放」，归属写领域框
+    return {"x": float(slot[0]), "y": float(slot[1]), "w": NODE_W, "h": NODE_H,
+            "group": home_of(gid, layout["groups"]),
             "state": "draft", "anchor": anchor, "placedAt": today or dt.date.today().isoformat()}
 
 
@@ -309,6 +336,8 @@ def plan_new_lane(parent: str, name: str, layout: dict,
                     "w": width, "h": CELL_H * 2}
 
     lane.update({"name": name, "parent": parent, "collapsed": False, "pinned": None, "color": None})
+    if name in LAYER_NAMES:
+        lane["kind"] = ZONE              # 按层开的道是区块（2026-10-12），不是分组
     need = (lane["y"] + lane["h"] + PAD_BOT) - (box["y"] + box["h"])
     grown = plan_growth(parent, layout, extra=need) if need > 0 else {}
     if need > 0 and grown is None:

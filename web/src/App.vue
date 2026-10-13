@@ -55,6 +55,7 @@ import { useChat } from './composables/useChat.js'
 import { useCamera } from './composables/useCamera.js'
 import { usePathSearch } from './composables/usePathSearch.js'
 import { ancestors as groupAncestors, computeCollapsed } from './canvas/lod.js'
+import { bucketOf, isZone, withoutZones } from './canvas/zones.js'
 import {
   applyViewport, buildCells, clearPath, contentBBox, createGraph,
   highlightEdges, highlightPath, mount, movedPositions, setSnap, snapDelta,
@@ -709,7 +710,7 @@ function render({ view = 'keep' } = {}) {
   if (mode.value === 'history') return renderHistory({ view })
   if (mode.value === 'lineage') return renderLineage({ view })
   const g = graph.value
-  collapsedIds.value = computeCollapsed(layoutDoc.value, g.zoom(),
+  collapsedIds.value = computeCollapsed(withoutZones(layoutDoc.value), g.zoom(),
     { auto: autoLod.value, focus: focusGroup.value })
   // 借来的外部邻居只叠在**这一次渲染**用的 layout 上，layoutDoc 本身一个字都不改——
   // 它是要落盘的那份，混进不属于这个项目的点就再也分不干净了
@@ -1088,7 +1089,7 @@ function bindEvents(g) {
   const groupHeadAt = (x, y) => {
     let hit = null
     for (const [gid, box] of Object.entries(layoutDoc.value?.groups || {})) {
-      if (collapsedIds.value.has(gid)) continue
+      if (collapsedIds.value.has(gid) || isZone(box)) continue     // 层区块没有标题条可点
       if (x < box.x || x > box.x + box.w || y < box.y || y > box.y + GROUP_HEAD) continue
       if (!hit || depthOf(gid) > depthOf(hit)) hit = gid
     }
@@ -1226,7 +1227,7 @@ function editVertices(edge) {
 function relatedEdgeIds(nodeId) {
   const layout = layoutDoc.value
   const fams = visibleFamilies()
-  const groupOf = (nid) => layout.nodes[nid]?.group || null
+  const groupOf = (nid) => bucketOf(layout, nid)       // 和画布上捆边同一口径（层区块也捆）
   const ids = new Set()
   for (const e of indexDoc.value.edges) {
     if (e.source !== nodeId && e.target !== nodeId) continue
@@ -1430,6 +1431,11 @@ function dissolveGroup(gid) {
   delete groups[gid]
   for (const [cid, g] of Object.entries(groups)) {
     if (g.parent !== gid) continue
+    if (isZone(g)) {                     // 领域框都没了，它里面的层区块也就没有意义
+      delete groups[cid]
+      patcher.value.queueGroup(cid, null)
+      continue
+    }
     groups[cid] = { ...g, parent: outer }
     patcher.value.queueGroup(cid, { parent: outer })
   }
@@ -2650,6 +2656,7 @@ function innermostGroupAt(x, y) {
   const groups = layoutDoc.value?.groups || {}
   let best = null
   for (const [gid, box] of Object.entries(groups)) {
+    if (isZone(box)) continue            // 层区块不是分组：落点归它所在的领域框
     if (x < box.x || y < box.y || x > box.x + box.w || y > box.y + box.h) continue
     if (!best || box.w * box.h < best.area) best = { gid, area: box.w * box.h }
   }

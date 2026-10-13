@@ -840,10 +840,52 @@ def 按抽象层铺布局_二级分组是层且次序固定():
     doc = core.build_initial_layout(index, by="layer")
     subs = [g["name"] for g in doc["groups"].values() if g.get("parent")]
     assert subs == ["理论", "硬件", "AI应用", "未分层"], subs      # 底层在前，不是字典序
-    assert doc["nodes"]["b"]["group"].endswith("理论"), doc["nodes"]["b"]
-    # 默认那套（按子目录）没被动过
+    # 2026-10-12 起按层铺出来的二级框是层区块：节点归属领域框，区块只是底色
+    assert all(g.get("kind") == "zone" for g in doc["groups"].values() if g.get("parent")), doc["groups"]
+    zone = next(gid for gid, g in doc["groups"].items() if g["name"] == "理论")
+    assert doc["nodes"]["b"]["group"] == "g-测试", doc["nodes"]["b"]
+    assert core.zones.zone_at(doc["nodes"]["b"], "g-测试", doc["groups"]) == zone, "点仍然摆在自己那一层的区块里"
+    # 默认那套（按子目录）没被动过：目录分组还是真分组
     old = core.build_initial_layout(index)
     assert sorted(g["name"] for g in old["groups"].values() if g.get("parent")) == ["x", "y"]
+    assert not any(g.get("kind") for g in old["groups"].values())
+
+
+@case
+def 层子框迁成区块_坐标不动_目录分组和自建子簇不动_放置照样落进自己那一层():
+    """2026-10-12 归属整理 ⑤-3：层框降为区块（kind: zone），节点归属领域框、坐标一点不动；
+    只认「父是顶层框、名字是层名」的子框，目录分组和他建的子簇不碰；放置还按层落进对应区块。"""
+    vault = make_vault({
+        "nodes/x/a.md": node_md("A", extra="layer: 理论\n", rels="- 依赖:: [[b]]"),
+        "nodes/x/b.md": node_md("B", extra="layer: 硬件\n"),
+        "nodes/x/c.md": node_md("C", extra="layer: 硬件\n"),
+        "nodes/x/d.md": node_md("D", rels="- 依赖:: [[b]]"),          # 没有 layer：跟着邻居落
+    })
+    index = core.build_index(vault, None).data
+    lay = core.build_initial_layout(index, by="layer")
+    for g in lay["groups"].values():                                   # 造一份「旧」布局：层是真分组
+        g.pop("kind", None)
+    for nid, n in lay["nodes"].items():
+        n["group"] = next(gid for gid, g in lay["groups"].items() if g.get("parent")
+                          and core.zones.zone_at(n, "g-测试", {**lay["groups"], gid: {**g, "kind": "zone"}}) == gid)
+    lay["groups"]["g-自建"] = {"name": "我的子簇", "x": 0, "y": 0, "w": 10, "h": 10, "parent": "g-测试--硬件"}
+    lay["groups"]["g-测试--目录"] = {"name": "目录x", "x": 0, "y": 0, "w": 10, "h": 10, "parent": "g-测试"}
+    for nid in ("c", "d"):
+        lay["nodes"].pop(nid)
+    plan = core.zones.plan_migration(lay)
+    assert plan["zones"] == ["g-测试--未分层", "g-测试--理论", "g-测试--硬件"], plan["zones"]
+    new = core.zones.apply_migration(lay, plan)
+    assert new["groups"]["g-自建"]["parent"] == "g-测试" and "kind" not in new["groups"]["g-测试--目录"], new["groups"]
+    assert all(n["group"] == "g-测试" for n in new["nodes"].values()), new["nodes"]
+    assert all((new["nodes"][k]["x"], new["nodes"][k]["y"]) == (lay["nodes"][k]["x"], lay["nodes"][k]["y"])
+               for k in lay["nodes"]), "坐标一点不动"
+    assert core.zones.plan_migration(new)["zones"] == [], "再跑一次什么都不改"
+    hw = new["groups"]["g-测试--硬件"]
+    for nid in ("c", "d"):
+        box, _, _ = core.place_or_grow(nid, index, new)
+        assert box and box["group"] == "g-测试", (nid, box)
+        assert core.zones.zone_at(box, "g-测试", new["groups"]) == "g-测试--硬件", \
+            (nid, "c 按自己的 layer、d 没 layer 跟着邻居 b，都落进硬件区块", box, hw)
 
 
 @case

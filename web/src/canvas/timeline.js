@@ -1,6 +1,7 @@
 // 历史视图布局（设计文档 3.8）：X 轴锁死在年份上，所以这里可以放心自动布局——
 // 位置不是算法乱猜的，是数据本身决定的。历史视图的坐标不持久化，每次进入重算。
 import { DOT, NODE_H, NODE_W } from './shapes.js'
+import { isZone, realGroups } from './zones.js'
 
 export const YEAR_W = 130          // 一年最多占多少像素（跨度小时用这个）
 export const YEAR_W_MIN = 30       // 一年最少占多少像素
@@ -51,7 +52,8 @@ export function descendants(groups, gid) {
  * 缩进成了唯一线索——而同名同缩进的那两条恰好被 name 排到一起，等于线索也没了。
  */
 export function timelineOptions(layout) {
-  const groups = layout?.groups || {}
+  // 层区块（2026-10-12）不是分组，不进选择器——两个「理论」并排站就是它们闹的。选领域框时泳道自动按层分（见 laneOf）
+  const groups = realGroups(layout?.groups || {})
   // parent 指向一个不存在的分组、或指向自己，都按根处理：宁可摆在第一层，不能整条不见
   const parentOf = (id) => {
     const p = groups[id]?.parent
@@ -146,6 +148,15 @@ export const UNSCHOOLED = '未归派'
 export const LINE_MODES = [BY_SCHOOL, BY_DOMAIN]
 const LINE_KIND = { [BY_SCHOOL]: '流派', [BY_DOMAIN]: '领域线' }
 
+/** 选了分组时的泳道次序：同一块（「计算机系统／…」）挨着；块内是层名的按层的固定次序（上层在上），别的按字典序。 */
+function byLaneName(a, b) {
+  const [ba, la] = a.split('／')
+  const [bb, lb] = b.split('／')
+  if (ba !== bb || la === undefined || lb === undefined) return a.localeCompare(b, 'zh')
+  const rank = (l) => { const i = [...LAYERS, UNLAYERED].indexOf(l); return i < 0 ? -1 : LAYERS.length - i }
+  return rank(la) - rank(lb) || la.localeCompare(lb, 'zh')
+}
+
 /** 泳道归属：按抽象层 / 按所选时间线的直接子分组 / 都没选就按 field。 */
 function laneOf(node, layout, selected, schools = [], homes = {}) {
   const place = layout.nodes?.[node.id]
@@ -174,6 +185,10 @@ function laneOf(node, layout, selected, schools = [], homes = {}) {
   for (const root of selected) {
     const family = descendants(groups, root)
     if (!place?.group || !family.has(place.group)) continue
+    // 直属领域框、而领域框里有层区块：泳道按它的层分（md 的 layer 说了算），不再全挤进「直属」
+    if (place.group === root && Object.values(groups).some((g) => isZone(g) && g.parent === root)) {
+      return `${groups[root]?.name || root}／${node.layer || UNLAYERED}`
+    }
     let cur = place.group
     while (cur && groups[cur]?.parent && groups[cur].parent !== root) cur = groups[cur].parent
     const name = groups[cur]?.parent === root ? groups[cur].name : `${groups[root]?.name} · 直属`
@@ -500,7 +515,7 @@ export function buildTimeline(index, layout, opts = {}) {
       .filter((l) => laneNames.has(l) || shown.some((s) => s.name === l))
     : byLayer
       ? [...LAYERS].reverse().concat(UNLAYERED).filter((l) => laneNames.has(l))
-      : [...laneNames.keys()].sort((a, b) => a.localeCompare(b, 'zh'))
+      : [...laneNames.keys()].sort(byLaneName)
   // 属于第二派起的点：在那条道上补一个**影子**（合成 id、空心、不带边）。
   // 不补的话，`现代Intel微架构` 只会出现在 CISC 道里，"它也是 RISC"这件事就消失了。
   const shadows = []

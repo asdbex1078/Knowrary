@@ -95,7 +95,8 @@ def _add_child_groups(field: str, subs: dict[str, list[str]], top_id: str,
                       keep_order: bool = False) -> tuple[float, float]:
     """在顶层分组里横向摆放二级分组，超过行宽换行。返回顶层分组的内容尺寸。
 
-    `keep_order`：按传进来的次序摆（分层时次序有意义，字典序会把「AI应用」排到「体系结构」前面）。
+    `keep_order`：按传进来的次序摆，也表示**按层铺**——这时二级框是层区块（`kind: zone`，2026-10-12），
+    节点归属领域框；按目录铺时二级框还是真分组。
     """
     x0, y0 = origin
     cx, cy, row_h, used_w = x0 + PAD_X, y0 + PAD_TOP, 0.0, 0.0
@@ -107,7 +108,9 @@ def _add_child_groups(field: str, subs: dict[str, list[str]], top_id: str,
         if sub:
             doc["groups"][gid] = {"name": sub, "x": cx, "y": cy, "w": w, "h": h, "parent": top_id,
                                   "collapsed": False, "pinned": None, "color": None}
-        place_grid(ids, cx, cy, doc, gid)
+            if keep_order:
+                doc["groups"][gid]["kind"] = "zone"
+        place_grid(ids, cx, cy, doc, top_id if keep_order else gid)
         cx, row_h = cx + w + GROUP_GAP, max(row_h, h)
         used_w = max(used_w, cx - x0 - GROUP_GAP)
     return used_w + PAD_X, (cy + row_h) - y0 + PAD_BOT

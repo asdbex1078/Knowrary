@@ -285,6 +285,19 @@ export function registerShapes() {
     },
   }, true)
 
+  // 层区块（2026-10-12）：领域框里的一块底色 + 左上角层名。故意不是 kg-group——拖放、折叠、菜单都不认它
+  Graph.registerNode('kg-zone', {
+    inherit: 'rect',
+    markup: [
+      { tagName: 'rect', selector: 'body' },
+      { tagName: 'text', selector: 'label' },
+    ],
+    attrs: {
+      body: { rx: 12, ry: 12, fill: '#f4f7fa', stroke: 'none', class: 'kg-zone-box' },
+      label: { refX: 12, refY: 18, fontSize: 12, fontWeight: 600, fill: '#6b7a8a', textAnchor: 'start' },
+    },
+  }, true)
+
   Graph.registerNode('kg-group', {
     inherit: 'rect',
     markup: [
@@ -542,6 +555,19 @@ export function groupAttrs(name, color = NEUTRAL, doc = null, zoom = 1, box = nu
              refX: 16, refY: head * 0.5 + size * 0.36 },
     doc: { text: doc ? '📄 总览' : '', fill: color.text, opacity: 0.75, fontSize: size * 0.9,
            refY: head * 0.5 + size * 0.32 },
+  }
+}
+
+/** 层区块：一块淡淡的层色底 + 层名。比分组框轻一档——它只是告诉你「这一片是哪一层」，不是一个容器。 */
+export function zoneAttrs(name, color = NEUTRAL, zoom = 1) {
+  const k = Math.min(2.4, Math.max(1, 1 / Math.max(zoom, 0.05)))
+  const size = Math.min(12 * k, 26)
+  return {
+    // 点不中它：鼠标穿过去落到领域框上——在区块里按住拖，拖的是整个领域框（区块盖住了框的大半，否则框就拖不动了）
+    body: { fill: color.head, fillOpacity: 0.45, stroke: color.line, strokeOpacity: 0.25, strokeWidth: 1,
+            strokeDasharray: '4 3', rx: 12, ry: 12, class: 'kg-zone-box', pointerEvents: 'none' },
+    label: { text: name, fill: color.text, opacity: 0.8, fontSize: size, fontWeight: 600,
+             refX: 12, refY: size + 6, pointerEvents: 'none' },
   }
 }
 

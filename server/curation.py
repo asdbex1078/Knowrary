@@ -42,11 +42,22 @@ def inbox(vault: Path) -> InboxRead:
         items.append(InboxItem(
             id=nid, name=meta.get("name") or nid, field=field, desc=meta.get("desc"),
             stub=bool(meta.get("stub")), degree=int(meta.get("degree") or 0),
-            suggested_group=gid, suggested_group_name=plain["groups"].get(gid, {}).get("name") if gid else None,
+            suggested_group=gid, suggested_group_name=_where(gid, meta, plain["groups"]),
             field_group_missing=bool(field) and gid is None and field not in top_names,
             home=homes.get(nid), confidence=d["confidence"], reason=d["reason"], cluster=d["cluster"],
             ai=_ai_view(curated.get(nid), plain["groups"])))
     return InboxRead(items=items, index_revision=index["revision"], layout_revision=layout.revision)
+
+
+def _where(gid: str | None, meta: dict, groups: dict) -> str | None:
+    """建议放哪，说给人听：领域框里有层区块的带上区块名（「计算机系统 / 硬件」），落点就是那块（2026-10-12）。"""
+    if not gid:
+        return None
+    if core.zones.is_zone(groups.get(gid)):
+        gid = groups[gid]["parent"]
+    zone = core.zones.refine(gid, meta, groups)
+    name = groups.get(gid, {}).get("name") or gid
+    return f"{name} / {groups[zone]['name']}" if zone != gid and zone in groups else name
 
 
 def _ai_view(row: dict | None, groups: dict) -> dict | None:
@@ -184,7 +195,8 @@ def regroup(vault: Path, base_revision: int, only_draft: bool = True,
             continue
         node = by_id.get(nid) or {}
         want = core.by_field_and_layer(node, plain)
-        if not want or want == place.get("group"):
+        # 已经在该在的地方：真分组看 group；层区块看「归属领域框、中心落在那个区块里」（2026-10-12）
+        if not want or core.in_box(place, want, plain):
             continue
         # want 落在领域大框上 = 该去的那条道还没建。给了 create_lane 就现开一条。
         if create_lane and node.get("layer") and not plain["groups"].get(want, {}).get("parent"):

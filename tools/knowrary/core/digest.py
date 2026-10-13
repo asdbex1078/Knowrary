@@ -13,6 +13,7 @@ from .compare import gaps as compare_gaps
 from .layout import layout_path
 from .mdio import load_json
 from .parser import OFF_CANVAS_TYPES
+from .zones import is_zone, zone_at, zones_in
 from .placement import by_field_and_layer, inbox_ids
 from .issues import summary as issues_summary
 from .projects import load_projects
@@ -437,7 +438,7 @@ def misplaced(index: dict, layout: dict) -> list[dict]:
         top = _top_group(gid, groups)
         if not top:
             continue
-        lane = groups.get(gid, {}).get("name") if groups.get(gid, {}).get("parent") else None
+        lane = _lane_of(place, gid, groups)
         wrong_field = top != node["field"]
         # 层不符只在「它确实有 layer、而且现在躺在某条道里」时才算：
         # 躺在域大框里（没有 parent）是"还没归到任何一层"，那是另一回事。
@@ -451,7 +452,7 @@ def misplaced(index: dict, layout: dict) -> list[dict]:
             continue
         want_name = (groups.get(want, {}).get("name") or want) if want else None
         # want 退回了领域大框 = 该去的那条泳道还不存在，挪过去之前得先建一条
-        want_exists = bool(want and groups.get(want, {}).get("parent"))
+        want_exists = bool(want and (is_zone(groups.get(want)) or groups.get(want, {}).get("parent")))
         out.append({"id": nid, "field": node["field"], "layer": node.get("layer") or "",
                     "group": gid,
                     # 域不符时说顶层域，层不符时要说清是哪条道——否则「却摆在 AI」
@@ -461,6 +462,15 @@ def misplaced(index: dict, layout: dict) -> list[dict]:
                     "why": "域" if wrong_field else "层",
                     "want": want, "want_name": want_name, "want_exists": want_exists})
     return out[:MAX_ITEMS]
+
+
+def _lane_of(place: dict, gid: str, groups: dict) -> str | None:
+    """它现在躺在哪一层：领域框里有层区块的看几何（中心落在哪个区块，2026-10-12）；
+    旧布局（层还是子分组）看它所在子分组的名字。都不是就是 None（还没归到任何一层）。"""
+    if zones_in(gid, groups):
+        zid = zone_at(place, gid, groups)
+        return groups[zid]["name"] if zid else None
+    return groups.get(gid, {}).get("name") if groups.get(gid, {}).get("parent") else None
 
 
 def build_digest(vault, index: dict, layout: dict, today: dt.date | None = None) -> dict:

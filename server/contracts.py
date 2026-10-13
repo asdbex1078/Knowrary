@@ -46,6 +46,7 @@ class GroupBox(Strict):
     pinned: Literal["expanded", "collapsed"] | None = None
     color: str | None = None
     doc: str | None = None    # 这个域的总览文档（一个普通节点 id）；知识仍然只住在 md 里
+    kind: Literal["zone"] | None = None   # zone = 领域框里的层区块（2026-10-12）：只是底色，不是分组，见 core/zones.py
 
 
 class NodeBox(Strict):
@@ -126,6 +127,7 @@ class GroupPatch(Strict):
     pinned: Literal["expanded", "collapsed"] | None = None
     color: str | None = None
     doc: str | None = None
+    kind: Literal["zone"] | None = None
 
 
 class NodePatch(Strict):

@@ -12,6 +12,7 @@
 import { ref, shallowRef } from 'vue'
 import { clearPath, highlightPath } from '../canvas/render.js'
 import { describePath, shortestPath } from '../canvas/paths.js'
+import { bucketOf } from '../canvas/zones.js'
 
 /**
  * @param deps graph / indexDoc / layoutDoc / aggregate / expanded —— 响应式引用
@@ -29,8 +30,8 @@ export function usePathSearch(deps) {
   /** 索引里的一条边，在画布上对应哪个 cell（跨组时是那一束聚合边）。 */
   function edgeCellId(e) {
     const layout = layoutDoc.value
-    const a = layout.nodes[e.source]?.group || null
-    const b = layout.nodes[e.target]?.group || null
+    const a = bucketOf(layout, e.source)        // 和画布上捆边同一口径（层区块也捆）
+    const b = bucketOf(layout, e.target)
     const pair = a && b ? `${a}->${b}` : null
     return !aggregate.value || !pair || a === b || expanded.value.has(pair) ? e.id : `agg:${pair}`
   }

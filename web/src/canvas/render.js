@@ -5,8 +5,9 @@ import { Selection } from '@antv/x6-plugin-selection'
 import { Snapline } from '@antv/x6-plugin-snapline'
 import { Transform } from '@antv/x6-plugin-transform'
 import { clusterSummary, containerOf } from './lod.js'
+import { bucketOf, isZone, withoutZones } from './zones.js'
 import { CLUSTER_H, CLUSTER_W, CURSOR_ID, CURSOR_W, FAMILY_STYLE, clusterBox, NODE_H, NODE_W, aggregateAttrs,
-         aggregateLabel, clusterAttrs, activationAttrs, dotAttrs, edgeAttrs, groupAttrs, imageAttrs, laneAttrs, nodeAttrs,
+         aggregateLabel, clusterAttrs, activationAttrs, dotAttrs, edgeAttrs, groupAttrs, zoneAttrs, imageAttrs, laneAttrs, nodeAttrs,
          noteAttrs, paletteFor, NEUTRAL, refAttrs, registerShapes, sizeFor, tickAttrs, tokens } from './shapes.js'
 import { AXIS_H, TICK_OFFSET, activeAt, buildTimeline } from './timeline.js'
 import { buildLineage } from './lineage.js'
@@ -326,8 +327,10 @@ export function buildCells(index, layout, options = {}) {
     ? new Set(Object.entries(layout.nodes).filter(([nid]) => only.has(nid))
         .flatMap(([, n]) => (n.group ? [n.group, ...groupChain(layout.groups, n.group)] : [])))
     : null
+  // 折叠只认真分组：层区块（2026-10-12）跟着领域框一起收，不单独折
+  const real = withoutZones(layout)
   // 折叠后节点"显示成谁"：最外层被折叠的祖先分组，或它自己
-  const visibleOf = (nid) => containerOf(layout, nid, collapsed)
+  const visibleOf = (nid) => containerOf(real, nid, collapsed)
   const hasCollapsedAncestor = (gid) => {
     let cur = layout.groups[gid]?.parent
     const seen = new Set()
@@ -339,7 +342,7 @@ export function buildCells(index, layout, options = {}) {
     return false
   }
   const byId = new Map(index.nodes.map((n) => [n.id, n]))
-  // 按"最内层分组"取色：一个簇一个色相。径向布局下没有分组，退回按 field 取色。
+  // 按"最内层分组"取色：一个簇一个色相（领域框里的层区块也算一个，见 zones.js）。径向布局下没有分组，退回按 field 取色。
   const leaves = Object.keys(layout.groups)
     .filter((g) => !Object.values(layout.groups).some((x) => x.parent === g))
     .sort()
@@ -351,8 +354,18 @@ export function buildCells(index, layout, options = {}) {
     if (keepGroup && !keepGroup.has(gid)) continue   // 邻居模式：空分组框只是噪音
     if (hasCollapsedAncestor(gid)) continue          // 祖先已折叠，里面的东西都不画
     const color = colorOf(gid)
+    if (isZone(g)) {
+      // 层区块：一块带层名的底色，压在节点下面；不接收拖放（不是 kg-group），跟着领域框走
+      nodes.push({
+        id: gid, shape: 'kg-zone', x: g.x, y: g.y, width: g.w, height: g.h,
+        zIndex: 1 + groupDepth(layout.groups, gid),
+        attrs: zoneAttrs(g.name, color, zoom),
+        data: { kind: 'zone', parent: g.parent || null },
+      })
+      continue
+    }
     if (collapsed.has(gid)) {
-      const summary = clusterSummary(layout, index, gid)
+      const summary = clusterSummary(real, index, gid)
       const box = clusterBox(g)
       // 卡片缩在分组框正中间，落盘时要减掉这个偏移才是分组框自己的坐标
       const dx = (g.w - box.w) / 2
@@ -382,7 +395,7 @@ export function buildCells(index, layout, options = {}) {
       width: meta ? size.w : (n.w || NODE_W), height: meta ? size.h : (n.h || NODE_H),
       zIndex: 10,
       attrs: meta
-        ? nodeAttrs(meta, n, colorOf(n.group, meta.field),
+        ? nodeAttrs(meta, n, colorOf(bucketOf(layout, nid), meta.field),
                     { due: due.has(nid), state: states[nid] || null, borrowed: borrowed.has(nid) })
         : n.state === 'ghost'
           ? nodeAttrs({ id: nid, name: nid }, n, NEUTRAL, { ghost: true })   // 幽灵占位，不是孤立记录
@@ -415,7 +428,7 @@ export function buildCells(index, layout, options = {}) {
     nodes.push({
       id: `ref:${ref.id}`, shape: 'kg-ref', x: ref.x, y: ref.y,
       width: ref.w || 170, height: ref.h || 46, zIndex: 11,
-      attrs: refAttrs(meta?.name || ref.target, colorOf(layout.nodes[ref.target]?.group, meta?.field)),
+      attrs: refAttrs(meta?.name || ref.target, colorOf(bucketOf(layout, ref.target), meta?.field)),
       data: { kind: 'ref', target: ref.target, raw: ref },
     })
   }
@@ -492,7 +505,8 @@ const MANHATTAN = { name: 'manhattan',
 // 只有密到 AGG_MIN 条以上的跨分组边才按「源分组 → 目标分组」并成一束。
 function splitEdges(visibleEdges, layout, options) {
   const { aggregate = true, expanded = new Set(), collapsed = new Set() } = options
-  const insideCluster = (nid) => containerOf(layout, nid, collapsed) !== nid
+  const real = withoutZones(layout)
+  const insideCluster = (nid) => containerOf(real, nid, collapsed) !== nid
   /**
    * 聚合边的端点必须是画布上真实存在的 cell：
    * - 节点被折进簇里 → 用簇 id；
@@ -501,9 +515,9 @@ function splitEdges(visibleEdges, layout, options) {
    * 后面 `pair.split('->')` 直接抛错（画布自愈能兜住，但折叠就失效了）。
    */
   const endpointOf = (nid) => {
-    const container = containerOf(layout, nid, collapsed)
+    const container = containerOf(real, nid, collapsed)
     if (container !== nid) return container
-    return layout.nodes[nid]?.group || nid
+    return bucketOf(layout, nid) || nid           // 领域内跨层的边按层区块捆（2026-10-12）
   }
   const detail = []
   const groups = new Map()
@@ -514,8 +528,8 @@ function splitEdges(visibleEdges, layout, options) {
     const pair = `${a}->${b}`
     // 两端落进同一个簇：那是簇的内部关系，簇卡片已经代表了它，不画
     if (clustered && a === b) continue
-    const gs = layout.nodes[e.source]?.group
-    const gt = layout.nodes[e.target]?.group
+    const gs = bucketOf(layout, e.source)
+    const gt = bucketOf(layout, e.target)
     // 两端都摆在画布上、又同属一个分组：画节点到节点的真实连线。
     // 聚合只针对跨分组的边——早先这里用 endpointOf（未折叠时返回所属分组）算出的
     // a === b 一并 continue 掉了，等于把所有组内连线都丢了（实测 21 条一条不剩）。
@@ -588,7 +602,7 @@ export function mount(graph, cells) {
   graph.fromJSON(cells)
   // fromJSON 之后再建父子关系：分组移动时 X6 自动带着子元素走
   for (const cell of cells.nodes) {
-    const parentId = cell.data.kind === 'group' ? cell.data.parent : cell.data.group
+    const parentId = cell.data.kind === 'group' || cell.data.kind === 'zone' ? cell.data.parent : cell.data.group
     if (!parentId) continue
     const parent = graph.getCellById(parentId)
     const child = graph.getCellById(cell.id)
@@ -751,7 +765,9 @@ export function movedPositions(cell) {
       out.push({ id: c.id, kind: 'group', x: Math.round(pos.x - (data.dx || 0)), y: Math.round(pos.y - (data.dy || 0)) })
       return   // 簇里的节点没建 cell，由调用方按位移量整体平移
     }
-    out.push({ id: c.id, kind: c.shape === 'kg-group' ? 'group' : 'node', x: Math.round(pos.x), y: Math.round(pos.y) })
+    // 层区块（kg-zone）跟着领域框挪，它的坐标存在 groups 里
+    const kind = c.shape === 'kg-group' || c.shape === 'kg-zone' ? 'group' : 'node'
+    out.push({ id: c.id, kind, x: Math.round(pos.x), y: Math.round(pos.y) })
     for (const child of c.getChildren() || []) walk(child)
   }
   walk(cell)
