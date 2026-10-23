@@ -12,6 +12,8 @@ import math
 from pathlib import Path
 from typing import Iterable
 
+from . import topic_folders
+
 LAYOUT_SCHEMA_VERSION = 2
 NODE_W, NODE_H = 196.0, 64.0                   # 与前端最大号节点一致，网格才不会叠框
 CELL_W, CELL_H = NODE_W + 44, NODE_H + 36      # 节点格子（含间距）
@@ -21,11 +23,31 @@ MAX_COLS = 6
 MAX_ROW_W = 2600.0                             # 二级分组换行的行宽上限
 
 
+TOPIC_PREFIX = "topic:"         # 专题画布的 layout 名：`topic:文件系统`。冒号进不了节点 / 项目 / 对比组 id，撞不上
+
+
 def layout_path(vault: Path, name: str = "layout") -> Path:
-    """全局图是 `.knowrary/layout.json`；项目画布各自一份 `.knowrary/layouts/<项目>.json`。
-    与 `server/paths.py` 的同名函数保持一致——两边算出不同路径是最难查的那类 bug。"""
+    """全局图是 `.knowrary/layout.json`；项目画布、对比画布各自一份 `.knowrary/layouts/<id>.json`；
+    专题画布在 `.knowrary/topics/<专题名>/canvas.json`（一个专题一个文件夹，以后的审图意见也放这儿）。
+    `server/paths.py` 直接调这里——以前两边各算一遍，
+    两边算出不同路径是最难查的那类 bug。"""
     root = vault / ".knowrary"
-    return root / "layout.json" if name == "layout" else root / "layouts" / f"{name}.json"
+    if name == "layout":
+        return root / "layout.json"
+    if name.startswith(TOPIC_PREFIX):
+        return topic_dir(vault, name[len(TOPIC_PREFIX):]) / "canvas.json"
+    return root / "layouts" / f"{name}.json"
+
+
+def topic_dir(vault: Path, topic: str) -> Path:
+    """一个专题一个目录（画布 `canvas.json`、审图意见 `review.json`），可以放在任意一层文件夹里（2026-10-14）。
+    md 不在这里，照旧按领域放。还没建的专题落在顶层。"""
+    return topic_folders.find_topic(vault, topic) or topic_folders.root(vault) / topic
+
+
+def topic_canvases(vault: Path) -> list[str]:
+    """已经有画布的专题名（画布可以先于中心点存在：先画，再把大框升级成知识点）。"""
+    return topic_folders.topic_names(vault)
 
 
 def empty_layout() -> dict:
@@ -264,6 +286,9 @@ def find_orphans(doc: dict, index: dict, vault: Path) -> list[dict]:
     for image in doc.get("images", []):
         if not (vault / str(image.get("file", ""))).exists():
             out.append({"kind": "image", "id": image.get("id"), "reason": f"图片文件不存在：{image.get('file')}"})
+    for sid, shape in (doc.get("shapes") or {}).items():
+        if shape.get("node") and shape["node"] not in real:
+            out.append({"kind": "shape", "id": sid, "reason": f"图形绑定的知识点 `{shape['node']}` 不存在"})
     groups = set(doc.get("groups", {}))
     for gid, group in doc.get("groups", {}).items():
         if group.get("parent") and group["parent"] not in groups:

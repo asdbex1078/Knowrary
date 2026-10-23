@@ -6,7 +6,7 @@ const LIMIT = 30
 
 export const clone = (doc) => JSON.parse(JSON.stringify(doc))
 
-const ENTRY_KEYS = ['groups', 'nodes', 'edges']
+const ENTRY_KEYS = ['groups', 'nodes', 'edges', 'shapes', 'links']   // 后两样只有专题画布有
 const LIST_KEYS = ['refs', 'notes', 'images']
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b)
 

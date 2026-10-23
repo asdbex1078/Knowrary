@@ -127,6 +127,7 @@ export function registerShapes() {
       { tagName: 'text', selector: 'title' },
       { tagName: 'text', selector: 'desc' },
       { tagName: 'circle', selector: 'due' },
+      { tagName: 'text', selector: 'work' },
       { tagName: 'rect', selector: 'sqStudy' },
       { tagName: 'rect', selector: 'sqExam' },
     ],
@@ -139,6 +140,9 @@ export function registerShapes() {
               textWrap: { width: -26, ellipsis: true } },
       // 到期复习的小圆点：默认透明，due 时才点亮（不占布局，缩小后仍看得见）
       due: { r: 4.5, refX: '100%', refX2: -11, refY: 11, fill: 'transparent', stroke: 'none' },
+      // 成品徽标（2026-10-22）：来源里链着交互式 HTML 深度文档的点，右上角一个小播放符。
+      // 默认空串不画；排在 due 圆点左边，两个都亮时不打架
+      work: { text: '', fontSize: 9, refX: '100%', refX2: -24, refY: 14.5, textAnchor: 'middle', fill: 'transparent' },
       // 学 / 考双态：左下角两个小方块。默认透明，缩小到只剩标题时不画（性能守则）
       sqStudy: { x: 12, refY: '100%', refY2: -11, width: 7, height: 7, rx: 2, ry: 2, fill: 'transparent' },
       sqExam: { x: 22, refY: '100%', refY2: -11, width: 7, height: 7, rx: 2, ry: 2, fill: 'transparent' },
@@ -483,8 +487,14 @@ function ringAttrs(schools) {
  * `opts`：`due` 到期、`state` 掌握度、`ghost` 幽灵占位、`borrowed` 借来的外部邻居。
  * 摊成位置参数的话这里就是六七个 flag，调用处全是一串 `false, null, true`。
  */
+/** 来源里有没有链着成品（库里的 html）。index 的 `sources` 是原始字符串，这里只认后缀。 */
+export function hasWorkSource(indexNode) {
+  return (indexNode?.sources || []).some((s) => /\.html?(#|\]|\|)/i.test(String(s)))
+}
+
 export function nodeAttrs(indexNode, layoutNode, color = NEUTRAL, opts = {}) {
   const { due = false, state = null, ghost = false, borrowed = false } = opts
+  const work = !ghost && hasWorkSource(indexNode)
   const draft = layoutNode?.state === 'draft'
   // 幽灵：计划里有、图里还没建。比 stub 更淡——stub 是"建了个壳"，幽灵是"压根还没有"。
   // 只活在项目画布上，不进全局 layout、不进 vault。
@@ -533,6 +543,9 @@ export function nodeAttrs(indexNode, layoutNode, color = NEUTRAL, opts = {}) {
       textWrap: { width: size.accent ? -32 : -26, ellipsis: true },
     },
     due: { fill: due ? '#e0891f' : 'transparent', r: size.shape === 'pill' ? 3.5 : 4.5 },
+    // 成品徽标和到期圆点同级：任何形态都画（它是「这点有出版物」的入口提示，不是状态噪声）
+    work: { text: work ? '▶' : '', fill: work ? tone.line : 'transparent',
+            fontSize: size.shape === 'pill' ? 7.5 : 9, opacity: borrowed ? 0.55 : 0.9 },
     // 只在卡片形态（有 desc 的尺寸）上画：缩小成一行标题时这两个点只会变成噪声
     sqStudy: { fill: size.desc && state ? (STATE_FILL[state.study] || 'transparent') : 'transparent' },
     sqExam: { fill: size.desc && state ? (STATE_FILL[state.exam] || 'transparent') : 'transparent' },

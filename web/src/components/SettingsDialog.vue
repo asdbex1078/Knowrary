@@ -232,6 +232,7 @@ async function loadArticlesDir() {
   try {
     artCfg.value = await props.readVaultConfig()
     artDraft.value = artCfg.value.articles_dir
+    workDraft.value = artCfg.value.works_dir
   } catch (err) {
     artError.value = `读不到原文目录：${err.body?.detail?.message || err.message}`
   }
@@ -277,6 +278,30 @@ async function saveArticlesDir(move = false) {
     else artError.value = d.message || err.message
   } finally {
     artBusy.value = false
+  }
+}
+
+// —— 成品目录：自己产出的 HTML 深度文档放哪。**成品由人自己整理进来**，所以换目录只换指向不搬文件 ——
+const workDraft = ref('')
+const workBusy = ref(false)
+const workError = ref('')
+const workDone = ref('')
+const workChanged = computed(() => !!artCfg.value && workDraft.value.trim() !== artCfg.value.works_dir)
+
+async function saveWorksDir() {
+  if (!props.saveVaultConfig || !workChanged.value) return
+  workBusy.value = true
+  workError.value = ''
+  workDone.value = ''
+  try {
+    const got = await props.saveVaultConfig({ works_dir: workDraft.value })
+    artCfg.value = got
+    workDraft.value = got.works_dir
+    workDone.value = `成品目录改成了 ${got.works_dir}/（只换指向，文件要自己整理过去）`
+  } catch (err) {
+    workError.value = err.body?.detail?.message || err.message
+  } finally {
+    workBusy.value = false
   }
 }
 
@@ -356,6 +381,24 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onKey, true))
                   : `现在 ${artCfg.articles_dir}/ 里有 ${artCfg.articles} 篇原文` }}</p>
               <p v-if="artDone" class="art-done">{{ artDone }}</p>
               <p v-if="artError" class="model-error">{{ artError }}</p>
+
+              <div class="model-head">
+                <div><b>成品目录</b><span class="sub">自己产出的交互式 HTML 深度文档（讲解页、实验台、演示器）放这儿，
+                  节点用 sources 链到某一节、新标签页打开。<b>成品要你自己整理进来</b>——它们通常在别的仓库里
+                  由模型生产、还在被改，库不会自动同步那边的活文件，哪一版入库由你决定。</span></div>
+              </div>
+              <div class="art-row">
+                <input v-model="workDraft" class="art-input" list="art-dir-options" spellcheck="false"
+                       placeholder="works" aria-label="成品目录"
+                       @keydown.enter.prevent="saveWorksDir()" />
+                <button class="btn tiny primary" type="button" :disabled="workBusy || !workChanged"
+                        @click="saveWorksDir()">保存</button>
+              </div>
+              <p class="sub art-count">
+                {{ workChanged ? `保存后成品认 ${workDraft.trim()}/（不存在会自动建；只换指向，已有文件和链接不跟着搬）`
+                  : `现在 ${artCfg.works_dir}/ 里有 ${artCfg.works} 个成品` }}</p>
+              <p v-if="workDone" class="art-done">{{ workDone }}</p>
+              <p v-if="workError" class="model-error">{{ workError }}</p>
             </template>
 
             <p v-if="vault?.pinned" class="model-error">

@@ -19,6 +19,8 @@ const props = defineProps({
   placed: { type: Set, default: () => new Set() },  // 已经在画布上的 id
   linked: { type: Object, default: () => ({}) },    // { 目标id: [已有的关系类型] }
   preset: { type: Object, default: null },          // { relation, target }：欠账清单点「连边」带过来的默认值
+  // 专题画布上「写成关系」：两头已经由那条线定了，只选类型和方向，不搜目标
+  lockTarget: { type: Object, default: null },      // { id, name }
 })
 const emit = defineEmits(['create', 'close'])
 
@@ -66,7 +68,7 @@ const hits = computed(() => {
 })
 
 // 当前高亮的那条搜索结果就是"目标"，句子跟着上下键实时变
-const target = computed(() => hits.value[cursor.value] || null)
+const target = computed(() => props.lockTarget || hits.value[cursor.value] || null)
 
 watch(hits, () => { cursor.value = 0 })
 
@@ -162,12 +164,16 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onKey, true))
       </div>
       <p class="tip inv-hint">{{ inverseHint }}</p>
 
-      <div class="search-row">
+      <p v-if="lockTarget" class="tip" data-relate-locked>
+        两头由画布上那条线定了。方向不对点上面的 <Icon name="rotate" :size="11" /> 反过来。
+        <template v-if="linked[lockTarget.id]?.length">它们之间已经有：{{ linked[lockTarget.id].join('、') }}</template>
+      </p>
+      <div v-if="!lockTarget" class="search-row">
         <Icon name="search" :size="14" class="dim" />
         <input ref="searchEl" v-model="query" placeholder="搜知识点：名称 / id / 摘要"
                @keydown="onSearchKey" />
       </div>
-      <ul class="hits scroll-thin">
+      <ul v-if="!lockTarget" class="hits scroll-thin">
         <li v-for="(n, i) in hits" :key="n.id" :class="{ cur: i === cursor }"
             @mouseenter="cursor = i" @click="confirm(n)">
           <span class="nm">{{ n.name || n.id }}</span>
@@ -180,8 +186,9 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onKey, true))
         <li v-if="!hits.length" class="none">没有匹配的知识点</li>
       </ul>
       <footer>
-        <span class="dim">↑↓ 选择 · Enter 建立 · Esc 返回</span>
-        <button class="btn primary" :disabled="!hits.length" @click="confirm()">
+        <span class="dim">{{ lockTarget ? 'Esc 返回换类型' : '↑↓ 选择 · Enter 建立 · Esc 返回' }}</span>
+        <button class="btn primary" data-act="relate-confirm" :disabled="!lockTarget && !hits.length"
+                @click="confirm(lockTarget || undefined)">
           <Icon name="check" :size="14" />建立关系
         </button>
       </footer>

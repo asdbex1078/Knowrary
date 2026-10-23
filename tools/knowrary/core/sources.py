@@ -1,9 +1,10 @@
 """节点的来源（frontmatter `sources`）：这个点是从哪来的。
 
-**一个列表，两种写法混放**（2026-09-23）：
+**一个列表，三种写法混放**（2026-09-23；成品 2026-10-22）：
 
     sources:
       - "[[articles/BPE全景]]"          # 库里的原文：完整路径的 wikilink，点得开
+      - "[[works/桶锁.html#sec-3]]"     # 库里的成品：HTML 深度文档，锚点直达那一节
       - 图灵《计算机器与智能》            # 外部来源：一张图、一篇论文、一本书——纯文字
 
 为什么是完整路径而不是 `[[BPE全景]]`：文章和节点常常同名（都叫「Transformer」），
@@ -66,7 +67,9 @@ class Resolver:
 
     def __init__(self, vault: Path):
         self.vault = vault
-        self.articles = load_vault_config(vault)["articles_dir"]
+        cfg = load_vault_config(vault)
+        self.articles = cfg["articles_dir"]
+        self.works = cfg["works_dir"]
         self._memo: dict[str, dict] = {}
 
     def __call__(self, item: str) -> dict:
@@ -78,9 +81,14 @@ class Resolver:
         m = RE_SOURCE_LINK.match(item)
         if m:
             rel = m.group(1).strip().strip("/")
-            rel = rel if rel.endswith(".md") else f"{rel}.md"
+            # 成品（2026-10-22）：链到库里 html 的是「成品」——自己产出的交互式深度文档。
+            # `#小节` 对成品是页面锚点（section id），前端打开时拼在 URL 后面直达那一节
+            if rel.lower().endswith((".html", ".htm")):
+                kind = "work"
+            else:
+                kind, rel = "article", (rel if rel.endswith(".md") else f"{rel}.md")
             hit = self.vault / rel
-            return {"raw": item, "kind": "article", "path": rel, "section": (m.group(2) or "")[1:],
+            return {"raw": item, "kind": kind, "path": rel, "section": (m.group(2) or "")[1:],
                     "label": (m.group(3) or "").strip() or Path(rel).stem,
                     "exists": hit.is_file() and self._inside(hit)}
         if item.endswith(".md") and "/" not in item:
@@ -105,7 +113,7 @@ class Resolver:
 
 
 def backlink_refs(vault: Path, index: dict) -> dict[str, list[dict]]:
-    """原文 → 从它拆出来的节点，带上每个点链的是哪一节（`section` 为空 = 链整篇）。
+    """原文 / 成品 → 从它拆出来的节点，带上每个点链的是哪一节（`section` 为空 = 链整篇）。
     **派生的，不存第二份**：原文里不回写链接。一个点链了同一篇的两节就出现两次。"""
     resolve = Resolver(vault)
     out: dict[str, list[dict]] = {}
@@ -114,7 +122,7 @@ def backlink_refs(vault: Path, index: dict) -> dict[str, list[dict]]:
             continue
         for item in node.get("sources") or []:
             ref = resolve(item)
-            if ref["kind"] == "article":
+            if ref["kind"] in ("article", "work"):
                 out.setdefault(ref["path"], []).append(
                     {"id": node["id"], "name": node.get("name") or node["id"], "section": ref["section"]})
     return out

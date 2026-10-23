@@ -24,6 +24,7 @@ import { forModel } from '../src/composables/useChat.js'
 import { localISO, todayISO } from '../src/today.js'
 import { applyBody, mergeProposals, pickedCount, suspectsByArticle } from '../src/modelsPlan.js'
 import { COL, LEFT, MIN_GAP, YEAR_PX, badgeOf, computeLanes, humanNumber, humanParams, techOptions } from '../src/canvas/modelLanes.js'
+import { boundChildren, draftPlan, linkNodes, openReviewCounts, removalPatch, suggestions as topicSuggestions, removeEdgeChanges, upgradeChanges, writtenEdgeId } from '../src/canvas/drawing.js'
 
 const CASES = []
 const test = (name, fn) => CASES.push([name, fn])
@@ -726,6 +727,142 @@ test('谱系图叠加（2026-10-12 第 2 步）：两张以上换共用真实年
     [m('L/DeepSeek-V2-长名字', 2024.3), m('L/DeepSeek-V3-长名字', 2024.9), m('L/DeepSeek-R1-长名字', 2025.0)] }] }
   const lc = computeLanes(long, { lineages: ['llm', 'cpu'] })
   assert.deepEqual(lc.items.map((it) => it.showLabel), [true, true, false], '同一侧撞了的后一个不写，留给悬停')
+})
+
+
+// ---------------------------------------------------------------- 专题画布：框升级成知识点（2026-10-13）
+
+const box = (kind, x, extra = {}) => ({ kind, x, y: 0, w: 80, h: 40, text: '', tip: '', ...extra })
+const topicLayout = () => ({ shapes: {
+  F: box('frame', 0, { w: 600 }),
+  b: box('rect', 300, { parent: 'F', node: '超级块' }),
+  a: box('rect', 100, { parent: 'F', node: '引导块' }),
+  c: box('rect', 500, { parent: 'F' }),                  // 还没升级：不进部件
+}, links: {} })
+
+test('大框里已升级的小框按从左到右排，没升级的不算', () => {
+  assert.deepEqual(boundChildren(topicLayout(), 'F'), ['引导块', '超级块'])
+})
+
+test('新建的大框：部件按从左到右补，专题字段交给 create_node 不重复写', () => {
+  const ch = upgradeChanges({ layout: topicLayout(), index: { nodes: [], edges: [] }, sid: 'F', nodeId: 'FS',
+                              topic: '文件系统', isNew: true })
+  assert.deepEqual(ch, [{ type: 'add_edge', source: 'FS', relation: '部件', target: '引导块' },
+                        { type: 'add_edge', source: 'FS', relation: '部件', target: '超级块' }])
+})
+
+test('绑定已有点当大框：补专题字段；已经是部件 / 包含的不重复补', () => {
+  const index = { nodes: [{ id: 'FS', topic: '别的' }],
+                  edges: [{ source: 'FS', target: '引导块', type: '包含' }] }
+  const ch = upgradeChanges({ layout: topicLayout(), index, sid: 'F', nodeId: 'FS', topic: '文件系统' })
+  assert.deepEqual(ch, [{ type: 'update_frontmatter', source: 'FS', fields: { 专题: '文件系统' } },
+                        { type: 'add_edge', source: 'FS', relation: '部件', target: '超级块' }])
+})
+
+test('小框升级时，所在大框已绑定：大框的点补一条「部件:: 它」', () => {
+  const layout = topicLayout()
+  layout.shapes.F.node = 'FS'
+  const ch = upgradeChanges({ layout, index: { nodes: [], edges: [] }, sid: 'c', nodeId: 'inode', topic: '文件系统' })
+  assert.deepEqual(ch, [{ type: 'add_edge', source: 'FS', relation: '部件', target: 'inode' }])
+})
+
+test('删大框：连同套着的小框、连着这些框的线一起删，连别处的线不动', () => {
+  const layout = topicLayout()
+  layout.shapes.G = box('rect', 900)
+  layout.links = { l1: { source: { kind: 'shape', id: 'a' }, target: { kind: 'node', id: 'x' } },
+                   l2: { source: { kind: 'shape', id: 'G' }, target: { kind: 'node', id: 'x' } } }
+  const patch = removalPatch(layout, 'F')
+  assert.deepEqual(Object.keys(patch.shapes).sort(), ['F', 'a', 'b', 'c'])
+  assert.deepEqual(Object.keys(patch.links), ['l1'])
+})
+
+test('图形右键：没升级给新建 / 绑定，升级过的大框给查看 / 补部件 / 解除', () => {
+  const layout = topicLayout()
+  const ids = (m) => m.items.filter((i) => !i.sep).map((i) => i.id)
+  assert.ok(ids(buildMenu('shape', 'c', ctx({ layout }))).includes('shape-new-node'))
+  layout.shapes.F.node = 'FS'
+  const frame = ids(buildMenu('shape', 'F', ctx({ layout })))
+  assert.ok(frame.includes('shape-open') && frame.includes('shape-sync') && frame.includes('shape-unbind')
+            && !frame.includes('shape-bind'), frame.join(','))
+  assert.ok(!ids(buildMenu('shape', 'a', ctx({ layout }))).includes('shape-sync'), '小框没有「补部件」')
+})
+
+
+test('连线两端：知识点卡片直接用，框用它升级成的点；有一头还只是图形就写不成关系', () => {
+  const layout = topicLayout()
+  layout.links = { l1: { source: { kind: 'shape', id: 'a' }, target: { kind: 'node', id: '甲' } },
+                   l2: { source: { kind: 'shape', id: 'c' }, target: { kind: 'node', id: '甲' } } }
+  assert.deepEqual(linkNodes(layout, 'l1'), { from: '引导块', to: '甲' })
+  assert.equal(linkNodes(layout, 'l2'), null)
+})
+
+test('写进去的关系在索引里的 id：反向写法被归一了也认得出', () => {
+  const index = { edges: [{ id: '父->子#包含', source: '父', target: '子', type: '包含', raw_types: ['属于'] }] }
+  assert.equal(writtenEdgeId(index, '子', '父', '属于'), '父->子#包含')
+  assert.equal(writtenEdgeId(index, '子', '父', '依赖'), null)
+})
+
+test('删边按它写在哪个文件里删：「子 属于 父」去子的 md 删「属于」，两边都写了两边都删', () => {
+  const index = { nodes: [{ id: '父', path: 'nodes/父.md' }, { id: '子', path: 'nodes/子.md' }] }
+  const e = { source: '父', target: '子', type: '包含', raw_types: ['属于'], declared_in: ['nodes/子.md'] }
+  assert.deepEqual(removeEdgeChanges(e, index), [{ type: 'remove_edge', source: '子', relation: '属于', target: '父' }])
+  const both = { ...e, raw_types: ['包含', '属于'], declared_in: ['nodes/父.md', 'nodes/子.md'] }
+  assert.deepEqual(removeEdgeChanges(both, index), [
+    { type: 'remove_edge', source: '父', relation: '包含', target: '子' },
+    { type: 'remove_edge', source: '子', relation: '属于', target: '父' }])
+})
+
+
+const draftOf = () => ({ center: 'FS', parts: ['引导块', '超级块'],
+  up: [{ id: 'MySQL', hop: 1, via: 'FS' }, { id: 'Java', hop: 2, via: 'MySQL' }],
+  down: [{ id: '扇区', hop: 1, via: 'FS' }], left: [{ id: 'Minix', hop: 1, via: 'FS' }],
+  right: [{ id: 'ext2', hop: 1, via: 'FS' }, { id: 'ext3', hop: 2, via: 'ext2' }], compare: [{ id: 'FAT', hop: 1, via: 'FS' }],
+  pending: [{ id: 'Redis', hop: 1, via: '超级块', why: '弱关联' }] })
+let seq = 0
+const sid = (p) => `${p}${++seq}`
+
+test('一键初稿（空画布）：建中心大框、部件按顺序成方块，上下按跳数往外、左右是演化链', () => {
+  const plan = draftPlan({ shapes: {}, nodes: {} }, draftOf(), { x: 0, y: 0 }, sid)
+  const shapes = Object.values(plan.shapes)
+  const frame = shapes.find((x) => x.kind === 'frame')
+  assert.equal(frame.node, 'FS')
+  const parts = shapes.filter((x) => x.kind === 'rect').sort((a, b) => a.x - b.x).map((x) => x.node)
+  assert.deepEqual(parts, ['引导块', '超级块'])
+  const n = plan.nodes
+  assert.ok(n.MySQL.y < frame.y && n.Java.y < n.MySQL.y, '上：第 2 跳比第 1 跳更靠上')
+  assert.ok(n['扇区'].y > frame.y + frame.h, '下')
+  assert.ok(n.Minix.x + 160 < frame.x && n.ext2.x > frame.x + frame.w && n.ext3.x > n.ext2.x, '左前身、右后继一列一列往外')
+  assert.ok(n.FAT && !n.Redis, '对照摆上；其他相关只在侧栏，不自动摆')
+})
+
+test('一键初稿（已经摆过）：已有中心大框就围着它摆，图上已有的点不动，部件接在已有小框后面、放不下撑宽框', () => {
+  const layout = { shapes: { F: { kind: 'frame', x: 0, y: 0, w: 200, h: 170, node: 'FS' },
+                             a: { kind: 'rect', x: 15, y: 60, w: 140, h: 70, parent: 'F', node: '引导块' } },
+                   nodes: { MySQL: { x: 999, y: 999 } } }
+  const plan = draftPlan(layout, draftOf(), { x: 5000, y: 5000 }, sid)
+  const added = Object.entries(plan.shapes).filter(([k]) => k !== 'F').map(([, v]) => v)
+  assert.deepEqual(added.map((x) => x.node), ['超级块'])
+  assert.equal(added[0].x, 165, '接在已有小框后面')
+  assert.ok(plan.shapes.F.w > 200 && Object.keys(plan.shapes.F).join() === 'w', '只撑宽，不动框的位置')
+  assert.ok(!plan.nodes.MySQL, '已经在图上的不动')
+  assert.ok(plan.nodes.Java.y < 0, '围着已有的框摆，不是落在 at')
+})
+
+test('侧栏建议：按方位分组，只列还没上图的，部件在最前', () => {
+  const layout = { shapes: { a: { kind: 'rect', node: '引导块' } }, nodes: { MySQL: {} } }
+  const groups = topicSuggestions(layout, draftOf())
+  assert.deepEqual(groups.map((g) => g.key), ['parts', 'up', 'down', 'left', 'right', 'compare', 'pending'])
+  assert.deepEqual(groups[0].items.map((x) => x.id), ['超级块'])
+  assert.deepEqual(groups[1].items.map((x) => x.id), ['Java'])
+})
+
+
+test('审图角标：只数还没处理的；连线意见挂在起点那个框上', () => {
+  const counts = openReviewCounts({ items: [
+    { kind: 'fact', target: 'a', status: 'open' }, { kind: 'missing', target: 'F', status: 'open' },
+    { kind: 'fact', target: 'a', status: 'adopted' },
+    { kind: 'link', status: 'open', fix: { from: { kind: 'shape', id: 'a' }, to: { kind: 'node', id: 'x' } } }] })
+  assert.deepEqual(counts, { a: 2, F: 1 })
 })
 
 // ---------------------------------------------------------------- 跑

@@ -922,7 +922,7 @@ FORMAT_DOC = {
   （不改类型就填一样的）；`year` 和 `note` **给了才动，没给就保持原样**。
 - `update_frontmatter`：`fields` 里逐个字段给新值。能改的只有 `name / field / layer / params /
   type / status / year / start_year / end_year / aliases / tags / desc / learned / sources / source /
-  color / timeless / 流派 / 领域线`；
+  color / timeless / 流派 / 领域线 / 专题`；
   `sources` 是来源列表：库里的原文写完整路径的链接 `"[[articles/文章名]]"`，外部来源（论文、书、图）写纯文字；
   **给的是完整列表**，写了它旧的单值 `source` 会一并并掉，所以原来那几项要一起带上。`source` 是旧写法，别再用；
   `id` 和画布坐标（`x / y / w / h / group / collapsed / pinned`）永远改不了，提了整批退回。
@@ -937,6 +937,8 @@ FORMAT_DOC = {
   `流派` / `领域线` 是这个点的归属（2026-10-12 起是字段，不再写 `- 属于:: [[CISC]]` 边）：
   给**完整列表**、写成链接 `["[[NLP]]", "[[CV]]"]`，**写在前面的是主道**（真身画在那条道上），
   所以加一条要接在原有的后面、别打乱顺序；名字只能是库里 `type: 流派` / `type: 领域线` 的文档。
+  `专题` 表示这个点是哪张专题图的中心（专题画布上大框升级出来的）。**别主动改它**：它由画布上的升级动作写，
+  一个专题只认一个中心，乱改会让那张图换中心；给空串就是不再当中心。
   `start_year / end_year` 同理只对流派有意义：`end_year` 留空表示还在延续，
   **不要为了"看起来完整"去猜一个结束年**——停摆由那条累计走势的平台期自己显示。
 

@@ -2378,6 +2378,54 @@ def 命令行导入_文章超长和模型不给JSON都要有说法():
     assert cli.extract_json("好的：\n```json\n{\"nodes\": []}\n```", vault) == {"nodes": []}
 
 
+@case
+def 命令行导入_默认保留原文_不保留和同名不同文都有说法():
+    """2026-10-13：命令行 / skill 那条路以前不存原文（ELF 一篇拆了 8 个点、原文没了），现在和网页一样默认存。"""
+    import argparse
+    import contextlib
+    import io
+    import knowrary as cli
+
+    vault, _ = build({"nodes/x/a.md": node_md("A")})
+    outside = vault.parent / f"{vault.name}-src"
+    outside.mkdir()
+    art = outside / "ELF入门.md"
+    art.write_text("# ELF\n\n## 节与段\n两种视图。\n", encoding="utf-8")
+    plan = outside / "plan.json"
+
+    def run(node_id: str, **kw):
+        plan.write_text(json.dumps({"nodes": [{"id": node_id, "name": node_id, "desc": "d", "from_section": "节与段",
+                                               "body": "## 描述\n正文", "relations": []}]}, ensure_ascii=False),
+                        encoding="utf-8")
+        ns = argparse.Namespace(plan=str(plan), vault=str(vault), field="测试", folder=None, source=None,
+                                article=str(art), no_article=False, dry_run=False)
+        for k, v in kw.items():
+            setattr(ns, k, v)
+        with contextlib.redirect_stdout(io.StringIO()):
+            cli.cmd_apply(ns)
+
+    run("新点")
+    saved = vault / "articles" / "ELF入门.md"
+    assert saved.exists() and "两种视图。" in saved.read_text(encoding="utf-8"), "原文默认存进原文目录"
+    assert "articles/ELF入门#节与段" in (vault / "nodes/测试/新点.md").read_text(encoding="utf-8"), "来源链到出自的那一节"
+    log = json.loads(next((vault / ".knowrary/imports").glob("*ELF入门.json")).read_text(encoding="utf-8"))
+    assert log["article"] == "articles/ELF入门.md", log
+
+    run("又一点")                                                       # 一模一样的原文：复用，不存第二份
+    assert len(list((vault / "articles").glob("*.md"))) == 1
+
+    run("不留原文的点", no_article=True, source="随手记")
+    assert "articles/" not in (vault / "nodes/测试/不留原文的点.md").read_text(encoding="utf-8")
+
+    art.write_text("改过的另一篇\n", encoding="utf-8")
+    try:
+        run("撞名的点")
+        raise AssertionError("同名不同文没挡下")
+    except SystemExit as exc:
+        assert "换个文章名" in str(exc) and "--no-article" in str(exc), exc
+    assert not (vault / "nodes/测试/撞名的点.md").exists()
+
+
 # ---------------------------------------------------------------- 横向对比：速查 / 对比项 / 对比组
 
 GROUP_FM = "type: 对比组\ndimensions: [核心方法, 适用场景]\n"
@@ -3161,6 +3209,118 @@ def 模型目录_没指定就不读_只认kind_family_check报出指不到的前
             pass
     core.save_models_dir(vault, "")
     assert core.load_catalog(vault)["configured"] is False, "空串 = 取消指定"
+
+
+def _topic_vault() -> dict[str, str]:
+    """文件系统专题：方块写序和 id 序相反、上面叠三层还多一层、右边多一跳、左边前身、对比、弱关联。"""
+    def n(name, layer, rels="", extra=""):
+        return node_md(name, rels=rels, extra=f"layer: {layer}\n{extra}")
+    return {
+        "nodes/Linux0.12文件系统.md": n("Linux0.12文件系统", "系统软件",
+                                       "- 部件:: [[超级块]]\n- 部件:: [[引导块]]\n- 演化为:: [[ext2]]\n"
+                                       "- 基于:: [[磁盘扇区]]\n- 对比:: [[FAT]]", extra="专题: 文件系统\n"),
+        "nodes/超级块.md": n("超级块", "系统软件", "- 相关:: [[Redis]]"),
+        "nodes/引导块.md": n("引导块", "系统软件"),
+        "nodes/Minix文件系统.md": n("Minix文件系统", "系统软件", "- 演化为:: [[Linux0.12文件系统]]"),
+        "nodes/ext2.md": n("ext2", "系统软件", "- 演化为:: [[ext3]]"),
+        "nodes/ext3.md": n("ext3", "系统软件", "- 演化为:: [[ext4]]"),
+        "nodes/ext4.md": n("ext4", "系统软件", "- 演化为:: [[ext5]]"),
+        "nodes/ext5.md": n("ext5", "系统软件"),
+        "nodes/FAT.md": n("FAT", "系统软件"),
+        "nodes/磁盘扇区.md": n("磁盘扇区", "硬件"),
+        "nodes/C语言.md": n("C语言", "高级语言", "- 使用:: [[Linux0.12文件系统]]"),
+        "nodes/CPP.md": n("CPP", "高级语言", "- 基于:: [[C语言]]"),
+        "nodes/Java.md": n("Java", "高级语言", "- 基于:: [[CPP]]"),
+        "nodes/Kotlin.md": n("Kotlin", "高级语言", "- 基于:: [[Java]]"),
+        "nodes/Redis.md": n("Redis", "高级语言"),
+    }
+
+
+@case
+def 专题图_方块按书写顺序_上下多跳_左右演化_对照_超跳进待上图():
+    _, r = build(_topic_vault())
+    assert node_by_id(r, "Linux0.12文件系统")["parts"] == ["超级块", "引导块"], "方块顺序 = md 里的书写顺序"
+    assert core.topics(r.data) == [{"topic": "文件系统", "center": "Linux0.12文件系统", "name": "Linux0.12文件系统"}]
+    m = core.topic_map(r.data, "文件系统")
+    ids = lambda side: [(it["id"], it["hop"]) for it in m[side]]
+    assert ids("up") == [("C语言", 1), ("CPP", 2), ("Java", 3)], "同层看边方向：基于者在上，一层叠一层"
+    assert ids("down") == [("磁盘扇区", 1)], "层更低的在下"
+    assert ids("right") == [("ext2", 1), ("ext3", 2), ("ext4", 3)] and ids("left") == [("Minix文件系统", 1)]
+    assert ids("compare") == [("FAT", 1)]
+    why = {it["id"]: it["why"] for it in m["pending"]}
+    assert why == {"Kotlin": "往上超过 3 跳", "ext5": "演化链超过 3 跳", "Redis": "弱关联"}, why
+    shallow = core.topic_map(r.data, "文件系统", {"up": 1})
+    assert [it["id"] for it in shallow["up"]] == ["C语言"] and shallow["depth"]["up"] == 1
+    assert "CPP" in {it["id"] for it in shallow["pending"]}, "每张图可单独改跳数，超出的照样提示"
+    try:
+        core.topic_map(r.data, "内存")
+        raise AssertionError("没人声明的专题应该报错")
+    except core.TopicNotFound:
+        pass
+
+
+@case
+def 专题图_两个点抢同一个专题名_报警告_图认id小的():
+    files = _topic_vault()
+    files["nodes/ext2.md"] = node_md("ext2", rels="- 演化为:: [[ext3]]", extra="layer: 系统软件\n专题: 文件系统\n")
+    _, r = build(files)
+    assert "topic_clash" in codes(r, "warning")
+    assert core.topic_map(r.data, "文件系统")["center"] == "Linux0.12文件系统"
+
+
+@case
+def 成品层_html链接认成work_锚点保留_反查两种都算():
+    """成品层（2026-10-22）：sources 里链到库内 html 的是「成品」，`#` 后面是页面锚点；
+    原文 / 成品都进反查（成品清单要靠它算「覆盖了哪些点」）。"""
+    vault, r = build({
+        "nodes/a.md": node_md("A", extra='sources: ["[[works/桶锁.html#sec-3]]", "[[articles/旧方案]]"]\n'),
+        "works/桶锁.html": "<!doctype html><html><body><h2 id='sec-3'>成品</h2></body></html>",
+        "articles/旧方案.md": "# 旧方案\n\n原文",
+    })
+    resolve = core.SourceResolver(vault)
+    work = resolve("[[works/桶锁.html#sec-3]]")
+    assert work["kind"] == "work" and work["path"] == "works/桶锁.html", work
+    assert work["section"] == "sec-3" and work["exists"] and work["label"] == "桶锁", work
+    assert resolve("[[works/没有的.htm]]")["kind"] == "work" and not resolve("[[works/没有的.htm]]")["exists"]
+    assert resolve("[[articles/旧方案]]")["kind"] == "article", "不带 html 后缀的照旧补 .md 当原文"
+    refs = core.source_backlink_refs(vault, r.data)
+    assert refs["works/桶锁.html"] == [{"id": "a", "name": "A", "section": "sec-3"}], refs
+    assert "articles/旧方案.md" in refs
+
+
+@case
+def 成品导入_html抽成纯文本_小节对上锚点_目录外拒绝():
+    """成品层第 3 步（2026-10-22）：成品即原文——html 不存 md 副本，抽出纯文本喂模型，
+    节点 sources 链 `[[works/….html#锚点]]`；没有锚点的小节链整篇；成品目录外的 html 直接拒。"""
+    html = ("<!doctype html><html><head><title>页</title><style>.x{color:red}</style></head><body>\n"
+            "<script>var a=1;</script>\n"
+            "<h1>桶锁</h1>\n"
+            "<section id='sec-bin'><h2>桶与扩容</h2><p>一个 <code>bin</code> 一把锁。</p>\n"
+            "<svg><text>图里的字</text></svg></section>\n"
+            "<h2 id='own-id'>树化</h2><p>链表转红黑树。</p>\n"
+            "<h2>没有锚点的一节</h2><p>尾声。</p>\n"
+            "</body></html>")
+    vault = make_vault({"nodes/a.md": node_md("A"), "works/桶锁.html": html})
+    plan = core.plan_work(vault, "works/桶锁.html")
+    assert plan.action == "in_place" and plan.path == "works/桶锁.html"
+    assert "var a=1" not in plan.text and ".x{" not in plan.text and "图里的字" not in plan.text, plan.text
+    assert "# 桶锁" in plan.text and "## 桶与扩容" in plan.text and "一个 bin 一把锁。" in plan.text, plan.text
+    assert plan.anchors == {"桶与扩容": "sec-bin", "树化": "own-id"}, plan.anchors
+    assert plan.headings == ["桶与扩容", "树化", "没有锚点的一节"], plan.headings
+
+    target = core.ImportTarget("测试", "桶锁", None, article=plan)
+    assert target.sources_for("桶与 扩容") == ["[[works/桶锁.html#sec-bin]]"], "对上小节要换成页面锚点"
+    assert target.sources_for("树化") == ["[[works/桶锁.html#own-id]]"]
+    assert target.sources_for("没有锚点的一节") == ["[[works/桶锁.html]]"], "页面上跳不过去的锚点没意义"
+    assert target.sources_for(None) == ["[[works/桶锁.html]]"]
+
+    core.write(vault / "散放.html", "<html><body><p>x</p></body></html>")
+    for bad, why in (("散放.html", "自己整理"), ("nodes/a.md", "html"), ("works/没有.html", "不存在")):
+        try:
+            core.plan_work(vault, bad)
+            assert False, f"该拒没拒：{bad}"
+        except core.WorkRejected as exc:
+            assert why in str(exc), (bad, str(exc))
 
 
 def main() -> None:

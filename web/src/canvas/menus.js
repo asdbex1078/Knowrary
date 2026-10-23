@@ -10,6 +10,7 @@
  * 以前只能靠真无头浏览器点开菜单才验得到。
  */
 import { GROUP_LAYOUTS, hasSubGroups } from './groupLayout.js'
+import { SHAPE_KINDS, linkNodes } from './drawing.js'
 
 /**
  * @typedef {object} MenuCtx
@@ -38,6 +39,8 @@ export function nodeMenu(id, ctx) {
   const picked = ctx.selectedIds || []
   const items = [{ id: 'relate', label: '建立关系…', icon: 'link', hint: '⌘L' },
                  { id: 'ref', label: '放引用卡', icon: 'bookmark' }]
+  // 专题画布：从知识点拉一条自由连线（只存画布；两端都是知识点的以后可以写成 md 关系）
+  if (ctx.topic) items.unshift({ id: 'link-from-node', label: '从这里连线', icon: 'arrowRight', hint: '点终点' })
   // 框选了好几个点（Shift 拖框 / Shift 点选）再右键其中一个：把它们概括成一个上位节点
   if (picked.length >= 2 && picked.includes(id)) {
     items.unshift({ id: 'summarize-selected', label: `把选中的 ${picked.length} 个点概括为一个节点…`,
@@ -147,8 +150,88 @@ export function blankMenu(ctx) {
   ] }
 }
 
+/** 专题画布上手画的图形：连线、改成别的形状、删。样式在右边的编辑卡里改。 */
+export function shapeMenu(sid, ctx) {
+  const shape = ctx.layout?.shapes?.[sid]
+  const kind = SHAPE_KINDS.find((k) => k.kind === shape?.kind)
+  const inner = Object.values(ctx.layout?.shapes || {}).filter((s) => s.parent === sid).length
+  return {
+    title: shape?.text || kind?.name || '图形',
+    subtitle: shape?.node ? `已升级为知识点「${shape.node}」` : `${kind?.name || ''} · 只存在这张专题画布里`,
+    items: [
+      ...upgradeItems(shape, ctx),
+      { sep: true },
+      { id: 'link-from-shape', label: '从这里连线', icon: 'arrowRight', hint: '点终点' },
+      { id: 'shape-edit', label: '改文字', icon: 'pencil', hint: '双击' },
+      { id: 'shape-style', label: '悬停说明 / 颜色 / 字号', icon: 'pencil' },
+      { sep: true },
+      ...SHAPE_KINDS.filter((k) => k.kind !== shape?.kind)
+        .map((k) => ({ id: `shape-kind-${k.kind}`, label: `改成${k.name}`, icon: 'rotate' })),
+      { sep: true },
+      { id: 'shape-delete', label: inner ? `删除（连同里面的 ${inner} 个小框和连着的线）` : '删除（连同连着它的线）',
+        icon: 'trash', danger: true, hint: 'Del' },
+    ],
+  }
+}
+
+/** 升级成知识点：没升级的给「新建文档 / 绑定已有点」，升级过的给「查看 / 同步部件 / 解除」。 */
+function upgradeItems(shape, ctx) {
+  const frame = shape?.kind === 'frame'
+  if (!shape?.node) {
+    return [
+      { id: 'shape-new-node', label: frame ? '升级为知识点：新建文档（当这个专题的中心）…' : '升级为知识点：新建文档…',
+        icon: 'plus', hint: '写 md' },
+      { id: 'shape-bind', label: '绑定已有知识点…', icon: 'link' },
+    ]
+  }
+  const name = ctx.nodeName?.(shape.node) || shape.node
+  return [
+    { id: 'shape-open', label: `查看知识点「${name}」`, icon: 'file' },
+    ...(frame ? [{ id: 'shape-sync', label: '把框里的小框补成「部件」关系', icon: 'layers', hint: '写 md' }] : []),
+    { id: 'shape-unbind', label: '解除绑定（md 不动）', icon: 'x' },
+  ]
+}
+
+export function linkMenu(lid, ctx) {
+  const link = ctx.layout?.links?.[lid]
+  const written = link?.edge ? ctx.index?.edges.find((e) => e.id === link.edge) : null
+  const ends = linkNodes(ctx.layout, lid)
+  const relate = link?.edge
+    ? (written
+      ? [{ id: 'link-edge-delete', label: `从 md 删掉「${written.type}」这条关系（线也删）`, icon: 'trash', danger: true, hint: '写 md' }]
+      : [{ id: 'link-relate', label: 'md 里这条关系已不在，重新写成关系…', icon: 'link', hint: '写 md' }])
+    : [{ id: 'link-relate', label: '写成关系（写进 md）…', icon: 'link', hint: ends ? '写 md' : '',
+         disabled: !ends }]
+  return {
+    title: link?.text ? `连线「${link.text}」` : '连线',
+    subtitle: written ? `已写成 md 关系：${written.source} ${written.type} → ${written.target}`
+      : ends ? '只存在这张专题画布里' : '只存在这张专题画布里 · 两端的框都升级成知识点后才能写成关系',
+    items: [
+      ...relate,
+      { sep: true },
+      { id: 'link-edit', label: '改线上的字', icon: 'pencil', hint: '双击' },
+      { id: 'link-style', label: '改颜色', icon: 'pencil' },
+      { id: 'link-delete', label: written ? '只删画布上的线（md 关系保留）' : '删除这条线', icon: 'trash',
+        danger: !written, hint: 'Del' },
+    ],
+  }
+}
+
+/** 专题画布的空白处：右键落点就是新图形的位置。 */
+export function topicBlankMenu() {
+  return { title: '专题画布', subtitle: '右键落点就是新图形的位置；也可以从左边拖进来', items: [
+    ...SHAPE_KINDS.map((k) => ({ id: `draw-${k.kind}`, label: `在这里放${k.name}`, icon: 'plus' })),
+    { sep: true },
+    { id: 'note', label: '贴便签', icon: 'note' },
+    { id: 'fit', label: '适应窗口', icon: 'fit', hint: 'F' },
+  ] }
+}
+
 /** 按右键点到的是什么，挑一个 builder。`cluster` 就是折叠起来的 group。 */
 export function buildMenu(kind, id, ctx) {
+  if (kind === 'shape') return shapeMenu(id, ctx)
+  if (kind === 'link') return linkMenu(id, ctx)
+  if (kind === 'blank' && ctx.topic) return topicBlankMenu()
   if (kind === 'node') return nodeMenu(id, ctx)
   if (kind === 'group' || kind === 'cluster') return groupMenu(id, kind === 'cluster', ctx)
   if (kind === 'edge') return edgeMenu(id, ctx)

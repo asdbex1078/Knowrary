@@ -7,6 +7,7 @@ from __future__ import annotations
 import datetime as dt
 import json
 import logging
+import shutil
 
 from pathlib import Path
 
@@ -22,13 +23,14 @@ from . import edge_check as edge_check_svc
 from . import models_catalog as models_svc
 from . import models_extract as models_extract_svc
 from . import models_move as models_move_svc
+from . import topic_review as topic_review_svc
 from . import pending_review as pending_svc
 from . import (articles as articles_svc, assets, audit, chat as chat_svc, compare as compare_svc, copying, curation, importing,
                projects as projects_svc, revise as revise_svc, summarize as summarize_svc, vaults, years as years_svc)
-from .contracts import (ArticleRead, ArticlesRead, ModelFromNode, ModelFromNodeResult, ModelsApplied, ModelsApply, ModelsDirPatch, ModelsExtract,
+from .contracts import (ArticleRead, ArticlesRead, WorksRead, ModelFromNode, ModelFromNodeResult, ModelsApplied, ModelsApply, ModelsDirPatch, ModelsExtract,
                         ModelsProposal, ModelsRead, ModelsVerified, ModelsVerify, CurateRequest, CurateResult, EdgeCheckPlan, EdgeCheckPlanned, EdgeCheckRan, EdgeCheckRun,
                         EdgeChecksRead, EdgeFix, EdgeFixed, RelinkRequest, RelinkResult, PendingDecide, PendingDecided, PendingRead, TypeDecide, TypeDecided, AuditReport, AuditRequest, ReviseRequest, ReviseResult, ReviseUndo, SourceRef, VaultConfigPatch, VaultConfigRead, CalendarRead, ChangeResult, ChangeSet, ChatRequest, CoachToday, FileDiff, ImportProposal,
-                        ImportProposeRequest, ImportRequest, ImportResult, SourceText, SourcesRead, SummarizeRequest, SummaryDraft,
+                        ImportProposeRequest, ImportRequest, ImportReshapeRequest, ImportReshapeResult, ImportResult, SourceText, SourcesRead, SummarizeRequest, SummaryDraft,
                         InboxRead,
                         LayoutPatch, LayoutRead,
                         LayoutSaved, MergeImpact, MergeRequest, MergeResult, NodeDetail,
@@ -122,6 +124,8 @@ def _layout_target(vault, layout: str | None):
     """
     if not layout or layout == DEFAULT_LAYOUT:
         return DEFAULT_LAYOUT, None
+    if layout.startswith(core.TOPIC_PREFIX):
+        return _topic_target(vault, layout[len(core.TOPIC_PREFIX):])
     if not core.RE_ID_OK.match(layout) or layout.startswith("."):
         raise HTTPException(status_code=422, detail=f"非法的 layout 名 `{layout}`")
     if core.ID_OK.match(layout):
@@ -133,6 +137,22 @@ def _layout_target(vault, layout: str | None):
         members = [r["id"] for r in core.compare_table(vault, index, layout)["rows"]]
         return layout, lambda idx: core.build_compare_layout(members, idx)
     raise HTTPException(status_code=404, detail=f"没有 `{layout}` 这个项目或对比组")
+
+
+def _topic_name_ok(name: str) -> str:
+    name = name.strip()
+    if not name or not core.RE_ID_OK.match(name) or name.startswith("."):
+        raise HTTPException(status_code=422, detail=f"专题名「{name}」不能为空，也不能含空格或 / \\ : * ? \" < > |（它同时是文件名）")
+    return name
+
+
+def _topic_target(vault, name: str):
+    """专题画布：已经建了画布的，或者有点在 frontmatter 里声明了这个专题的（第一次打开时建一张空的）。"""
+    name = _topic_name_ok(name)
+    declared = any(t["topic"] == name for t in core.topics(current_index(vault)))
+    if not declared and name not in core.topic_canvases(vault):
+        raise HTTPException(status_code=404, detail=f"没有「{name}」这个专题")
+    return core.TOPIC_PREFIX + name, lambda index: core.empty_layout()
 
 
 @app.get("/api/layout", response_model=LayoutRead)
@@ -164,12 +184,13 @@ def patch_layout(patch: LayoutPatch, layout: str | None = None) -> LayoutSaved:
 
 
 def _source_refs(vault: Path, items: list[str]) -> list[SourceRef]:
-    """把节点的 sources 逐项认成原文 / 外部来源。原文在的话给一个 Obsidian 打开链接。"""
+    """把节点的 sources 逐项认成原文 / 成品 / 外部来源。原文在的话给一个 Obsidian 打开链接；
+    成品不给（Obsidian 不渲染 html），前端自己拼 `/api/work` 在新标签页打开。"""
     resolve = core.SourceResolver(vault)
     out = []
     for item in items:
         ref = {k: v for k, v in resolve(item).items() if k != "legacy"}
-        if ref["exists"]:
+        if ref["exists"] and ref["kind"] == "article":
             ref["uri"] = f"obsidian://open?vault={quote(vault.name)}&file={quote(ref['path'])}"
         out.append(SourceRef(**ref))
     return out
@@ -278,6 +299,136 @@ def get_schools_of_kind(kind: str) -> dict:
     if kind not in core.LINE_TYPES:
         raise HTTPException(status_code=404, detail=f"没有 `{kind}` 这种线，只有：{core.LINE_TYPES}")
     return {"schools": core.schools(current_index(vault_path()), kind)}
+
+
+@app.get("/api/topics")
+def get_topics() -> dict:
+    """库里所有专题：建了画布的 ∪ 有中心点声明的。画布可以先于中心点存在（先画，再把大框升级成知识点）。"""
+    vault = vault_path()
+    centers = {t["topic"]: t for t in core.topics(current_index(vault))}
+    canvases = set(core.topic_canvases(vault))
+    names = sorted(set(centers) | canvases)
+    folder = {n: core.topic_folders.folder_of(vault, core.topic_dir(vault, n)) for n in canvases}
+    return {"topics": [{"topic": n, "center": (centers.get(n) or {}).get("center"),
+                        "name": (centers.get(n) or {}).get("name"), "canvas": n in canvases,
+                        "folder": folder.get(n, "")} for n in names],
+            "folders": core.topic_folders.folders(vault)}
+
+
+@app.post("/api/topics", status_code=201)
+def post_topic(body: dict) -> dict:
+    """新建一张空的专题画布。重名直接拒——两张图写同一个文件，后写的会把先画的整张盖掉。"""
+    vault = vault_path()
+    name = _topic_name_ok(str(body.get("topic") or ""))
+    if name in core.topic_canvases(vault):
+        raise HTTPException(status_code=409, detail=f"专题「{name}」已经有画布了（专题名全库唯一）")
+    canvas = {**core.empty_layout(), "revision": 1, "updated_at": dt.datetime.now().astimezone().isoformat(timespec="seconds")}
+    try:
+        core.topic_folders.new_topic_dir(vault, name, str(body.get("folder") or ""), canvas)
+    except core.topic_folders.FolderRejected as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {"topic": name, "revision": 1, "folder": str(body.get("folder") or "")}
+
+
+def _folder_op(fn, *args):
+    """文件夹操作统一出口：不合法的请求（撞名、挪进自己里面、删非空文件夹）一律 422 + 原因。"""
+    try:
+        return fn(vault_path(), *args)
+    except core.topic_folders.FolderRejected as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.post("/api/topics/{topic}/move")
+def post_topic_move(topic: str, body: dict) -> dict:
+    """把专题挪进某个文件夹（空串 = 顶层）。专题名不变，中心点 md 里的 `专题:` 一个字不用改。"""
+    return {"topic": topic, "folder": _folder_op(core.topic_folders.move_topic, _topic_name_ok(topic), str(body.get("folder") or ""))}
+
+
+@app.post("/api/topic-folders", status_code=201)
+def post_topic_folder(body: dict) -> dict:
+    """新建文件夹，`parent` 空串 = 顶层。文件夹可以套文件夹，但不能建在专题里（专题是叶子）。"""
+    return {"path": _folder_op(core.topic_folders.make_folder, str(body.get("parent") or ""), str(body.get("name") or ""))}
+
+
+@app.post("/api/topic-folders/move")
+def post_topic_folder_move(body: dict) -> dict:
+    return {"path": _folder_op(core.topic_folders.move_folder, str(body.get("path") or ""), str(body.get("to") or ""))}
+
+
+@app.post("/api/topic-folders/rename")
+def post_topic_folder_rename(body: dict) -> dict:
+    return {"path": _folder_op(core.topic_folders.rename_folder, str(body.get("path") or ""), str(body.get("name") or ""))}
+
+
+@app.delete("/api/topic-folders")
+def delete_topic_folder(path: str) -> dict:
+    """只删空文件夹（他 2026-10-14 定的：非空不让删，先清空）。"""
+    _folder_op(core.topic_folders.delete_folder, path)
+    return {"path": path}
+
+
+@app.delete("/api/topics/{topic}")
+def delete_topic(topic: str) -> dict:
+    """删专题：整个专题文件夹（画布和以后的审图意见）先原样备份再删——图里升级出来的知识点 md 一个不碰。"""
+    vault = vault_path()
+    name = _topic_name_ok(topic)
+    folder = core.topic_dir(vault, name)          # 在哪一层文件夹里都按名字找得到
+    if not (folder / "canvas.json").exists():
+        raise HTTPException(status_code=404, detail=f"专题「{name}」没有画布")
+    stamp = dt.datetime.now().strftime("%Y%m%d-%H%M%S")
+    backup = vault / ".knowrary" / "backup" / f"topic-{name}-{stamp}"
+    shutil.copytree(folder, backup)
+    shutil.rmtree(folder)
+    return {"topic": name, "backup": backup.relative_to(vault).as_posix()}
+
+
+@app.get("/api/topics/{topic}/draft")
+def get_topic_draft(topic: str, up: int | None = None, down: int | None = None,
+                    left: int | None = None, right: int | None = None) -> dict:
+    """按关系算出的方位（上 / 下 / 左 / 右 / 对照 / 待上图）：给「一键初稿」和侧栏建议用，不是画布本身。
+
+    跳数默认 3，按方位单独覆盖；画布的手摆位置另存，这里永远现算。
+    """
+    depth = {k: v for k, v in (("up", up), ("down", down), ("left", left), ("right", right)) if v is not None}
+    if any(v < 0 or v > 10 for v in depth.values()):
+        raise HTTPException(status_code=422, detail="跳数要在 0～10 之间")
+    try:
+        return core.topic_map(current_index(vault_path()), topic, depth)
+    except core.TopicNotFound:
+        raise HTTPException(status_code=404, detail=f"没有点声明专题「{topic}」（中心点 frontmatter 写 `专题: {topic}`）")
+
+
+@app.get("/api/topics/{topic}/review")
+def get_topic_review(topic: str) -> dict:
+    """上次审图的意见（含采纳 / 忽略状态）和问过的「该画什么」。没审过就是空的。"""
+    return core.topic_review.load_review(vault_path(), _topic_name_ok(topic))
+
+
+@app.post("/api/topics/{topic}/review")
+def post_topic_review(topic: str) -> dict:
+    """审这张图（review 角色，点了才调）：意见挂在框 / 线上，每条带一键采纳的改法。"""
+    try:
+        return topic_review_svc.review(vault_path(), _topic_name_ok(topic))
+    except topic_review_svc.TopicReviewRejected as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.post("/api/topics/{topic}/review/{item_id}")
+def post_topic_review_mark(topic: str, item_id: str, body: dict) -> dict:
+    """采纳 / 忽略一条意见。采纳的动作前端照着 fix 做（改字、加框、升级、连线），这里只记状态。"""
+    try:
+        return topic_review_svc.mark(vault_path(), _topic_name_ok(topic), item_id, str(body.get("status") or ""))
+    except topic_review_svc.TopicReviewRejected as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.post("/api/topics/{topic}/advice")
+def post_topic_advice(topic: str, body: dict) -> dict:
+    """问 AI 该画什么（learn 角色）：只给文字建议，不替你画。"""
+    try:
+        return topic_review_svc.advise(vault_path(), _topic_name_ok(topic), str(body.get("question") or ""))
+    except topic_review_svc.TopicReviewRejected as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 @app.get("/api/compare/{group_id}")
@@ -550,21 +701,28 @@ def forget_vault(path: str) -> VaultRead:
 def _vault_config_read(vault: Path, extra: dict | None = None) -> VaultConfigRead:
     cfg = core.load_vault_config(vault)
     return VaultConfigRead(**cfg, articles=len(core.list_articles(vault / cfg["articles_dir"])),
+                           works=len(core.list_works(vault / cfg["works_dir"])),
                            candidates=core.articles_dir_candidates(vault), **(extra or {}))
 
 
 @app.get("/api/vault/config", response_model=VaultConfigRead)
 def get_vault_config() -> VaultConfigRead:
-    """这个库的结构配置（现在只有原文目录）。在库里，跟着 git 走——和「用哪个库」那份用户级选择不是一回事。"""
+    """这个库的结构配置（原文目录、成品目录、模型目录）。在库里，跟着 git 走——和「用哪个库」那份用户级选择不是一回事。"""
     return _vault_config_read(vault_path())
 
 
 @app.put("/api/vault/config", response_model=VaultConfigRead)
 def put_vault_config(req: VaultConfigPatch) -> VaultConfigRead:
-    """改原文目录。旧目录里还有文章而没说 `move` 就 409——前端据此问一句「一起搬过去？」。"""
+    """改原文目录（旧目录里还有文章而没说 `move` 就 409——前端据此问一句「一起搬过去？」），
+    或改成品目录（只换指向不搬，成品由人自己整理）。一次只改一样。"""
     vault = vault_path()
     try:
-        done = core.save_articles_dir(vault, req.articles_dir, move=req.move, dry_run=req.dry_run)
+        if req.works_dir is not None:
+            done = core.save_works_dir(vault, req.works_dir, dry_run=req.dry_run)
+        elif req.articles_dir is not None:
+            done = core.save_articles_dir(vault, req.articles_dir, move=req.move, dry_run=req.dry_run)
+        else:
+            raise HTTPException(status_code=422, detail={"message": "articles_dir 和 works_dir 至少给一个"})
     except core.ArticlesNeedMove as exc:
         raise HTTPException(status_code=409, detail={"message": str(exc), "articles": exc.count,
                                                      "from": exc.old}) from exc
@@ -572,8 +730,9 @@ def put_vault_config(req: VaultConfigPatch) -> VaultConfigRead:
         raise HTTPException(status_code=422, detail={"message": str(exc)}) from exc
     if req.dry_run:
         cfg = done["config"]
-        return VaultConfigRead(**cfg, articles=len(core.list_articles(vault / cfg["articles_dir"])))
-    return _vault_config_read(vault, {"moved": done["moved"], "backup": done["backup"]})
+        return VaultConfigRead(**cfg, articles=len(core.list_articles(vault / cfg["articles_dir"])),
+                               works=len(core.list_works(vault / cfg["works_dir"])))
+    return _vault_config_read(vault, {"moved": done.get("moved", []), "backup": done.get("backup", "")})
 
 
 @app.get("/api/models", response_model=ModelsRead)
@@ -866,7 +1025,8 @@ def post_merge(req: MergeRequest) -> MergeResult:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     if req.dry_run:
         return MergeResult(impact=MergeImpact(**impact), index_revision=index["revision"])
-    snapshot = {"path": impact["drop_path"], "files": [impact["keep_path"], *impact["files"]]}
+    snapshot = {"path": impact["drop_path"], "files": [impact["keep_path"], *impact["files"]],
+                "canvases": impact["canvases"]}
     try:
         core.guarded(vault, snapshot, "merge", lambda: core.apply_merge(vault, impact), [])
     except core.RolledBack as exc:
@@ -1062,6 +1222,17 @@ def post_import_propose(req: ImportProposeRequest) -> ImportProposal:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
+@app.post("/api/import/reshape", response_model=ImportReshapeResult)
+def post_import_reshape(req: ImportReshapeRequest) -> ImportReshapeResult:
+    """审核卡上调整拆法（2026-10-13）：勾几个点合并 / 对一个点再拆。调一次 learn，只重写动到的点；只改卡不写盘。"""
+    try:
+        return importing.reshape(vault_path(), req)
+    except importing.ImportRejected as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except LLMFailed as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
 @app.get("/api/articles", response_model=ArticlesRead)
 def get_articles() -> ArticlesRead:
     """原文目录里的全部原文，带「拆出了几个点」。只读。"""
@@ -1073,6 +1244,22 @@ def get_article(path: str) -> ArticleRead:
     """读一篇原文（只读）：正文、小节、从它拆出的点（各自链的是哪一节）。"""
     try:
         return articles_svc.read_article(vault_path(), path)
+    except articles_svc.ArticleRejected as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.get("/api/works", response_model=WorksRead)
+def get_works() -> WorksRead:
+    """成品目录里的全部成品，带「拆出了哪些点」；没有节点链着的就是待导入。只读。"""
+    return articles_svc.list_works(vault_path())
+
+
+@app.get("/api/work")
+def get_work(path: str) -> FileResponse:
+    """端出一个成品（库里的交互式 HTML 深度文档），浏览器新标签页直接看。
+    锚点（#sec-x）由前端拼在 URL 后面，不经过这里。只读。"""
+    try:
+        return FileResponse(str(articles_svc.work_file(vault_path(), path)), media_type="text/html")
     except articles_svc.ArticleRejected as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 

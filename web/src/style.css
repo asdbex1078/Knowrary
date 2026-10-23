@@ -696,6 +696,10 @@ select:disabled { cursor: not-allowed; opacity: .5; }
 /* 原文面板：列表 + 只读阅读页（每节标题旁挂出自这一节的点） */
 .art-list, .art-read { padding: 0 2px 16px; }   /* 滚动交给外层 .drawer-body */
 .art-list-head { font-size: 11.5px; margin: 2px 0 8px; }
+.art-tabs { margin: 0 0 10px; }
+/* 成品行下面那串「拆出来的点」：缩进对齐行里的名字，和行贴着 */
+.art-work-refs { display: flex; flex-wrap: wrap; gap: 4px; align-items: center;
+  margin: -2px 0 8px 24px; }
 .art-row { display: flex; align-items: center; gap: 6px; padding: 2px 0; }
 .art-open { flex: 1; min-width: 0; display: flex; align-items: center; gap: 6px; text-align: left;
   padding: 6px 8px; border-radius: var(--r-sm); background: transparent; border: 1px solid transparent;
@@ -721,6 +725,11 @@ select:disabled { cursor: not-allowed; opacity: .5; }
 
 /* 导入面板：保留原文开关、原文怎么进库 */
 .imp-keep { margin: 6px 0 2px; }
+.imp-grain { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 11.5px; }
+.imp-grain-tip { flex: 1; min-width: 160px; font-size: 11px; }
+.imp-reshape { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: 12px; padding: 6px 8px;
+               margin-bottom: 6px; border: 1px dashed var(--line); border-radius: 8px; }
+.imp-reshape input { flex: 1; min-width: 140px; font-size: 12px; padding: 3px 6px; }
 .imp-article { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: 11.5px; margin: 4px 0 6px; }
 .imp-article .dim { display: inline-flex; align-items: center; gap: 4px; }
 
@@ -1886,3 +1895,94 @@ kbd.key {
 .line-picks .chip:disabled { cursor: default; opacity: .6; }
 .layer-also { margin-top: 5px; align-items: center; }
 .layer-also .dim { font-size: 11px; margin-right: 2px; }
+
+/* 专题画布：画图工具条、图形 / 连线编辑卡、悬停说明（2026-10-13） */
+.draw-card {
+  position: absolute; top: 64px; right: 16px; z-index: 12; width: 250px;
+  display: flex; flex-direction: column; gap: 8px; padding: 10px 12px; border-radius: 10px;
+  background: var(--bg-1); border: 1px solid var(--line); box-shadow: 0 6px 18px rgba(0, 0, 0, 0.1);
+  font-size: 12px;
+}
+.draw-card-head { display: flex; align-items: center; gap: 6px; }
+.draw-card-head .icon-btn { margin-left: auto; }
+.draw-card .fld { display: flex; flex-direction: column; gap: 3px; }
+.draw-card textarea, .draw-card input:not([type='checkbox']) { width: 100%; font-size: 12px; }
+.draw-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.draw-swatch { width: 18px; height: 18px; border-radius: 50%; border: 1px solid var(--line-2); cursor: pointer; padding: 0; }
+.draw-swatch.on { outline: 2px solid var(--accent); outline-offset: 1px; }
+.draw-size { width: 64px !important; }
+.draw-bold { display: inline-flex; align-items: center; gap: 4px; }
+.draw-tip {
+  position: absolute; z-index: 40; pointer-events: none; max-width: 320px; white-space: pre-wrap;
+  padding: 7px 10px; border-radius: 8px; font-size: 12.5px; line-height: 1.55;
+  background: var(--surface); color: var(--text); border: 1px solid var(--line); box-shadow: var(--sh-3);
+}
+.draw-tip[hidden] { display: none; }
+
+/* 专题画布左边的图形栏（照 draw.io：拖进画布） */
+.shape-palette {
+  position: absolute; top: 12px; left: 12px; bottom: 12px; z-index: 12; width: 176px;
+  display: flex; flex-direction: column; gap: 8px; padding: 10px; border-radius: 10px; overflow: auto;
+  background: var(--bg-1); border: 1px solid var(--line); box-shadow: 0 6px 18px rgba(0, 0, 0, 0.08);
+  font-size: 12px;
+}
+.pal-head { display: flex; align-items: center; gap: 5px; font-weight: 600; font-size: 13px; }
+.pal-sub { color: var(--text-3); font-size: 11px; margin-top: 2px; }
+.pal-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 6px; }
+.pal-item {
+  display: flex; flex-direction: column; align-items: center; gap: 2px; padding: 6px 2px;
+  border: 1px solid var(--line); border-radius: 8px; background: var(--surface); color: var(--text-2);
+  cursor: grab; font-size: 11px;
+}
+.pal-item:hover { border-color: var(--accent); color: var(--accent-text); background: var(--accent-soft); }
+.pal-item:active { cursor: grabbing; }
+.pal-search { width: 100%; height: 28px; font-size: 12px; }
+.pal-hits { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+.pal-hits li {
+  display: flex; align-items: baseline; gap: 6px; padding: 5px 7px; border-radius: 6px; cursor: grab;
+  border: 1px dashed var(--line);
+}
+.pal-hits li:hover { background: var(--accent-soft); border-color: var(--accent); }
+.pal-hits .fd { font-size: 10.5px; color: var(--text-3); margin-left: auto; }
+.pal-none { color: var(--text-3); margin: 0; }
+.pal-tip { margin-top: auto; color: var(--text-3); font-size: 11px; line-height: 1.6; }
+/* 原地改字：盖在图形上的文本框 */
+.draw-inline {
+  position: absolute; z-index: 40; resize: none; padding: 6px 8px; line-height: 1.4; text-align: center;
+  background: var(--surface); color: var(--text); border: 1.5px solid #d8a838; border-radius: 6px;
+  box-shadow: var(--sh-3); outline: none;
+}
+.pal-depth { display: flex; gap: 4px; }
+.pal-depth label { display: flex; align-items: center; gap: 2px; font-size: 11px; color: var(--text-3); }
+.pal-depth input { width: 30px; height: 22px; padding: 0 2px; font-size: 11px; text-align: center; }
+.pal-group-head { font-size: 11px; font-weight: 600; margin: 4px 0 2px; }
+
+/* 专题图的 AI 面板（审这张图 / 问该画什么） */
+.topic-ai {
+  position: absolute; top: 64px; right: 16px; bottom: 70px; z-index: 13; width: 310px;
+  display: flex; flex-direction: column; gap: 10px; padding: 10px 12px; border-radius: 10px; overflow: auto;
+  background: var(--bg-1); border: 1px solid var(--line); box-shadow: 0 6px 18px rgba(0, 0, 0, 0.1); font-size: 12px;
+}
+.topic-ai ~ .draw-card { right: 340px; }
+.tai-head { display: flex; align-items: center; gap: 6px; }
+.tai-head .icon-btn { margin-left: auto; }
+.tai-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.tai-sum { margin: 6px 0 0; line-height: 1.6; }
+.tai-small { font-size: 11px; }
+.tai-items { list-style: none; margin: 6px 0 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.tai-item { border: 1px solid var(--line); border-radius: 8px; padding: 7px 9px; cursor: pointer; }
+.tai-item.focus { border-color: #d8a838; box-shadow: 0 0 0 1px #d8a838 inset; }
+.tai-item.adopted, .tai-item.ignored { opacity: .55; }
+.tai-item-head { display: flex; align-items: center; gap: 6px; }
+.tai-state { margin-left: auto; }
+.tai-kind { font-size: 10.5px; font-weight: 600; padding: 1px 6px; border-radius: 4px; background: var(--surface-3); }
+.tai-kind.fact { color: #c0392b; } .tai-kind.missing { color: #c07a26; }
+.tai-kind.upgrade { color: #3f74b5; } .tai-kind.link { color: #2f8d7b; }
+.tai-say { margin: 4px 0 2px; line-height: 1.5; }
+.tai-fix { display: flex; align-items: center; gap: 6px; margin-top: 4px; }
+.tai-acts { margin-left: auto; display: flex; gap: 4px; flex: none; }
+.tai-advice { border-top: 1px solid var(--line); padding-top: 8px; display: flex; flex-direction: column; gap: 6px; }
+.tai-sub { font-weight: 600; }
+.tai-advice textarea { width: 100%; font-size: 12px; }
+.tai-answer { border-left: 2px solid var(--line-2); padding-left: 8px; }
+.pal-ai { margin-left: auto; }

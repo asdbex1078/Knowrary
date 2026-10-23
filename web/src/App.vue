@@ -3,13 +3,17 @@ import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, shallowR
 import {
   fetchSettings, putSettings, fetchLLMConfig, putLLMConfig, testLLMConfig as postLLMConfigTest,
   fetchPending, postPendingDecide, postTypeDecide, postEdgesPlan, postEdgesCheck, fetchEdgeChecks, postEdgeFix, fetchVault, browseVault, initVault, putVault, forgetVault, fetchVaultConfig, putVaultConfig,
-  fetchCopySources, fetchCopyCatalog, postCopy, fetchCalendar, fetchCompareGroups, fetchCompareTable, postCompareFill, fetchDigest, postSyncToGlobal, fetchDue, fetchProjects, putProjects, postPlanPropose, fetchToday, fetchUsage, postMerge, postRename, postQuiz, postQuizDiagnose, postQuizGrade, fetchOpenQuiz, dropOpenQuiz, postRegroup, fetchIndex, fetchInbox, fetchLayout, fetchModels, fetchNode,
+  fetchCopySources, fetchCopyCatalog, postCopy, fetchCalendar, fetchCompareGroups, fetchTopics, fetchTopicDraft, postTopic, deleteTopic, postTopicFolder, renameTopicFolder, moveTopicFolder, deleteTopicFolder, moveTopic, fetchTopicReview, postTopicReview, markTopicReview, postTopicAdvice, fetchCompareTable, postCompareFill, fetchDigest, postSyncToGlobal, fetchDue, fetchProjects, putProjects, postPlanPropose, fetchToday, fetchUsage, postMerge, postRename, postQuiz, postQuizDiagnose, postQuizGrade, fetchOpenQuiz, dropOpenQuiz, postRegroup, fetchIndex, fetchInbox, fetchLayout, fetchModels, fetchNode,
   patchLayout, postAudit, postChanges, postRelink, postRevise, postReviseUndo, postPlace, postCurate, postReview, postSuggest, postSummarize, postYearsPropose,
 } from './api.js'
 import AppHeader from './components/AppHeader.vue'
 import ActivityBar from './components/ActivityBar.vue'
 import { panelOk } from './components/activity-items.js'
 import CanvasTools from './components/CanvasTools.vue'
+import DrawTools from './components/DrawTools.vue'
+import ShapePalette from './components/ShapePalette.vue'
+import BindDialog from './components/BindDialog.vue'
+import TopicAI from './components/TopicAI.vue'
 import ZoomBar from './components/ZoomBar.vue'
 import HistoryPlayer from './components/HistoryPlayer.vue'
 import StatusBar from './components/StatusBar.vue'
@@ -45,6 +49,10 @@ import ArticlesPanel from './panels/ArticlesPanel.vue'
 import ImagePicker from './panels/ImagePicker.vue'
 import TimelinePanel from './panels/TimelinePanel.vue'
 import ComparePanel from './panels/ComparePanel.vue'
+import TopicsPanel from './panels/TopicsPanel.vue'
+import { DRAG_NODE, DRAG_SHAPE, SHAPE_KINDS, draftPlan, drawCells, openReviewCounts, suggestions as topicSuggestions, editInPlace, isDrawnShape, isLink, linkNodes, shapeCellId,
+         removeEdgeChanges, upgradeChanges, writtenEdgeId } from './canvas/drawing.js'
+import { createTopicDrawing } from './canvas/topicDraw.js'
 import CompareTable from './components/CompareTable.vue'
 import CompareFillDialog from './components/CompareFillDialog.vue'
 import TourPanel from './components/TourPanel.vue'
@@ -133,6 +141,20 @@ const compareData = ref(null)
 const compareBusy = ref(false)
 const compareFill = ref(null)      // 补一轮的提议（CompareProposal），null = 没开
 const compareFilling = ref(false)
+// 专题（2026-10-13）：一个专题一张自己画的画布，layout 名 `topic:<专题名>`（`.knowrary/topics/<专题名>.json`）。
+// 和对比组一样：换专题 = 换一份 layout，撤销栈要清。
+const topicId = ref(localStorage.getItem('knowrary-topic') || '')
+const topics = ref([])
+const topicFolders = ref([])         // .knowrary/topics/ 下的文件夹（2026-10-14），`AI/LLM` 这种路径
+const topicBusy = ref(false)
+const drawQuery = ref('')
+const binding = ref(null)          // 正在给哪个框挑已有知识点：{ sid }
+const topicAIOpen = ref(false)      // 第 6 步：AI 面板（审这张图 / 问该画什么）
+const topicReview = shallowRef({})   // GET /api/topics/<专题>/review
+const topicAIBusy = ref('')          // '' | 'review' | 'advice'
+let reviewAfterUpgrade = null        // 「建议升级」走新建对话框：写成了才记采纳
+const topicDraft = shallowRef(null)  // 按关系算的方位（/api/topics/<专题>/draft）；没有中心就是 null
+if (mode.value === 'topic' && !topicId.value) mode.value = 'structure'   // 记着的专题模式却没有专题：别拿全局图冒充
 /**
  * 「画布与外观」那一栏的**出厂默认**：别人 clone 下来第一眼看到的样子。
  *
@@ -185,6 +207,164 @@ const preview = shallowRef(null)         // 换布局的预览态：{ serverLayo
 const history = createHistory()
 const histVer = ref(0)                   // 栈深度变化时触发按钮可用状态刷新
 let dirtyBefore = null                   // 当前这批未保存改动之前的快照（撤销用）
+/** 画面正中（图坐标）。viewportCenter 返回的是便签左上角，这里还原成中心点 */
+function drawCenter() {
+  const c = viewportCenter()
+  return { x: c.x + 90, y: c.y + 30 }
+}
+
+// 专题画布上的画图交互（canvas/topicDraw.js）。补丁和拖动走同一条路：先记撤销起点，再进写盘队列
+const draw = createTopicDrawing({
+  layoutDoc, graph,
+  queue: (bucket, id, patch) => {
+    if (!writable()) return
+    if (!dirtyBefore) dirtyBefore = clone(layoutDoc.value)
+    patcher.value.queueEntry(bucket, id, patch)
+  },
+  render: () => render(),
+  center: () => drawCenter(),
+  meta: (id) => indexDoc.value?.nodes.find((n) => n.id === id) || null,
+  say: (text, kind) => setBanner(text, kind),
+})
+const topicCenter = computed(() => (indexDoc.value?.nodes || []).find((n) => n.topic === topicId.value)?.id || '')
+const topicRelated = computed(() => (topicDraft.value ? topicSuggestions(layoutDoc.value, topicDraft.value) : []))
+const topicNames = computed(() => Object.fromEntries((indexDoc.value?.nodes || []).map((n) => [n.id, n.name || n.id])))
+
+/** 方位只跟着索引、专题、跳数变；画布上摆了什么由 suggestions 现算，不用重拉。 */
+async function refreshTopicDraft() {
+  if (mode.value !== 'topic' || !topicId.value || !topicCenter.value) { topicDraft.value = null; return }
+  try {
+    topicDraft.value = await fetchTopicDraft(topicId.value, layoutDoc.value?.depth || {})
+  } catch (err) {
+    topicDraft.value = null
+    if (err.status !== 404) setBanner(`按关系算方位失败：${err.message}`, 'error')
+  }
+}
+watch([indexDoc, topicId, mode, topicCenter, () => JSON.stringify(layoutDoc.value?.depth || {})], () => refreshTopicDraft())
+
+/** 一键初稿：只摆还没上图的，落在画面中间（已经有中心大框就围着它摆）。 */
+function runTopicDraft() {
+  if (!topicDraft.value || !writable()) return
+  const plan = draftPlan(layoutDoc.value, topicDraft.value, drawCenter(), draw.uid)
+  const n = Object.keys(plan.nodes).length + Object.values(plan.shapes).filter((x) => x.node && x.kind !== 'frame').length
+  if (!n && !Object.keys(plan.shapes).length) { setBanner('关系能连到的点都已经在图上了'); return }
+  draw.applyPlan(plan)
+  nextTick(() => graph.value?.zoomToFit({ padding: 60, maxScale: 1 }))
+  setBanner(`摆了一版初稿：${n} 个点（已经摆好的没动）。不满意 ⌘Z 撤回`, 'success')
+}
+
+
+// ---- 专题图的 AI（第 6 步）：审这张图 / 问该画什么，都是点了才调 ----
+
+watch([topicId, mode], async () => {
+  if (mode.value !== 'topic' || !topicId.value) { topicReview.value = {}; return }
+  try { topicReview.value = await fetchTopicReview(topicId.value) } catch { topicReview.value = {} }
+  render()
+})
+
+/** 框 / 知识点 id → 给人看的名字（面板里写「引导块」而不是 smv6…）。 */
+function topicThingName(id) {
+  const shape = layoutDoc.value?.shapes?.[id]
+  return shape ? shape.text || topicNames.value[shape.node] || '（没写字的框）' : topicNames.value[id] || id
+}
+
+async function runTopicReview() {
+  await patcher.value.flush()           // 审的是盘上的画布：手上还没写盘的改动先落下去
+  topicAIBusy.value = 'review'
+  try {
+    const review = await postTopicReview(topicId.value)
+    topicReview.value = { ...topicReview.value, review }
+    render()
+    setBanner(`审完了：${review.items.length} 条意见（${review.model}，${(review.ms / 1000).toFixed(1)}s）`, 'success')
+  } catch (err) {
+    setBanner(`审图没成：${err.body?.detail?.message || err.body?.detail || err.message}`, 'error')
+  } finally {
+    topicAIBusy.value = ''
+  }
+}
+
+async function askTopicAdvice(question) {
+  await patcher.value.flush()
+  topicAIBusy.value = 'advice'
+  try {
+    const entry = await postTopicAdvice(topicId.value, question)
+    topicReview.value = { ...topicReview.value, advice: [entry, ...(topicReview.value.advice || [])].slice(0, 10) }
+  } catch (err) {
+    setBanner(`没问成：${err.body?.detail?.message || err.body?.detail || err.message}`, 'error')
+  } finally {
+    topicAIBusy.value = ''
+  }
+}
+
+async function markReview(item, status) {
+  try {
+    const saved = await markTopicReview(topicId.value, item.id, status)
+    const items = (topicReview.value.review?.items || []).map((it) => (it.id === item.id ? saved : it))
+    topicReview.value = { ...topicReview.value, review: { ...topicReview.value.review, items } }
+    render()
+  } catch (err) {
+    setBanner(`没记上：${err.body?.detail || err.message}`, 'error')
+  }
+}
+
+/** 采纳：照意见里的改法改画布。指的框已经被删了就说一声，让他忽略掉。 */
+async function adoptReview(item) {
+  const f = item.fix || {}
+  const shapes = layoutDoc.value.shapes || {}
+  if (item.target && !shapes[item.target]) { setBanner('这条意见指的框已经不在了，点「忽略」收掉它'); return }
+  if (item.kind === 'fact') draw.patchShape(item.target, { [f.field]: f.value })
+  else if (item.kind === 'missing') adoptMissing(item.target, f)
+  else if (item.kind === 'link') draw.addLink(f.from, f.to, f.text || '')
+  else if (item.kind === 'upgrade') return adoptUpgrade(item)
+  await markReview(item, 'adopted')
+}
+
+/** 缺了一块：放进它该在的大框，接在框里最右边那个小框后面；没指定大框就放画面中间。 */
+function adoptMissing(frameId, f) {
+  const frame = frameId ? layoutDoc.value.shapes[frameId] : null
+  const kids = frame ? Object.values(layoutDoc.value.shapes).filter((x) => x.parent === frameId) : []
+  const at = !frame ? drawCenter()
+    : { x: (kids.length ? Math.max(...kids.map((k) => k.x + k.w)) : frame.x) + 85, y: frame.y + frame.h / 2 + 10 }
+  const sid = draw.addAt(f.shape, at)
+  draw.patchShape(sid, { text: f.text, tip: f.tip || '' })
+}
+
+/** 建议升级：有现成的点就直接绑（照常过写入审核）；要新建就开新建对话框，写成了才记采纳。 */
+async function adoptUpgrade(item) {
+  const f = item.fix || {}
+  if (f.node) {
+    binding.value = { sid: item.target }
+    await bindExisting(f.node)
+    if (layoutDoc.value.shapes?.[item.target]?.node === f.node) await markReview(item, 'adopted')
+    return
+  }
+  openShapeNodeDialog(item.target)
+  if (f.name && creating.value) creating.value.name = f.name.replace(/[\\/:*?"<>|\s]+/g, '')
+  reviewAfterUpgrade = item
+}
+
+function pickReview(item) {
+  const sid = item.target || (item.fix?.from?.kind === 'shape' ? item.fix.from.id : null)
+  if (!sid || !layoutDoc.value.shapes?.[sid]) return
+  draw.select('shape', sid)
+  render()
+}
+
+/** 每个方向走几跳：这张图自己记着（layout.depth），改完重算方位。 */
+function setTopicDepth(depth) {
+  if (!writable()) return
+  layoutDoc.value = { ...layoutDoc.value, depth }
+  patcher.value.queueList('depth', depth)
+  refreshTopicDraft()
+}
+
+const drawHits = computed(() => {
+  const q = drawQuery.value.trim().toLowerCase()
+  if (!q) return []
+  return (indexDoc.value?.nodes || [])
+    .filter((n) => !n.virtual && `${n.id} ${n.name || ''} ${(n.aliases || []).join(' ')}`.toLowerCase().includes(q))
+    .slice(0, 8)
+})
 const canUndo = computed(() => histVer.value >= 0 && history.depth()[0] > 0)
 const canRedo = computed(() => histVer.value >= 0 && history.depth()[1] > 0)
 // 只有用户真的操作过画布才允许落盘：既避免"打开页面就涨 revision"，
@@ -239,7 +419,9 @@ const ctx = ref(null)          // 菜单浮层的 props：{ x, y, title, subtitl
 let ctxTarget = null           // 菜单指着谁：{ kind, id, at }，不进 props（会漏成 DOM 属性）
 const relating = shallowRef(null)        // 建立关系对话框的源节点
 const relatePreset = shallowRef(null)    // 欠账清单的连边建议带过来的默认类型与目标
-watch(relating, (v) => { if (!v) relatePreset.value = null })
+// 专题画布「写成关系」：是哪条线、对面是谁（两头由线定，对话框只选类型和方向）
+const relateLock = shallowRef(null)      // { lid, target: { id, name } }
+watch(relating, (v) => { if (!v) { relatePreset.value = null; relateLock.value = null } })
 const creating = shallowRef(null)        // 新建知识点对话框：{ at, group }
 const writeNonce = ref(0)                // ++ 一次 = 让检查器展开正文编辑框
 const neighbor = ref(null)               // 只看这个节点和它的直接邻居
@@ -456,9 +638,9 @@ async function reloadLayout() {
     fresh = await fetchLayout(layoutName())
   } catch (err) {
     if (err.status !== 404) throw err
-    // 项目画布没了（项目被删）：退回全局图，别让整屏卡在"加载失败"
-    currentProject.value = ''
-    setBanner('那个项目已经不在了，已退回全局图')
+    // 项目画布 / 专题画布没了（被删）：退回全局图，别让整屏卡在"加载失败"
+    if (mode.value === 'topic') { topicId.value = ''; mode.value = 'structure' } else currentProject.value = ''
+    setBanner('那张画布已经不在了，已退回全局图')
     fresh = await fetchLayout(null)
   }
   layoutDoc.value = fresh.layout
@@ -473,6 +655,7 @@ function layoutName() {
   // 对比画布是第三种 layout：一个对比组一份，`.knowrary/layouts/<对比组 id>.json`。
   // 它不写全局图——那正是"对比组不上主图"这条规矩在写入侧的落点。
   if (mode.value === 'compare') return compareId.value || null
+  if (mode.value === 'topic') return topicId.value ? `topic:${topicId.value}` : null
   const scoped = mode.value === 'project' || mode.value === 'chat'
   return scoped && currentProject.value ? currentProject.value : null
 }
@@ -560,7 +743,11 @@ function enterHistory() {
   try { last = localStorage.getItem('knowrary.historyView') || 'timeline' } catch { /* 无痕模式 */ }
   openHistory(HISTORY_VIEWS.some(([k]) => k === last) ? last : 'timeline')
 }
-function onHeaderMode(next) { if (next === 'history-entry') enterHistory(); else switchMode(next) }
+function onHeaderMode(next) {
+  if (next === 'history-entry') enterHistory()
+  else if (next === 'topic') enterTopic()
+  else switchMode(next)
+}
 
 function setLineageKind(kind) {
   lineageKind.value = kind
@@ -598,9 +785,15 @@ const modelsUsing = computed(() => {
   return ids.map((id) => byId.get(id)).filter(Boolean)
 })
 
-/** 在应用里读一篇原文、滚到某一节。检查器的来源链接、别处的"看原文"都走这里。 */
+/** 在应用里读一篇原文、滚到某一节。检查器的来源链接、别处的"看原文"都走这里。
+ * 成品（html）不进阅读面板——它是交互页面，新标签页打开原页面（带锚点直达那一节）。 */
 function openArticle({ path, section }) {
   if (!path) return
+  if (/\.html?$/i.test(path)) {
+    window.open(`/api/work?path=${encodeURIComponent(path)}${section ? '#' + encodeURIComponent(section) : ''}`,
+                '_blank', 'noopener')
+    return
+  }
   articleReq.value = { path, section: section || '', nonce: Date.now() }
   openPanel('articles', { force: true })
 }
@@ -629,6 +822,7 @@ function openPanel(id, { force = false } = {}) {
   if (panel.value === 'plans') refreshPlans()
   if (panel.value === 'calendar') refreshCalendar()
   if (panel.value === 'compare') refreshCompareGroups()
+  if (panel.value === 'topics') refreshTopics()
 }
 
 const statusText = computed(() => ({
@@ -678,7 +872,8 @@ async function load() {
   const [index, first] = await Promise.all([fetchIndex(), fetchLayout(layoutName()).catch((e) => e)])
   if (first instanceof Error) {
     if (first.status !== 404) throw first
-    currentProject.value = ''          // localStorage 里存的项目已经没了：退回全局图
+    // localStorage 里存的项目 / 专题已经没了：退回全局图
+    if (mode.value === 'topic') { topicId.value = ''; mode.value = 'structure' } else currentProject.value = ''
     layout = await fetchLayout(null)
   } else {
     layout = first
@@ -727,6 +922,14 @@ function render({ view = 'keep' } = {}) {
         ? new Set([...projectIds.value, ...borrowed])
         : null),
   })
+  if (mode.value === 'topic') {
+    const drawn = drawCells(layoutDoc.value, indexDoc.value, { shape: draw.selShape.value, link: draw.selLink.value,
+                                                              reviews: openReviewCounts(topicReview.value?.review) })
+    cells.nodes.push(...drawn.nodes)
+    cells.edges.push(...drawn.edges)
+    const rubber = draw.preview()               // 正在连线：起点到鼠标的那条虚线
+    if (rubber) cells.edges.push(rubber)
+  }
   edgesShown.value = cells.edges.filter((e) => e.data.kind === 'edge').length
   aggShown.value = cells.edges.length - edgesShown.value
   const keep = view === 'keep' ? { zoom: g.zoom(), translate: g.translate() } : null
@@ -911,6 +1114,10 @@ async function switchMode(next) {
     expanded.value = new Set()
     render({ view: 'fit' })
     refreshCompareTable()
+  } else if (next === 'topic') {
+    expanded.value = new Set()
+    draw.reset()
+    render({ view: 'fit' })
   } else {
     expanded.value = new Set()
     render({ view: next === 'project' ? 'fit' : 'stored' })
@@ -958,7 +1165,7 @@ function showProblems() {
 // 盘上却没变。同一个坑踩第二次了，判据跟着 layoutName() 走，别再各写一份。
 const writable = () => !preview.value
   && (mode.value === 'structure' || mode.value === 'project' || mode.value === 'chat'
-      || mode.value === 'compare')
+      || mode.value === 'compare' || mode.value === 'topic')
 
 function queueIfChanged(kind, id, patch) {
   if (!writable()) return
@@ -1012,7 +1219,28 @@ function reportCrash(err) {
   rebuildGraph(msg)
 }
 
+// 专题画布：从左边图形栏拖进来（画布上的 @drop 先问这里）、连线时预览线跟着鼠标。
+/** 是从图形栏拖来的就放下并返回 true；不是就交回给 Inbox 那条路。 */
+function onTopicDrop(e) {
+  if (mode.value !== 'topic' || !writable()) return false
+  const kind = e.dataTransfer?.getData(DRAG_SHAPE)
+  const nid = e.dataTransfer?.getData(DRAG_NODE)
+  if (!kind && !nid) return false
+  e.preventDefault()
+  ready.value = true                    // 拖进来就是真人操作，允许落盘
+  const at = graph.value.clientToLocal(e.clientX, e.clientY)
+  if (kind) draw.addAt(kind, at)
+  else draw.addNodeAt(nid, at)
+  return true
+}
+
+// 用模块级的同一个函数挂监听：画布重建时 bindEvents 再挂一次，同一个函数引用不会重复触发
+function onCanvasPointer(e) {
+  if (mode.value === 'topic' && draw.linking.value) draw.trackPointer(graph.value.clientToLocal(e.clientX, e.clientY))
+}
+
 function bindEvents(g) {
+  g.container.addEventListener('mousemove', onCanvasPointer)
   // 首次真实交互后才允许落盘（合成事件与真人操作都会触发 mousedown / wheel）
   const markReady = () => { ready.value = true }
   g.container.addEventListener('mousedown', markReady, { capture: true })
@@ -1029,6 +1257,7 @@ function bindEvents(g) {
 
   g.on('node:moved', safe(({ node }) => {
     if (!ready.value) return
+    if (isDrawnShape(node)) { draw.onMoved(node); return }
     if (node.id.startsWith('note:') || node.id.startsWith('ref:')) {
       const pos = snapped(node.position())
       node.position(pos.x, pos.y)
@@ -1051,6 +1280,7 @@ function bindEvents(g) {
   }))
   g.on('node:change:parent', safe(({ node, current }) => {
     if (!ready.value) return
+    if (isDrawnShape(node)) { draw.onParent(node, current); return }
     if (node.shape === 'kg-node') {
       const pos = node.position()
       queueIfChanged('node', node.id, { group: current || null, x: Math.round(pos.x), y: Math.round(pos.y) })
@@ -1068,6 +1298,7 @@ function bindEvents(g) {
   }))
   g.on('node:unselected', safe(() => { selected.value = null; detail.value = null; focus(null) }))
   g.on('blank:click', safe(() => {
+    if (mode.value === 'topic') draw.onEscape()
     selected.value = null
     detail.value = null
     activeGroup.value = null
@@ -1097,6 +1328,7 @@ function bindEvents(g) {
   }
 
   g.on('node:click', safe(({ node }) => {
+    if (mode.value === 'topic' && draw.onNodeClick(node)) return     // 连线模式 / 点了手画的图形
     // 影子点（按流派分道时第二派起的那一份）：跳到真身，别停在合成 id 上
     if (node.shape === 'kg-dot' && node.getData()?.shadow) { gotoNode(node.getData().realId); return }
     if (node.shape === 'kg-cluster') enterGroup(node.id)
@@ -1115,6 +1347,8 @@ function bindEvents(g) {
     }
   }))
   g.on('node:dblclick', safe(({ node }) => {
+    // 双击手画的图形 = 直接改字：编辑卡里的文字框拿到焦点
+    if (isDrawnShape(node)) { editShapeText(node.getData().sid); return }   // 照 draw.io：原地改字
     if (node.shape === 'kg-note') editNote(node.id.slice(5))
     else if (node.shape === 'kg-group') exitGroup()   // 双击域的空白处退回全景
     // 历史图上双击一个点 = 只看它那条演化线（祖先 + 后代 + 直接旁系）。
@@ -1123,6 +1357,7 @@ function bindEvents(g) {
   }))
   g.on('node:resized', safe(({ node }) => {
     if (!ready.value) return
+    if (isDrawnShape(node)) { draw.onResized(node); return }
     const { width, height } = node.size()
     const pos = node.position()
     if (node.shape === 'kg-image') {
@@ -1135,6 +1370,7 @@ function bindEvents(g) {
   }))
   // 点聚合边展开这对分组之间的明细，再点收起；点普通边则挂上拐点手柄
   g.on('edge:click', safe(({ edge, x, y }) => {
+    if (mode.value === 'topic' && draw.onEdgeClick(edge)) return
     // 绕行路由让线贴着分组框的上沿走，而边的点击热区有十来像素宽——
     // 于是**点域标题条会点到线上**，工具条再也弹不出来（e2e 抓到的：点中的是 `丁->乙#依赖`）。
     // 标题条是那个域唯一的把手，必须赢：点在标题条范围内就当点了这个域。
@@ -1151,6 +1387,7 @@ function bindEvents(g) {
     editVertices(edge)
   }))
   g.on('edge:dblclick', safe(({ edge }) => {
+    if (isLink(edge)) { editLinkText(edge.getData().lid); return }
     if ((edge.getData() || {}).kind !== 'edge') return
     edge.setVertices([])
     edge.removeTools()
@@ -1178,11 +1415,13 @@ function bindEvents(g) {
       setBanner(`「${node.id}」是借来的外部邻居，不属于这个项目——要改它请去全局图`)
       return
     }
+    if (isDrawnShape(node)) { draw.select('shape', node.getData().sid); render(); openMenu('shape', node.getData().sid, e); return }
     const kind = { 'kg-node': 'node', 'kg-group': 'group', 'kg-cluster': 'cluster' }[node.shape]
       || (['kg-note', 'kg-image', 'kg-ref'].includes(node.shape) ? 'deco' : null)
     if (kind) openMenu(kind, node.id, e)
   }))
   g.on('edge:contextmenu', safe(({ edge, e }) => {
+    if (isLink(edge)) { draw.select('link', edge.getData().lid); render(); openMenu('link', edge.getData().lid, e); return }
     if ((edge.getData() || {}).kind === 'edge') openMenu('edge', edge.id, e)
   }))
   g.on('blank:contextmenu', safe(({ e }) => openMenu('blank', null, e)))
@@ -1253,7 +1492,8 @@ function focus(nodeId) {
 function menuCtx() {
   return { index: indexDoc.value, layout: layoutDoc.value, dueIds: dueIds.value,
            pathFrom: pathFrom.value, pathHit: !!pathHit.value, neighbor: neighbor.value,
-           focusGroup: focusGroup.value, showMap: showMap.value, nodeName, selectedIds: selectedNodeIds() }
+           focusGroup: focusGroup.value, showMap: showMap.value, nodeName, selectedIds: selectedNodeIds(),
+           topic: mode.value === 'topic' }
 }
 
 /** 画布上当前框选 / 多选的知识点 id（Selection 插件只让 kg-node 进选区）。 */
@@ -1324,6 +1564,25 @@ const MENU_ACTIONS = {
 
   'deco-edit': (cellId) => editNote(cellId.slice(cellId.indexOf(':') + 1)),
   'deco-delete': (cellId) => deleteDecoration(cellId),
+
+  // 专题画布（2026-10-13）：图形 / 连线的右键菜单、空白处右键放图形
+  'link-from-node': (id) => draw.startLink({ kind: 'node', id }),
+  'link-from-shape': (sid) => draw.startLink({ kind: 'shape', id: sid }),
+  'shape-edit': (sid) => editShapeText(sid),
+  'shape-style': (sid) => { draw.select('shape', sid); render(); nextTick(() => document.querySelector('[data-shape-tip]')?.focus()) },
+  'shape-new-node': (sid) => openShapeNodeDialog(sid),
+  'shape-bind': (sid) => { binding.value = { sid } },
+  'shape-open': (sid) => openShapeNode(sid),
+  'shape-sync': (sid) => syncShapeParts(sid),
+  'shape-unbind': (sid) => { draw.bind(sid, null); setBanner('已解除绑定：只改了画布，md 没动') },
+  'shape-delete': (sid) => draw.deleteShape(sid),
+  ...Object.fromEntries(SHAPE_KINDS.map((k) => [`shape-kind-${k.kind}`, (sid) => draw.patchShape(sid, { kind: k.kind })])),
+  ...Object.fromEntries(SHAPE_KINDS.map((k) => [`draw-${k.kind}`, (_id, at) => draw.addAt(k.kind, at)])),
+  'link-edit': (lid) => editLinkText(lid),
+  'link-style': (lid) => { draw.select('link', lid); render() },
+  'link-relate': (lid) => startLinkRelation(lid),
+  'link-edge-delete': (lid) => deleteLinkEdge(lid),
+  'link-delete': (lid) => draw.deleteLink(lid),
 
   'new-group': (_id, at) => newGroup(at),
   'new-subgroup': (gid, at) => newGroup(at, gid),
@@ -1502,6 +1761,7 @@ async function copyWikiLink(id) {
 function unplace(id) {
   if (!layoutDoc.value.nodes[id]) return
   if (!dirtyBefore) dirtyBefore = clone(layoutDoc.value)
+  if (mode.value === 'topic') draw.dropNodeLinks(id)      // 连着它的线一起拿掉，悬空的线服务端会拒
   const nodes = { ...layoutDoc.value.nodes }
   delete nodes[id]
   layoutDoc.value = { ...layoutDoc.value, nodes }
@@ -1510,7 +1770,8 @@ function unplace(id) {
   if (neighbor.value === id) neighbor.value = null
   render()
   refreshInbox()
-  setBanner(`「${id}」已移出画布，md 没动，在 Inbox 里可以再放回来`, 'success')
+  setBanner(mode.value === 'topic' ? `「${id}」已从这张专题图上拿掉，md 没动`
+    : `「${id}」已移出画布，md 没动，在 Inbox 里可以再放回来`, 'success')
 }
 
 function deleteDecoration(cellId) {
@@ -1674,7 +1935,111 @@ function openNodeDialog(at, gid) {
   }
 }
 
+// ---- 专题画布：框升级成知识点（2026-10-13）----
+
+function editShapeText(sid) {
+  const shape = layoutDoc.value.shapes?.[sid]
+  const cell = graph.value.getCellById(shapeCellId(sid))
+  if (!shape || !cell || !writable()) return
+  draw.select('shape', sid)
+  editInPlace(graph.value, cell.getBBox(), shape.text, (text) => draw.patchShape(sid, { text }))
+}
+
+function editLinkText(lid) {
+  const link = layoutDoc.value.links?.[lid]
+  const cell = graph.value.getCellById(`link:${lid}`)
+  if (!link || !cell || !writable()) return
+  const c = cell.getBBox().center
+  editInPlace(graph.value, { x: c.x - 80, y: c.y - 18, width: 160, height: 36 }, link.text,
+              (text) => draw.patchLink(lid, { text }))
+}
+
+/** 右键「升级为知识点：新建文档」：照常的新建对话框，名字 / 摘要从框上的字 / 悬停说明预填。 */
+function openShapeNodeDialog(sid) {
+  const shape = layoutDoc.value.shapes?.[sid]
+  if (!shape) return
+  openNodeDialog(null, null)
+  // 名字同时是文件名：框上的字常带空格 / 换行（「Linux 0.12 文件系统」），预填时去掉不能进文件名的字符
+  const name = shape.text.replace(/[\\/:*?"<>|\s]+/g, '')
+  Object.assign(creating.value, { shape: sid, name, desc: shape.tip.trim(), noRelate: true })
+}
+
+/** 大框当中心之前：这个专题原来已经有中心的话，问一句要不要换（原来那个的 `专题` 字段去掉）。null = 不换，放弃。 */
+function centerSwap(nodeId) {
+  const old = indexDoc.value.nodes.find((n) => n.topic === topicId.value && n.id !== nodeId)
+  if (!old) return []
+  if (!window.confirm(`专题「${topicId.value}」的中心原来是「${old.name || old.id}」，换成这个框？\n（「${old.name || old.id}」md 里的 专题 字段会去掉）`)) return null
+  return [{ type: 'update_frontmatter', source: old.id, fields: { 专题: '' } }]
+}
+
+async function createShapeNode(form) {
+  const sid = creating.value.shape
+  creating.value = null
+  const shape = layoutDoc.value.shapes?.[sid]
+  const frame = shape?.kind === 'frame'
+  const swap = frame ? centerSwap(form.id) : []
+  if (!shape || swap === null) return
+  const create = { type: 'create_node', source: form.id, path: `${form.dir}/${form.id}.md`,
+                   fields: { name: form.name, field: form.field, desc: form.desc, learned: todayISO(),
+                             ...(form.layer ? { layer: form.layer } : {}), ...(form.year ? { year: form.year } : {}),
+                             ...(frame ? { 专题: topicId.value } : {}) },
+                   ...(form.body ? { body: form.body } : {}) }
+  const extra = upgradeChanges({ layout: layoutDoc.value, index: indexDoc.value, sid, nodeId: form.id,
+                                 topic: topicId.value, isNew: true })
+  await writeShapeUpgrade(sid, form.id, [...swap, create, ...extra], `已新建 ${form.dir}/${form.id}.md，框升级成了知识点`)
+}
+
+/** 绑定已有知识点：补的关系同样过写入审核。 */
+async function bindExisting(nodeId) {
+  const sid = binding.value?.sid
+  binding.value = null
+  const shape = layoutDoc.value.shapes?.[sid]
+  if (!shape) return
+  const swap = shape.kind === 'frame' ? centerSwap(nodeId) : []
+  if (swap === null) return
+  const meta = indexDoc.value.nodes.find((n) => n.id === nodeId)
+  if (shape.kind === 'frame' && meta?.topic && meta.topic !== topicId.value
+      && !window.confirm(`「${meta.name || nodeId}」现在是专题「${meta.topic}」的中心，改成「${topicId.value}」的中心？`)) return
+  const changes = upgradeChanges({ layout: layoutDoc.value, index: indexDoc.value, sid, nodeId, topic: topicId.value })
+  await writeShapeUpgrade(sid, nodeId, [...swap, ...changes], `已绑定「${meta?.name || nodeId}」`)
+}
+
+/** 大框右键「把框里的小框补成部件关系」：后来才拖进框、或后来才升级的小框，一次补齐。 */
+async function syncShapeParts(sid) {
+  const node = layoutDoc.value.shapes?.[sid]?.node
+  if (!node) return
+  const changes = upgradeChanges({ layout: layoutDoc.value, index: indexDoc.value, sid, nodeId: node, topic: topicId.value })
+  if (!changes.length) { setBanner('框里已经升级的小框都已经是它的部件了'); return }
+  await writeShapeUpgrade(sid, node, changes, '部件关系补齐了')
+}
+
+async function writeShapeUpgrade(sid, nodeId, changes, done) {
+  status.value = 'saving'
+  try {
+    if (changes.length) await writeChanges(changes)
+    draw.bind(sid, nodeId)
+    await reloadIndex()
+    render()
+    status.value = 'saved'
+    const edges = changes.filter((c) => c.type === 'add_edge').length
+    setBanner(`${done}${edges ? `；补了 ${edges} 条「部件」关系` : ''}`, 'success')
+    if (reviewAfterUpgrade?.target === sid) { const it = reviewAfterUpgrade; reviewAfterUpgrade = null; markReview(it, 'adopted') }
+  } catch (err) {
+    status.value = 'error'
+    setBanner(`没写成：${err.audit ? '审核没通过——' + (err.audit.summary || '') : err.body?.detail?.message || err.body?.detail || err.message}`, 'error')
+  }
+}
+
+function openShapeNode(sid) {
+  const id = layoutDoc.value.shapes?.[sid]?.node
+  if (!id) return
+  selected.value = describe(id)
+  inspectorHidden.value = false
+  loadDetail(id)
+}
+
 async function createNode(form) {
+  if (creating.value?.shape) return createShapeNode(form)
   const spot = creating.value
   creating.value = null
   status.value = 'saving'
@@ -1934,7 +2299,9 @@ function linkFromDigest({ source, target, relation }) {
   relating.value = describe(source)
 }
 
-async function createRelation({ relation, target, swap }) {
+async function createRelation(payload) {
+  if (relateLock.value) return createLinkRelation(payload)
+  const { relation, target, swap } = payload
   const src = relating.value
   if (!src) return
   const from = swap ? target : src.id
@@ -1955,6 +2322,52 @@ async function createRelation({ relation, target, swap }) {
     status.value = 'error'
     setBanner(`建立关系失败：${err.body?.detail?.message || err.body?.detail || err.message}`, 'error')
   }
+}
+
+// ---- 专题画布：连线写成关系（2026-10-13）----
+
+/** 右键「写成关系」：两头由线定（知识点卡片，或升级过的框），对话框只选类型和方向。 */
+function startLinkRelation(lid) {
+  const ends = linkNodes(layoutDoc.value, lid)
+  if (!ends) { setBanner('两端都要是知识点：先把框右键升级成知识点'); return }
+  relating.value = describe(ends.from)
+  relateLock.value = { lid, target: describe(ends.to) }
+}
+
+/**
+ * 写进 md 之后这条线怎么办：两头都是知识点卡片的，画布本来就会画出那条真关系，手画的线删掉免得叠两根；
+ * 有一头是框的，线留着、记住它写成了哪条关系（按那条关系的族上色，md 里没了就变红）。
+ */
+async function createLinkRelation({ relation, target, swap }) {
+  const { lid } = relateLock.value
+  const src = relating.value.id
+  const from = swap ? target : src
+  const to = swap ? src : target
+  relating.value = null
+  status.value = 'saving'
+  try {
+    await writeChanges([{ type: 'add_edge', source: from, relation, target: to }])
+    await reloadIndex()
+    const link = layoutDoc.value.links?.[lid]
+    if (link?.source.kind === 'node' && link?.target.kind === 'node') draw.deleteLink(lid)
+    else draw.patchLink(lid, { edge: writtenEdgeId(indexDoc.value, from, to, relation) })
+    const family = familyOfType(relation)
+    if (family && !visible[family]) visible[family] = true
+    render()
+    status.value = 'saved'
+    setBanner(`已写进 md：「${from} ${relation} → ${to}」`, 'success')
+  } catch (err) {
+    status.value = 'error'
+    setBanner(`写成关系失败：${err.audit ? '审核没通过——' + (err.audit.summary || '') : err.body?.detail?.message || err.body?.detail || err.message}`, 'error')
+  }
+}
+
+/** 已写成关系的线右键「从 md 删掉这条关系」：md 里删边，线也一起删（不然它会变成一条红线）。 */
+async function deleteLinkEdge(lid) {
+  const edgeId = layoutDoc.value.links?.[lid]?.edge
+  if (!edgeId) return
+  await deleteEdge(edgeId)
+  if (!indexDoc.value.edges.some((e) => e.id === edgeId)) { draw.deleteLink(lid); render() }
 }
 
 /** 保存正文：只换 frontmatter 与 `## 关系` 之间那一段，其余逐字保留（服务端也是这么切的）。 */
@@ -1985,7 +2398,7 @@ async function deleteEdge(edgeId) {
   if (!e) return
   status.value = 'saving'
   try {
-    await writeChanges([{ type: 'remove_edge', source: e.source, relation: e.type, target: e.target }])
+    await writeChanges(removeEdgeChanges(e, indexDoc.value))
     await reloadIndex()
     status.value = 'saved'
     setBanner(`已删除「${e.source} ${e.type} → ${e.target}」`, 'success')
@@ -2502,6 +2915,97 @@ async function refreshCompareTable() {
   }
 }
 
+/** 专题目录：建了画布的 ∪ 有中心点声明的，服务端现算，每次开面板重拉。 */
+async function refreshTopics() {
+  topicBusy.value = true
+  try {
+    const got = await fetchTopics()
+    topics.value = got.topics
+    topicFolders.value = got.folders || []
+  } catch (err) {
+    setBanner(`专题目录加载失败：${err.message}`, 'error')
+  } finally {
+    topicBusy.value = false
+  }
+}
+
+/** 顶栏「专题」：记着上次那张就直接进，没有就先开目录挑一个 / 建一个。 */
+async function enterTopic() {
+  if (topicId.value) return switchMode('topic')
+  openPanel('topics', { force: true })
+}
+
+/** 进某个专题：换 layout、清撤销栈（和换对比组同一条规矩）。 */
+async function openTopic(name) {
+  if (mode.value === 'topic' && topicId.value === name) return
+  await patcher.value.flush()
+  topicId.value = name
+  try { localStorage.setItem('knowrary-topic', name) } catch { /* 无痕模式 */ }
+  draw.reset()
+  if (mode.value !== 'topic') return switchMode('topic')
+  history.reset()
+  histVer.value++
+  await reloadLayout()
+  render({ view: 'fit' })
+}
+
+/** 新建专题：`req` = { topic, folder }，folder 空 = 顶层（专题树上选中的文件夹）。 */
+async function createTopic(req) {
+  const name = req.topic
+  topicBusy.value = true
+  try {
+    await postTopic(name, req.folder || '')
+    await refreshTopics()
+    await openTopic(name)
+    setBanner(`专题「${name}」建好了：从左边把图形拖进画布，右键连线、升级成知识点`, 'success')
+  } catch (err) {
+    setBanner(`没建成：${err.body?.detail || err.message}`, 'error')
+  } finally {
+    topicBusy.value = false
+  }
+}
+
+async function removeTopic(name) {
+  topicBusy.value = true
+  try {
+    if (mode.value === 'topic' && topicId.value === name) await patcher.value.flush()
+    const res = await deleteTopic(name)
+    if (topicId.value === name) {
+      topicId.value = ''
+      try { localStorage.removeItem('knowrary-topic') } catch { /* 无痕模式 */ }
+      if (mode.value === 'topic') await switchMode('structure')
+    }
+    await refreshTopics()
+    setBanner(`已删掉「${name}」这张画布，备份在 ${res.backup}`, 'success')
+  } catch (err) {
+    setBanner(`没删成：${err.body?.detail || err.message}`, 'error')
+  } finally {
+    topicBusy.value = false
+  }
+}
+
+/** 专题树上的文件夹操作（新建 / 改名 / 挪 / 删）和「专题挪进文件夹」。专题名不变，md 不动。 */
+async function topicFolderOp(o) {
+  const run = {
+    'make-folder': () => postTopicFolder(o.parent, o.name),
+    'rename-folder': () => renameTopicFolder(o.path, o.name),
+    'move-folder': () => moveTopicFolder(o.path, o.to),
+    'delete-folder': () => deleteTopicFolder(o.path),
+    'move-topic': () => moveTopic(o.topic, o.folder),
+    'remove-topic': () => removeTopic(o.topic),
+  }[o.op]
+  if (!run) return
+  topicBusy.value = true
+  try {
+    await run()
+    await refreshTopics()
+  } catch (err) {
+    setBanner(`没成：${err.body?.detail || err.message}`, 'error')
+  } finally {
+    topicBusy.value = false
+  }
+}
+
 /** 从目录进某个对比组：换 layout、清撤销栈（跨画布撤销会把补丁打到错的文件上）。 */
 async function openCompare(id) {
   if (mode.value === 'compare' && compareId.value === id) return
@@ -2633,6 +3137,7 @@ const placeAll = () => place({ ids: inboxItems.value.map((i) => i.id) }, '全部
 
 /** 从 Inbox 拖到画布：落点由鼠标决定，落在哪个分组框里就归哪个组。 */
 async function onCanvasDrop(ev) {
+  if (onTopicDrop(ev)) return
   const id = ev.dataTransfer?.getData('text/knowrary-node')
   if (!id) return
   ev.preventDefault()
@@ -3361,7 +3866,7 @@ async function applyPreview() {
   const { result, serverLayout } = preview.value
   status.value = 'saving'
   try {
-    const saved = await patchLayout(toPatch(result, serverLayout, revision.value))
+    const saved = await patchLayout(toPatch(result, serverLayout, revision.value), layoutName())
     preview.value = null
     await load()
     if (history.record(clone(serverLayout), clone(layoutDoc.value), '换布局')) histVer.value++
@@ -3420,7 +3925,9 @@ async function restore(target, what) {
   if (isEmptyPatch(patch)) return
   status.value = 'saving'
   try {
-    await patchLayout({ base_revision: revision.value, ...patch })
+    // **必须带上 layout 名**：以前漏了，项目 / 对比 / 专题画布上的撤销都打到全局图去（多半 409 失败，
+    // revision 恰好对上时还会把这块画布的状态写进全局图）。2026-10-13 专题画布 e2e 抓到的
+    await patchLayout({ base_revision: revision.value, ...patch }, layoutName())
     await load()
     status.value = 'saved'
     setBanner(what)
@@ -3466,7 +3973,7 @@ function onKeydown(e) {
   const el = e.target
   const tag = (el?.tagName || '').toLowerCase()
   const typing = tag === 'input' || tag === 'textarea' || tag === 'select' || el?.isContentEditable
-  if (e.key === 'Escape' && !typing) { onEscape(); return }
+  if (e.key === 'Escape' && !typing) { if (mode.value === 'topic' && draw.onEscape()) return; onEscape(); return }
 
   if (e.metaKey || e.ctrlKey) {
     const key = e.key.toLowerCase()
@@ -3478,6 +3985,7 @@ function onKeydown(e) {
   if (typing || e.altKey) return
 
   // 单键快捷键：只在焦点不在输入框时生效
+  if ((e.key === 'Delete' || e.key === 'Backspace') && mode.value === 'topic' && draw.onDelete()) { e.preventDefault(); return }
   if (e.key === '/') { e.preventDefault(); headerEl.value?.focus() }
   else if (e.key === '?') { e.preventDefault(); showHelp.value = !showHelp.value }
   else if (e.key === '1') switchMode('chat')
@@ -3850,6 +4358,10 @@ onBeforeUnmount(() => {
       <ComparePanel v-else-if="panel === 'compare'" class="study" :items="compareGroups"
                     :current="mode === 'compare' ? compareId : ''" :busy="compareBusy"
                     @open="openCompare" @refresh="refreshCompareGroups" @close="panel = ''" />
+      <TopicsPanel v-else-if="panel === 'topics'" class="study" :items="topics" :folders="topicFolders"
+                   :current="mode === 'topic' ? topicId : ''" :busy="topicBusy"
+                   @open="openTopic" @create="createTopic" @op="topicFolderOp" @refresh="refreshTopics"
+                   @close="panel = ''" />
       <TimelinePanel v-else-if="panel === 'timeline'" class="timeline" :options="timelineChoices"
                      :selected="timelines" :layered="layeredHint"
                      :families="hist" :trunk="hist.trunk" :chain="histChain"
@@ -3911,6 +4423,18 @@ onBeforeUnmount(() => {
           </button>
         </div>
 
+        <ShapePalette v-if="mode === 'topic'" :topic="topicId" :hits="drawHits"
+                      :related="topicRelated" :center="topicCenter" :depth="layoutDoc?.depth || {}" :names="topicNames"
+                      @add="draw.addAt($event)" @search="drawQuery = $event" @add-node="draw.addNodeAt($event)"
+                      @draft="runTopicDraft" @depth="setTopicDepth" @ai="topicAIOpen = !topicAIOpen" />
+        <TopicAI v-if="mode === 'topic' && topicAIOpen" :doc="topicReview" :busy="topicAIBusy"
+                 :focus="draw.selShape.value || ''" :names="topicThingName"
+                 @review="runTopicReview" @advice="askTopicAdvice" @adopt="adoptReview"
+                 @ignore="markReview($event, 'ignored')" @pick="pickReview" @close="topicAIOpen = false" />
+        <DrawTools v-if="mode === 'topic'" :shape="draw.shape.value" :link="draw.link.value"
+                   @patch-shape="draw.patchShape" @delete-shape="draw.deleteShape"
+                   @patch-link="draw.patchLink" @delete-link="draw.deleteLink" />
+
         <div v-if="mode === 'compare'" class="sync-bar">
           <span class="dim">对比画布 · 只有这个组的成员，<b>不进全局图</b>（那张图已经够挤了）</span>
           <button class="btn tiny" title="回全局图" @click="switchMode('structure')">
@@ -3928,10 +4452,10 @@ onBeforeUnmount(() => {
                       @goto="gotoNode" @refresh="refreshCompareTable"
                       @fill="openCompareFill" @save="saveFact" />
 
-        <CanvasTools v-if="mode === 'structure' || mode === 'project'" :visible="visible" :shown-families="shownFamilies"
+        <CanvasTools v-if="mode === 'structure' || mode === 'project' || mode === 'topic'" :visible="visible" :shown-families="shownFamilies"
                      :collapsed="collapsedIds.size" :aggregate="aggregate" :auto-lod="autoLod" :snap="snap" :avoid-nodes="avoidNodes"
                      :borrow="borrowOn" :project="mode === 'project' && !!currentProject"
-                     :layouts="mode === 'project' ? {} : LAYOUTS" :can-undo="canUndo" :can-redo="canRedo" :locked="!!preview"
+                     :layouts="mode === 'structure' ? LAYOUTS : {}" :can-undo="canUndo" :can-redo="canRedo" :locked="!!preview"
                      @toggle-family="visible[$event] = !visible[$event]; render()"
                      @toggle-aggregate="toggleAggregate()" @toggle-lod="toggleLod()"
                      @toggle-snap="toggleSnap" @toggle-avoid="toggleAvoid" @toggle-borrow="toggleBorrow"
@@ -4026,12 +4550,15 @@ onBeforeUnmount(() => {
 
     <ContextMenu v-if="ctx" v-bind="ctx" @pick="onMenuPick" @close="ctx = null" />
 
+    <BindDialog v-if="binding" :shape-text="layoutDoc?.shapes?.[binding.sid]?.text || ''"
+                :frame="layoutDoc?.shapes?.[binding.sid]?.kind === 'frame'" :nodes="indexDoc?.nodes || []"
+                @pick="bindExisting" @close="binding = null" />
     <NodeDialog v-if="creating" :fields="fieldNames" :dirs="nodeDirs" :defaults="creating"
                 :taken="takenIds" @create="createNode" @close="creating = null" />
 
     <RelationDialog v-if="relating" :source="relating" :families="relationTypes"
                     :nodes="indexDoc?.nodes || []" :placed="placedIds" :linked="linkedOf"
-                    :preset="relatePreset"
+                    :preset="relatePreset" :lock-target="relateLock?.target"
                     @create="createRelation" @close="relating = null" />
 
     <QuizDialog v-if="quiz" :questions="quiz.questions" :names="nodeNames" :diagnosis="quizDiag"

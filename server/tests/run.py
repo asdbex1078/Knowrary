@@ -1744,7 +1744,8 @@ def dup_vault():
         "nodes/组A/a.md": node_md("A", rels="- 部件:: [[b]]", extra="learned: 2026-09-01\n"),
         # 正文补充要写在 `## 关系` **之前**，否则它属于关系段而不是正文
         "nodes/组A/甲.md": ("---\nname: 甲\nfield: 测试\ndesc: 甲 的摘要\n---\n# 甲\n\n"
-                           "这是甲的正文补充。\n\n## 关系\n- 部件:: [[b]]\n- 依赖:: [[c]]\n"),
+                           "这是甲的正文补充。\n\n## 关系\n- 部件:: [[b]]\n- 依赖:: [[c]]\n\n"
+                           "## 待办\n\n- [ ] 甲关系段后面的待办\n"),
         "nodes/组A/b.md": node_md("B", rels="- 相关:: [[甲]]"),
         "nodes/组B/c.md": node_md("C", extra="year: 2020\n"),
     }
@@ -1772,12 +1773,16 @@ def merge_边与引用全并到保留的那张():
     assert not (vault / "nodes/组A/甲.md").exists()
     kept = (vault / "nodes/组A/a.md").read_text("utf-8")
     assert "## 并入自 甲" in kept and "这是甲的正文补充" in kept, kept   # 内容一个字都不能丢
+    assert "甲关系段后面的待办" in kept, "关系段之后的小节也是内容"
     assert "- 依赖:: [[c]]" in kept, kept
     assert kept.count("- 部件:: [[b]]") == 1, "重复的边不该并成两条"
     assert "[[a]]" in (vault / "nodes/组A/b.md").read_text("utf-8")      # 别人的引用改指过来
 
     edges = {(e["source"], e["type"], e["target"]) for e in c.get("/api/index").json()["edges"]}
     assert ("a", "依赖", "c") in edges, edges
+    # 保留那张**自己原有的**边也得还是边：以前 `## 关系` 标题丢了，它们掉进正文、从索引里消失（2026-10-13）
+    assert ("a", "部件", "b") in edges, edges
+    assert kept.count("## 关系") == 1 and kept.index("## 并入自") < kept.index("## 关系"), kept
     assert not [e for e in edges if "甲" in e], edges
 
 
@@ -1827,6 +1832,50 @@ def merge_落盘前备份两边():
     assert dirs, "没有留备份"                                    # 目录名要认得出是哪种操作
     kept = {str(p.relative_to(dirs[0])) for p in dirs[0].rglob("*") if p.is_file()}
     assert "nodes/组A/甲.md" in kept and "nodes/组A/a.md" in kept, kept   # 被删的和被改的都要留档
+
+
+@case
+def merge与rename_项目画布也跟着改_没有保留那张就接过位置():
+    """2026-10-13：以前只改全局 layout.json，项目画布（layouts/*.json）上留着丢弃 / 旧 id 的位置。"""
+    c, vault = dup_vault()
+    canvas = vault / ".knowrary" / "layouts"
+    canvas.mkdir(parents=True, exist_ok=True)
+    box = {"x": 10, "y": 20, "w": 100, "h": 40}
+    (canvas / "p.json").write_text(json.dumps({"revision": 3, "groups": {}, "nodes": {"甲": box, "b": box},
+                                                "edges": {"b->甲#相关": {"vertices": []}}}), "utf-8")
+    (canvas / "q.json").write_text(json.dumps({"revision": 5, "groups": {}, "nodes": {"甲": box, "a": {**box, "x": 99}}}),
+                                   "utf-8")
+    (canvas / "r.json").write_text(json.dumps({"revision": 7, "groups": {}, "nodes": {"c": box}}), "utf-8")
+    topics = vault / ".knowrary" / "topics"
+    topics.mkdir(parents=True, exist_ok=True)
+    end = lambda nid: {"kind": "node", "id": nid}
+    (topics / "t").mkdir()
+    (topics / "t" / "canvas.json").write_text(json.dumps({"revision": 1, "nodes": {"甲": box, "a": box, "b": box},
+        "shapes": {"s": {"kind": "rect", "x": 0, "y": 0, "w": 9, "h": 9, "node": "甲"}},
+        "links": {"l1": {"source": end("a"), "target": end("甲")}, "l2": {"source": end("b"), "target": end("甲")}}}), "utf-8")
+    rev = c.get("/api/index").json()["revision"]
+    imp = c.post("/api/merge", json={"keep_id": "a", "drop_id": "甲", "base_revision": rev}).json()["impact"]
+    assert imp["canvases"] == [".knowrary/layouts/p.json", ".knowrary/layouts/q.json", ".knowrary/topics/t/canvas.json"], imp["canvases"]
+    assert c.post("/api/merge", json={"keep_id": "a", "drop_id": "甲", "base_revision": rev,
+                                      "dry_run": False}).json()["applied"]
+    p = json.loads((canvas / "p.json").read_text("utf-8"))
+    assert "甲" not in p["nodes"] and p["nodes"]["a"]["x"] == 10, "这张上没有 a：接过 甲 的位置，不能从项目画布上消失"
+    assert list(p["edges"]) == ["b->a#相关"] and p["revision"] == 4, p
+    q = json.loads((canvas / "q.json").read_text("utf-8"))
+    assert "甲" not in q["nodes"] and q["nodes"]["a"]["x"] == 99, "这张上有 a：以 a 的位置为准"
+    assert json.loads((canvas / "r.json").read_text("utf-8"))["revision"] == 7, "没碰到的画布不动"
+    t = json.loads((topics / "t" / "canvas.json").read_text("utf-8"))
+    assert t["shapes"]["s"]["node"] == "a" and list(t["links"]) == ["l2"] and t["links"]["l2"]["target"] == end("a"), \
+        "专题画布：图形绑定改指保留的那张；a→甲 并完成了自环，删掉"
+    snap = next((vault / ".knowrary" / "backup").glob("merge-*"))
+    assert (snap / ".knowrary/layouts/p.json").exists(), "改到的项目画布要进备份"
+
+    rev = c.get("/api/index").json()["revision"]
+    assert c.post("/api/rename", json={"old_id": "a", "new_id": "乙", "base_revision": rev,
+                                       "dry_run": False}).json()["applied"]
+    p = json.loads((canvas / "p.json").read_text("utf-8"))
+    assert "乙" in p["nodes"] and "a" not in p["nodes"] and list(p["edges"]) == ["b->乙#相关"], p
+    assert json.loads((canvas / "r.json").read_text("utf-8"))["revision"] == 7
 
 
 # ---------------------------------------------------------------- 重命名（改 id）
@@ -2665,6 +2714,75 @@ def import_propose_认领幽灵_近似撞名_孤立判定():
     assert d2["pending"] == [], "被提升的待审边该直接写"
     rnn = next(f for f in d2["files"] if f["path"].endswith("RNN与长程依赖.md"))
     assert "- 对比:: [[b]]" in rnn["diff"], rnn["diff"]
+
+
+@case
+def import_拆前选粒度_拆后合并再拆_只重写动到的点():
+    """2026-10-13：粒度由人定。拆前选档进提示词；卡上勾几个点合并、对一个点再拆，
+    只把动到的点交给模型重写，别的点和指向它们的边跟着改，只改卡不写盘。"""
+    from server import importing as imp_mod
+    c, vault = client()
+    plan = {"nodes": [
+        {"id": "ELF", "name": "ELF", "desc": "格式", "body": "## 描述\n见 [[动态链接]] 和 [[数据库扩展]]",
+         "relations": [{"type": "包含", "target": "动态链接", "confidence": 1}]},
+        {"id": "动态链接", "name": "动态链接", "desc": "GOT/PLT", "body": "## 描述\nd",
+         "relations": [{"type": "依赖", "target": "a", "confidence": 0.9}]},
+        {"id": "数据库扩展", "name": "数据库 C 扩展加载", "desc": "dlopen", "body": "## 描述\nx",
+         "relations": [{"type": "依赖", "target": "动态链接", "confidence": 1}]},
+    ], "summary": "s"}
+    seen = {}
+    original, original_meta = imp_mod.ask, imp_mod.ask_meta
+    imp_mod.ask = lambda vault, role, prompt, op="?": seen.update(propose=prompt) or json.dumps(plan, ensure_ascii=False)
+    try:
+        r = c.post("/api/import/propose", json={"text": "# ELF\n\n文章", "source": "ELF", "field": "测试", "grain": "粗"})
+        assert r.status_code == 200, r.text
+        assert "只拆 2～4 个节点" in seen["propose"] and "{{grain}}" not in seen["propose"], "选的档要进提示词"
+        assert c.post("/api/import/propose", json={"text": "x", "source": "y", "field": "测试",
+                                                   "grain": "超细"}).status_code == 422
+
+        merged = {"id": "动态链接", "name": "动态链接与 GOT/PLT", "desc": "运行时重定位",
+                  "body": "## 描述\nd\n\n## 例子\n数据库扩展用 dlopen",
+                  "relations": [{"type": "依赖", "target": "a", "confidence": 0.9},
+                                {"type": "依赖", "target": "动态链接", "confidence": 1}]}
+        imp_mod.ask_meta = lambda vault, role, prompt, op="?": (seen.update({op: prompt}) or json.dumps(
+            {"nodes": [merged], "main": "动态链接", "summary": "应用场景并成例子"}, ensure_ascii=False),
+            {"model": "m", "ms": 1200})
+        r = c.post("/api/import/reshape", json={"plan": plan, "op": "merge", "ids": ["动态链接", "数据库扩展"],
+                                                "hint": "数据库那个当例子", "text": "# ELF\n\n原文全文"})
+        assert r.status_code == 200, r.text
+        d = r.json()
+        p2 = d["plan"]
+        assert [n["id"] for n in p2["nodes"]] == ["ELF", "动态链接"], "并成一个、摆在原位"
+        assert p2["nodes"][0] == plan["nodes"][0] | {"body": "## 描述\n见 [[动态链接]] 和 [[动态链接]]"}, \
+            "别的点只改指向被并掉那个的链接"
+        m = p2["nodes"][1]
+        assert [r_["target"] for r_ in m["relations"]] == ["a"], "并进来以后指向自己的边去掉"
+        assert "数据库 C 扩展加载" in m["aliases"], "被并掉的名字进别名"
+        assert d["model"] == "m" and d["ms"] == 1200 and "数据库扩展用 dlopen" in d["delta"]
+        assert d["before"] == plan and d["made"] == ["动态链接"]
+        pr = seen["import-merge"]
+        assert "原文全文" in pr and "数据库那个当例子" in pr and "合并成一个" in pr
+        assert "- ELF｜格式" in pr and '"id": "数据库扩展"' in pr, "动到的点全量、别的点只给 id 和摘要"
+        assert not (vault / "nodes/测试/动态链接.md").exists(), "只改卡不写盘"
+
+        imp_mod.ask_meta = lambda vault, role, prompt, op="?": (json.dumps({"nodes": [
+            {"id": "ELF", "name": "ELF", "desc": "总览", "body": "## 描述\n总", "relations": [
+                {"type": "包含", "target": "ELF节", "confidence": 1}]},
+            {"id": "ELF节", "name": "ELF 节", "desc": "链接视图", "body": "## 描述\n节", "relations": []}],
+            "main": "ELF"}, ensure_ascii=False), {"model": "m", "ms": 1})
+        r = c.post("/api/import/reshape", json={"plan": p2, "op": "split", "ids": ["ELF"]})
+        assert r.status_code == 200, r.text
+        assert [n["id"] for n in r.json()["plan"]["nodes"]] == ["ELF", "ELF节", "动态链接"]
+
+        # 选得不对、模型交回的数量不对：都有说法，前者不调模型
+        calls = []
+        imp_mod.ask_meta = lambda vault, role, prompt, op="?": calls.append(op) or ("{}", {"model": "m", "ms": 1})
+        bad = c.post("/api/import/reshape", json={"plan": plan, "op": "merge", "ids": ["ELF"]})
+        assert bad.status_code == 422 and "至少要两个" in bad.text and calls == []
+        bad = c.post("/api/import/reshape", json={"plan": plan, "op": "split", "ids": ["ELF"]})
+        assert bad.status_code == 422 and "没交回" in bad.text and calls == ["import-split"], bad.text
+    finally:
+        imp_mod.ask, imp_mod.ask_meta = original, original_meta
 
 
 ARTICLE = ("---\ntitle: BPE 全景\ntags: [NLP]\n---\n# BPE 全景\n\n开头一段。\n\n"
@@ -7898,6 +8016,281 @@ def 用户级配置的备份放在它自己旁边():
     backups = list((home / "backup").glob("llm-config-*/llm.local.json"))
     assert backups, f"用户级配置没留备份：{list(home.iterdir())}"
     assert not (vault / ".knowrary" / "backup").exists(), "备份跑到库里去了"
+
+
+@case
+def 专题_列表与初稿方位_跳数可调_没声明404():
+    c, _ = client({
+        "nodes/fs.md": node_md("fs", rels="- 部件:: [[b2]]\n- 部件:: [[b1]]\n- 演化为:: [[ext2]]",
+                               extra="专题: 文件系统\nlayer: 系统软件\n"),
+        "nodes/b1.md": node_md("b1"), "nodes/b2.md": node_md("b2"),
+        "nodes/ext2.md": node_md("ext2", rels="- 演化为:: [[ext3]]"), "nodes/ext3.md": node_md("ext3"),
+        "nodes/db.md": node_md("db", rels="- 使用:: [[fs]]", extra="layer: 高级语言\n"),
+    })
+    assert c.get("/api/topics").json()["topics"] == [{"topic": "文件系统", "center": "fs", "name": "fs", "canvas": False, "folder": ""}]
+    assert c.get("/api/layout", params={"layout": "topic:文件系统"}).status_code == 200, "有中心声明、还没画布：第一次打开建一张空的"
+    assert c.get("/api/topics").json()["topics"][0]["canvas"] is True
+    m = c.get("/api/topics/文件系统/draft").json()
+    assert m["parts"] == ["b2", "b1"] and [it["id"] for it in m["right"]] == ["ext2", "ext3"]
+    assert [it["id"] for it in m["up"]] == ["db"]
+    m = c.get("/api/topics/文件系统/draft", params={"right": 1}).json()
+    assert [it["id"] for it in m["right"]] == ["ext2"] and m["pending"][0]["id"] == "ext3"
+    assert c.get("/api/topics/内存/draft").status_code == 404
+    assert c.get("/api/topics/文件系统/draft", params={"up": 99}).status_code == 422
+
+
+def _topic_patch(c, rev: int, **body):
+    return c.patch("/api/layout", params={"layout": "topic:文件系统"}, json={"base_revision": rev, **body})
+
+
+@case
+def 专题画布_新建画图连线_悬空和成环被拒_改名跟着走_删画布先备份():
+    c, vault = client()
+    assert c.post("/api/topics", json={"topic": "文件系统"}).status_code == 201
+    assert c.post("/api/topics", json={"topic": "文件系统"}).status_code == 409, "重名会整张盖掉"
+    assert c.post("/api/topics", json={"topic": "a/b"}).status_code == 422
+    assert (vault / ".knowrary" / "topics" / "文件系统" / "canvas.json").exists(), "一个专题一个文件夹"
+    rev = c.get("/api/layout", params={"layout": "topic:文件系统"}).json()["layout"]["revision"]
+    box = {"kind": "frame", "x": 0, "y": 0, "w": 600, "h": 120, "text": "Linux 0.12"}
+    r = _topic_patch(c, rev, shapes={
+        "s1": box, "s2": {"kind": "rect", "x": 10, "y": 10, "w": 80, "h": 60, "text": "引导块", "tip": "512 字节", "parent": "s1"},
+        "s3": {"kind": "cylinder", "x": 0, "y": 300, "w": 80, "h": 80, "text": "磁盘"}},
+        nodes={"a": {"x": 700, "y": 0}},
+        links={"l1": {"source": {"kind": "shape", "id": "s2"}, "target": {"kind": "node", "id": "a"}, "text": "读",
+                      "edge": "a->b#部件"}})
+    assert r.status_code == 200, r.text
+    rev = r.json()["revision"]
+    assert _topic_patch(c, rev, shapes={"s4": {"kind": "rect", "x": 0, "y": 0, "w": 1, "h": 1, "parent": "s3"}}).status_code == 422, "只能挂在大框里"
+    assert _topic_patch(c, rev, shapes={"s1": {"parent": "s1"}}).status_code == 422, "大框不能套自己"
+    assert _topic_patch(c, rev, links={"l2": {"source": {"kind": "shape", "id": "s9"}, "target": {"kind": "node", "id": "a"}}}).status_code == 422
+    assert _topic_patch(c, rev, shapes={"s3": {"node": "a"}}).status_code == 200
+    topics = c.get("/api/topics").json()["topics"]
+    assert topics == [{"topic": "文件系统", "center": None, "name": None, "canvas": True, "folder": ""}], topics
+    doc = c.get("/api/layout").json()["layout"]
+    assert not doc.get("shapes"), "画图只在专题画布，全局图不该沾上"
+
+    base = c.get("/api/index").json()["revision"]
+    plan = c.post("/api/rename", json={"old_id": "a", "new_id": "a2", "base_revision": base}).json()
+    assert ".knowrary/topics/文件系统/canvas.json" in plan["impact"]["canvases"], plan
+    r = c.post("/api/rename", json={"old_id": "a", "new_id": "a2", "base_revision": base, "dry_run": False})
+    assert r.status_code == 200, r.text
+    doc = c.get("/api/layout", params={"layout": "topic:文件系统"}).json()["layout"]
+    assert doc["links"]["l1"]["target"] == {"kind": "node", "id": "a2"} and doc["shapes"]["s3"]["node"] == "a2"
+    assert doc["links"]["l1"]["edge"] == "a2->b#部件", "连线记着的关系 id 也跟着改名"
+    assert "a2" in doc["nodes"]
+
+    rev = c.get("/api/layout", params={"layout": "topic:文件系统"}).json()["layout"]["revision"]
+    assert _topic_patch(c, rev, depth={"up": 1, "right": 5}).status_code == 200
+    rev = c.get("/api/layout", params={"layout": "topic:文件系统"}).json()["layout"]
+    assert rev["depth"] == {"up": 1, "right": 5}, "每张专题图自己记着各方位走几跳"
+    assert _topic_patch(c, rev["revision"], depth={"up": 11}).status_code == 422
+    assert _topic_patch(c, rev["revision"], depth={"斜": 1}).status_code == 422
+
+    r = c.delete("/api/topics/文件系统")
+    assert r.status_code == 200 and (vault / r.json()["backup"] / "canvas.json").exists(), r.json()
+    assert not (vault / ".knowrary" / "topics" / "文件系统").exists(), "整个专题文件夹删掉"
+    assert c.get("/api/layout", params={"layout": "topic:文件系统"}).status_code == 404
+    assert (vault / "nodes/组A/a2.md").exists(), "删画布不碰 md"
+
+
+@case
+def 专题_框升级_新建带专题字段和部件边_一次写完_专题字段可改可清():
+    """2026-10-13 框升级成知识点：create_node 带 `专题`，同一批给刚建的点挂「部件」边；update_frontmatter 给空 = 去掉。"""
+    c, vault = client()
+    rev = c.get("/api/index").json()["revision"]
+    r = c.post("/api/changes", json={"base_revision": rev, "dry_run": False, "changes": [
+        {"type": "create_node", "source": "FS", "path": "nodes/组A/FS.md",
+         "fields": {"name": "FS", "field": "测试", "desc": "Linux 0.12 文件系统", "专题": "文件系统"}},
+        {"type": "add_edge", "source": "FS", "relation": "部件", "target": "b"},
+        {"type": "add_edge", "source": "FS", "relation": "部件", "target": "a"}]})
+    assert r.status_code == 200 and r.json()["applied"], r.text
+    md = (vault / "nodes/组A/FS.md").read_text("utf-8")
+    assert "专题: 文件系统" in md and md.index("[[b]]") < md.index("[[a]]"), md
+    idx = c.get("/api/index").json()
+    fs = next(n for n in idx["nodes"] if n["id"] == "FS")
+    assert fs["topic"] == "文件系统" and fs["parts"] == ["b", "a"], fs
+    assert c.get("/api/topics").json()["topics"][0]["center"] == "FS"
+
+    r = c.post("/api/changes", json={"base_revision": idx["revision"], "dry_run": False, "changes": [
+        {"type": "update_frontmatter", "source": "FS", "fields": {"专题": ""}}]})
+    assert r.status_code == 200 and r.json()["applied"], r.text
+    assert "专题" not in (vault / "nodes/组A/FS.md").read_text("utf-8"), "给空就整个键拿掉，不留 `专题: ''`"
+    assert c.get("/api/topics").json()["topics"] == []
+
+
+@case
+def 专题_审这张图_只留指得到画布的意见_采纳忽略记状态_问该画什么只给文字():
+    """2026-10-13 第 6 步：审图走 review、问该画什么走 learn；指不到画布上真东西的意见丢掉并记一笔。"""
+    from server import topic_review as tr
+    c, vault = client()
+    assert c.post("/api/topics", json={"topic": "文件系统"}).status_code == 201
+    assert c.post("/api/topics/文件系统/review").status_code == 422, "空画布不白花一次调用"
+    rev = c.get("/api/layout", params={"layout": "topic:文件系统"}).json()["layout"]["revision"]
+    assert _topic_patch(c, rev, shapes={
+        "F": {"kind": "frame", "x": 0, "y": 0, "w": 500, "h": 200, "text": "Linux 0.12"},
+        "s1": {"kind": "rect", "x": 10, "y": 60, "w": 80, "h": 60, "text": "引导块", "tip": "1024 字节", "parent": "F"}},
+        nodes={"a": {"x": 700, "y": 0}}).status_code == 200
+    calls = []
+    reply = {"summary": "少了超级块", "items": [
+        {"kind": "fact", "target": "s1", "say": "引导块是一个盘块", "fix": {"field": "tip", "value": "1 个盘块（1024 字节）"}},
+        {"kind": "missing", "target": "F", "say": "缺超级块", "fix": {"shape": "rect", "text": "超级块"}},
+        {"kind": "upgrade", "target": "s1", "say": "值得单独成点", "fix": {"node": None, "name": "引导块"}},
+        {"kind": "link", "say": "引导块读 a", "fix": {"from": {"kind": "shape", "id": "s1"}, "to": {"kind": "node", "id": "a"}}},
+        {"kind": "fact", "target": "s9", "say": "指不到的框", "fix": {"field": "text", "value": "x"}},
+        {"kind": "upgrade", "target": "s1", "say": "绑个不存在的点", "fix": {"node": "没有这个"}}]}
+    original = tr.ask_meta
+    tr.ask_meta = lambda vault, role, prompt, op="?": (calls.append((role, op, prompt)) or json.dumps(reply, ensure_ascii=False),
+                                                      {"model": "m", "ms": 1200})
+    try:
+        r = c.post("/api/topics/文件系统/review")
+        assert r.status_code == 200, r.text
+        got = r.json()
+        assert calls[0][:2] == ("review", "topic-review") and "[s1] rect「引导块」" in calls[0][2], calls[0][2][:400]
+        assert [i["kind"] for i in got["items"]] == ["fact", "missing", "upgrade", "link"] and got["dropped"] == 2, got
+        assert got["model"] == "m" and got["summary"] == "少了超级块"
+        assert (vault / ".knowrary/topics/文件系统/review.json").exists(), "审图结果存进专题文件夹"
+        assert c.post("/api/topics/文件系统/review/r2", json={"status": "adopted"}).json()["status"] == "adopted"
+        assert c.post("/api/topics/文件系统/review/r9", json={"status": "adopted"}).status_code == 422
+        assert c.get("/api/topics/文件系统/review").json()["review"]["items"][1]["status"] == "adopted", "刷新还在"
+
+        tr.ask_meta = lambda vault, role, prompt, op="?": (calls.append((role, op, prompt)) or "**中间**：引导块｜超级块｜…", {"model": "m2", "ms": 900})
+        r = c.post("/api/topics/文件系统/advice", json={"question": "中间怎么分块？"})
+        assert r.status_code == 200 and r.json()["text"].startswith("**中间**") and r.json()["model"] == "m2", r.text
+        assert calls[-1][:2] == ("learn", "topic-advice") and "中间怎么分块？" in calls[-1][2]
+        assert c.get("/api/topics/文件系统/review").json()["advice"][0]["question"] == "中间怎么分块？"
+
+        tr.ask_meta = lambda vault, role, prompt, op="?": ("不是 JSON", {"model": "m", "ms": 1})
+        r = c.post("/api/topics/文件系统/review")
+        assert r.status_code == 422 and "不是能用的 JSON" in r.json()["detail"], "解析不出来不能当成「没意见」"
+        assert c.get("/api/topics/文件系统/review").json()["review"]["items"], "失败不覆盖上一次的意见"
+    finally:
+        tr.ask_meta = original
+
+
+@case
+def 专题文件夹_套文件夹_专题挪进挪出不动md_撞名挪进自己非空都拒():
+    """2026-10-14：topics/ 下是真目录；专题名全库唯一，挪位置不改名，中心点 md 的 `专题:` 不用动。"""
+    c, vault = client({**DEFAULT_FILES, "nodes/组A/fs.md": node_md("fs", extra="专题: Transformer\n")})
+    assert c.post("/api/topic-folders", json={"name": "AI"}).json()["path"] == "AI"
+    assert c.post("/api/topic-folders", json={"parent": "AI", "name": "LLM"}).json()["path"] == "AI/LLM"
+    assert (vault / ".knowrary/topics/AI/LLM/.keep").exists(), "空文件夹放占位，git 才跟得上"
+    assert c.post("/api/topic-folders", json={"parent": "AI", "name": "LLM"}).status_code == 422
+    assert c.post("/api/topics", json={"topic": "Transformer", "folder": "AI/LLM"}).status_code == 201
+    assert (vault / ".knowrary/topics/AI/LLM/Transformer/canvas.json").exists()
+    assert c.post("/api/topics", json={"topic": "Transformer"}).status_code == 409, "专题名全库唯一"
+    assert c.post("/api/topic-folders", json={"parent": "AI/LLM/Transformer", "name": "x"}).status_code == 422, "专题是叶子"
+    got = c.get("/api/topics").json()
+    assert got["folders"] == ["AI", "AI/LLM"] and got["topics"][0]["folder"] == "AI/LLM" and got["topics"][0]["center"] == "fs", got
+    rev = c.get("/api/layout", params={"layout": "topic:Transformer"}).json()["layout"]["revision"]
+    assert c.patch("/api/layout", params={"layout": "topic:Transformer"},
+                   json={"base_revision": rev, "nodes": {"a": {"x": 1, "y": 2}}}).status_code == 200
+
+    md_before = (vault / "nodes/组A/fs.md").read_text("utf-8")
+    assert c.post("/api/topics/Transformer/move", json={"folder": "AI"}).json()["folder"] == "AI"
+    assert c.get("/api/layout", params={"layout": "topic:Transformer"}).json()["layout"]["nodes"]["a"]["x"] == 1, "挪了还读得到原来的画布"
+    assert (vault / "nodes/组A/fs.md").read_text("utf-8") == md_before, "挪位置不碰 md"
+    assert c.delete("/api/topic-folders", params={"path": "AI"}).status_code == 422, "非空不让删"
+    assert c.post("/api/topic-folders/move", json={"path": "AI", "to": "AI/LLM"}).status_code == 422, "不能挪进自己里面"
+    assert c.post("/api/topic-folders/rename", json={"path": "AI/LLM", "name": "大模型"}).json()["path"] == "AI/大模型"
+    assert c.post("/api/topic-folders", json={"name": "JVM"}).status_code == 201
+    assert c.post("/api/topic-folders/move", json={"path": "AI/大模型", "to": "JVM"}).json()["path"] == "JVM/大模型"
+    assert c.delete("/api/topic-folders", params={"path": "JVM/大模型"}).status_code == 200, "只剩 .keep 算空"
+    assert c.post("/api/topics/Transformer/move", json={"folder": ""}).json()["folder"] == ""
+    assert c.get("/api/topics").json()["folders"] == ["AI", "JVM"]
+    r = c.delete("/api/topics/Transformer")
+    assert r.status_code == 200 and not (vault / ".knowrary/topics/Transformer").exists()
+
+
+@case
+def 成品层_sources链html_端点端出_配置只换指向():
+    """成品层（2026-10-22）：`[[works/….html#锚点]]` 认成 kind=work、`/api/work` 把 HTML 端给浏览器。
+    成品由人自己整理进成品目录，所以换目录只换指向、不搬文件。"""
+    c, vault = client({**DEFAULT_FILES,
+                       "nodes/组A/d.md": node_md(
+                           "D", extra='sources: ["[[works/桶锁.html#sec-3]]", "[[旧方案]]", "一本书"]\n')})
+    got = c.get("/api/vault/config").json()
+    assert got["works_dir"] == "works" and got["works"] == 0, got
+
+    (vault / "works").mkdir()
+    (vault / "works" / "桶锁.html").write_text("<!doctype html><html><body><h2 id='sec-3'>成品</h2></body></html>", "utf-8")
+    assert c.get("/api/vault/config").json()["works"] == 1
+
+    srcs = {s["raw"]: s for s in c.get("/api/node/d").json()["sources"]}
+    work = srcs["[[works/桶锁.html#sec-3]]"]
+    assert work["kind"] == "work" and work["exists"] and work["section"] == "sec-3", work
+    assert work["uri"] == "", "成品不给 Obsidian 链接：它不渲染 html，前端走 /api/work"
+    assert srcs["[[旧方案]]"]["kind"] == "article" and not srcs["[[旧方案]]"]["exists"]
+    assert srcs["一本书"]["kind"] == "external"
+
+    r = c.get("/api/work", params={"path": "works/桶锁.html"})
+    assert r.status_code == 200 and "text/html" in r.headers["content-type"] and "成品" in r.text, r.text[:200]
+    assert c.get("/api/work", params={"path": "../外面.html"}).status_code == 404
+    assert c.get("/api/work", params={"path": "nodes/组A/d.md"}).status_code == 404, "只端 html"
+    (vault / "散放.html").write_text("<html></html>", "utf-8")
+    assert c.get("/api/work", params={"path": "散放.html"}).status_code == 404, "不在成品目录、也没节点链着：不端"
+
+    # 换成品目录：只换指向不搬。旧目录里那份因为还有节点链着，照样端得出来
+    r = c.put("/api/vault/config", json={"works_dir": "成品"})
+    assert r.status_code == 200 and r.json()["works_dir"] == "成品", r.text
+    assert (vault / "成品").is_dir(), "保存时该把目录建出来"
+    assert (vault / "works" / "桶锁.html").is_file(), "换指向不许搬文件"
+    assert c.get("/api/work", params={"path": "works/桶锁.html"}).status_code == 200
+    doc = json.loads((vault / ".knowrary" / "vault.json").read_text("utf-8"))
+    assert doc == {"schema_version": 1, "works_dir": "成品"}, doc
+    assert c.put("/api/vault/config", json={"works_dir": "nodes/偷渡"}).status_code == 422
+    assert c.put("/api/vault/config", json={}).status_code == 422, "articles_dir 和 works_dir 至少给一个"
+
+
+@case
+def 成品导入_成品即原文_不存副本_节点链页面锚点():
+    """成品层第 3 步（2026-10-22）：从成品（works/ 里的 html）导入拆节点——
+    素材列表列出成品、预览给抽出来的纯文本、写入后节点 sources 链 `[[works/….html#锚点]]`，
+    articles/ 里**不落任何副本**（成品即原文）。"""
+    html = ("<!doctype html><html><head><style>.x{}</style></head><body><script>var a=1;</script>"
+            "<h1>桶锁</h1><section id='sec-bin'><h2>桶与扩容</h2><p>一个 bin 一把锁。</p></section>"
+            "<h2>尾声</h2><p>完。</p></body></html>")
+    c, vault = client(DEFAULT_FILES)
+    (vault / "works").mkdir()
+    (vault / "works" / "桶锁.html").write_text(html, "utf-8")
+
+    got = {f["path"] for f in c.get("/api/import/sources").json()["files"]}
+    assert "works/桶锁.html" in got, got
+    text = c.get("/api/import/source", params={"path": "works/桶锁.html"}).json()["text"]
+    assert "## 桶与扩容" in text and "var a=1" not in text, text
+    (vault / "散放.html").write_text("<html></html>", "utf-8")
+    assert c.get("/api/import/source", params={"path": "散放.html"}).status_code == 422, "成品目录外的 html 不是素材"
+
+    payload = {"shape": "single", "summary": "s", "nodes": [
+        {"id": "CHM桶锁", "name": "CHM 桶锁", "desc": "桶级别的锁", "from_section": "桶与扩容", "body": AUDIT_LONG,
+         "relations": [{"type": "依赖", "target": "a", "confidence": 0.9}]}]}
+    original, _ = stub_import(payload)
+    try:
+        r = c.post("/api/import/propose", json={"text": text, "file": "works/桶锁.html",
+                                                "source": "桶锁", "field": "测试"})
+    finally:
+        restore_import(original)
+    assert r.status_code == 200, r.text
+    d = r.json()
+    art = d["preview"]["article"]
+    assert art == {"path": "works/桶锁.html", "action": "in_place",
+                   "link": "[[works/桶锁.html]]", "headings": 2}, art
+
+    r = c.post("/api/import", json={"plan": d["plan"], "field": "测试", "source": "桶锁",
+                                    "file": "works/桶锁.html", "dry_run": False})
+    assert r.status_code == 200 and r.json()["applied"], r.text
+    fm, _body = core.split_frontmatter(core.read(vault / "nodes/测试/CHM桶锁.md"))
+    assert fm["sources"] == ["[[works/桶锁.html#sec-bin]]"], fm
+    assert not (vault / "articles").exists() or not list((vault / "articles").rglob("*.md")), \
+        "成品即原文：articles/ 里不该落副本"
+    srcs = {s["raw"]: s for s in c.get("/api/node/CHM桶锁").json()["sources"]}
+    ref = srcs["[[works/桶锁.html#sec-bin]]"]
+    assert ref["kind"] == "work" and ref["exists"] and ref["section"] == "sec-bin", ref
+
+    # 成品清单（第 4 步）：列成品目录里的、带「拆出了哪些点」；散放的 html 不算成品
+    w = c.get("/api/works").json()
+    assert w["dir"] == "works" and [x["path"] for x in w["works"]] == ["works/桶锁.html"], w
+    assert w["works"][0]["title"] == "桶锁", "标题从 <title> / 第一个 <h1> 里来"
+    assert w["works"][0]["refs"] == [{"id": "CHM桶锁", "name": "CHM 桶锁", "section": "sec-bin"}], w
 
 
 def main() -> None:

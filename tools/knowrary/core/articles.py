@@ -34,21 +34,29 @@ class ArticleConflict(ValueError):
 
 @dataclass
 class ArticlePlan:
-    """这篇原文怎么进库。`action`：`in_place`（就地引用）/ `reuse`（已有一模一样的）/ `copy`（要存一份）。"""
+    """这篇原文怎么进库。`action`：`in_place`（就地引用）/ `reuse`（已有一模一样的）/ `copy`（要存一份）。
+    成品（html，见 core/works.py）也用它：永远 `in_place`，`text` 是抽出来的纯文本，`anchors` 带着页面锚点。"""
 
     path: str                          # 库内相对路径，如 articles/BPE全景.md
     action: str
-    text: str                          # 原文正文（不含我们加的那两个字段）
+    text: str                          # 原文正文（不含我们加的那两个字段）；成品是抽出来的纯文本
     headings: list[str] = field(default_factory=list)
+    anchors: dict[str, str] = field(default_factory=dict)   # 成品：小节标题 → 页面锚点 id（md 原文没有）
 
     @property
     def link(self) -> str:
         return article_link(self.path)
 
     def link_to(self, section: str | None) -> str:
-        """链到某一节：模型给的小节名要能在原文里找到（模糊匹配），链接里用原文的原样标题；找不到就链整篇。"""
+        """链到某一节：模型给的小节名要能在原文里找到（模糊匹配），链接里用原文的原样标题；找不到就链整篇。
+        成品链的是页面锚点 id——没有锚点的小节链整篇，页面上跳不过去的锚点没有意义。"""
         hit = find_heading(self.text, section) if section else None
-        return f"{self.link[:-2]}#{hit.title}]]" if hit else self.link
+        if hit is None:
+            return self.link
+        if self.anchors or self.path.lower().endswith((".html", ".htm")):
+            aid = self.anchors.get(hit.title, "")
+            return f"{self.link[:-2]}#{aid}]]" if aid else self.link
+        return f"{self.link[:-2]}#{hit.title}]]"
 
 
 def safe_name(name: str) -> str:

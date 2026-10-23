@@ -11,6 +11,7 @@ import { CLUSTER_H, CLUSTER_W, CURSOR_ID, CURSOR_W, FAMILY_STYLE, clusterBox, NO
          noteAttrs, paletteFor, NEUTRAL, refAttrs, registerShapes, sizeFor, tickAttrs, tokens } from './shapes.js'
 import { AXIS_H, TICK_OFFSET, activeAt, buildTimeline } from './timeline.js'
 import { buildLineage } from './lineage.js'
+import { bindTips, isDrawnShape, registerDrawShapes } from './drawing.js'
 
 /**
  * 历史视图的画布元素：泳道 + 年份刻度 + 有 year 的节点 + 两端都在图里的边。
@@ -142,11 +143,13 @@ export function markStop(graph, id) {
 }
 
 const DRAGGABLE = new Set(['kg-node', 'kg-group', 'kg-cluster', 'kg-note', 'kg-ref', 'kg-image'])
+const draggable = (shape) => DRAGGABLE.has(shape) || isDrawnShape({ shape })
 
 export const LABEL_ZOOM = 0.8 // 边标签只在放大到这个比例以上才画（性能守则 4）
 
 export function createGraph(container) {
   registerShapes()
+  registerDrawShapes()
   const graph = new Graph({
     container,
     autoResize: true,
@@ -173,12 +176,15 @@ export function createGraph(container) {
       // 落点可能同时落在多层分组里；按面积从大到小排序，X6 取最后一个 → 命中最内层分组
       findParent({ node }) {
         const bbox = node.getBBox()
+        // 手画的图形只往手画的大框里套（专题画布）；知识点和分组框照旧只认分组框
+        const host = isDrawnShape(node) ? 'kg-draw-frame' : 'kg-group'
         return this.getNodes()
-          .filter((n) => n.shape === 'kg-group' && n.id !== node.id)
+          .filter((n) => n.shape === host && n.id !== node.id)
           .filter((n) => n.getBBox().containsRect(bbox))
           .sort((a, b) => b.getBBox().width * b.getBBox().height - a.getBBox().width * a.getBBox().height)
       },
       validate: ({ child, parent }) => {
+        if (isDrawnShape(child)) return parent?.shape === 'kg-draw-frame' && !hasAncestor(parent, child)
         if (!parent || parent.shape !== 'kg-group') return false
         if (child.shape === 'kg-node') return true
         if (child.shape !== 'kg-group') return false
@@ -196,7 +202,7 @@ export function createGraph(container) {
     connecting: { router: 'normal', connector: 'normal', allowBlank: false },
     // 只有"内容"能拖。泳道、年份刻度、时间游标是图的骨架不是图的内容——
     // 它们的坐标是算出来的，拖走既没意义，还会被 node:moved 当成真节点写进 layout。
-    interacting: { nodeMovable: (view) => DRAGGABLE.has(view.cell.shape) && !view.cell.getData()?.borrowed,
+    interacting: { nodeMovable: (view) => draggable(view.cell.shape) && !view.cell.getData()?.borrowed,
                    edgeMovable: false, edgeLabelMovable: false },
   })
   // 拖空白 = 平移；shift + 拖空白 = 框选
@@ -208,9 +214,10 @@ export function createGraph(container) {
   // 想在组里加内容、想留白画连线，都得先有地方。簇卡片（折叠态）不给拉，它的尺寸跟着缩放走。
   graph.use(new Transform({
     resizing: {
-      enabled: (node) => node.shape === 'kg-image' || node.shape === 'kg-group',
-      minWidth: (node) => (node.shape === 'kg-group' ? GROUP_MIN_W : 80),
-      minHeight: (node) => (node.shape === 'kg-group' ? GROUP_MIN_H : 60),
+      // 手画的图形也能拉：画图本来就是在定大小
+      enabled: (node) => node.shape === 'kg-image' || node.shape === 'kg-group' || isDrawnShape(node),
+      minWidth: (node) => (node.shape === 'kg-group' ? GROUP_MIN_W : isDrawnShape(node) ? 40 : 80),
+      minHeight: (node) => (node.shape === 'kg-group' ? GROUP_MIN_H : isDrawnShape(node) ? 24 : 60),
       preserveAspectRatio: (node) => node.shape === 'kg-image',
     },
     rotating: false,
@@ -223,7 +230,13 @@ export function createGraph(container) {
   graph.use(new Snapline({ enabled: true, tolerance: 6, sharp: true, resizing: true,
     filter: (node) => node.shape !== 'kg-image' }))
   bindWheelPan(graph)
+  bindTips(graph)
   return graph
+}
+
+function hasAncestor(node, target) {
+  for (let cur = node; cur; cur = cur.getParent()) if (cur.id === target.id) return true
+  return false
 }
 
 export const GROUP_MIN_W = 200   // 再小就装不下一张知识点卡片（160）加边距
@@ -638,6 +651,7 @@ export function contentBBox(layout) {
   Object.values(layout?.groups || {}).forEach((g) => eat(g))
   Object.values(layout?.nodes || {}).forEach((n) => eat(n))
   for (const key of ['notes', 'refs', 'images']) (layout?.[key] || []).forEach((i) => eat(i))
+  Object.values(layout?.shapes || {}).forEach((s) => eat(s))
   if (!Number.isFinite(x0)) return null
   return { x: x0, y: y0, width: Math.max(x1 - x0, 1), height: Math.max(y1 - y0, 1) }
 }

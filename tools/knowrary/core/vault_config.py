@@ -23,6 +23,10 @@ DEFAULTS = {
     # 模型目录（2026-09-30）：家族文件（kind: family）放这儿，给「模型谱系」读。**默认不设**——
     # 谱系是通用能力，不该默认绑在某个路径上；没设时页面给引导，让人自己指一个目录
     "models_dir": "",
+    # 成品层（2026-10-22）：自己产出的 HTML 深度文档 / 交互演示放这儿。和原文层的根本区别：
+    # **成品由人自己整理进来**——它们在学习现场（别的代码仓库）由模型生产、还在被改，
+    # 库不自动同步那边的活文件，哪一版值得入库由人决定，搬进来的那份就是入库的那版
+    "works_dir": "works",
 }
 # 原文目录不能放的地方：节点层（会被扫成节点）、机器区、附件区、版本库与编辑器的目录
 RESERVED = ("nodes", "fields", ".knowrary", "assets", ".git", ".obsidian")
@@ -66,6 +70,10 @@ def load_vault_config(vault: Path) -> dict:
                 out["models_dir"] = normalize_models_dir(vault, data.get("models_dir"))
             except VaultConfigRejected:
                 pass
+            try:
+                out["works_dir"] = normalize_works_dir(vault, data.get("works_dir", DEFAULTS["works_dir"]))
+            except VaultConfigRejected:
+                pass
     return out
 
 
@@ -90,9 +98,27 @@ def save_models_dir(vault: Path, raw, dry_run: bool = False) -> dict:
     return {"config": config}
 
 
+def normalize_works_dir(vault: Path, raw) -> str:
+    """成品目录：规则同原文目录（库内相对、不许落进 nodes/ fields/）。"""
+    return _normalize_dir(vault, raw, "成品")
+
+
+def save_works_dir(vault: Path, raw, dry_run: bool = False) -> dict:
+    """改成品目录。**只换指向、不搬文件**：成品本来就由人自己整理进来，搬也该人搬。
+    注意链接是完整路径写法（`[[works/….html]]`），换目录后旧链接不会跟着改——
+    成品层还年轻时换无妨，链接多了再换就得自己批量改。"""
+    new = normalize_works_dir(vault, raw)
+    config = {**load_vault_config(vault), "works_dir": new}
+    if not dry_run:
+        (vault / new).mkdir(parents=True, exist_ok=True)
+        write_json_atomic(config_path(vault), _doc(config))
+    return {"config": config}
+
+
 def _doc(config: dict) -> dict:
-    """写进 vault.json 的样子：没设的（空串）不写，库的配置文件里只留真指定过的东西。"""
-    return {"schema_version": SCHEMA_VERSION, **{k: v for k, v in config.items() if v != ""}}
+    """写进 vault.json 的样子：没设的（空串）和等于默认值的不写，库的配置文件里只留真指定过的东西。"""
+    return {"schema_version": SCHEMA_VERSION,
+            **{k: v for k, v in config.items() if v != "" and v != DEFAULTS.get(k)}}
 
 
 def _normalize_dir(vault: Path, raw, what: str) -> str:
@@ -123,9 +149,19 @@ def articles_dir(vault: Path) -> Path:
     return vault / load_vault_config(vault)["articles_dir"]
 
 
+def works_dir(vault: Path) -> Path:
+    return vault / load_vault_config(vault)["works_dir"]
+
+
 def list_articles(folder: Path) -> list[Path]:
     """一个目录里的原文：所有 md，含子目录。"""
     return sorted(p for p in folder.rglob("*.md") if p.is_file()) if folder.is_dir() else []
+
+
+def list_works(folder: Path) -> list[Path]:
+    """一个目录里的成品：所有 html，含子目录。"""
+    return sorted(p for p in folder.rglob("*") if p.is_file()
+                  and p.suffix.lower() in (".html", ".htm")) if folder.is_dir() else []
 
 
 def candidates(vault: Path) -> list[str]:

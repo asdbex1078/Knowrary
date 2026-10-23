@@ -41,6 +41,8 @@ from core import link_models, load_catalog
 from core import build_article_prompt, cards_from_index, cards_from_nodes, describe_related, select_linkable, select_related
 from core import check_length, isolated as isolated_blocks, near_misses, normalize_claims, project_points
 from core import parse_json
+from core import ArticleConflict, ArticlePlan, plan_article, write_article
+from core import WorkRejected, plan_work, works_dir
 from core.mdio import RE_LINK
 
 HERE = Path(__file__).resolve().parent
@@ -537,7 +539,7 @@ def extract_json(text: str, vault: Path | None = None, context: str = "") -> dic
 # ---------------------------------------------------------------- article（提示词拼装在 core.article）
 
 def apply_plan(plan: dict, vault: Path, target: ImportTarget, dry_run: bool,
-               index: dict | None = None) -> Translation:
+               index: dict | None = None, art_origin: str = "") -> Translation:
     """方案 JSON → 三种产物（新建 / 补充老节点 / 待审边），走和网页同一条写回通道。
 
     以前这里自己渲染文件、自己 write，和 `/api/changes` 是两套写法；现在翻译成 ChangeSet
@@ -555,12 +557,24 @@ def apply_plan(plan: dict, vault: Path, target: ImportTarget, dry_run: bool,
     except (ChangeRejected, WriteConflict) as exc:
         raise SystemExit(f"方案写不进去：{exc}")
     print_import_report(tr, edits, dry_run)
+    if target.article:
+        print(f"  原文：{ARTICLE_SAY[target.article.action]} {target.article.path}（节点来源链过去）")
+    elif dry_run:
+        print("  原文：不保留，节点来源只记文章名")
     if dry_run:
         for e in edits:
             print(f"\n{'=' * 70}\n{e.rel}\n{'=' * 70}\n{_diff_text(e)}")
         return tr
-    snapshot = commit(vault, edits) if edits else ""
-    origin = {"source": target.source, "imported_at": target.date}
+    # 原文先放、节点后写；节点写失败就把这次新放的原文撤掉（和 /api/import 同一个次序）
+    art = target.article
+    created = write_article(vault, art, art_origin, target.date) if art else False
+    try:
+        snapshot = commit(vault, edits) if edits else ""
+    except BaseException:
+        if created:
+            (vault / art.path).unlink(missing_ok=True)
+        raise
+    origin = {"source": target.source, "imported_at": target.date, **({"article": art.path} if art else {})}
     added = add_pending(vault, tr.pending, origin) if tr.pending else []
     home = plan.get("suggest_home")
     if isinstance(home, dict):
@@ -570,9 +584,11 @@ def apply_plan(plan: dict, vault: Path, target: ImportTarget, dry_run: bool,
     stem = re.sub(r"[^\w一-鿿-]+", "-", target.source)[:60]
     log = vault / ".knowrary" / "imports" / f"{TODAY}-{stem}.json"
     write(log, json.dumps({"plan": plan, "changes": tr.changes, "pending": tr.pending,
-                           "warnings": tr.warnings}, ensure_ascii=False, indent=2))
+                           "warnings": tr.warnings, "article": art.path if art else None},
+                          ensure_ascii=False, indent=2))
     print(f"\n已写入 {len(edits)} 个文件" + (f"（备份 {snapshot}）" if snapshot else "")
-          + f"，待审边 {len(added)} 条；方案存于 {log.relative_to(vault)}")
+          + f"，待审边 {len(added)} 条；方案存于 {log.relative_to(vault)}"
+          + (f"；原文{ARTICLE_SAY[art.action]} {art.path}" if art else ""))
     return tr
 
 
@@ -617,10 +633,47 @@ def cmd_context(args: argparse.Namespace) -> None:
         print("\n".join(describe_related(related)))
 
 
+ARTICLE_SAY = {"copy": "存一份进", "reuse": "已有一模一样的", "in_place": "就地引用"}
+
+
+def cli_article(vault: Path, path: Path | None, name: str, keep: bool) -> ArticlePlan | None:
+    """命令行导入的原文怎么进库（2026-10-13：和网页一样**默认保留**，`--no-article` 才不存）。
+
+    口径全在 `core.plan_article`：原文目录里的就地引用、一模一样的复用、别的存一份；同名不同文直接退出。
+    成品（html，2026-10-22）走 `core.plan_work`：成品即原文，`--no-article` 对它无效——
+    链接是成品进图谱的全部意义；不在成品目录里的直接退出，成品要自己整理进去。
+    """
+    if path is not None and path.suffix.lower() in (".html", ".htm"):
+        try:
+            rel = path.resolve().relative_to(vault).as_posix()
+        except ValueError:
+            raise SystemExit(f"成品要先自己整理进成品目录（{works_dir(vault).relative_to(vault)}/）再导入——"
+                             "库不自动同步别的仓库里的文件")
+        try:
+            return plan_work(vault, rel)
+        except WorkRejected as exc:
+            raise SystemExit(str(exc))
+    if not keep or path is None:
+        return None
+    path = path.resolve()
+    try:
+        rel = path.relative_to(vault).as_posix()
+    except ValueError:
+        rel = None                         # 库外的文件：存一份进来
+    try:
+        return plan_article(vault, name, read(path), rel)
+    except ArticleConflict as exc:
+        raise SystemExit(f"{exc}（或者加 --no-article 不保留原文）")
+
+
 def cmd_apply(args: argparse.Namespace) -> None:
     plan = extract_json(read(Path(args.plan)))
-    source = args.source or f"plan {Path(args.plan).stem} {TODAY}"
-    apply_plan(plan, Path(args.vault).resolve(), ImportTarget(args.field, source, args.folder), args.dry_run)
+    art_path = Path(args.article) if args.article else None
+    source = args.source or (art_path.stem if art_path else f"plan {Path(args.plan).stem} {TODAY}")
+    vault = Path(args.vault).resolve()
+    art = cli_article(vault, art_path, source, not args.no_article)
+    target = ImportTarget(args.field, source, args.folder, article=art)
+    apply_plan(plan, vault, target, args.dry_run, art_origin=art_path.name if art_path else "")
 
 
 def cmd_article(args: argparse.Namespace) -> None:
@@ -634,12 +687,14 @@ def cmd_article(args: argparse.Namespace) -> None:
     art_path = Path(args.article).resolve()
     rt = load_relation_types(vault)
     index = build_index(vault).data
+    art = cli_article(vault, art_path, art_path.stem, not args.no_article)   # 同名冲突在调模型之前挡下
     try:
-        article = check_length(read(art_path))
+        # 成品给模型看的是抽出来的纯文本（plan.text），md 原样；不保留原文时才直接读文件
+        article = check_length(art.text if art else read(art_path))
     except ValueError as exc:
         raise SystemExit(str(exc))
     points = project_points(vault, index, args.project)
-    prompt = build_article_prompt(cards_from_index(index), rt, article, args.field, points)
+    prompt = build_article_prompt(cards_from_index(index), rt, article, args.field, points, args.grain)
     if args.show_prompt:
         print(prompt)
         return
@@ -651,8 +706,10 @@ def cmd_article(args: argparse.Namespace) -> None:
     plan = extract_json(llm_backend.ask(prompt, provider, args.model), vault,
                         f"article {art_path.name}")
     plan, claims = normalize_claims(plan, points, rename_in_plan)
-    target = ImportTarget(args.field, f"article {art_path.name} {TODAY}", args.folder)
-    tr = apply_plan(plan, vault, target, args.dry_run, index)
+    # 保留原文时来源就是原文那篇（文件名即文章名）；不保留才退回「article 文件名 日期」这种纯文字
+    source = art_path.stem if art else f"article {art_path.name} {TODAY}"
+    target = ImportTarget(args.field, source, args.folder, article=art)
+    tr = apply_plan(plan, vault, target, args.dry_run, index, art_origin=art_path.name)
     print_match_report(plan, points, claims, tr, index)
 
 
@@ -845,6 +902,9 @@ def add_llm_parsers(sub: argparse._SubParsersAction) -> None:
     a.add_argument("--llm", help="临时指定 provider 名（默认用配置里 roles.learn）")
     a.add_argument("--model", help="临时覆盖模型名")
     a.add_argument("--dry-run", action="store_true")
+    a.add_argument("--no-article", action="store_true", help="不保留原文（默认存进原文目录，节点来源链过去）")
+    a.add_argument("--grain", choices=["粗", "中", "细"], default="中",
+                   help="拆分粒度：粗 2～4 个、应用场景写成例子；中 3～8 个；细 按机制拆到 8～15 个")
     a.add_argument("--show-prompt", action="store_true", help="只打印提示词，不调用 LLM")
     a.set_defaults(fn=cmd_article)
 
@@ -859,7 +919,9 @@ def add_llm_parsers(sub: argparse._SubParsersAction) -> None:
     p.add_argument("--vault", default=None, help=VAULT_HELP)
     p.add_argument("--field", required=True)
     p.add_argument("--folder")
-    p.add_argument("--source", help="文章名：写进节点的 sources（纯文字）和补充段引言")
+    p.add_argument("--source", help="文章名：原文存进原文目录时的文件名，也写进补充段引言；默认取 --article 的文件名")
+    p.add_argument("--article", help="原文路径：默认存进原文目录（就地 / 复用 / 存一份），节点的 sources 链过去")
+    p.add_argument("--no-article", action="store_true", help="给了 --article 也不保留原文，sources 只记文章名")
     p.add_argument("--dry-run", action="store_true")
     p.set_defaults(fn=cmd_apply)
 

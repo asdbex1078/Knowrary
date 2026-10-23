@@ -25,6 +25,7 @@ from .facts import (COMPARE_HEADING, FACTS_HEADING, FM_DIMENSIONS, bare_compare_
                     compare_targets, facts_of, section_bounds, stray_facts)
 from .parser import Node, is_aggregate, layers_of, load_vault, validate_frontmatter, parse_params
 from .sources import sources_of
+from .topic import PART_TYPES, topic_name
 from .relations import NormalizedEdge, RelationTypes, load_relation_types, normalize_direction
 
 # 演化族里「源比目标晚」属于正常的那几个类型（见 _warn_year_inverted）。
@@ -71,6 +72,7 @@ def build_index(vault: Path, previous: dict | None = None) -> IndexResult:
     _warn_year_conflicts(ctx)
     _warn_dead_body_links(ctx)
     _check_compare(ctx)
+    _warn_topic_clash(ctx)
     payload = _assemble(ctx)
     _warn_cycles(payload, ctx)
     return _finalize(payload, diags, previous)
@@ -216,6 +218,20 @@ def _check_compare(ctx: BuildContext) -> None:
         _check_node_facts(node, out_by_type[node.id].get("对比", set()), ctx.diags, loc)
 
 
+def _warn_topic_clash(ctx: BuildContext) -> None:
+    """两个点写了同一个 `专题`：图只认 id 小的那个当中心，另一个静默落选——要报出来。"""
+    owners: dict[str, list[str]] = defaultdict(list)
+    for node in ctx.nodes.values():
+        name = topic_name(node.fm)
+        if name:
+            owners[name].append(node.id)
+    for name, ids in owners.items():
+        if len(ids) > 1:
+            ids.sort()
+            ctx.diags.warn("topic_clash", f"专题「{name}」有 {len(ids)} 个点都声明了中心：{'、'.join(ids)}，"
+                                          f"图只认 `{ids[0]}`，其余改个专题名或删掉 `专题` 字段", node=ids[1])
+
+
 def _line_fields(ctx: BuildContext) -> dict[str, set[str]]:
     """点上的 `流派` / `领域线` 字段（2026-10-12）：线 id → 声明了它的点。顺手报写错的线名。
 
@@ -342,6 +358,11 @@ def _node_payload(vault: Path, node: Node) -> dict:
     srcs = sources_of(node.fm)
     if srcs:
         d["sources"] = srcs
+    # 专题图的中心（2026-10-13）：方块顺序 = md 里 `部件::` 的书写顺序，索引里的边是排过序的，只能在这儿留住
+    topic = topic_name(node.fm)
+    if topic:
+        d["topic"] = topic
+        d["parts"] = list(dict.fromkeys(e.target for e in node.edges if e.type in PART_TYPES))
     d.setdefault("status", "active")
     # 聚合文档（对比组 / 领域总览）：算一遍存进来，下游只看这个布尔值，
     # 不用每处都去认那几个 type 字符串

@@ -238,6 +238,11 @@ class Check:
         self.items.append((name, ok, detail))
 
 
+# 2026-10-13：本机 Chrome 更新后，经 CDP 求值读 localStorage 会抛 SecurityError（页面自己读写正常，
+# 上一个提交上也一样）。读失败就当一条失败记下，别让整套用例在第二条就中断
+LS_GET = "(() => { try { return localStorage.getItem('%s') } catch (e) { return 'ERR:' + e.name } })()"
+
+
 async def case_initial(page: Page, ck: Check) -> None:
     """首屏：布局自动生成，全局图上四个节点都画出来了（要在「全局图」模式下数）。"""
     await wait_render(page, 4)
@@ -267,7 +272,7 @@ async def case_morning_brief(page: Page, ck: Check) -> None:
     gone = await poll(page, "!document.querySelector('.brief')", lambda v: v, timeout=8)
     ck.add("关掉简报后遮罩消失", bool(gone), f"still={not gone}")
 
-    day = await page.ev("localStorage.getItem('knowrary-brief-day')")
+    day = await page.ev(LS_GET % 'knowrary-brief-day')
     ck.add("当天只弹一次（记的是日期不是布尔）", bool(day) and "-" in str(day), str(day))
 
 
@@ -2709,7 +2714,7 @@ async def case_minimap(page: Page, ck: Check) -> None:
     after = await page.ev("JSON.stringify(document.querySelector('.float.map').getBoundingClientRect())")
     moved = json.loads(after)["x"] - json.loads(before)["x"]
     ck.add("小地图可以拖到别处", round(moved) == 120, f"横向移动 {round(moved)}px")
-    saved = await page.ev("localStorage.getItem('knowrary-map-box')")
+    saved = await page.ev(LS_GET % 'knowrary-map-box')
     ck.add("拖过的位置记在本地", bool(saved) and '"x"' in (saved or ""), saved or "没存")
 
 

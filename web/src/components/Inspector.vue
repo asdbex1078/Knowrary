@@ -30,6 +30,9 @@ const props = defineProps({
   models: { type: Array, default: () => [] },         // 技术点链着这个点的型号（模型目录反查）
   lineOptions: { type: Object, default: () => ({ 流派: [], 领域线: [] }) },   // 库里有哪些流派 / 领域线
 })
+/** 成品的打开地址：服务端端出 HTML，锚点拼在 URL 后面直达那一节。 */
+const workUrl = (s) => `/api/work?path=${encodeURIComponent(s.path)}${s.section ? '#' + encodeURIComponent(s.section) : ''}`
+
 /** 这个点的几层：第一个是主层。索引里 `layer` 永远是主层、`layers` 是几层时的全量。 */
 const myLayers = computed(() => props.selected?.layers || (props.selected?.layer ? [props.selected.layer] : []))
 function setPrimaryLayer(value) {
@@ -233,8 +236,18 @@ const CHANGE_ICON = { add_edge: 'plus', remove_edge: 'trash', update_edge: 'penc
                   <dd class="src-list">
                     <template v-if="detail?.sources?.length">
                       <span v-for="s in detail.sources" :key="s.raw" class="src-item">
+                        <!-- 成品：交互式 HTML 深度文档，新标签页打开（带锚点直达那一节）。
+                             成品由人自己整理进成品目录，不在就提示去整理，不是去「导入」。 -->
+                        <template v-if="s.kind === 'work'">
+                          <a v-if="s.exists" :href="workUrl(s)" target="_blank" rel="noopener"
+                             :title="`成品：新标签页打开 ${s.path}${s.section ? ' #' + s.section : ''}`">
+                            <Icon name="play" :size="11" />{{ s.label }}<template v-if="s.section"> §{{ s.section }}</template></a>
+                          <span v-else class="src-dead"
+                                :title="`成品 ${s.path} 不在库里：成品要自己整理进成品目录（设置 → 知识库）`">
+                            {{ s.label }}（成品不在）</span>
+                        </template>
                         <!-- 点名字在应用里读（跳到那一节）；想改原文时点旁边的小图标去 Obsidian -->
-                        <template v-if="s.uri">
+                        <template v-else-if="s.uri">
                           <a href="#" :title="`在应用里读原文：${s.path}${s.section ? ' §' + s.section : ''}`"
                              @click.prevent="emit('open-article', { path: s.path, section: s.section })">
                             <Icon name="book" :size="11" />{{ s.label }}<template v-if="s.section"> §{{ s.section }}</template></a>

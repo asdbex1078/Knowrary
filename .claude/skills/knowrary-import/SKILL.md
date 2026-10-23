@@ -28,6 +28,7 @@ description: 把一篇文章 / 一段笔记 / 一次学习心得拆成知识节�
 ## 流程
 
 1. **确认输入**：文章路径（或用户直接贴的文本，先写到 scratchpad 一个 .md）、目标 vault、`field`（顶层领域，如 `计算机体系结构` / `AI-Agent` / `JVM`）。field 用户没说就从文章主题判断并在结果里说明。
+   - **成品（HTML 深度文档，2026-10-22）**：文章也可以是 vault 成品目录（默认 `works/`）里的 `.html`——「成品即原文」，不往 `articles/` 存副本，拆出的节点 `sources` 直接链 `[[works/….html#页面锚点]]`（`--article` 传 html 路径即可，抽文本和锚点由 `core.plan_work` 管）。**html 必须先由用户自己整理进成品目录**，还在别的仓库里的先让用户拷进来，别替他拷。
 2. **拿上下文**（不要自己遍历 vault）：
    ```bash
    python3 tools/knowrary/knowrary.py context --vault <vault> --article <文章> --field <领域>
@@ -36,7 +37,9 @@ description: 把一篇文章 / 一段笔记 / 一次学习心得拆成知识节�
    和 `--field` 领域下的节点，封顶 200 个）、与文章最相关的已有节点及其边。
    图里别的节点不在列表里，不确定的概念不要猜 id，链到不存在的 id 会被补成 stub 等用户确认。
 3. **读文章，写方案 JSON**：按 `prompts/article.md` 里的拆分原则和输出结构，直接在 scratchpad 写 `plan.json`。要点：
-   - 3～10 个节点，一个节点 = 一个可独立复习的概念；文章章节不等于节点。
+   - **粒度由用户定**（2026-10-13）：开拆前问一句「粗 / 中 / 细」，没说就用「中」。三档口径在 `tools/knowrary/core/article.py` 的 `GRAINS`
+     （提示词里的 `{{grain}}` 就是它）：粗 2～4 个、中 3～8 个、细按机制拆 8～15 个；**应用场景、工具清单、案例默认写进所属概念的 `## 例子`**，不单独成点。
+     一个节点 = 一个可独立复习的概念；文章章节不等于节点。
    - 正文写足不精简：以原文为主体，作者原话、例子、代码、数字一个不丢；原文一笔带过的前置概念和机制自己补足、段首标「（补充）」。每个节点都要有 `## 例子`（至少一个具体案例，原文没有就自己举并标「（补充）」）。从 `## 描述` 开始，不含 H1 / frontmatter / `## 关系`。
    - 关系优先连到**已有节点**，类型只从类型表选；方向从本节点指向目标；不要两侧重复写。
    - 正文里只能 `[[链接]]` 已有节点、本次新节点或 stubs；其余概念要么进 stubs，要么不链接。
@@ -46,10 +49,16 @@ description: 把一篇文章 / 一段笔记 / 一次学习心得拆成知识节�
    - `year` 只在有明确年代且值得进历史视图时填，不猜。
 4. **先 dry-run 给用户看**：
    ```bash
-   python3 tools/knowrary/knowrary.py apply plan.json --vault <vault> --field <field> --source "<文章名>" --dry-run
+   python3 tools/knowrary/knowrary.py apply plan.json --vault <vault> --field <field> --article <文章路径> --dry-run
    ```
+   **原文默认保留**（2026-10-13 起和网页一致）：`--article` 给的那篇存进原文目录（库里原文目录下的就地引用、一模一样的复用、别处的存一份），
+   节点 `sources` 链到原文，能对上 `from_section` 的链到那一节。文章名默认取文件名，`--source` 可改；
+   用户贴的文本先存成 scratchpad 里以文章标题命名的 `.md` 再传 `--article`。用户明说不要原文才加 `--no-article`。
+   同名不同文会直接退出——换个 `--source` 再来。
    脚本把方案翻成变更集（新建节点 / 补充老节点 / 待审边），校验 id、目标、类型，然后打印**每个文件的 diff**（新文件给全文，老节点给 unified diff）。把摘要（新建几个、补充了哪些老节点、直接写入几条边、几条待审、被丢弃的边）讲给用户，补充老节点的 diff 要让用户看过。
-5. **用户确认后**去掉 `--dry-run` 写入：落盘前自动备份；待审边记进 `.knowrary/pending.json`；方案与变更集存档到 `<vault>/.knowrary/imports/`。
+   dry-run 之后用户说「这几个合并」「这个再拆」：直接改 `plan.json`（合并时被并掉的名字进 `aliases`、别的点指向它的边和 `[[链接]]` 改指新点，
+   正文全部保留不精简），再 dry-run 给他看。
+5. **用户确认后**去掉 `--dry-run` 写入：原文先进库，落盘前自动备份；待审边记进 `.knowrary/pending.json`；方案与变更集存档到 `<vault>/.knowrary/imports/`。
 6. **校验**：`python3 tools/knowrary/knowrary.py check <vault>`，错误必须为 0；警告（未登记类型、演化边缺 year）如实汇报。
 7. 待审边不要替用户拍板：列出来即可，审核入口在网页端（后续阶段）。
 

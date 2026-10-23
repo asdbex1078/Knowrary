@@ -24,7 +24,7 @@ export const ITEMS = [
     tip: '读原文：长文原样存在原文目录里，看它拆出了哪些点；还没拆的在这儿一键拆',
     modes: ['chat', 'project', 'structure'] },
   { id: 'assets', icon: 'image', name: '素材', group: 'do', scopes: ['project', 'global'],
-    tip: '往当前这块画布上贴图、加便签', modes: ['project', 'structure'] },
+    tip: '往当前这块画布上贴图、加便签', modes: ['project', 'structure', 'topic'] },
 
   // 「项目」跟项目内的「清单」是两件事，图标别再共用 checklist——
   // 同一个图标一会儿叫「清单」一会儿叫「项目」，等于这个图标不再有辨识度。
@@ -40,6 +40,9 @@ export const ITEMS = [
   { id: 'compare', icon: 'table', name: '对比', group: 'see', scopes: ['global'],
     tip: '横向对比组：一组技术按同几个维度摆成一张表',
     modes: ['chat', 'project', 'structure', 'compare'] },
+  // 专题目录在专题模式下也留着：画着这张还能直接换另一张
+  { id: 'topics', icon: 'pencil', name: '专题', group: 'see', scopes: ['global'],
+    tip: '专题：围绕一个主题自己画的总结图，可以建多个', modes: ['structure', 'topic'] },
   { id: 'stats', icon: 'chart', name: '数值对比', group: 'see', scopes: ['global'],
     tip: '模型目录里的型号：参数 / 激活 / 上下文 / 训练数据怎么涨上来的、谁更大', modes: ['structure', 'history'] },
   { id: 'calendar', icon: 'clock', name: '日历', group: 'see', scopes: ['global'],

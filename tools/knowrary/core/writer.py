@@ -20,11 +20,12 @@ from .lines import DOMAIN_KEY, SCHOOL_KEY, line_names
 from .parser import LAYERS, LAYOUT_KEYS, STATUS_VALUES, digest_of, layers_of
 from .relations import Edge, parse_relations
 from .sources import clean_sources
+from .topic import TOPIC_KEY
 
 # 允许通过 ChangeSet 修改的 frontmatter 字段；布局字段和 id 永远不许改
 EDITABLE_FIELDS = ("name", "field", "layer", "params", "type", "status", "year", "start_year", "end_year",
                    "aliases", "tags", "desc", "learned", "source", "sources", "color", "timeless",
-                   "流派", "领域线")
+                   "流派", "领域线", TOPIC_KEY)
 CHANGE_TYPES = ("add_edge", "remove_edge", "update_edge", "update_frontmatter", "create_node",
                 "update_body", "append_body", "set_fact", "move_node")
 # 新建的知识点只允许落在这两棵树下（规范 2：nodes/ 是知识点，fields/ 是领域总览）
@@ -242,6 +243,12 @@ def apply_to_text(text: str, node_id: str, changes: list[dict]) -> tuple[str, li
                             fm_changed = True
                             notes.append(f"frontmatter 去掉 {key}")
                         continue
+                if key == TOPIC_KEY and not str(value or "").strip():
+                    # 专题中心（2026-10-13）：给空就是不再当中心，整个键拿掉，别留一个 `专题: ''`
+                    if fm.pop(key, None) is not None:
+                        fm_changed = True
+                        notes.append(f"frontmatter 去掉 {key}")
+                    continue
                 fm[key] = value
                 fm_changed = True
                 notes.append(f"frontmatter {key} = {value!r}")

@@ -15,9 +15,10 @@ import os
 
 from . import audit, curation
 from .contracts import (FileDiff, ImportArticle, ImportClaim, ImportProposal, ImportProposeRequest, ImportRequest,
-                        ImportResult, PendingEdge, SourceFile, SourceText, SourcesRead)
+                        ImportReshapeRequest, ImportReshapeResult, ImportResult, PendingEdge, SourceFile, SourceText,
+                        SourcesRead)
 from .index_service import current_index, invalidate
-from .llm_call import ask
+from .llm_call import ask, ask_meta
 from .paths import core
 
 MAX_SOURCE_BYTES = 1_000_000
@@ -119,6 +120,13 @@ def _archive(vault: Path, plan: dict, tr, target) -> str:
 def _article_plan(vault: Path, req) -> "core.ArticlePlan | None":
     """保留原文的话它该怎么进库。同名不同文在这里就挡下（`ImportRejected`）——
     `propose` 在调模型之前先跑这一步，免得付了钱才发现写不进去。"""
+    # 成品即原文（2026-10-22）：html 不存副本，节点直接链 `[[works/….html#锚点]]`。
+    # keep_article 对成品没有意义——链接是成品进图谱的全部意义，关掉等于白导
+    if req.file and req.file.lower().endswith(core.WORK_SUFFIXES):
+        try:
+            return core.plan_work(vault, req.file)
+        except core.WorkRejected as exc:
+            raise ImportRejected(str(exc)) from exc
     if not req.keep_article:
         return None
     # 不 strip：原文要一字不改地存下来，连结尾的换行也算
@@ -172,7 +180,7 @@ def propose(vault: Path, req: ImportProposeRequest) -> ImportProposal:
     index = current_index(vault)
     rt = core.load_relation_types(vault)
     points = core.project_points(vault, index, req.project)
-    prompt = core.build_article_prompt(core.cards_from_index(index), rt, text, req.field.strip(), points)
+    prompt = core.build_article_prompt(core.cards_from_index(index), rt, text, req.field.strip(), points, req.grain)
     raw = ask(vault, "learn", prompt, op="import")
     plan = core.parse_json(raw, f"import source={req.source}", vault=vault)
     if not isinstance(plan, dict) or not plan.get("nodes"):
@@ -186,14 +194,66 @@ def propose(vault: Path, req: ImportProposeRequest) -> ImportProposal:
     isolated = core.isolated(plan, [p.model_dump() for p in preview.pending], index, claimed)
     home = plan.get("suggest_home") if isinstance(plan.get("suggest_home"), dict) else None
     shape = str(plan.get("shape") or "").strip()
-    born = {n.get("id") for n in plan.get("nodes") or []}
-    near_existing = {nid: got for n in plan.get("nodes") or []
-            if (nid := n.get("id")) and nid not in claimed
-            and (got := core.near_candidates(index, {"id": nid, "name": n.get("name"), "aliases": n.get("aliases")},
-                                             exclude=born))}
+    near_existing = _near_existing(index, plan, plan.get("nodes") or [], claimed)
     return ImportProposal(plan=plan, preview=preview, claims=claims, near_misses=near, isolated=isolated,
                           suggest_home=home, project_points=len(points), prompt_chars=len(prompt),
                           shape=shape if shape in ("single", "multi") else "", near_existing=near_existing)
+
+
+def _near_existing(index: dict, plan: dict, nodes: list[dict], claimed: set) -> dict:
+    """新节点 → 图里可能是同一个的（同名 / 用字一样 / 只差后缀）。方案里别的新点不算。"""
+    born = {n.get("id") for n in plan.get("nodes") or []}
+    return {nid: got for n in nodes
+            if (nid := n.get("id")) and nid not in claimed
+            and (got := core.near_candidates(index, {"id": nid, "name": n.get("name"), "aliases": n.get("aliases")},
+                                             exclude=born))}
+
+
+# ---------------------------------------------------------------- 审核卡上调整拆法（2026-10-13）
+
+def reshape(vault: Path, req: ImportReshapeRequest) -> ImportReshapeResult:
+    """勾几个点「合并」/ 对一个点「再拆」：调一次 learn，只重写动到的点，其余原样。只改卡不写盘。
+
+    模型交回的点先过 `core.reshape_in_plan` 的结构检查（数量对不对、id 撞没撞），
+    改完的方案由卡上照常「重算 diff」——那一步会过写回层的校验，坏方案摆不上去。
+    """
+    ids = list(dict.fromkeys(req.ids))
+    article = (req.text or "").strip() or (read_source(vault, req.file).text if req.file else "")
+    try:
+        core.check_reshape(req.plan, req.op, ids)
+    except ValueError as exc:                      # 选得不对（没这几个点、合并只勾了一个）：不白花一次钱
+        raise ImportRejected(str(exc)) from exc
+    prompt = core.build_reshape_prompt(req.plan, req.op, ids, article, core.load_relation_types(vault), req.hint)
+    raw, meta = ask_meta(vault, "learn", prompt, op=f"import-{req.op}")
+    data = core.parse_json(raw, f"import-{req.op}", vault=vault)
+    made = [n for n in (data.get("nodes") if isinstance(data, dict) else None) or [] if isinstance(n, dict)]
+    try:
+        after = core.reshape_in_plan(req.plan, req.op, ids, made, str(data.get("main") or "") or None)
+    except ValueError as exc:
+        core.record_issue(vault, "reshape", f"{exc}：{raw[:600]}", where="/api/import/reshape")
+        raise ImportRejected(f"模型交回的拆法用不了：{exc}（{meta['model']}，{meta['ms'] / 1000:.1f}s）") from exc
+    made_ids = [n["id"] for n in made]
+    return ImportReshapeResult(
+        plan=after, before=req.plan, made=made_ids, summary=str(data.get("summary") or "").strip(),
+        delta=_reshape_delta([n for n in req.plan["nodes"] if n.get("id") in ids], made),
+        near_existing=_near_existing(current_index(vault), after, made, set()), **meta)
+
+
+def _render_nodes(nodes: list[dict]) -> list[str]:
+    out: list[str] = []
+    for n in nodes:
+        out.append(f"【{n.get('id')}】{n.get('name') or ''}")
+        out.append(f"  摘要：{n.get('desc') or ''}")
+        out.extend(str(n.get("body") or "").splitlines())
+        out.extend(f"  - {r.get('type')}:: {r.get('target')}" for r in n.get("relations") or [])
+        out.append("")
+    return out
+
+
+def _reshape_delta(before: list[dict], after: list[dict]) -> str:
+    import difflib
+    return "\n".join(difflib.unified_diff(_render_nodes(before), _render_nodes(after),
+                                         fromfile="改前", tofile="改后", lineterm="", n=2))
 
 
 def _article_text(vault: Path, req: ImportProposeRequest) -> str:
@@ -211,7 +271,8 @@ def _article_text(vault: Path, req: ImportProposeRequest) -> str:
 # ---------------------------------------------------------------- 素材源：vault 里已有的笔记
 
 def sources(vault: Path) -> SourcesRead:
-    """vault 里可以当导入素材的 md / txt：节点目录、机器目录、代码目录之外的全部。按改动时间倒序。"""
+    """vault 里可以当导入素材的：节点目录、机器目录、代码目录之外的 md / txt，
+    加上成品目录里的 html（成品即原文，拆出来的节点直接链它）。按改动时间倒序。"""
     files: list[SourceFile] = []
     for root, dirs, names in os.walk(vault):
         dirs[:] = sorted(d for d in dirs if d not in SKIP_DIRS and not d.startswith("."))
@@ -225,12 +286,20 @@ def sources(vault: Path) -> SourcesRead:
                 continue
             files.append(SourceFile(path=path.relative_to(vault).as_posix(), name=name, size=st.st_size,
                                     modified=dt.datetime.fromtimestamp(st.st_mtime).isoformat(timespec="seconds")))
+    for path in core.list_works(core.works_dir(vault)):
+        try:
+            st = path.stat()
+        except OSError:
+            continue
+        files.append(SourceFile(path=path.relative_to(vault).as_posix(), name=path.name, size=st.st_size,
+                                modified=dt.datetime.fromtimestamp(st.st_mtime).isoformat(timespec="seconds")))
     files.sort(key=lambda f: f.modified, reverse=True)
     return SourcesRead(files=files[:500])
 
 
 def read_source(vault: Path, rel: str) -> SourceText:
-    """读一个素材文件。路径必须落在 vault 里、在允许的目录、后缀对、不太大——一个 `..` 都不放过。"""
+    """读一个素材文件。路径必须落在 vault 里、在允许的目录、后缀对、不太大——一个 `..` 都不放过。
+    成品（html）只认成品目录里的，回的是抽出来的纯文本（预览和提示词都用它，原页面走 /api/work 看）。"""
     clean = rel.strip().lstrip("/")
     path = (vault / clean)
     try:
@@ -241,10 +310,15 @@ def read_source(vault: Path, rel: str) -> SourceText:
     parts = resolved.relative_to(vault.resolve()).parts
     if not parts or parts[0] in SKIP_DIRS or any(p.startswith(".") for p in parts[:-1]):
         raise ImportRejected(f"这个目录不是素材目录：{rel}")
-    if not resolved.name.lower().endswith(SOURCE_SUFFIXES):
-        raise ImportRejected(f"只认 md / txt：{rel}")
+    is_work = resolved.name.lower().endswith(core.WORK_SUFFIXES)
+    if is_work:
+        root = core.load_vault_config(vault)["works_dir"]
+        if not clean.startswith(root + "/"):
+            raise ImportRejected(f"html 只认成品目录 `{root}/` 里的——成品要自己整理进去再导入")
+    elif not resolved.name.lower().endswith(SOURCE_SUFFIXES):
+        raise ImportRejected(f"只认 md / txt，和成品目录里的 html：{rel}")
     if not resolved.is_file():
         raise ImportRejected(f"文件不存在：{rel}")
     if resolved.stat().st_size > MAX_SOURCE_BYTES:
         raise ImportRejected(f"文件太大（{resolved.stat().st_size} 字节）")
-    return SourceText(path=clean, text=core.read(resolved))
+    return SourceText(path=clean, text=core.work_text(resolved) if is_work else core.read(resolved))

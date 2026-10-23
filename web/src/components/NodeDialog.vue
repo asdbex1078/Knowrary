@@ -55,7 +55,8 @@ const badDir = computed(() => {
   if (/\.\.|\/\//.test(d)) return '路径里不能有 .. 或空目录段'
   return ''
 })
-const thenRelate = ref(true)
+// 从专题画布的框升级来的：关系由画（大框套小框 = 部件）来定，不再追着问
+const thenRelate = ref(!props.defaults.noRelate)
 const nameEl = ref(null)
 
 const id = computed(() => name.value.trim())
@@ -165,7 +166,7 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onKey, true))
       <footer>
         <span class="dim">⌘↵ 创建</span>
         <button class="btn primary" :disabled="!ready" @click="submit">
-          <Icon name="check" :size="14" />创建并放到画布
+          <Icon name="check" :size="14" />{{ defaults.shape ? "创建并升级这个框" : "创建并放到画布" }}
         </button>
       </footer>
     </div>

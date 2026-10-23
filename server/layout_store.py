@@ -13,7 +13,7 @@ import threading
 from pathlib import Path
 from typing import Any, Callable
 
-from .contracts import LAYOUT_SCHEMA_VERSION, EdgeStyle, GroupBox, LayoutDoc, LayoutPatch, NodeBox
+from .contracts import LAYOUT_SCHEMA_VERSION, EdgeStyle, GroupBox, LayoutDoc, LayoutPatch, Link, NodeBox, Shape
 from .paths import DEFAULT_LAYOUT, core, layout_path
 
 # 所有 layout 共用一把锁。按名字分锁能多一点并发，但写 layout 本来就稀疏
@@ -101,9 +101,10 @@ def is_bulk(patch: LayoutPatch) -> bool:
 def backup_layout(vault: Path, doc: LayoutDoc, name: str = DEFAULT_LAYOUT) -> str:
     """把当前 layout 存一份快照再覆盖，只保留最近 BACKUP_KEEP 份。"""
     stamp = dt.datetime.now().strftime("%Y%m%d-%H%M%S")
-    path = vault / ".knowrary" / "backup" / f"{name}-r{doc.revision}-{stamp}.json"
+    safe = name.replace(":", "-")                    # topic:文件系统 → topic-文件系统，冒号别进文件名
+    path = vault / ".knowrary" / "backup" / f"{safe}-r{doc.revision}-{stamp}.json"
     core.write_json_atomic(path, doc.model_dump())
-    old = sorted(path.parent.glob(f"{name}-r*.json"))[:-BACKUP_KEEP]
+    old = sorted(path.parent.glob(f"{safe}-r*.json"))[:-BACKUP_KEEP]
     for stale in old:
         stale.unlink(missing_ok=True)
     return path.relative_to(vault).as_posix()
@@ -122,6 +123,7 @@ def apply_patch(vault: Path, patch: LayoutPatch, index: dict, name: str = DEFAUL
         backup = backup_layout(vault, doc, name) if is_bulk(patch) and doc.revision else None
         _merge(doc, patch)
         _assert_group_refs(doc)
+        _assert_shape_refs(doc)
         return write_layout(vault, doc, name), find_orphans(doc, index, vault), backup
 
 
@@ -132,6 +134,12 @@ def _merge(doc: LayoutDoc, patch: LayoutPatch) -> None:
     _merge_entries(doc.groups, patch.groups, GroupBox, "分组")
     _merge_entries(doc.nodes, patch.nodes, NodeBox, "节点")
     _merge_entries(doc.edges, patch.edges, EdgeStyle, "边")
+    _merge_entries(doc.shapes, patch.shapes, Shape, "图形")
+    _merge_entries(doc.links, patch.links, Link, "连线")
+    if patch.depth is not None:
+        if any(v < 0 or v > 10 for v in patch.depth.values()):
+            raise PatchRejected("跳数要在 0～10 之间")
+        doc.depth = patch.depth
     for name in ("refs", "notes", "images"):
         given = getattr(patch, name)
         if given is not None:
@@ -166,6 +174,28 @@ def _assert_group_refs(doc: LayoutDoc) -> None:
     for nid, node in doc.nodes.items():
         if node.group and node.group not in known:
             raise PatchRejected(f"节点 `{nid}` 的分组 `{node.group}` 不存在")
+
+
+def _assert_shape_refs(doc: LayoutDoc) -> None:
+    """手画图形也要闭合：小框挂的大框得在、得真是大框、不能套成环；连线两端得在这张画布上。
+
+    删大框 / 删图形时前端要把小框和连线一起改掉——悬空的留着，画出来就是飘在半空的框和线。
+    """
+    for sid, shape in doc.shapes.items():
+        seen, cur = {sid}, shape.parent
+        while cur:
+            host = doc.shapes.get(cur)
+            if host is None or host.kind != "frame":
+                raise PatchRejected(f"图形 `{sid}` 挂的大框 `{cur}` 不存在或不是大框")
+            if cur in seen:
+                raise PatchRejected(f"图形 `{sid}` 的大框套成了环")
+            seen.add(cur)
+            cur = host.parent
+    for lid, link in doc.links.items():
+        for end in (link.source, link.target):
+            pool = doc.shapes if end.kind == "shape" else doc.nodes
+            if end.id not in pool:
+                raise PatchRejected(f"连线 `{lid}` 的一端 `{end.id}` 不在这张画布上")
 
 
 def find_orphans(doc: LayoutDoc, index: dict, vault: Path) -> list[dict[str, Any]]:

@@ -8,12 +8,14 @@ const VIEWPORT_DELAY = 1000
 /** `getLayoutName()` 说这份补丁该写去哪一份 layout（全局图 = null，项目画布 = 项目 id）。
  *  队列本身不区分 layout——**切画布前必须先 flush**，否则会把上一份的改动写到下一份去。 */
 export function createPatcher({ getRevision, setRevision, onStatus, onConflict, getLayoutName }) {
-  let pending = { nodes: {}, groups: {}, edges: {}, viewport: null, lists: {} }
+  const fresh = () => ({ nodes: {}, groups: {}, edges: {}, shapes: {}, links: {}, viewport: null, lists: {} })
+  let pending = fresh()
   let timer = null
   let inflight = false
 
-  const empty = (p) => !p.viewport && !Object.keys(p.nodes).length && !Object.keys(p.groups).length
-    && !Object.keys(p.edges || {}).length && !Object.keys(p.lists || {}).length
+  const BUCKETS = ['nodes', 'groups', 'edges', 'shapes', 'links']
+  const empty = (p) => !p.viewport && BUCKETS.every((b) => !Object.keys(p[b] || {}).length)
+    && !Object.keys(p.lists || {}).length
 
   function schedule(delay) {
     if (timer) clearTimeout(timer)
@@ -41,6 +43,13 @@ export function createPatcher({ getRevision, setRevision, onStatus, onConflict, 
     schedule(DELAY)
   }
 
+  /** 专题画布上手画的图形（`shapes`）和自由连线（`links`）：按条目合并，传 null 删掉。 */
+  function queueEntry(bucket, id, patch) {
+    pending[bucket][id] = patch === null ? null : { ...(pending[bucket][id] || {}), ...patch }
+    onStatus?.('dirty')
+    schedule(DELAY)
+  }
+
   /** refs / notes / images 是带 id 的小集合，服务端按整表替换。 */
   function queueList(name, items) {
     pending.lists = { ...pending.lists, [name]: items }
@@ -54,25 +63,21 @@ export function createPatcher({ getRevision, setRevision, onStatus, onConflict, 
   }
 
   function mergeBack(snapshot) {
-    pending = {
-      nodes: { ...snapshot.nodes, ...pending.nodes },
-      groups: { ...snapshot.groups, ...pending.groups },
-      edges: { ...snapshot.edges, ...pending.edges },
-      viewport: pending.viewport || snapshot.viewport,
-      lists: { ...snapshot.lists, ...pending.lists },
-    }
+    const next = fresh()
+    for (const b of BUCKETS) next[b] = { ...snapshot[b], ...pending[b] }
+    next.viewport = pending.viewport || snapshot.viewport
+    next.lists = { ...snapshot.lists, ...pending.lists }
+    pending = next
   }
 
   async function flush() {
     if (inflight || empty(pending)) return
     inflight = true
     const snapshot = pending
-    pending = { nodes: {}, groups: {}, edges: {}, viewport: null, lists: {} }
+    pending = fresh()
     const body = { base_revision: getRevision() }
     Object.assign(body, snapshot.lists || {})
-    if (Object.keys(snapshot.nodes).length) body.nodes = snapshot.nodes
-    if (Object.keys(snapshot.groups).length) body.groups = snapshot.groups
-    if (Object.keys(snapshot.edges).length) body.edges = snapshot.edges
+    for (const b of BUCKETS) if (Object.keys(snapshot[b]).length) body[b] = snapshot[b]
     if (snapshot.viewport) body.viewport = snapshot.viewport
     onStatus?.('saving')
     try {
@@ -97,6 +102,6 @@ export function createPatcher({ getRevision, setRevision, onStatus, onConflict, 
     }
   }
 
-  return { queueNode, queueGroup, queueEdge, queueViewport, queueList, flush,
+  return { queueNode, queueGroup, queueEdge, queueViewport, queueList, queueEntry, flush,
     pendingCount: () => Object.keys(pending.nodes).length + Object.keys(pending.groups).length }
 }

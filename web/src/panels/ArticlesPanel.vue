@@ -16,7 +16,7 @@ import Drawer from '../ui/Drawer.vue'
 import Icon from '../ui/Icon.vue'
 import Markdown from '../ui/Markdown.vue'
 import ModelsExtract from '../components/ModelsExtract.vue'
-import { fetchArticle, fetchArticles } from '../api.js'
+import { fetchArticle, fetchArticles, fetchWorks } from '../api.js'
 
 const props = defineProps({
   // 从别处要求打开的一篇：{ path, section, nonce }。nonce 变一次开一次（同一篇再点一次也要滚过去）
@@ -51,6 +51,23 @@ function endExtract() { extracting.value = null; if (!reading.value) loadList() 
 async function loadList() {
   error.value = ''
   try { list.value = await fetchArticles() } catch (err) { error.value = msgOf(err) }
+}
+
+// —— 成品页签（成品层第 4 步，2026-10-22）——
+// 成品是交互式 HTML 深度文档：不在应用内读（新标签页打开原页面），这里只列清单和覆盖情况。
+const tab = ref('原文')
+const works = ref(null)           // { dir, works }
+async function loadWorks() {
+  error.value = ''
+  try { works.value = await fetchWorks() } catch (err) { error.value = msgOf(err) }
+}
+watch(tab, (t) => { if (t === '成品') loadWorks() })
+const workUrl = (path, section = '') =>
+  `/api/work?path=${encodeURIComponent(path)}${section ? '#' + encodeURIComponent(section) : ''}`
+const coveredOf = (w) => {
+  const seen = new Map()
+  for (const r of w.refs) if (!seen.has(r.id)) seen.set(r.id, r)
+  return [...seen.values()]
 }
 
 async function openArticle(path, section = '') {
@@ -200,7 +217,42 @@ const HEAD_TAG = (level) => `h${Math.min(Math.max(level, 1), 6)}`
 
     <!-- 列表 -->
     <div v-else class="art-list scroll-thin">
-      <p v-if="loading" class="dim">读取中…</p>
+      <div class="seg small art-tabs">
+        <button :class="{ on: tab === '原文' }" data-tab="原文" @click="tab = '原文'">原文</button>
+        <button :class="{ on: tab === '成品' }" data-tab="成品" @click="tab = '成品'">成品</button>
+      </div>
+
+      <!-- 成品：交互式 HTML 深度文档。点开是新标签页的原页面，不在这儿读 -->
+      <template v-if="tab === '成品'">
+        <template v-if="works">
+          <p class="dim art-list-head">成品目录 <code>{{ works.dir }}/</code> · {{ works.works.length }} 个
+            （设置 → 知识库里能改）。<b>成品要你自己整理进这个目录</b>——库不自动同步别的仓库里的活文件。</p>
+          <p v-if="!works.works.length" class="dim">
+            还没有成品。把在别处让模型产出的 HTML 深度文档（讲解页 / 实验台 / 演示器）拷进
+            <code>{{ works.dir }}/</code>，这里就会列出来；再「拆成知识点」，它就进了图谱和复习闭环。</p>
+          <template v-for="w in works.works" :key="w.path">
+            <div class="art-row" :class="{ fresh: !w.refs.length }" :data-work="w.path">
+              <a class="art-open" :href="workUrl(w.path)" target="_blank" rel="noopener"
+                 :title="`新标签页打开 ${w.path}`">
+                <Icon name="play" :size="13" />
+                <span class="art-name">{{ w.title }}</span>
+                <span v-if="w.refs.length" class="chip m-mastered">{{ coveredOf(w).length }} 个点</span>
+                <span v-else class="chip m-unbuilt">待导入</span>
+              </a>
+              <button v-if="!w.refs.length" class="btn tiny" data-act="import"
+                      title="打开导入面板，把这个成品带过去（成品即原文，不存副本）"
+                      @click="emit('import', w.path)">拆成知识点</button>
+            </div>
+            <div v-if="w.refs.length" class="art-work-refs">
+              <button v-for="n in coveredOf(w)" :key="n.id" class="art-chip"
+                      :title="`在图上定位 ${n.id}`" @click="emit('goto', n.id)">{{ n.name }}</button>
+            </div>
+          </template>
+        </template>
+        <p v-else class="dim">读取中…</p>
+      </template>
+
+      <p v-else-if="loading" class="dim">读取中…</p>
       <template v-else-if="list">
         <p class="dim art-list-head">原文目录 <code>{{ list.dir }}/</code> · {{ list.articles.length }} 篇（设置 → 知识库里能改）</p>
         <p v-if="!list.articles.length" class="dim">还没有原文。导入时勾着「保留原文」，原文就会存到这里。</p>

@@ -80,7 +80,13 @@ def _json_impact(vault: Path, old_id: str) -> dict:
         "reviews": len(((review.get("nodes") or {}).get(old_id) or {}).get("reviews") or []),
         "quiz": sum(1 for a in quiz.get("answers") or [] if old_id in (a.get("points") or [])),
         "projects": hit_projects,
+        "canvases": canvases_with(vault, old_id),
     }
+
+
+def canvases_with(vault: Path, node_id: str) -> list[str]:
+    """哪几张项目画布上有它（库内相对路径）。全局 layout.json 已经在 SIDE_FILES 里，不重复列。"""
+    return [str(p.relative_to(vault)) for p in layout_paths(vault)[1:] if _touches(_safe(p), node_id)]
 
 
 def _safe(path: Path) -> dict:
@@ -120,10 +126,59 @@ def _move_key(d: dict, old_id: str, new_id: str) -> None:
         d[new_id] = d.pop(old_id)
 
 
+def layout_paths(vault: Path) -> list[Path]:
+    """全局图、每张项目 / 对比画布、每张专题画布。改名 / 合并以前只改全局那张，别的画布上留着旧 id（2026-10-13 补）。"""
+    root = vault / ".knowrary"
+    return [root / "layout.json", *sorted((root / "layouts").glob("*.json")), *sorted((root / "topics").rglob("canvas.json"))]   # 专题可以套在文件夹里
+
+
 def _rewrite_layout(vault: Path, old_id: str, new_id: str) -> None:
-    path = vault / ".knowrary" / "layout.json"
+    for path in layout_paths(vault):
+        _rewrite_one_layout(path, old_id, new_id)
+
+
+def _touches(doc: dict, node_id: str) -> bool:
+    """这张画布上有没有它：位置、边的拐点、引用卡、分组总览文档，任一处就算。"""
+    return (node_id in (doc.get("nodes") or {}) or any(_edge_touches(k, node_id) for k in doc.get("edges") or {})
+            or any(r.get("target") == node_id for r in doc.get("refs") or [])
+            or any(g.get("doc") == node_id for g in (doc.get("groups") or {}).values())
+            or _drawn_touches(doc, node_id))
+
+
+def _drawn_touches(doc: dict, node_id: str) -> bool:
+    """专题画布上手画的东西：升级成这个知识点的图形、一端连着它的连线。"""
+    return (any(s.get("node") == node_id for s in (doc.get("shapes") or {}).values())
+            or any(end.get("kind") == "node" and end.get("id") == node_id
+                   for link in (doc.get("links") or {}).values() for end in (link.get("source") or {}, link.get("target") or {}))
+            or any(_edge_touches(link.get("edge") or "", node_id) for link in (doc.get("links") or {}).values()))
+
+
+def rewrite_drawn(doc: dict, old_id: str, new_id: str) -> None:
+    """图形绑定和连线端点从旧 id 改指新 id；合并后两端成了同一个点的连线没有意义，删掉。"""
+    for shape in (doc.get("shapes") or {}).values():
+        if shape.get("node") == old_id:
+            shape["node"] = new_id
+    links = doc.get("links") or {}
+    for lid, link in list(links.items()):
+        for end in (link.get("source") or {}, link.get("target") or {}):
+            if end.get("kind") == "node" and end.get("id") == old_id:
+                end["id"] = new_id
+        if link.get("edge") and _edge_touches(link["edge"], old_id):
+            link["edge"] = _swap_edge_end(link["edge"], old_id, new_id)
+        if link.get("source") == link.get("target"):
+            links.pop(lid)
+
+
+def _swap_edge_end(key: str, old_id: str, new_id: str) -> str:
+    """边 id `源->目标#类型` 里把旧 id 换成新 id（连线记着它写成了哪条关系，改名 / 合并要跟着改）。"""
+    head, _, tail = key.partition("#")
+    a, _, b = head.partition("->")
+    return f"{new_id if a == old_id else a}->{new_id if b == old_id else b}#{tail}"
+
+
+def _rewrite_one_layout(path: Path, old_id: str, new_id: str) -> None:
     doc = _safe(path)
-    if not doc:
+    if not doc or not _touches(doc, old_id):         # 没碰到的画布不动，revision 也不白涨
         return
     _move_key(doc.get("nodes") or {}, old_id, new_id)
     edges = doc.get("edges") or {}
@@ -137,6 +192,7 @@ def _rewrite_layout(vault: Path, old_id: str, new_id: str) -> None:
     for g in (doc.get("groups") or {}).values():
         if g.get("doc") == old_id:
             g["doc"] = new_id
+    rewrite_drawn(doc, old_id, new_id)
     doc["revision"] = int(doc.get("revision") or 0) + 1      # 让还开着的页面撞上 409 去重新拉
     write_json_atomic(path, doc)
 
@@ -189,7 +245,7 @@ def backup_rename(vault: Path, impact: dict, op: str = "rename") -> str:
 
 
 def _snapshot_rels(impact: dict) -> list[str]:
-    rels = [impact["path"], *impact["files"], *(f".knowrary/{n}" for n in SIDE_FILES)]
+    rels = [impact["path"], *impact["files"], *(f".knowrary/{n}" for n in SIDE_FILES), *impact.get("canvases", [])]
     return list(dict.fromkeys(rels))                 # 去重且保持顺序
 
 

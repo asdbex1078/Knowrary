@@ -10,8 +10,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from .mdio import read, write, write_json_atomic
-from .rename import RenameRejected, _edge_touches, _link_pattern, _safe, scan_links
+from .mdio import RE_REL_HEADER, read, write, write_json_atomic
+from .rename import (RenameRejected, _edge_touches, _link_pattern, _safe, _touches, canvases_with, layout_paths,
+                     rewrite_drawn, scan_links)
 from .writer import split_sections
 
 MERGED_HEADER = "## 并入自"
@@ -51,7 +52,7 @@ def plan_merge(vault: Path, index: dict, keep_id: str, drop_id: str) -> dict:
             moved.append({"type": e["type"], "source": e["source"], "target": e["target"]})
 
     links = scan_links(vault, drop_id)
-    body = split_sections(read(vault / drop["path"]))[1].strip()
+    body = _drop_body(read(vault / drop["path"])).strip()
     side = _side_impact(vault, drop_id)
     return {"keep_id": keep_id, "drop_id": drop_id,
             "keep_path": keep["path"], "drop_path": drop["path"],
@@ -74,7 +75,15 @@ def _side_impact(vault: Path, drop_id: str) -> dict:
         "projects": [pr.get("name") or pid for pid, pr in (projects.get("projects") or {}).items()
                      if any(pt.get("id") == drop_id for ls in pr.get("lists") or []
                             for st in ls.get("stages") or [] for pt in st.get("points") or [])],
+        "canvases": canvases_with(vault, drop_id),
     }
+
+
+def _drop_body(text: str) -> str:
+    """丢弃那张卡要并过去的正文：关系段之前的，加上关系段**之后**的（规范允许 `## 参考资料` / `## 待办` 放在那儿）。
+    以前只取前一段，后面的整段丢了。"""
+    _, body, _, tail = split_sections(text)
+    return body.rstrip("\n") + ("\n\n" + tail.strip("\n") if tail.strip() else "")
 
 
 def _merge_body(keep_text: str, drop_id: str, drop_body: str) -> str:
@@ -86,10 +95,12 @@ def _merge_body(keep_text: str, drop_id: str, drop_body: str) -> str:
     if not drop_body.strip():
         return keep_text
     block = f"\n{MERGED_HEADER} {drop_id}\n\n{drop_body.strip()}\n"
-    fm, body, rel_head, tail = split_sections(keep_text)
-    if not rel_head:                               # 没有关系段，直接接在正文后面
+    # split_sections 的第三项是关系段的**内容**，不带 `## 关系` 这行标题——拼回去时得自己补上。
+    # 以前当成「标题 + 内容」直接接，标题丢了，保留那张原有的关系行就掉进了正文（2026-10-13 修）
+    fm, body, rels, tail = split_sections(keep_text)
+    if not RE_REL_HEADER.search(keep_text):        # 没有关系段，直接接在正文后面
         return keep_text.rstrip("\n") + "\n" + block
-    return fm + body.rstrip("\n") + "\n" + block + rel_head + tail
+    return fm + body.rstrip("\n") + "\n" + block + "\n## 关系" + rels + tail
 
 
 def _merge_relations(vault: Path, impact: dict) -> None:
@@ -97,15 +108,18 @@ def _merge_relations(vault: Path, impact: dict) -> None:
     keep_id, drop_id = impact["keep_id"], impact["drop_id"]
     keep_path = vault / impact["keep_path"]
     text = read(keep_path)
-    drop_body = split_sections(read(vault / impact["drop_path"]))[1]
+    drop_body = _drop_body(read(vault / impact["drop_path"]))
     text = _merge_body(text, drop_id, drop_body)
 
     own = [e for e in impact["moved_edges"] if e["source"] == drop_id]
     if own:
-        fm, body, rel_head, tail = split_sections(text)
         lines = "".join(f"- {e['type']}:: [[{e['target']}]]\n" for e in own)
-        text = (fm + body + (rel_head or "\n## 关系\n") + lines + tail) if rel_head else \
-               (text.rstrip("\n") + "\n\n## 关系\n" + lines)
+        if RE_REL_HEADER.search(text):
+            fm, body, rels, tail = split_sections(text)
+            text = fm + body + "## 关系\n" + rels.strip("\n") + ("\n" if rels.strip() else "") + lines + \
+                ("\n" + tail if tail else "")
+        else:
+            text = text.rstrip("\n") + "\n\n## 关系\n" + lines
     write(keep_path, text)
 
     # 指向 drop 的边住在别人的文件里，改成指向 keep 就行（`[[ ]]` 替换会一并覆盖）
@@ -118,11 +132,18 @@ def _merge_relations(vault: Path, impact: dict) -> None:
 
 
 def _merge_layout(vault: Path, keep_id: str, drop_id: str) -> None:
-    path = vault / ".knowrary" / "layout.json"
+    for path in layout_paths(vault):                # 全局图和每张项目画布都要改
+        _merge_one_layout(path, keep_id, drop_id)
+
+
+def _merge_one_layout(path: Path, keep_id: str, drop_id: str) -> None:
     doc = _safe(path)
-    if not doc:
+    if not doc or not _touches(doc, drop_id):
         return
-    (doc.get("nodes") or {}).pop(drop_id, None)     # 位置以保留的那张为准，丢弃的直接去掉
+    nodes = doc.get("nodes") or {}
+    gone = nodes.pop(drop_id, None)                 # 位置以保留的那张为准，丢弃的直接去掉
+    if gone is not None and keep_id not in nodes:
+        nodes[keep_id] = gone                       # 这张画布上没有保留的那张：接过丢弃那张的位置，别让它从画布上消失
     edges = doc.get("edges") or {}
     for key in [k for k in edges if _edge_touches(k, drop_id)]:
         head, _, tail = key.partition("#")
@@ -137,6 +158,7 @@ def _merge_layout(vault: Path, keep_id: str, drop_id: str) -> None:
     for g in (doc.get("groups") or {}).values():
         if g.get("doc") == drop_id:
             g["doc"] = keep_id
+    rewrite_drawn(doc, drop_id, keep_id)
     doc["revision"] = int(doc.get("revision") or 0) + 1
     write_json_atomic(path, doc)
 

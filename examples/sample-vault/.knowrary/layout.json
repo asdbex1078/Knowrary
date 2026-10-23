@@ -1,11 +1,11 @@
 {
   "schema_version": 2,
-  "revision": 1,
-  "updated_at": "2026-09-22T08:35:24Z",
+  "revision": 3,
+  "updated_at": "2026-09-30T07:04:22Z",
   "viewport": {
-    "zoom": 0.8,
-    "cx": 0.0,
-    "cy": 0.0
+    "zoom": 0.4,
+    "cx": 774.0,
+    "cy": 159.0
   },
   "groups": {
     "g-网络": {
@@ -17,7 +17,8 @@
       "parent": null,
       "collapsed": false,
       "pinned": null,
-      "color": "#eef2f8"
+      "color": "#eef2f8",
+      "doc": null
     },
     "g-网络--_stubs": {
       "name": "_stubs",
@@ -28,7 +29,8 @@
       "parent": "g-网络",
       "collapsed": false,
       "pinned": null,
-      "color": null
+      "color": null,
+      "doc": null
     }
   },
   "nodes": {
@@ -38,7 +40,9 @@
       "w": 196.0,
       "h": 64.0,
       "group": "g-网络",
-      "state": "final"
+      "state": "final",
+      "placedAt": null,
+      "anchor": null
     },
     "http-1-1": {
       "x": 288.0,
@@ -46,7 +50,9 @@
       "w": 196.0,
       "h": 64.0,
       "group": "g-网络",
-      "state": "final"
+      "state": "final",
+      "placedAt": null,
+      "anchor": null
     },
     "http-2": {
       "x": 528.0,
@@ -54,7 +60,9 @@
       "w": 196.0,
       "h": 64.0,
       "group": "g-网络",
-      "state": "final"
+      "state": "final",
+      "placedAt": null,
+      "anchor": null
     },
     "http-3": {
       "x": 48.0,
@@ -62,7 +70,9 @@
       "w": 196.0,
       "h": 64.0,
       "group": "g-网络",
-      "state": "final"
+      "state": "final",
+      "placedAt": null,
+      "anchor": null
     },
     "quic": {
       "x": 288.0,
@@ -70,7 +80,9 @@
       "w": 196.0,
       "h": 64.0,
       "group": "g-网络",
-      "state": "final"
+      "state": "final",
+      "placedAt": null,
+      "anchor": null
     },
     "tcp": {
       "x": 528.0,
@@ -78,7 +90,9 @@
       "w": 196.0,
       "h": 64.0,
       "group": "g-网络",
-      "state": "final"
+      "state": "final",
+      "placedAt": null,
+      "anchor": null
     },
     "udp": {
       "x": 48.0,
@@ -86,7 +100,9 @@
       "w": 196.0,
       "h": 64.0,
       "group": "g-网络",
-      "state": "final"
+      "state": "final",
+      "placedAt": null,
+      "anchor": null
     },
     "网络": {
       "x": 288.0,
@@ -94,7 +110,9 @@
       "w": 196.0,
       "h": 64.0,
       "group": "g-网络",
-      "state": "final"
+      "state": "final",
+      "placedAt": null,
+      "anchor": null
     },
     "head-of-line-blocking": {
       "x": 856.0,
@@ -102,7 +120,9 @@
       "w": 196.0,
       "h": 64.0,
       "group": "g-网络--_stubs",
-      "state": "final"
+      "state": "final",
+      "placedAt": null,
+      "anchor": null
     }
   },
   "refs": [],

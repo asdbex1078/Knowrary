@@ -19,6 +19,20 @@ RELATED_LIMIT = 60
 LINKABLE_LIMIT = 200
 RE_TOKEN = re.compile(r"[a-z0-9_+#.-]+|[一-鿿]{2,4}")
 
+# 拆分粒度（2026-10-13）：拆粗拆细由人在拆之前选，不再写死「3～10 个」。
+# 起因是 ELF 一篇拆了 8 个点，「数据库 C 扩展加载」这种应用场景也单独成了点——
+# 所以三档都说清楚**应用场景、工具清单、案例怎么处理**，不只给一个数字。
+GRAINS = {
+    "粗": ("**粗**：只拆 2～4 个节点。只有会被别的知识反复引用、值得单独复习的核心概念才单独成点；"
+          "应用场景（某个系统 / 产品怎么用它）、工具与命令清单、具体案例、历史细节一律写进相关节点的 `## 例子` 或 `## 核心内容`，"
+          "不单独成点。拿不准拆不拆的就不拆。"),
+    "中": ("**中**：一篇几千字的文章通常拆出 3～8 个节点，太碎会让图变毛线球。"
+          "应用场景、工具清单、具体案例默认写进它所属概念的 `## 例子`，只有它本身也是一个能独立复习的概念才单独成点。"),
+    "细": ("**细**：按机制拆，每个能独立讲清、独立被考的子概念 / 机制都单独成点，可以拆到 8～15 个；"
+          "但仍然不是一节一个点——没有独立价值的段落（过渡、背景、工具清单）并进它所属的那个点。"),
+}
+DEFAULT_GRAIN = "中"
+
 
 def cards_from_index(index: dict) -> list[dict]:
     """index.json → 节点卡。虚拟 stub（没有文件）不算：模型链到它们等于链到不存在的东西。"""
@@ -87,7 +101,7 @@ def describe_points(points: list[dict]) -> str:
 
 
 def build_article_prompt(cards: list[dict], rt: RelationTypes, article: str, field_name: str,
-                         project_points: list[dict] | None = None) -> str:
+                         project_points: list[dict] | None = None, grain: str | None = None) -> str:
     tpl = read(PROMPTS_DIR / "article.md")
     related = select_related(cards, article)
     linkable = select_linkable(cards, related, field_name)
@@ -98,4 +112,33 @@ def build_article_prompt(cards: list[dict], rt: RelationTypes, article: str, fie
             .replace("{{all_ids}}", "、".join(linkable) or "(空)")
             .replace("{{related_nodes}}", "\n".join(describe_related(related)) or "(无)")
             .replace("{{project_points}}", describe_points(project_points or []))
+            .replace("{{grain}}", GRAINS.get(grain or "", GRAINS[DEFAULT_GRAIN]))
+            .replace("{{article}}", article))
+
+
+# ---------------------------------------------------------------- 拆后调整：合并 / 再拆（2026-10-13）
+
+RESHAPE_OPS = ("merge", "split")
+
+
+def _node_view(n: dict) -> dict:
+    """给模型看的一个点：全量（要改写的那几个）。"""
+    keep = ("id", "name", "type", "year", "desc", "from_section", "tags", "aliases", "body", "relations")
+    return {k: n[k] for k in keep if n.get(k) not in (None, "", [])}
+
+
+def build_reshape_prompt(plan: dict, op: str, ids: list[str], article: str, rt: RelationTypes,
+                         hint: str = "") -> str:
+    """审核卡上勾了几个点「合并」、或对一个点「再拆」：只让模型重写动到的那几个，别的点原样留着。"""
+    picked = [n for n in plan.get("nodes") or [] if n.get("id") in ids]
+    others = [n for n in plan.get("nodes") or [] if n.get("id") not in ids]
+    tpl = read(PROMPTS_DIR / "reshape.md")
+    task = {"merge": f"把下面这 {len(picked)} 个点**合并成一个**节点。", "split": "把下面这 1 个点**再拆成 2 个或更多**节点。"}[op]
+    import json
+    return (tpl.replace("{{task}}", task)
+            .replace("{{op}}", op)
+            .replace("{{hint}}", hint.strip() or "（没有额外要求）")
+            .replace("{{relation_types}}", rt.describe())
+            .replace("{{picked}}", json.dumps([_node_view(n) for n in picked], ensure_ascii=False, indent=2))
+            .replace("{{others}}", "\n".join(f"- {n.get('id')}｜{n.get('desc') or ''}" for n in others) or "(无)")
             .replace("{{article}}", article))

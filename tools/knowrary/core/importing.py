@@ -292,6 +292,90 @@ def rename_in_plan(plan: dict, old: str, new: str) -> dict:
     return out
 
 
+def check_reshape(plan: dict, op: str, ids: list[str]) -> None:
+    """选得对不对：调模型之前先挡，免得白花一次钱。"""
+    if op not in ("merge", "split"):
+        raise ValueError(f"不认识的调整：{op}")
+    have = {n.get("id") for n in plan.get("nodes") or []}
+    missing = [i for i in ids if i not in have]
+    if missing:
+        raise ValueError(f"方案里没有这几个点：{'、'.join(missing)}")
+    if op == "merge" and len(ids) < 2:
+        raise ValueError("合并至少要两个点")
+    if op == "split" and len(ids) != 1:
+        raise ValueError("再拆一次只拆一个点")
+
+
+def reshape_in_plan(plan: dict, op: str, ids: list[str], made: list[dict], main: str | None = None) -> dict:
+    """审核卡上的「合并 / 再拆」（2026-10-13）：把 `ids` 那几个点换成模型重写的 `made`，其余点一字不动。
+
+    - 合并：`ids` 几个点 → `made` 里的一个点；别的点指向旧 id 的边、正文链接都改指它。
+    - 再拆：`ids` 一个点 → `made` 里的几个；别的点指向它的边和链接改指 `main`（拆出来的主点，不给就第一个）。
+    新点摆在原来第一个点的位置；改完自环去掉、重复边并掉。返回新方案，不改入参。
+    """
+    import copy
+    check_reshape(plan, op, ids)
+    if not made:
+        raise ValueError("模型没交回新的点")
+    have = [n.get("id") for n in plan.get("nodes") or []]
+    made_ids = [n.get("id") for n in made]
+    if not all(made_ids) or len(set(made_ids)) != len(made_ids):
+        raise ValueError("模型交回的点缺 id 或 id 重复")
+    if op == "merge" and len(made) != 1:
+        raise ValueError(f"合并应当交回 1 个点，模型交回了 {len(made)} 个")
+    if op == "split" and len(made) < 2:
+        raise ValueError("再拆应当交回至少 2 个点，模型只交回了 1 个")
+    clash = [i for i in made_ids if i in have and i not in ids]
+    if clash:
+        raise ValueError(f"新点的 id 和方案里别的点撞了：{'、'.join(clash)}")
+    heir = made_ids[0] if op == "merge" else (main if main in made_ids else made_ids[0])
+    made = copy.deepcopy(made)
+    if op == "merge":
+        # 被并掉的几个点的名字进别名：以后搜「数据库C扩展加载」还能找到它并进去的那个点
+        m = made[0]
+        names = [x for n in plan["nodes"] if n.get("id") in ids for x in (n.get("name"), n.get("id")) if x]
+        m["aliases"] = list(dict.fromkeys([*(m.get("aliases") or []),
+                                           *(x for x in names if x not in (m.get("name"), m.get("id")))]))
+
+    out = copy.deepcopy(plan)
+    first = next(i for i in have if i in ids)        # 新点摆在被换掉的第一个点原来的位置
+    nodes: list[dict] = []
+    for n in out.get("nodes") or []:
+        if n.get("id") not in ids:
+            nodes.append(n)
+        elif n.get("id") == first:
+            nodes.extend(copy.deepcopy(made))
+    out["nodes"] = nodes
+    for old in ids:
+        if old not in made_ids:
+            out = _redirect(out, old, heir)
+    for n in out["nodes"]:
+        seen, rels = set(), []
+        for r in n.get("relations") or []:
+            key = (r.get("type"), r.get("target"))
+            if r.get("target") == n.get("id") or key in seen:
+                continue
+            seen.add(key)
+            rels.append(r)
+        n["relations"] = rels
+    return out
+
+
+def _redirect(plan: dict, old: str, new: str) -> dict:
+    """指向 `old` 的边和正文链接改指 `new`（`old` 这个点本身已经不在方案里了）。"""
+    link_old, link_new = f"[[{old}]]", f"[[{new}]]"
+    for n in plan.get("nodes") or []:
+        if n.get("body"):
+            n["body"] = n["body"].replace(link_old, link_new).replace(f"[[{old}|", f"[[{new}|")
+        for r in n.get("relations") or []:
+            if r.get("target") == old:
+                r["target"] = new
+    for e in plan.get("enrich") or plan.get("merge_into") or []:
+        if e.get("content"):
+            e["content"] = e["content"].replace(link_old, link_new)
+    return plan
+
+
 def promote_in_plan(plan: dict, keys: list[str]) -> dict:
     """把指定的几条关系置信度抬到 1.0，让它们直接进 md 而不是待审。
     key 用 `源->目标#类型`（和 pending.json / index 里边的 id 同一写法）。"""

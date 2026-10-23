@@ -34,16 +34,36 @@ PLAN = {"shape": "single", "summary": "整篇讲 BPE", "nodes": [
     {"id": "BPE", "name": "BPE", "desc": "子词分词", "from_section": "为什么是子词", "body": BODY,
      "relations": [{"type": "依赖", "target": "甲", "confidence": 0.9}]}]}
 CALLS: list = []                     # 假模型被问了几次：同名冲突要在调模型之前挡下
+PROMPTS: list[str] = []              # 每次问了什么：粒度档要进提示词
+# 第二篇（2026-10-13 粒度）：一篇拆成三个点，卡上勾两个合并
+ELF = "# ELF\n\n## 动态链接\n\nGOT/PLT。\n\n## 数据库扩展\n\ndlopen 加载 .so。\n"
+MULTI = {"shape": "multi", "summary": "ELF 三个点", "nodes": [
+    {"id": "ELF", "name": "ELF", "desc": "格式", "body": "## 描述\n见 [[数据库扩展]]", "relations": [
+        {"type": "依赖", "target": "甲", "confidence": 0.9}, {"type": "包含", "target": "动态链接", "confidence": 1}]},
+    {"id": "动态链接", "name": "动态链接", "desc": "GOT/PLT", "body": "## 描述\nd", "relations": []},
+    {"id": "数据库扩展", "name": "数据库扩展", "desc": "dlopen", "body": "## 描述\nx",
+     "relations": [{"type": "依赖", "target": "动态链接", "confidence": 1}]}]}
+MERGED = {"main": "动态链接", "summary": "数据库扩展当动态链接的例子", "nodes": [
+    {"id": "动态链接", "name": "动态链接", "desc": "运行时重定位", "body": "## 描述\nd\n\n## 例子\ndlopen 加载 .so",
+     "relations": []}]}
+
+
+def answer(prompt: str) -> dict:
+    if "合并成一个" in prompt:
+        return MERGED
+    return MULTI if "dlopen" in prompt else PLAN
 
 
 class FakeLearn(BaseHTTPRequestHandler):
     """假的 OpenAI 兼容接口，当 learn 角色：导入那一次调用固定回 PLAN。"""
 
     def do_POST(self):  # noqa: N802
-        self.rfile.read(int(self.headers["Content-Length"]))
+        req = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+        prompt = "\n".join(str(m.get("content")) for m in req.get("messages") or [])
         CALLS.append(1)
+        PROMPTS.append(prompt)
         out = json.dumps({"model": "fake-learn", "usage": {"prompt_tokens": 1, "completion_tokens": 1},
-                          "choices": [{"message": {"content": json.dumps(PLAN, ensure_ascii=False)}}]}).encode()
+                          "choices": [{"message": {"content": json.dumps(answer(prompt), ensure_ascii=False)}}]}).encode()
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(out)))
@@ -121,6 +141,41 @@ async def scenarios(page, ck, vault: Path) -> None:
     ck.add("同名不同文：当场拦下让人改文章名", "换个文章名" in st["error"], str(st))
     ck.add("拦下时没调模型", len(CALLS) == calls, f"calls {calls}->{len(CALLS)}")
     ck.add("已有的那篇原文没被覆盖", core.split_frontmatter(saved.read_text("utf-8"))[1] == ARTICLE, "")
+    await grain_and_reshape(page, ck, vault)
+
+
+NODES = "JSON.stringify([...document.querySelectorAll('aside .imp-node-head b')].map((b) => b.textContent.trim()))"
+
+
+async def grain_and_reshape(page, ck, vault: Path) -> None:
+    """2026-10-13：拆前选「粗」进提示词；卡上勾两个点合并、看得见谁改的、能撤回。"""
+    await E.click_text(page, "aside [data-grain] button", "粗")
+    await paste(page, ELF, "ELF")
+    await E.click_text(page, "aside .imp-run .btn", "拆成知识点")
+    await E.poll(page, NODES, lambda v: len(json.loads(v)) == 3, timeout=10)
+    ck.add("选的粒度进了提示词", "只拆 2～4 个节点" in PROMPTS[-1], PROMPTS[-1][-300:])
+    used = await page.ev("document.querySelector('aside [data-grain-used]')?.textContent.trim() || ''")
+    ck.add("卡上标着这次用的粒度", used == "粒度：粗", used)
+
+    await page.ev("document.querySelector('aside [data-pick=\"动态链接\"]').click()")
+    await page.ev("document.querySelector('aside [data-pick=\"数据库扩展\"]').click()")
+    await E.poll(page, "!!document.querySelector('aside [data-reshape]')", lambda v: v, timeout=4)
+    await page.ev("document.querySelector('aside [data-act=\"merge\"]').click()")
+    await E.poll(page, NODES, lambda v: json.loads(v) == ["ELF", "动态链接"], timeout=10)
+    note = await page.ev("document.querySelector('aside [data-reshaped]')?.textContent || ''")
+    ck.add("合并后卡上说清谁改的、怎么改的", "fake-learn" in note and "当动态链接的例子" in note, note)
+    ck.add("合并只发了被勾的两个点的全文", '"id": "数据库扩展"' in PROMPTS[-1] and '"id": "ELF"' not in PROMPTS[-1],
+           PROMPTS[-1][:300])
+    await E.poll(page, "[...document.querySelectorAll('aside .cc-diff b')].map((b) => b.textContent).join('|')",
+                 lambda v: "数据库扩展" not in v and "动态链接" in v, timeout=8)
+    diff = await page.ev("[...document.querySelectorAll('aside .cc-diff')].map((p) => p.textContent).join('\\n')")
+    ck.add("重算后的 diff 里，ELF 正文的链接改指合并后的点", "[[动态链接]]" in diff and "[[数据库扩展]]" not in diff,
+           diff[:400])
+
+    await page.ev("document.querySelector('aside [data-act=\"undo-reshape\"]').click()")
+    await E.poll(page, NODES, lambda v: len(json.loads(v)) == 3, timeout=8)
+    ck.add("撤回回到合并前三个点", True, "")
+    ck.add("调整只改卡不写盘", not (vault / "nodes/测试/动态链接.md").exists(), "")
 
 
 async def run(api: str, cdp: str, vault: Path, results: list) -> None:

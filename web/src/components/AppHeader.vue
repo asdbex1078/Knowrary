@@ -95,6 +95,12 @@ defineExpose({ focus: () => inputEl.value?.focus() })
               @click="emit('switch-mode', 'history-entry')">
         <Icon name="clock" :size="14" />历史
       </button>
+      <!-- 2026-10-13 专题：围绕一个主题自己画的总结图（画图工具只在这儿开，全局图保持干净） -->
+      <button :class="{ on: mode === 'topic' }" role="tab" data-mode="topic"
+              title="全局 · 专题：自己画的总结图（结构 / 上下层 / 演化），框可以升级成知识点"
+              @click="emit('switch-mode', 'topic')">
+        <Icon name="pencil" :size="14" />专题
+      </button>
     </div>
 
     <span class="divider" />

@@ -78,22 +78,24 @@ def precheck(vault: Path, index: dict, edits: list) -> list[dict]:
 
 
 def _check_sources(edit, resolve: Resolver) -> list[dict]:
-    """③ 来源链到了不存在的原文 / 原文目录外面。**只提醒不拦**：导入时原文和节点
+    """③ 来源链到了不存在的原文 / 成品，或落在各自目录外面。**只提醒不拦**：导入时原文和节点
     不一定是同一步落盘的，硬拦会卡住流程。纯文字的外部来源（一张图、一篇论文）不查。"""
     fm, _ = split_frontmatter(_text_of(edit))
     out: list[dict] = []
     for item in sources_of(fm):
         ref = resolve(item)
-        if ref["kind"] != "article" or ref.get("legacy"):
+        if ref["kind"] not in ("article", "work") or ref.get("legacy"):
             continue
+        what, root, fix = (("原文", resolve.articles, "先把原文放进原文目录；或者这是外部来源的话，去掉 [[ ]] 写成纯文字")
+                           if ref["kind"] == "article"
+                           else ("成品", resolve.works, "成品要自己整理进成品目录（库不自动同步别的仓库里的活文件）"))
         if not ref["exists"]:
             out.append(_issue("warn", "dead_source", edit.rel,
-                              f"来源 `{item}` 指向的原文 `{ref['path']}` 不存在",
-                              "先把原文放进原文目录；或者这是外部来源的话，去掉 [[ ]] 写成纯文字"))
-        elif not ref["path"].startswith(resolve.articles + "/"):
+                              f"来源 `{item}` 指向的{what} `{ref['path']}` 不存在", fix))
+        elif not ref["path"].startswith(root + "/"):
             out.append(_issue("warn", "source_outside", edit.rel,
-                              f"来源 `{item}` 不在原文目录 `{resolve.articles}/` 里",
-                              "原文统一放进原文目录，界面上才认得出它是原文（设置 → 知识库）"))
+                              f"来源 `{item}` 不在{what}目录 `{root}/` 里",
+                              f"{what}统一放进{what}目录，界面上才认得出（设置 → 知识库）"))
     return out
 
 

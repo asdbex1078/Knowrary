@@ -99,6 +99,78 @@ class EdgeStyle(Strict):
     router: str | None = None
 
 
+ShapeKind = Literal["rect", "frame", "text", "ellipse", "triangle", "diamond", "cylinder"]
+
+
+class ShapeStyle(Strict):
+    """手画图形的样式：都可空，空 = 按主题色走（暗色模式自动换）。"""
+
+    fill: str | None = None
+    stroke: str | None = None
+    color: str | None = None          # 文字颜色
+    size: float | None = None         # 字号
+    bold: bool | None = None
+
+
+class Shape(Strict):
+    """专题画布上手画的图形（2026-10-13）：先是图形，可以升级成知识点（`node` 指向它）。
+
+    `frame` 是能套小框的大框，小框用 `parent` 挂上去；知识仍然只住在 md 里——
+    没升级的图形只是画，升级后框上显示的名字 / 悬停摘要都从索引现取。
+    """
+
+    kind: ShapeKind
+    x: float
+    y: float
+    w: float
+    h: float
+    text: str = ""
+    tip: str = ""                     # 悬停说明
+    parent: str | None = None         # 套在哪个大框里（另一个 shape 的 id）
+    node: str | None = None           # 升级后绑定的知识点 id
+    style: ShapeStyle | None = None
+
+
+class ShapePatch(Strict):
+    kind: ShapeKind | None = None
+    x: float | None = None
+    y: float | None = None
+    w: float | None = None
+    h: float | None = None
+    text: str | None = None
+    tip: str | None = None
+    parent: str | None = None
+    node: str | None = None
+    style: ShapeStyle | None = None
+
+
+class LinkEnd(Strict):
+    """连线的一端：手画的图形，或者画布上的知识点。两种 id 空间不同，所以显式标出是哪种。"""
+
+    kind: Literal["shape", "node"]
+    id: str
+
+
+class Link(Strict):
+    """专题画布上的自由连线。只存在画布里；两端都是知识点、要沉淀成关系的，走 md 的 `## 关系`。"""
+
+    source: LinkEnd
+    target: LinkEnd
+    text: str = ""
+    vertices: list[Point] = Field(default_factory=list)
+    style: ShapeStyle | None = None
+    edge: str | None = None           # 写成了 md 里的哪条关系（索引边 id `源->目标#类型`）；没写成就是 None
+
+
+class LinkPatch(Strict):
+    source: LinkEnd | None = None
+    target: LinkEnd | None = None
+    text: str | None = None
+    vertices: list[Point] | None = None
+    style: ShapeStyle | None = None
+    edge: str | None = None
+
+
 class LayoutDoc(Strict):
     schema_version: int = LAYOUT_SCHEMA_VERSION
     revision: int = 0
@@ -110,6 +182,9 @@ class LayoutDoc(Strict):
     notes: list[StickyNote] = Field(default_factory=list)
     images: list[ImageBox] = Field(default_factory=list)
     edges: dict[str, EdgeStyle] = Field(default_factory=dict)
+    shapes: dict[str, Shape] = Field(default_factory=dict)     # 只有专题画布会有（画图工具只开在那儿）
+    links: dict[str, Link] = Field(default_factory=dict)
+    depth: dict[Literal["up", "down", "left", "right"], int] | None = None   # 专题画布：初稿 / 建议每个方位走几跳（不给 = 3）
 
 
 # ---------------------------------------------------------------- layout patch
@@ -156,6 +231,9 @@ class LayoutPatch(Strict):
     refs: list[RefCard] | None = None
     notes: list[StickyNote] | None = None
     images: list[ImageBox] | None = None
+    shapes: dict[str, ShapePatch | None] | None = None
+    links: dict[str, LinkPatch | None] | None = None
+    depth: dict[Literal["up", "down", "left", "right"], int] | None = None
 
 
 class LayoutSaved(Strict):
@@ -314,6 +392,30 @@ class ImportProposeRequest(Strict):
     project: str | None = None         # 在哪个项目下导入：它清单里没建的点作为"待认领"给模型看
     keep_article: bool = True          # 保留原文：同名冲突在调模型之前就挡下，不白花一次钱
     origin: str | None = None          # 本地文件名
+    grain: Literal["粗", "中", "细"] = "中"   # 拆分粒度（2026-10-13）：拆之前由人选，提示词按档说怎么拆
+
+
+class ImportReshapeRequest(Strict):
+    """审核卡上调整拆法（2026-10-13）：勾几个点「合并」，或对一个点「再拆」。调一次 learn，只重写动到的点。
+    只改卡、不写盘：改完的方案回到卡上，人看过 diff 再写。"""
+
+    plan: dict[str, Any]
+    op: Literal["merge", "split"]
+    ids: list[str]
+    hint: str = ""                     # 人补的一句要求，如「按静态 / 动态拆」
+    text: str | None = None            # 原文：模型重写正文要看着它，不然合并只能拼接、再拆只能切段
+    file: str | None = None
+
+
+class ImportReshapeResult(Strict):
+    plan: dict[str, Any]               # 改完的整份方案，直接替换卡上那份
+    before: dict[str, Any]             # 改之前那份：撤回用
+    made: list[str] = Field(default_factory=list)      # 这次新交回的点
+    delta: str = ""                    # 改前 → 改后（只看动到的点），给人看模型到底怎么合 / 怎么拆的
+    summary: str = ""
+    near_existing: dict[str, list[dict[str, Any]]] = Field(default_factory=dict)   # 新点 → 图里可能是同一个的
+    model: str = ""
+    ms: int = 0
 
 
 class ImportClaim(Strict):
@@ -696,15 +798,16 @@ class ReviewDone(Strict):
 
 
 class SourceRef(Strict):
-    """节点的一处来源，解析过的。`kind`：`article` = 库里的原文（点得开），`external` = 外部来源（纯文字）。"""
+    """节点的一处来源，解析过的。`kind`：`article` = 库里的原文（点得开），
+    `work` = 库里的成品（HTML 深度文档，新标签页打开，`section` 是页面锚点），`external` = 外部来源（纯文字）。"""
 
     raw: str                           # frontmatter 里原样写的那一项
-    kind: str                          # article | external
-    label: str                         # 给人看的名字：原文取文件名，外部来源就是原文字
-    path: str = ""                     # 原文的库内路径
-    section: str = ""                  # [[路径#小节]] 里的小节
-    exists: bool = False               # 原文文件在不在
-    uri: str = ""                      # 在 Obsidian 里打开它
+    kind: str                          # article | work | external
+    label: str                         # 给人看的名字：原文/成品取文件名，外部来源就是原文字
+    path: str = ""                     # 原文/成品的库内路径
+    section: str = ""                  # [[路径#小节]] 里的小节；成品的话是 HTML 锚点
+    exists: bool = False               # 文件在不在
+    uri: str = ""                      # 在 Obsidian 里打开它（成品没有：Obsidian 不渲染 html）
 
 
 class NodeDetail(Strict):
@@ -1317,6 +1420,29 @@ class ArticlesRead(Strict):
     articles: list[ArticleEntry] = Field(default_factory=list)
 
 
+class WorkNodeRef(Strict):
+    """成品 → 从它拆出来的一个点，带链的是哪个页面锚点（空 = 链整篇）。"""
+
+    id: str
+    name: str
+    section: str = ""
+
+
+class WorkEntry(Strict):
+    """成品目录里的一个 HTML 深度文档。`refs` 空 = 还没有节点链着它（待导入）。"""
+
+    path: str
+    title: str
+    size: int = 0
+    modified: str = ""
+    refs: list[WorkNodeRef] = Field(default_factory=list)
+
+
+class WorksRead(Strict):
+    dir: str                           # 成品目录（库内相对路径）
+    works: list[WorkEntry] = Field(default_factory=list)
+
+
 class ArticleHeading(Strict):
     level: int
     title: str
@@ -1348,7 +1474,9 @@ class VaultConfigRead(Strict):
 
     articles_dir: str                  # 原文目录，库内相对路径
     models_dir: str = ""               # 模型目录（家族文件），库内相对路径；空 = 还没指定
+    works_dir: str = "works"           # 成品目录（自己产出的 HTML 深度文档），**由人自己整理进来**
     articles: int = 0                  # 这个目录里现在有几篇原文（改目录时要不要搬，看它）
+    works: int = 0                     # 成品目录里现在有几个 html
     candidates: list[str] = Field(default_factory=list)   # 库里现有的目录，给输入框当候选
     moved: list[str] = Field(default_factory=list)        # 这次一起搬过去的文章
     backup: str = ""                   # 搬之前的快照在哪
@@ -1565,8 +1693,11 @@ class ModelsDirPatch(Strict):
 
 
 class VaultConfigPatch(Strict):
-    articles_dir: str
-    move: bool = False                 # 旧目录里还有文章时，得明说一起搬
+    """一次改一样：给了 `articles_dir` 走原文目录（带搬家逻辑），给了 `works_dir` 走成品目录（只换指向不搬——成品由人自己整理）。"""
+
+    articles_dir: str | None = None
+    works_dir: str | None = None
+    move: bool = False                 # 旧目录里还有文章时，得明说一起搬（只对原文目录有意义）
     dry_run: bool = False              # 只校验不落盘：设置页边打边问，规则只在服务端写一份
 
 
@@ -1666,6 +1797,7 @@ class RenameImpact(Strict):
     reviews: int = 0
     quiz: int = 0
     projects: list[str] = Field(default_factory=list)
+    canvases: list[str] = Field(default_factory=list)  # 有它的项目画布（.knowrary/layouts/*.json），一并改、一并备份
 
 
 class RenameResult(Strict):
@@ -1701,6 +1833,7 @@ class MergeImpact(Strict):
     reviews: int = 0
     quiz: int = 0
     projects: list[str] = Field(default_factory=list)
+    canvases: list[str] = Field(default_factory=list)  # 有它的项目画布（.knowrary/layouts/*.json），一并改、一并备份
 
 
 class MergeResult(Strict):

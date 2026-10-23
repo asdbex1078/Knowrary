@@ -40,8 +40,7 @@ def layout_path(vault: Path | None = None, name: str = DEFAULT_LAYOUT) -> Path:
     **契约是同一个 `LayoutDoc`**，只是文件不同——项目画布是工作台，全局图才是成品图，
     但它们的形状没有理由不一样（重构方案 §5A）。
     """
-    root = (vault or vault_path()) / ".knowrary"
-    return root / "layout.json" if name == DEFAULT_LAYOUT else root / "layouts" / f"{name}.json"
+    return core.layout_path(vault or vault_path(), name)
 
 
 __all__ = ["DEFAULT_LAYOUT", "REPO", "WEB_DIST", "core", "layout_path", "vault_path"]

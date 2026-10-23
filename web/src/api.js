@@ -78,6 +78,34 @@ export const fetchDue = () => request('/api/review/due')
 
 // —— 横向对比：两个只读接口，表是现算的，没有第二份数据 ——
 export const fetchCompareGroups = () => request('/api/compare')
+
+/** 专题：一个专题一张自己画的画布（layout 名 `topic:<专题名>`）。 */
+export const fetchTopics = () => request('/api/topics')
+/** 按关系算的方位（初稿和侧栏建议用）。`depth` = { up, down, left, right }，不给就是 3 跳。 */
+export const fetchTopicDraft = (topic, depth = {}) => {
+  const q = new URLSearchParams(Object.entries(depth || {}).filter(([, v]) => v != null).map(([k, v]) => [k, String(v)]))
+  return request(`/api/topics/${encodeURIComponent(topic)}/draft${q.size ? `?${q}` : ''}`)
+}
+export const postTopic = (topic, folder = '') => request('/api/topics', {
+  method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ topic, folder }),
+})
+/** 专题文件夹（2026-10-14）：新建 / 改名 / 挪 / 删（只删空的）；专题挪进某个文件夹。 */
+const folderReq = (url, body, method = 'POST') => request(url, { method, headers: { 'Content-Type': 'application/json' },
+                                                                  body: JSON.stringify(body) })
+export const postTopicFolder = (parent, name) => folderReq('/api/topic-folders', { parent, name })
+export const renameTopicFolder = (path, name) => folderReq('/api/topic-folders/rename', { path, name })
+export const moveTopicFolder = (path, to) => folderReq('/api/topic-folders/move', { path, to })
+export const deleteTopicFolder = (path) => request(`/api/topic-folders?path=${encodeURIComponent(path)}`, { method: 'DELETE' })
+export const moveTopic = (topic, folder) => folderReq(`/api/topics/${encodeURIComponent(topic)}/move`, { folder })
+const topicUrl = (topic, tail) => `/api/topics/${encodeURIComponent(topic)}/${tail}`
+const postJson = (url, body) => request(url, { method: 'POST', headers: { 'Content-Type': 'application/json' },
+                                              body: JSON.stringify(body || {}) })
+/** 专题图的 AI（第 6 步）：上次的审图意见和问过的建议；审一次；采纳 / 忽略一条；问该画什么。 */
+export const fetchTopicReview = (topic) => request(topicUrl(topic, 'review'))
+export const postTopicReview = (topic) => postJson(topicUrl(topic, 'review'))
+export const markTopicReview = (topic, id, status) => postJson(topicUrl(topic, `review/${encodeURIComponent(id)}`), { status })
+export const postTopicAdvice = (topic, question) => postJson(topicUrl(topic, 'advice'), { question })
+export const deleteTopic = (topic) => request(`/api/topics/${encodeURIComponent(topic)}`, { method: 'DELETE' })
 // 流派没有独立入口：它只在历史视图里出现，所以这个只有时间线那条路会调
 export const fetchSchools = () => request('/api/schools')
 export const fetchCompareTable = (id) => request(`/api/compare/${encodeURIComponent(id)}`)
@@ -98,6 +126,8 @@ const postJSON = (url, body) => request(url, {
 })
 export const postImportPropose = (body) => postJSON('/api/import/propose', body)
 export const postImport = (body) => postJSON('/api/import', body)
+/** 审核卡上调整拆法：勾几个点合并 / 对一个点再拆（一次 learn 调用，只改卡不写盘）。 */
+export const postImportReshape = (body) => postJSON('/api/import/reshape', body)
 export const fetchImportSources = () => request('/api/import/sources')
 /** 待审边：导入时模型没把握的那些。decide 一批处理：adopt（可带 relation / swap）/ reject / clear / restore。 */
 export const fetchPending = () => request('/api/pending')
@@ -106,6 +136,7 @@ export const postPendingDecide = (decisions) => postJSON('/api/pending/decide', 
 export const postTypeDecide = (body) => postJSON('/api/pending/types/decide', body)
 /** 原文阅读（只读）：原文目录里的全部原文 / 读一篇（带从它拆出的点、各自链的是哪一节）。 */
 export const fetchArticles = () => request('/api/articles')
+export const fetchWorks = () => request('/api/works')
 export const fetchArticle = (path) => request(`/api/article?path=${encodeURIComponent(path)}`)
 /** 模型目录（家族文件）：读 / 指定目录 / 抽一篇原文成计划 / 可疑格子问 review / 写入勾选的型号。 */
 export const fetchModels = () => request('/api/models')

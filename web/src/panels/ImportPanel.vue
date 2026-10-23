@@ -13,10 +13,13 @@
 // 两个只在导入卡上有的动作都交给服务端改方案再翻译：
 // · 「改用清单里的 id」：认领幽灵要连带改所有指向它的关系和正文链接，前端不自己拼；
 // · 「这条待审直接写」：把那条边的置信度抬到 1。
+//
+// 粒度由人定（2026-10-13）：拆之前选粗 / 中 / 细；拆完在卡上勾几个点「合并」、对一个点「再拆」——
+// 都是再调一次模型、只重写动到的点，改完停在卡上给人看改了哪儿，能撤回，写入照常走审核。
 import { computed, onMounted, ref, watch } from 'vue'
 import Drawer from '../ui/Drawer.vue'
 import Icon from '../ui/Icon.vue'
-import { fetchImportSource, fetchImportSources, postImport, postImportPropose } from '../api.js'
+import { fetchImportSource, fetchImportSources, postImport, postImportPropose, postImportReshape } from '../api.js'
 
 const props = defineProps({
   fields: { type: Array, default: () => [] },       // 已有领域名，给下拉
@@ -55,6 +58,21 @@ const localName = ref('')       // 本地文件名：复制进来的那份原文
 // 这一张卡拆的是哪篇：写入时要把原文再带一次（方案里没有它，服务端也不替前端记着）
 const article = ref({ text: '', file: null, origin: null })
 
+// 拆分粒度：记住上次选的档（只是这台浏览器的偏好，读写失败就用「中」）
+const GRAINS = [
+  { id: '粗', tip: '2～4 个点：只拆核心概念，应用场景、工具清单、案例都写进例子' },
+  { id: '中', tip: '3～8 个点：应用场景默认写进所属概念的例子' },
+  { id: '细', tip: '按机制拆，8～15 个点；没有独立价值的段落仍并进所属的点' },
+]
+const GRAIN_KEY = 'knowrary.import.grain'
+const grain = ref((() => { try { return localStorage.getItem(GRAIN_KEY) || '中' } catch { return '中' } })())
+watch(grain, (v) => { try { localStorage.setItem(GRAIN_KEY, v) } catch { /* 存不了就算了 */ } })
+// 卡上调整拆法：勾上的点、补的一句要求、正在调模型的那一步、上一次调整的结果（撤回用）
+const picks = ref(new Set())
+const hint = ref('')
+const reshaping = ref('')        // '' | 'merge' | 'split'
+const reshaped = ref(null)       // ImportReshapeResult + { op, prev }：卡上摆「模型怎么改的」，能撤回
+
 // 批量队列：{ key, name, kind: 'vault' | 'file' | 'paste', path?, text?, status, error? }
 // status: waiting → proposing → review → done | skipped | failed
 const queue = ref([])
@@ -83,7 +101,7 @@ onMounted(loadSources)
 watch(() => props.preset, (path) => {
   if (!path) return
   tab.value = 'vault'
-  source.value = path.split('/').pop().replace(/\.(md|markdown|txt)$/i, '')
+  source.value = path.split('/').pop().replace(/\.(md|markdown|txt|html|htm)$/i, '')
   pickSource(path)
 }, { immediate: true })
 
@@ -97,11 +115,11 @@ async function pickSource(path) {
   try {
     const res = await fetchImportSource(path)
     text.value = res.text
-    if (!source.value) source.value = path.split('/').pop().replace(/\.(md|markdown|txt)$/i, '')
+    if (!source.value) source.value = path.split('/').pop().replace(/\.(md|markdown|txt|html|htm)$/i, '')
   } catch (err) { error.value = msgOf(err) }
 }
 
-const stripExt = (name) => name.replace(/\.(md|markdown|txt)$/i, '')
+const stripExt = (name) => name.replace(/\.(md|markdown|txt|html|htm)$/i, '')
 const readText = (f) => new Promise((ok, no) => {
   const r = new FileReader(); r.onload = () => ok(String(r.result || '')); r.onerror = no; r.readAsText(f)
 })
@@ -193,21 +211,26 @@ async function proposeText(body, name, from = {}) {
   working.value = true
   source.value = name
   proposal.value = null; renames.value = {}; relinks.value = {}; promote.value = new Set(); openBodies.value = new Set()
+  picks.value = new Set(); hint.value = ''; reshaped.value = null
   stale.value = false
   article.value = { text: body, file: from.file || null, origin: from.origin || null }
   try {
     proposal.value = await postImportPropose({ text: body, source: name, field: field.value.trim(),
                                                folder: folder.value.trim() || null, project: props.project || null,
                                                keep_article: keepArticle.value, file: article.value.file,
-                                               origin: article.value.origin })
+                                               origin: article.value.origin, grain: grain.value })
+    proposal.value.grain = grain.value
   } finally { working.value = false }
 }
 
-// 卡上那一行「原文怎么进库」
+// 卡上那一行「原文怎么进库」。成品（html）永远 in_place：成品即原文，不存副本
+const isWorkPath = (p) => /\.html?$/i.test(p || '')
 const ARTICLE_SAY = {
   copy: (a) => `原文会存进 ${a.path}（写入那一下才放，预览不碰文件）`,
   reuse: (a) => `原文目录里已经有这一篇（${a.path}），直接链过去，不存第二份`,
-  in_place: (a) => `就地引用 ${a.path}：它本来就在原文目录里，一个字不动`,
+  in_place: (a) => isWorkPath(a.path)
+    ? `成品即原文：节点的来源直接链 ${a.path} 的页面锚点，不存副本`
+    : `就地引用 ${a.path}：它本来就在原文目录里，一个字不动`,
 }
 const articleSay = computed(() => {
   const a = preview.value?.article
@@ -258,6 +281,52 @@ function toggleBody(id) {
   const next = new Set(openBodies.value); next.has(id) ? next.delete(id) : next.add(id); openBodies.value = next
 }
 function touch() { stale.value = true; blocked.value = null }
+
+function togglePick(id) {
+  const next = new Set(picks.value); next.has(id) ? next.delete(id) : next.add(id); picks.value = next
+}
+const RESHAPE_SAY = { merge: '合并', split: '再拆' }
+
+/** 合并勾上的几个点 / 把勾上的那一个再拆开：调一次模型，只重写这几个，改完重算 diff。 */
+async function reshape(op) {
+  const ids = nodes.value.map((n) => n.id).filter((id) => picks.value.has(id))
+  working.value = true; reshaping.value = op; error.value = ''
+  try {
+    const res = await postImportReshape({ plan: plan.value, op, ids, hint: hint.value.trim(),
+                                          text: article.value.text, file: article.value.file })
+    // 改前那份卡上的提示（撞名、孤立）也记下：撤回时原样摆回去
+    const prev = { near_existing: proposal.value.near_existing || {}, isolated: proposal.value.isolated || [] }
+    adoptPlan(res.plan, res.near_existing)
+    reshaped.value = { ...res, op, prev }
+    picks.value = new Set(); hint.value = ''
+  } catch (err) {
+    error.value = `${RESHAPE_SAY[op]}失败：${msgOf(err)}`
+    return
+  } finally { working.value = false; reshaping.value = '' }
+  await recompute()
+}
+
+/** 换上一份新方案：卡上挂在已经不在了的点上的状态（认领、并进、展开）一并清掉。 */
+function adoptPlan(next, near = {}) {
+  const alive = new Set((next.nodes || []).map((n) => n.id))
+  const keep = (obj) => Object.fromEntries(Object.entries(obj).filter(([k]) => alive.has(k)))
+  renames.value = keep(renames.value); relinks.value = keep(relinks.value)
+  openBodies.value = new Set([...openBodies.value].filter((id) => alive.has(id)))
+  proposal.value = { ...proposal.value, plan: next,
+                     near_existing: { ...keep(proposal.value.near_existing || {}), ...near },
+                     isolated: (proposal.value.isolated || []).filter((id) => alive.has(id)) }
+  stale.value = true; blocked.value = null
+}
+
+/** 撤回上一次合并 / 再拆：换回改前那份方案。 */
+async function undoReshape() {
+  if (!reshaped.value) return
+  const { before, prev } = reshaped.value
+  adoptPlan(before)
+  proposal.value = { ...proposal.value, ...prev }
+  reshaped.value = null
+  await recompute()
+}
 
 async function apply(force = false) {
   if (!plan.value) return
@@ -346,11 +415,21 @@ function reset() {
           </label>
           <label>目录<input v-model="folder" type="text" :placeholder="`nodes/ 下的子目录，默认同领域名`"></label>
         </div>
-        <label class="switch-row imp-keep">
+        <label v-if="!isWorkPath(picked)" class="switch-row imp-keep">
           <input v-model="keepArticle" type="checkbox" data-act="keep-article" />
           <span class="check"><Icon name="check" :size="11" :width="2.6" /></span>
           <span class="label">保留原文<span class="sub">原样存进原文目录（设置 → 知识库），节点的来源链过去；关掉就只记文章名</span></span>
         </label>
+        <p v-else class="dim imp-keep" style="font-size: 12px">
+          成品即原文：不往原文目录存副本，节点的来源直接链这个 HTML 的页面锚点。</p>
+        <div class="imp-grain" data-grain>
+          <span class="dim">拆分粒度</span>
+          <div class="seg small">
+            <button v-for="g in GRAINS" :key="g.id" :class="{ on: grain === g.id }" :title="g.tip"
+                    :data-grain-opt="g.id" @click="grain = g.id">{{ g.id }}</button>
+          </div>
+          <span class="dim imp-grain-tip">{{ GRAINS.find((g) => g.id === grain)?.tip }}</span>
+        </div>
 
         <div class="imp-run">
           <button class="btn primary" style="flex: 1; justify-content: center" :disabled="!canRun || !!current" @click="propose">
@@ -412,7 +491,8 @@ function reset() {
           <span v-if="proposal.project_points">· 给模型看了 {{ proposal.project_points }} 个待认领的点</span>
         </div>
         <!-- 原文层：模型对这篇形状的判断，和原文怎么进库。两件事都是写入前该看见的 -->
-        <div v-if="proposal.shape || articleSay" class="imp-article">
+        <div v-if="proposal.shape || articleSay || proposal.grain" class="imp-article">
+          <span v-if="proposal.grain" class="chip" data-grain-used>粒度：{{ proposal.grain }}</span>
           <span v-if="proposal.shape" class="chip" :class="proposal.shape === 'single' ? 'm-due' : 'm-unbuilt'"
                 data-shape>{{ SHAPE_SAY[proposal.shape] }}</span>
           <span v-if="articleSay" class="dim" data-article>
@@ -432,10 +512,36 @@ function reset() {
           </div>
         </div>
 
+        <!-- 调整拆法：勾两个以上能合并，勾一个能再拆。都是再调一次模型、只重写这几个点 -->
+        <div v-if="!proposal.applied && (picks.size || reshaping)" class="imp-reshape" data-reshape>
+          <span class="dim">已勾 {{ picks.size }} 个</span>
+          <input v-model="hint" type="text" :disabled="!canRun"
+                 :placeholder="picks.size === 1 ? '想怎么拆（可空），如「按静态 / 动态拆」' : '补一句要求（可空），如「数据库那个当例子」'">
+          <button class="btn tiny" :disabled="!canRun || picks.size < 2" data-act="merge" @click="reshape('merge')">
+            <Icon name="fold" :size="12" />{{ reshaping === 'merge' ? '合并中…（一次模型调用）' : `合并成一个` }}
+          </button>
+          <button class="btn tiny" :disabled="!canRun || picks.size !== 1" data-act="split" @click="reshape('split')">
+            <Icon name="plus" :size="12" />{{ reshaping === 'split' ? '再拆中…（一次模型调用）' : '再拆开' }}
+          </button>
+        </div>
+        <div v-if="reshaped && !proposal.applied" class="imp-note" data-reshaped>
+          <Icon name="check" :size="12" />
+          <div style="flex: 1; min-width: 0">
+            {{ RESHAPE_SAY[reshaped.op] }}完成：{{ reshaped.made.join('、') }}
+            <span class="dim">（{{ reshaped.model }} · {{ (reshaped.ms / 1000).toFixed(1) }}s）</span>
+            <div v-if="reshaped.summary" class="dim">{{ reshaped.summary }}</div>
+            <details v-if="reshaped.delta"><summary class="dim">看模型改了哪儿</summary>
+              <pre class="cc-diff">{{ reshaped.delta }}</pre></details>
+          </div>
+          <button class="btn subtle tiny" :disabled="!canRun" data-act="undo-reshape" @click="undoReshape">撤回</button>
+        </div>
+
         <!-- 节点行 -->
         <ul class="imp-nodes">
           <li v-for="n in nodes" :key="n.id" class="imp-node">
             <div class="imp-node-head">
+              <input v-if="!proposal.applied" type="checkbox" :checked="picks.has(n.id)" :disabled="!canRun"
+                     title="勾上：几个一起合并，或单独一个再拆" :data-pick="n.id" @change="togglePick(n.id)">
               <b :title="n.id !== shownId(n.id) ? `模型给的 id：${n.id}` : ''">{{ shownId(n.id) }}</b>
               <span v-if="isClaimed(n.id)" class="chip accent" title="认领了清单里的这个点：写入后落在幽灵原位">认领</span>
               <span class="dim">{{ edgeCount(n) }} 条关系</span>
