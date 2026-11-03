@@ -23,9 +23,10 @@ from .lines import DOMAIN_KEY, SCHOOL_KEY, line_names
 from .schools import LINE_TYPES
 from .facts import (COMPARE_HEADING, FACTS_HEADING, FM_DIMENSIONS, bare_compare_headings,
                     compare_targets, facts_of, section_bounds, stray_facts)
+from .glossary import load_glossary
 from .parser import Node, is_aggregate, layers_of, load_vault, validate_frontmatter, parse_params
 from .sources import sources_of
-from .topic import PART_TYPES, topic_name
+from .topic import PART_TYPES, topic_name, versions_of
 from .relations import NormalizedEdge, RelationTypes, load_relation_types, normalize_direction
 
 # 演化族里「源比目标晚」属于正常的那几个类型（见 _warn_year_inverted）。
@@ -363,6 +364,9 @@ def _node_payload(vault: Path, node: Node) -> dict:
     if topic:
         d["topic"] = topic
         d["parts"] = list(dict.fromkeys(e.target for e in node.edges if e.type in PART_TYPES))
+        versions = versions_of(node.fm)      # 这张专题图的版本轴（2026-10-27）：滑块按它走
+        if versions:
+            d["versions"] = versions
     d.setdefault("status", "active")
     # 聚合文档（对比组 / 领域总览）：算一遍存进来，下游只看这个布尔值，
     # 不用每处都去认那几个 type 字符串
@@ -401,6 +405,7 @@ def _assemble(ctx: BuildContext) -> dict:
         "nodes": payloads,
         "edges": edge_list,
         "families": _families_payload(ctx.rt, edge_list),
+        "glossary": load_glossary(ctx.vault),     # 术语/*.md 合并的名词解释表（语境即文件，2026-10-27）
         "stubs": sorted(d["id"] for d in payloads if d.get("stub")),
         "stats": _stats(payloads, edge_list, ctx.virtual, ctx.diags),
         "errors": ctx.diags.sorted_dicts("error"),

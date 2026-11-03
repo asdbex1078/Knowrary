@@ -24,7 +24,9 @@ import { forModel } from '../src/composables/useChat.js'
 import { localISO, todayISO } from '../src/today.js'
 import { applyBody, mergeProposals, pickedCount, suspectsByArticle } from '../src/modelsPlan.js'
 import { COL, LEFT, MIN_GAP, YEAR_PX, badgeOf, computeLanes, humanNumber, humanParams, techOptions } from '../src/canvas/modelLanes.js'
-import { boundChildren, draftPlan, linkNodes, openReviewCounts, removalPatch, suggestions as topicSuggestions, removeEdgeChanges, upgradeChanges, writtenEdgeId } from '../src/canvas/drawing.js'
+import { boundChildren, commonParent, draftPlan, groupBox, linkNodes, openReviewCounts, removalPatch, shapeAttrs, shapesInBox, splitByVersion, suggestions as topicSuggestions, removeEdgeChanges, ungroupPatch, upgradeChanges, versionStateOf, writtenEdgeId } from '../src/canvas/drawing.js'
+import { findSenses, resolveSenses } from '../src/canvas/glossary.js'
+import { nodeAttrs } from '../src/canvas/shapes.js'
 
 const CASES = []
 const test = (name, fn) => CASES.push([name, fn])
@@ -776,6 +778,26 @@ test('删大框：连同套着的小框、连着这些框的线一起删，连�
   assert.deepEqual(Object.keys(patch.links), ['l1'])
 })
 
+test('施工图：绑定框常显学/考方块，没学出来的淡显，没绑定的不染', () => {
+  const meta = { id: 'FS', name: '文件系统' }
+  // 学过的：方块按双态上色、不淡显
+  const on = shapeAttrs({ kind: 'rect', node: 'FS' }, meta, { study: '绿', exam: '黄' })
+  assert.equal(on.sqStudy.fill, '#3f9e5d')
+  assert.equal(on.sqExam.fill, '#e0891f')
+  assert.equal(on.body.fillOpacity, 1)
+  // 只有壳：整框淡显 + 虚线
+  const stub = shapeAttrs({ kind: 'rect', node: 'FS' }, { ...meta, stub: true }, { study: '红', exam: '灰' })
+  assert.ok(stub.body.fillOpacity < 1 && stub.body.strokeDasharray === '4 3')
+  assert.equal(stub.sqStudy.fill, '#d9534f')
+  // 绑定了但索引里没有（未建）：同样淡显
+  assert.ok(shapeAttrs({ kind: 'rect', node: '幽灵' }, null, null).body.fillOpacity < 1)
+  // 没绑定的图形：不画方块、不淡显；大框自带的虚线不被覆盖
+  const plain = shapeAttrs({ kind: 'frame' }, null, null)
+  assert.equal(plain.sqStudy.fill, 'transparent')
+  assert.equal(plain.body.fillOpacity, 1)
+  assert.ok(!('strokeDasharray' in plain.body), '非淡显不碰 strokeDasharray，大框默认虚线靠注册默认值')
+})
+
 test('图形右键：没升级给新建 / 绑定，升级过的大框给查看 / 补部件 / 解除', () => {
   const layout = topicLayout()
   const ids = (m) => m.items.filter((i) => !i.sep).map((i) => i.id)
@@ -785,6 +807,75 @@ test('图形右键：没升级给新建 / 绑定，升级过的大框给查看 /
   assert.ok(frame.includes('shape-open') && frame.includes('shape-sync') && frame.includes('shape-unbind')
             && !frame.includes('shape-bind'), frame.join(','))
   assert.ok(!ids(buildMenu('shape', 'a', ctx({ layout }))).includes('shape-sync'), '小框没有「补部件」')
+})
+
+test('组合框外接框：罩住所有选中图形，四周留内边距', () => {
+  const shapes = { a: box('rect', 100, { y: 50, w: 80, h: 40 }), b: box('ellipse', 300, { y: 120, w: 60, h: 60 }) }
+  // a: x[100,180] y[50,90]；b: x[300,360] y[120,180] → 外接 [100,360]×[50,180]，pad=10 → [90,70] 大小 280×140
+  assert.deepEqual(groupBox(shapes, ['a', 'b'], 10), { x: 90, y: 40, w: 280, h: 150 })
+  assert.equal(groupBox(shapes, ['没有的']), null)
+})
+
+test('共同父：同属一个父才把组合框挂过去，否则顶层', () => {
+  const shapes = { a: { parent: 'F' }, b: { parent: 'F' }, c: { parent: null } }
+  assert.equal(commonParent(shapes, ['a', 'b']), 'F')
+  assert.equal(commonParent(shapes, ['a', 'c']), null)
+})
+
+test('取消组合：删组合框、里面的图形改挂到组合框原来的父上（不删）', () => {
+  const layout = { shapes: { G: { kind: 'group', parent: 'F' }, a: { kind: 'rect', parent: 'G' },
+                             b: { kind: 'rect', parent: 'G' } } }
+  const patch = ungroupPatch(layout, 'G')
+  assert.equal(patch.shapes.G, null)                       // 组合框删掉
+  assert.deepEqual(patch.shapes.a, { parent: 'F' })        // 孩子回到组合框原来的父
+  assert.deepEqual(patch.shapes.b, { parent: 'F' })
+})
+
+test('知识海迷雾：按掌握态给整个节点上滤镜（学绿+考绿=点亮发光、考红=心魔变暗、考灰=待点亮淡、幽灵/壳=新边疆没入雾）', () => {
+  const node = { id: 'x', name: 'x', weight: 0.6 }   // weight 够高是卡片（kg-card），不是胶囊
+  const cls = (opts) => nodeAttrs(node, null, undefined, opts).body.class
+  // 不开迷雾：只有底色卡片类，不掺迷雾
+  assert.equal(cls({ state: { study: '绿', exam: '绿' } }), 'kg-card')
+  // 点亮
+  assert.ok(cls({ state: { study: '绿', exam: '绿' }, fog: true }).includes('kg-lit'))
+  // 心魔：错过（红）或到期/模糊（黄）
+  assert.ok(cls({ state: { study: '绿', exam: '红' }, fog: true }).includes('kg-demon'))
+  assert.ok(cls({ state: { study: '绿', exam: '黄' }, fog: true }).includes('kg-demon'))
+  // 待点亮：建好没考过（考灰）
+  assert.ok(cls({ state: { study: '绿', exam: '灰' }, fog: true }).includes('kg-dim'))
+  // 新边疆：幽灵 / 壳
+  assert.ok(nodeAttrs(node, null, undefined, { ghost: true, fog: true }).body.class.includes('kg-fog'))
+  assert.ok(nodeAttrs({ id: 'x', name: 'x', stub: true, weight: 0.6 }, null, undefined, { fog: true }).body.class.includes('kg-fog'))
+  // 点亮不压暗、新边疆压到 0.5
+  assert.equal(nodeAttrs(node, null, undefined, { state: { study: '绿', exam: '绿' }, fog: true }).body.opacity, 1)
+  assert.equal(nodeAttrs(node, null, undefined, { ghost: true, fog: true }).body.opacity, 0.5)
+})
+
+test('框选命中：相交就算选中，框外的不选', () => {
+  const shapes = {
+    a: box('rect', 100, { y: 100, w: 80, h: 40 }),      // x[100,180] y[100,140]
+    b: box('ellipse', 300, { y: 100, w: 60, h: 60 }),   // x[300,360] y[100,160]
+    c: box('rect', 1000, { y: 1000, w: 80, h: 40 }),    // 远在天边
+  }
+  // 框 [90,90]→[370,170]：罩住 a、b，碰不到 c
+  assert.deepEqual(shapesInBox(shapes, { x1: 90, y1: 90, x2: 370, y2: 170 }).sort(), ['a', 'b'])
+  // 只擦到 a 的一角也算（相交即选）
+  assert.deepEqual(shapesInBox(shapes, { x1: 170, y1: 130, x2: 200, y2: 200 }), ['a'])
+  // 两角顺序反过来结果一样
+  assert.deepEqual(shapesInBox(shapes, { x1: 370, y1: 170, x2: 90, y2: 90 }).sort(), ['a', 'b'])
+  assert.deepEqual(shapesInBox(shapes, { x1: 0, y1: 0, x2: 10, y2: 10 }), [])
+})
+
+test('组合框右键：给「取消组合」而不是升级 / 改形状；多选右键给「组合」', () => {
+  const ids = (m) => m.items.filter((i) => !i.sep).map((i) => i.id)
+  const layout = { shapes: { G: { kind: 'group' }, a: { kind: 'rect', parent: 'G' } } }
+  const gmenu = ids(buildMenu('shape', 'G', ctx({ layout })))
+  assert.ok(gmenu.includes('shape-ungroup') && !gmenu.includes('shape-new-node'), gmenu.join(','))
+  // 框选两个普通图形、右键其一：出「组合」
+  const sel = ids(buildMenu('shape', 'a', ctx({ layout: topicLayout(), shapeSel: ['a', 'b'] })))
+  assert.ok(sel.includes('shape-group'), sel.join(','))
+  // 只选一个：不出「组合」
+  assert.ok(!ids(buildMenu('shape', 'a', ctx({ layout: topicLayout(), shapeSel: ['a'] }))).includes('shape-group'))
 })
 
 
@@ -863,6 +954,114 @@ test('审图角标：只数还没处理的；连线意见挂在起点那个框�
     { kind: 'fact', target: 'a', status: 'adopted' },
     { kind: 'link', status: 'open', fix: { from: { kind: 'shape', id: 'a' }, to: { kind: 'node', id: 'x' } } }] })
   assert.deepEqual(counts, { a: 2, F: 1 })
+})
+
+// ---------------------------------------------------------------- 版本演进（A 方案）
+
+const VERS = ['0.12', '2.6', '7.2']
+
+test('版本：没写 since/until 的方块全版本常驻', () => {
+  for (const v of VERS) assert.equal(versionStateOf({}, v, VERS), 'present')
+})
+
+test('版本：since 之前淡成虚影，正好那一版是新增，之后常驻', () => {
+  assert.equal(versionStateOf({ since: '2.6' }, '0.12', VERS), 'ghost')
+  assert.equal(versionStateOf({ since: '2.6' }, '2.6', VERS), 'appear')
+  assert.equal(versionStateOf({ since: '2.6' }, '7.2', VERS), 'present')
+})
+
+test('版本：until 之后淡成虚影（废弃的部件）', () => {
+  assert.equal(versionStateOf({ until: '2.6' }, '0.12', VERS), 'present')
+  assert.equal(versionStateOf({ until: '2.6' }, '2.6', VERS), 'present')
+  assert.equal(versionStateOf({ until: '2.6' }, '7.2', VERS), 'ghost')
+})
+
+test('版本：只活在中间一版（since==until），前后都虚影', () => {
+  assert.equal(versionStateOf({ since: '2.6', until: '2.6' }, '0.12', VERS), 'ghost')
+  assert.equal(versionStateOf({ since: '2.6', until: '2.6' }, '2.6', VERS), 'appear')
+  assert.equal(versionStateOf({ since: '2.6', until: '2.6' }, '7.2', VERS), 'ghost')
+})
+
+test('版本：没选版本 / 没有版本轴 / 版本不在轴上，一律按常驻（不误伤）', () => {
+  assert.equal(versionStateOf({ since: '2.6' }, '', VERS), 'present')
+  assert.equal(versionStateOf({ since: '2.6' }, '2.6', []), 'present')
+  assert.equal(versionStateOf({ since: '2.6' }, '3.0', VERS), 'present')   // '3.0' 不在轴上
+})
+
+test('版本：since/until 打错字（不在轴上）当没写，那一边开口', () => {
+  assert.equal(versionStateOf({ since: '0.11' }, '0.12', VERS), 'present') // 下界失效 → 开口
+  assert.equal(versionStateOf({ until: '9.9' }, '7.2', VERS), 'present')   // 上界失效 → 开口
+})
+
+test('正文分版本：前言 + 各版本小节，标题行摘掉', () => {
+  const body = '轮转调度的演进。\n\n## 0.12\n最简单的时间片轮转。\n\n## 2.6\nO(1) 调度器。\n\n## 7.2\nCFS，红黑树。'
+  const blocks = splitByVersion(body, VERS)
+  assert.deepEqual(blocks.map((b) => b.ver), [null, '0.12', '2.6', '7.2'])
+  assert.equal(blocks[0].text, '轮转调度的演进。')
+  assert.equal(blocks[1].text, '最简单的时间片轮转。')          // `## 0.12` 标题行不在正文里
+  assert.equal(blocks[3].text, 'CFS，红黑树。')
+})
+
+test('正文分版本：没有版本小节 → 整篇当一段前言', () => {
+  const blocks = splitByVersion('就一段普通正文，没分版本。', VERS)
+  assert.deepEqual(blocks, [{ ver: null, text: '就一段普通正文，没分版本。' }])
+})
+
+test('正文分版本：一上来就是版本小节 → 不留空前言', () => {
+  const blocks = splitByVersion('## 0.12\n甲。\n## 7.2\n乙。', VERS)
+  assert.deepEqual(blocks.map((b) => b.ver), ['0.12', '7.2'])
+  assert.equal(blocks[0].text, '甲。')
+})
+
+test('正文分版本：对不上版本轴的 `##` 留在小节里当普通标题', () => {
+  const body = '## 2.6\n正文。\n\n## 细节\n这个二级标题不是版本，照原样留着。'
+  const blocks = splitByVersion(body, VERS)
+  assert.equal(blocks.length, 1)
+  assert.equal(blocks[0].ver, '2.6')
+  assert.ok(blocks[0].text.includes('## 细节'))   // 非版本标题不切段、标题行保留
+})
+
+test('正文分版本：没有版本轴（order 空）→ 不切，整篇前言', () => {
+  assert.deepEqual(splitByVersion('## 0.12\n甲。', []), [{ ver: null, text: '## 0.12\n甲。' }])
+})
+
+test('正文分版本：空正文 → 空数组', () => {
+  assert.deepEqual(splitByVersion('', VERS), [])
+  assert.deepEqual(splitByVersion(null, VERS), [])
+})
+
+// ---------------------------------------------------------------- 术语按需查
+
+const GLOSS = [
+  { term: 'CR3', gloss: '页目录基址寄存器', scope: '硬件', aka: [], see: null },
+  { term: '段', gloss: '内存分段', scope: '专题/Linux内存', aka: ['segment'], see: null },
+  { term: '段', gloss: 'TCP 报文段', scope: '全局', aka: [], see: null },
+  { term: 'GDT', gloss: '全局描述符表', scope: '全局', aka: ['描述符表'], see: '段机制' },
+]
+
+test('术语查词：整词相等命中（词条或别名），ASCII 不分大小写', () => {
+  assert.deepEqual(findSenses(GLOSS, 'CR3').map((e) => e.term), ['CR3'])
+  assert.deepEqual(findSenses(GLOSS, 'cr3').map((e) => e.term), ['CR3'])      // 大小写不敏感
+  assert.deepEqual(findSenses(GLOSS, '描述符表').map((e) => e.term), ['GDT'])  // 命中别名
+  assert.deepEqual(findSenses(GLOSS, 'segment').map((e) => e.scope), ['专题/Linux内存'])
+})
+
+test('术语查词：一词多义全命中，不丢', () => {
+  assert.equal(findSenses(GLOSS, '段').length, 2)                              // 两个「段」都在
+})
+
+test('术语查词：没命中 / 空选 → 空', () => {
+  assert.deepEqual(findSenses(GLOSS, 'CR3 寄存器'), [])                         // 整词不等，不部分匹配
+  assert.deepEqual(findSenses(GLOSS, '  '), [])
+  assert.deepEqual(findSenses(null, 'x'), [])
+})
+
+test('术语查词：多义按语境排序，当前专题在前、全局次之', () => {
+  const ordered = resolveSenses(findSenses(GLOSS, '段'), { topic: '专题/Linux内存' })
+  assert.deepEqual(ordered.map((e) => e.scope), ['专题/Linux内存', '全局'])
+  // 不在那个专题时，全局排前
+  const other = resolveSenses(findSenses(GLOSS, '段'), { topic: '专题/调度' })
+  assert.equal(other[0].scope, '全局')
 })
 
 // ---------------------------------------------------------------- 跑

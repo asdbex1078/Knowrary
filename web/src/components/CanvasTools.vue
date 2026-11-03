@@ -15,6 +15,7 @@ defineProps({
   snap: { type: Boolean, default: true },
   avoidNodes: { type: Boolean, default: false },
   borrow: { type: Boolean, default: false },
+  fog: { type: Boolean, default: false },       // 知识海迷雾：按掌握态给整个节点上色（项目画布）
   project: { type: Boolean, default: false },   // 只有项目画布才有"借来的点"这回事
   layouts: { type: Object, default: () => ({}) },
   canUndo: { type: Boolean, default: false },
@@ -22,7 +23,7 @@ defineProps({
   locked: { type: Boolean, default: false },
 })
 const emit = defineEmits([
-  'toggle-family', 'toggle-aggregate', 'toggle-lod', 'toggle-snap', 'toggle-avoid', 'toggle-borrow',
+  'toggle-family', 'toggle-aggregate', 'toggle-lod', 'toggle-snap', 'toggle-avoid', 'toggle-borrow', 'toggle-fog',
   'pick-layout',
   'add-note', 'add-image', 'undo', 'redo',
 ])
@@ -74,6 +75,11 @@ const emit = defineEmits([
           <input type="checkbox" :checked="borrow" @change="emit('toggle-borrow')" />
           <span class="check"><Icon name="check" :size="11" :width="2.6" /></span>
           <span class="label">周边一跳<span class="sub">把 GPU 前面的 CPU 这类外部邻居借过来画（↗ 靛蓝虚线，不可拖、不落盘；刷新后回到关）</span></span>
+        </label>
+        <label v-if="project" class="switch-row" data-act="toggle-fog">
+          <input type="checkbox" :checked="fog" @change="emit('toggle-fog')" />
+          <span class="check"><Icon name="check" :size="11" :width="2.6" /></span>
+          <span class="label">知识海迷雾<span class="sub">按掌握态给整个点上色：✨点亮发光 · 👹心魔变暗 · ◻️待点亮淡 · 🌊新边疆雾里</span></span>
         </label>
       </template>
     </Popover>

@@ -32,7 +32,8 @@ def fingerprint(vault: Path) -> tuple:
     (数量, 最新 mtime) 的话，在 Obsidian 里把一个节点拖到别的目录之后指纹纹丝不动，
     索引不重建，`path` 继续指向已经不存在的位置，点开这个节点就报错。
     """
-    paths = core.walk_md(vault)
+    # 术语/*.md 也进索引（glossary），但 walk_md 不扫它——不带上的话改术语不触发重建，写进去的词刷不出来
+    paths = core.walk_md(vault) + core.glossary_files(vault)
     newest = max((p.stat().st_mtime_ns for p in paths), default=0)
     rels = "\n".join(sorted(str(p.relative_to(vault)) for p in paths))
     table = vault / "relation-types.json"

@@ -25,7 +25,7 @@ from . import models_extract as models_extract_svc
 from . import models_move as models_move_svc
 from . import topic_review as topic_review_svc
 from . import pending_review as pending_svc
-from . import (articles as articles_svc, assets, audit, chat as chat_svc, compare as compare_svc, copying, curation, importing,
+from . import (articles as articles_svc, assets, audit, chat as chat_svc, compare as compare_svc, copying, curation, fragments as fragments_svc, importing,
                projects as projects_svc, revise as revise_svc, summarize as summarize_svc, vaults, years as years_svc)
 from .contracts import (ArticleRead, ArticlesRead, WorksRead, ModelFromNode, ModelFromNodeResult, ModelsApplied, ModelsApply, ModelsDirPatch, ModelsExtract,
                         ModelsProposal, ModelsRead, ModelsVerified, ModelsVerify, CurateRequest, CurateResult, EdgeCheckPlan, EdgeCheckPlanned, EdgeCheckRan, EdgeCheckRun,
@@ -35,7 +35,9 @@ from .contracts import (ArticleRead, ArticlesRead, WorksRead, ModelFromNode, Mod
                         LayoutPatch, LayoutRead,
                         LayoutSaved, MergeImpact, MergeRequest, MergeResult, NodeDetail,
                         PlanProposal, PlanProposeRequest, PlaceRequest,
-                        PlaceResult, ProjectsRead, ProjectsSaved, ProjectsWrite, QuizDiagnoseRequest,
+                        FragmentAdd, FragmentEntry, FragmentsConsolidated, FragmentsMark, FragmentsMarked, FragmentsRead,
+                        GlossaryAdd, GlossaryEntry,
+                        PlaceResult, ProjectsRead, ProjectsSaved, ProjectsWrite, QuizDiagnoseRequest, StatesQuery, StatesRead,
                         QuizDiagnosis, QuizGradeRequest, QuizGraded, QuizRequest, QuizSet, RenameImpact,
                         RenameRequest, RenameResult, ReviewDone, ReviewRequest, SettingsPatch,
                         SettingsRead, SuggestRequest, LLMConfigRead, LLMConfigWrite, LLMConfigTest,
@@ -517,6 +519,60 @@ def post_suggest(req: SuggestRequest) -> SuggestResult:
 def get_projects() -> ProjectsRead:
     """学习计划 + 每个知识点的掌握度（五档，现算不落盘）。"""
     return projects_svc.read(vault_path())
+
+
+@app.get("/api/fragments", response_model=FragmentsRead)
+def get_fragments() -> FragmentsRead:
+    """碎片箱：全部碎片 + 积压统计（没归拢几条、最老躺了几天、该不该催）。只读。"""
+    return fragments_svc.read(vault_path())
+
+
+@app.post("/api/fragments", response_model=FragmentEntry)
+def post_fragment(req: FragmentAdd) -> FragmentEntry:
+    """记一条碎片进 fragments/今天.md。"""
+    try:
+        return fragments_svc.add(vault_path(), req.text)
+    except fragments_svc.FragmentsRejected as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.post("/api/glossary", response_model=GlossaryEntry)
+def post_glossary(req: GlossaryAdd) -> GlossaryEntry:
+    """随手记一条名词：追加到 `术语/<语境>.md`（只追加，没并发控制）。索引缓存作废，下次刷新带上它。"""
+    vault = vault_path()
+    try:
+        entry = core.add_term(vault, req.term, req.gloss, req.scope, req.aka, req.see)
+    except core.GlossaryRejected as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    invalidate(vault)                      # 术语 md 变了，索引缓存作废
+    return GlossaryEntry(**entry)
+
+
+@app.post("/api/fragments/mark", response_model=FragmentsMarked)
+def post_fragments_mark(req: FragmentsMark) -> FragmentsMarked:
+    """给一批碎片标去向（行尾 `→ 目标（日期）`，留档不删）。落地走 /api/changes 或导入面板，这里只记账。"""
+    return FragmentsMarked(marked=fragments_svc.mark(vault_path(), req.ids, req.target))
+
+
+@app.post("/api/fragments/consolidate", response_model=FragmentsConsolidated)
+def post_fragments_consolidate() -> FragmentsConsolidated:
+    """归拢：一次 learn 调用把未归拢碎片分簇，每簇给「并进已有 / 长成新点 / 继续躺」的建议。只出建议不写盘。"""
+    try:
+        return fragments_svc.consolidate(vault_path())
+    except fragments_svc.FragmentsRejected as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except LLMFailed as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@app.post("/api/states", response_model=StatesRead)
+def post_states(req: StatesQuery) -> StatesRead:
+    """任意一组点的学 / 考双态（现算不落盘）。专题画布的施工图染色用它——
+    竣工图上的点不局限于某个项目的清单，项目接口里那份 states 盖不住。"""
+    vault = vault_path()
+    wrong = {w["id"] for w in core.wrong_nodes(core.load_quiz_log(vault), 999) if w["wrong"]}
+    ids = list(dict.fromkeys(req.ids))
+    return StatesRead(states=core.states_of(ids, current_index(vault), core.load_log(vault), wrong))
 
 
 @app.put("/api/projects", response_model=ProjectsSaved)

@@ -84,8 +84,9 @@ def has_cell(cell: str) -> str:
 BODY = "el.querySelector('rect, ellipse, polygon, path') || el"
 
 
-async def tap(page, cell: str) -> None:
-    """X6 的 click 是 mousedown + mouseup 合成的。派发到这个 cell 自己的元素上，别被叠在上面的框抢走。"""
+async def tap(page, cell: str, shift: bool = False) -> None:
+    """X6 的 click 是 mousedown + mouseup 合成的。派发到这个 cell 自己的元素上，别被叠在上面的框抢走。
+    shift=True 走加选（给「组合」攒多选）。"""
     out = await page.ev(f"""(() => {{
       const el = document.querySelector('[data-cell-id="{cell}"]');
       if (!el) return 'missing';
@@ -93,11 +94,39 @@ async def tap(page, cell: str) -> None:
       const r = body.getBoundingClientRect();
       const x = Math.round(r.x + 12), y = Math.round(r.y + r.height - 8);
       for (const t of ['mousedown', 'mouseup']) body.dispatchEvent(new MouseEvent(t, {{ bubbles: true, cancelable: true,
-        clientX: x, clientY: y, view: window, button: 0, buttons: t === 'mouseup' ? 0 : 1 }}));
+        clientX: x, clientY: y, view: window, button: 0, buttons: t === 'mouseup' ? 0 : 1, shiftKey: {str(shift).lower()} }}));
       return 'ok';
     }})()""")
     assert out == "ok", f"点不到 {cell}：{out}"
     await asyncio.sleep(0.3)
+
+
+async def drop_new_shape(page, api: str, kind: str, dx: int = 0, dy: int = 0) -> str:
+    """拖一个新图形进来，返回它的 sid（按拖之前/之后的差集认出来）。"""
+    before = set((topic_layout(api).get("shapes") or {}).keys())
+    await drop(page, "data-palette-shape", kind, dx=dx, dy=dy)
+    await saved()
+    after = set((topic_layout(api).get("shapes") or {}).keys())
+    new = list(after - before)
+    assert len(new) == 1, f"期望多出一个 {kind}，实际多出 {new}"
+    return new[0]
+
+
+async def resize_handle(page, dx: int, dy: int) -> str:
+    """抓住缩放手柄的右下角往外拖 (dx, dy) 像素。先得有手柄（选中图形后才会出现）。"""
+    return await page.ev(f"""(() => {{
+      const h = document.querySelector('.x6-widget-transform-resize[data-position="bottom-right"]');
+      if (!h) return 'no-handle';
+      const r = h.getBoundingClientRect();
+      const from = {{ x: r.x + r.width / 2, y: r.y + r.height / 2 }};
+      const fire = (t, x, y, node) => (node || document.elementFromPoint(x, y) || document.body).dispatchEvent(
+        new MouseEvent(t, {{ bubbles: true, cancelable: true, clientX: x, clientY: y, view: window,
+          button: 0, buttons: t === 'mouseup' ? 0 : 1 }}));
+      fire('mousedown', from.x, from.y, h);
+      for (let i = 1; i <= 10; i++) fire('mousemove', from.x + {dx} * i / 10, from.y + {dy} * i / 10, null);
+      fire('mouseup', from.x + {dx}, from.y + {dy}, null);
+      return 'ok';
+    }})()""")
 
 
 async def drop(page, attr: str, value: str, dx: int = 0, dy: int = 0) -> None:
@@ -372,6 +401,111 @@ async def case_delete_undo(page, ck, api: str, ids: dict) -> None:
            f"{list(doc['shapes'])} / {list(doc.get('links') or {})}")
 
 
+async def case_resize(page, ck, api: str) -> None:
+    """手画图形能调大小（之前的 bug：点一下就重绘，把缩放手柄连 cell 一起销毁了）。"""
+    sid = await drop_new_shape(page, api, "rect", dx=-260, dy=220)
+    await tap(page, f"shape:{sid}")
+    has = await E.poll(page, "!!document.querySelector('.x6-widget-transform-resize')", bool, timeout=4)
+    ck.add("点中手画图形：缩放手柄出得来（重绘后重新挂上）", bool(has), "")
+    before = topic_layout(api)["shapes"][sid]
+    out = await resize_handle(page, 80, 60)
+    await saved()
+    after = topic_layout(api)["shapes"][sid]
+    ck.add("拖右下角手柄：矩形变大了", out == "ok" and after["w"] > before["w"] and after["h"] > before["h"],
+           f"{out} · {before['w']}×{before['h']} → {after['w']}×{after['h']}")
+
+
+async def case_group(page, ck, api: str) -> None:
+    """组合 / 解组（2026-10-30）：Shift 点选两个图形 → 右键「组合」→ 拖组合框两个一起走 → 「取消组合」拆开。"""
+    a = await drop_new_shape(page, api, "rect", dx=260, dy=-220)
+    b = await drop_new_shape(page, api, "ellipse", dx=260, dy=-60)
+    await tap(page, f"shape:{a}")
+    await tap(page, f"shape:{b}", shift=True)          # 加选
+    await right_click(page, f"shape:{b}", "组合选中的 2 个图形")
+    await saved()
+    doc = topic_layout(api)
+    gid = next((sid for sid, s in doc["shapes"].items() if s["kind"] == "group"), None)
+    ck.add("组合：生成一个组合框，两个图形都挂到它下面",
+           bool(gid) and doc["shapes"][a]["parent"] == gid and doc["shapes"][b]["parent"] == gid, str(gid))
+    before = (doc["shapes"][a]["x"], doc["shapes"][b]["x"])
+    await E.drag(page, f"shape:{gid}", dx=-90, dy=-40, grab="title")
+    await saved()
+    doc = topic_layout(api)
+    after = (doc["shapes"][a]["x"], doc["shapes"][b]["x"])
+    ck.add("拖组合框：里面两个图形一起走", after != before and after[0] != before[0] and after[1] != before[1],
+           f"{before} → {after}")
+    await right_click(page, f"shape:{gid}", "取消组合")
+    await saved()
+    doc = topic_layout(api)
+    ck.add("取消组合：组合框没了，两个图形留在原位（parent 清空）",
+           gid not in doc["shapes"] and doc["shapes"][a].get("parent") is None
+           and doc["shapes"][b].get("parent") is None, str(list(doc["shapes"])))
+
+
+async def case_multidrag(page, ck, api: str) -> None:
+    """选中多个一起拖（2026-10-30）：Shift 点选两个图形，拖其中一个，另一个按同样位移跟着走。"""
+    a = await drop_new_shape(page, api, "rect", dx=-200, dy=140)
+    b = await drop_new_shape(page, api, "rect", dx=-40, dy=140)
+    await tap(page, f"shape:{a}")
+    await tap(page, f"shape:{b}", shift=True)
+    doc = topic_layout(api)
+    before = {k: (doc["shapes"][k]["x"], doc["shapes"][k]["y"]) for k in (a, b)}
+    await E.drag(page, f"shape:{a}", dx=-70, dy=-50)
+    await saved()
+    doc = topic_layout(api)
+    after = {k: (doc["shapes"][k]["x"], doc["shapes"][k]["y"]) for k in (a, b)}
+    da = (after[a][0] - before[a][0], after[a][1] - before[a][1])
+    db = (after[b][0] - before[b][0], after[b][1] - before[b][1])
+    ck.add("多选拖一个：另一个按同样位移一起走", da != (0, 0) and da == db, f"{da} vs {db}")
+
+
+def is_gold(sid: str) -> str:
+    return f"""(() => {{ const el = document.querySelector('[data-cell-id="shape:{sid}"]');
+      const b = el && el.querySelector('rect,ellipse,polygon,path');
+      return b && (b.getAttribute('stroke')||'').toLowerCase() === '#d8a838' ? 'y' : 'n'; }})()"""
+
+
+async def case_rubberband(page, ck, api: str) -> None:
+    """框选（⇧ + 拖空白，2026-10-30）：拉一个框把几个图形圈进选区。"""
+    a = await drop_new_shape(page, api, "rect", dx=-160, dy=120)
+    b = await drop_new_shape(page, api, "rect", dx=0, dy=120)
+    # 从两个图形右下角外侧的「画布空白」起手，往左上拉出罩住它俩的框。
+    # 起点必须落在 X6 画布背景上：落在图形上会被当成拖图形，落在侧边面板上事件根本到不了画布——
+    # 所以从右下往右下方向扫，找到第一个「在 .x6-graph 里、又不是某个 cell」的点。
+    out = await page.ev(f"""(() => {{
+      const ra = document.querySelector('[data-cell-id="shape:{a}"]').getBoundingClientRect();
+      const rb = document.querySelector('[data-cell-id="shape:{b}"]').getBoundingClientRect();
+      const end = {{ x: Math.min(ra.x, rb.x) - 20, y: Math.min(ra.y, rb.y) - 20 }};   // 终点（左上），落哪都行
+      const bare = (x, y) => {{ const el = document.elementFromPoint(x, y);
+        return el && el.closest('.x6-graph') && !el.closest('[data-cell-id]'); }};
+      let sx = Math.max(ra.right, rb.right) + 30, sy = Math.max(ra.bottom, rb.bottom) + 30;
+      let tries = 0;
+      while (!bare(sx, sy) && tries < 20) {{ sx += 12; sy += 12; tries += 1; }}
+      if (!bare(sx, sy)) return 'no-blank-start';
+      const fire = (t, x, y) => document.elementFromPoint(x, y).dispatchEvent(new MouseEvent(t, {{
+        bubbles: true, cancelable: true, clientX: x, clientY: y, view: window, button: 0,
+        buttons: t === 'mouseup' ? 0 : 1, shiftKey: true }}));
+      window.dispatchEvent(new KeyboardEvent('keydown', {{ key: 'Shift', bubbles: true }}));
+      fire('mousedown', sx, sy);
+      for (let i = 1; i <= 8; i++) fire('mousemove', sx + (end.x - sx) * i / 8, sy + (end.y - sy) * i / 8);
+      document.dispatchEvent(new MouseEvent('mouseup', {{ bubbles: true, cancelable: true,
+        clientX: end.x, clientY: end.y, view: window, button: 0, buttons: 0, shiftKey: true }}));
+      window.dispatchEvent(new KeyboardEvent('keyup', {{ key: 'Shift', bubbles: true }}));
+      return 'ok';
+    }})()""")
+    await asyncio.sleep(0.4)
+    ga = await page.ev(is_gold(a))
+    gb = await page.ev(is_gold(b))
+    ck.add("框选：拉框罩住的两个图形都进了选区（描金边）", out == "ok" and ga == "y" and gb == "y", f"{out} a={ga} b={gb}")
+    # 框选完右键其一 → 能「组合」，证明两个确实都在选区里（框里可能还扫到别的，用前缀匹配）
+    await right_click(page, f"shape:{a}", "组合选中的")
+    await saved()
+    doc = topic_layout(api)
+    gid = next((sid for sid, s in doc["shapes"].items() if s["kind"] == "group"
+                and doc["shapes"][a].get("parent") == sid), None)
+    ck.add("框选的结果能直接组合", bool(gid), str(gid))
+
+
 async def case_folders(page, ck, api: str, vault: Path) -> None:
     """专题文件夹（2026-10-14）：建文件夹 → 把专题拖进去 → 右键挪回顶层 → 空文件夹右键删掉。md 不动。"""
     if not await page.ev("!!document.querySelector('[data-act=\"new-folder\"]')"):   # 面板可能还开着：再点一下会关上
@@ -437,6 +571,10 @@ async def run(api: str, cdp: str, vault: Path, results: list) -> None:
             await case_draft(page, ck, api, ids)
             await case_ai(page, ck, api, ids)
             await case_delete_undo(page, ck, api, ids)
+            await case_resize(page, ck, api)
+            await case_group(page, ck, api)
+            await case_multidrag(page, ck, api)
+            await case_rubberband(page, ck, api)
             await case_folders(page, ck, api, vault)
             await case_reload_and_global(page, ck)
         except Exception as exc:        # 断言炸了也把已经收集的结论打出来

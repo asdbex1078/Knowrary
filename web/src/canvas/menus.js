@@ -155,10 +155,25 @@ export function shapeMenu(sid, ctx) {
   const shape = ctx.layout?.shapes?.[sid]
   const kind = SHAPE_KINDS.find((k) => k.kind === shape?.kind)
   const inner = Object.values(ctx.layout?.shapes || {}).filter((s) => s.parent === sid).length
+  const sel = ctx.shapeSel || []
+  const isGroup = shape?.kind === 'group'
+  // 组合框单独一套菜单：它不是知识图形，只管「取消组合 / 删掉」，不升级、不改形状、不改字
+  if (isGroup) {
+    return { title: '组合', subtitle: `把 ${inner} 个图形框在一起 · 只存在这张专题画布里`,
+      items: [
+        { id: 'shape-ungroup', label: '取消组合（里面的图形留在原位）', icon: 'x' },
+        { sep: true },
+        { id: 'shape-delete', label: `删除组合（连同里面的 ${inner} 个图形）`, icon: 'trash', danger: true, hint: 'Del' },
+      ] }
+  }
   return {
     title: shape?.text || kind?.name || '图形',
     subtitle: shape?.node ? `已升级为知识点「${shape.node}」` : `${kind?.name || ''} · 只存在这张专题画布里`,
     items: [
+      // 框选了两个以上、且右键的就在选区里：把它们组合成一组一起拖
+      ...(sel.length >= 2 && sel.includes(sid)
+        ? [{ id: 'shape-group', label: `组合选中的 ${sel.length} 个图形`, icon: 'layers' }, { sep: true }]
+        : []),
       ...upgradeItems(shape, ctx),
       { sep: true },
       { id: 'link-from-shape', label: '从这里连线', icon: 'arrowRight', hint: '点终点' },

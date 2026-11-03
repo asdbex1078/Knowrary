@@ -11,7 +11,7 @@ import { CLUSTER_H, CLUSTER_W, CURSOR_ID, CURSOR_W, FAMILY_STYLE, clusterBox, NO
          noteAttrs, paletteFor, NEUTRAL, refAttrs, registerShapes, sizeFor, tickAttrs, tokens } from './shapes.js'
 import { AXIS_H, TICK_OFFSET, activeAt, buildTimeline } from './timeline.js'
 import { buildLineage } from './lineage.js'
-import { bindTips, isDrawnShape, registerDrawShapes } from './drawing.js'
+import { bindTips, isDrawnShape, registerDrawShapes, versionStateOf } from './drawing.js'
 
 /**
  * 历史视图的画布元素：泳道 + 年份刻度 + 有 year 的节点 + 两端都在图里的边。
@@ -135,6 +135,37 @@ export function paintHistoryTime(graph, plan, { upto = null, validity = false, p
   return active
 }
 
+/**
+ * 专题画布的版本染色（2026-10-27，A 方案）：按当前版本给方块加减 class，
+ * **不碰 cell 增删**——和 paintHistoryTime 一样，滑块只重染、不重建，所以不闪。
+ *
+ * 方块的 since/until 从 layout 现取：手画图形认 `data.sid`，节点框认 cell id（= 节点 id）。
+ * 区间不覆盖当前版 → `kg-ver-ghost` 淡成虚影；这版新增 → `kg-ver-new` 描一圈金晕。
+ * 任一端是虚影的连线 / 边一起淡下去，不然会飘着半截线。
+ */
+export function paintTopicVersion(graph, layout, ver, order) {
+  if (!graph) return
+  const ghost = new Set()
+  const stateOf = (cell) => {
+    const d = cell.getData() || {}
+    if (d.kind === 'shape') return versionStateOf(layout?.shapes?.[d.sid] || {}, ver, order)
+    if (d.kind === 'node') return versionStateOf(layout?.nodes?.[cell.id] || {}, ver, order)
+    return 'present'
+  }
+  for (const node of graph.getNodes()) {
+    const el = viewEl(graph, node.id)
+    if (!el) continue
+    const st = stateOf(node)
+    el.classList.toggle('kg-ver-ghost', st === 'ghost')
+    el.classList.toggle('kg-ver-new', st === 'appear')
+    if (st === 'ghost') ghost.add(node.id)
+  }
+  for (const edge of graph.getEdges()) {
+    const el = viewEl(graph, edge.id)
+    if (el) el.classList.toggle('kg-ver-ghost', ghost.has(edge.getSourceCellId()) || ghost.has(edge.getTargetCellId()))
+  }
+}
+
 /** 导览当前停在哪一站：同一时刻只有一个 .kg-stop。传 null 就是全摘掉。 */
 export function markStop(graph, id) {
   if (!graph) return
@@ -176,15 +207,22 @@ export function createGraph(container) {
       // 落点可能同时落在多层分组里；按面积从大到小排序，X6 取最后一个 → 命中最内层分组
       findParent({ node }) {
         const bbox = node.getBBox()
-        // 手画的图形只往手画的大框里套（专题画布）；知识点和分组框照旧只认分组框
-        const host = isDrawnShape(node) ? 'kg-draw-frame' : 'kg-group'
+        // 手画的图形可以套进**任意**手画图形里（2026-10-30：不再只认大框）——完全罩住就当容器，
+        // 拖外层带着内层走。文字框不当容器（它只是一行字）；不能套进自己或自己的后代（防环）。
+        // 知识点和分组框照旧只认分组框。
+        if (isDrawnShape(node)) {
+          return this.getNodes()
+            .filter((n) => isDrawnShape(n) && n.id !== node.id && n.shape !== 'kg-draw-text'
+              && !hasAncestor(n, node) && n.getBBox().containsRect(bbox))
+            .sort((a, b) => b.getBBox().width * b.getBBox().height - a.getBBox().width * a.getBBox().height)
+        }
         return this.getNodes()
-          .filter((n) => n.shape === host && n.id !== node.id)
+          .filter((n) => n.shape === 'kg-group' && n.id !== node.id)
           .filter((n) => n.getBBox().containsRect(bbox))
           .sort((a, b) => b.getBBox().width * b.getBBox().height - a.getBBox().width * a.getBBox().height)
       },
       validate: ({ child, parent }) => {
-        if (isDrawnShape(child)) return parent?.shape === 'kg-draw-frame' && !hasAncestor(parent, child)
+        if (isDrawnShape(child)) return isDrawnShape(parent) && parent.shape !== 'kg-draw-text' && !hasAncestor(parent, child)
         if (!parent || parent.shape !== 'kg-group') return false
         if (child.shape === 'kg-node') return true
         if (child.shape !== 'kg-group') return false
@@ -330,7 +368,7 @@ export function buildLineageCells(index, layout, options = {}) {
 
 export function buildCells(index, layout, options = {}) {
   const { families = null, showLabels = false, collapsed = new Set(), zoom = 1, due = new Set(),
-          states = {}, only = null, avoidNodes = false, borrowed = new Set() } = options
+          states = {}, only = null, avoidNodes = false, borrowed = new Set(), fog = false } = options
   // borrowed：画在项目画布上、但不属于这个项目的一跳邻居（GPU 前面的 CPU）。
   // 它们的坐标是**算出来的**（调用方按相连的项目内点摆位），没有也不该有 layout 记录——
   // 所以既不能拖（见 nodeMovable），拖了也不会落盘。
@@ -409,9 +447,9 @@ export function buildCells(index, layout, options = {}) {
       zIndex: 10,
       attrs: meta
         ? nodeAttrs(meta, n, colorOf(bucketOf(layout, nid), meta.field),
-                    { due: due.has(nid), state: states[nid] || null, borrowed: borrowed.has(nid) })
+                    { due: due.has(nid), state: states[nid] || null, borrowed: borrowed.has(nid), fog })
         : n.state === 'ghost'
-          ? nodeAttrs({ id: nid, name: nid }, n, NEUTRAL, { ghost: true })   // 幽灵占位，不是孤立记录
+          ? nodeAttrs({ id: nid, name: nid }, n, NEUTRAL, { ghost: true, fog })   // 幽灵占位，不是孤立记录
           : orphanAttrs(nid),
       data: { kind: 'node', group: n.group || null, orphan: !meta && n.state !== 'ghost',
               ghost: !meta && n.state === 'ghost', borrowed: borrowed.has(nid),

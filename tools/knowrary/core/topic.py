@@ -26,6 +26,7 @@ from typing import Callable
 from .parser import LAYERS
 
 TOPIC_KEY = "专题"
+VERSION_KEY = "版本"                # 专题中心的版本轴（2026-10-27）：滑块的档位，方块的 since/until 落在这些档上
 PART_TYPES = ("部件", "包含")       # 中心 md 里这两种关系的目标是方块（属于:: 中心 归一后也是 包含）
 DEFAULT_DEPTH = 3
 SIDES = ("up", "down", "left", "right")
@@ -41,6 +42,19 @@ def topic_name(fm: dict) -> str:
     """frontmatter 里的 `专题` → 专题名；没写或写空返回空串。"""
     value = fm.get(TOPIC_KEY)
     return str(value).strip() if value not in (None, "", []) else ""
+
+
+def versions_of(fm: dict) -> list[str]:
+    """frontmatter 里的 `版本` → 有序版本名列表（滑块档位）。单值也认，去重去空、保序；没写返回 []。
+
+    建议在 md 里写成字符串列表 `["0.12", "2.6", "7.2"]`：裸写 `0.12` 会被 YAML 读成浮点。
+    """
+    value = fm.get(VERSION_KEY)
+    if value in (None, "", []):
+        return []
+    items = value if isinstance(value, list) else [value]
+    names = [str(v).strip() for v in items]
+    return [v for v in dict.fromkeys(names) if v]
 
 
 def topics(index: dict) -> list[dict]:

@@ -12,6 +12,9 @@
  * `group`  = 这个工具是干什么用的，决定它落在哪一段（见 GROUPS）。
  */
 export const ITEMS = [
+  // 探索台（2026-10-30）：学习这半的家。一个项目 = 一场远征，这里看它的掌握轴（心魔 / 待点亮 / 新边疆 / 已点亮）、来一场模拟面试。
+  { id: 'explore', icon: 'target', name: '探索', group: 'do', gold: true, scopes: ['project'],
+    tip: '探索台：这场远征还有多少没点亮、哪些正在变成心魔、来一场模拟面试', modes: ['chat', 'project', 'structure'] },
   { id: 'plans', icon: 'checklist', name: '清单', group: 'do', scopes: ['project'],
     tip: '这个项目的学习计划 / 面试方案 / 领域地图', modes: ['chat', 'project', 'structure'] },
   { id: 'study', icon: 'rotate', name: '今日', group: 'do', gold: true, badge: 'due', scopes: ['project', 'global'],
@@ -22,6 +25,11 @@ export const ITEMS = [
   // 原文是整个库的东西（不分项目），所以两个作用域都给；对话里边聊边翻原文也常见
   { id: 'articles', icon: 'book', name: '原文', group: 'do', scopes: ['project', 'global'],
     tip: '读原文：长文原样存在原文目录里，看它拆出了哪些点；还没拆的在这儿一键拆',
+    modes: ['chat', 'project', 'structure'] },
+  // 碎片（2026-10-23）：接不同的活学到的零散点子，先记下来，攒多了归拢进体系——
+  // 和导入（整篇文章）、对话（边聊边学）并列的第三个入口，管的是「一句话大小」的知识
+  { id: 'fragments', icon: 'note', name: '碎片', group: 'do', scopes: ['project', 'global'],
+    tip: '碎片箱：随手记零散点子；攒多了一键归拢——并进已有知识点，或长成新节点',
     modes: ['chat', 'project', 'structure'] },
   { id: 'assets', icon: 'image', name: '素材', group: 'do', scopes: ['project', 'global'],
     tip: '往当前这块画布上贴图、加便签', modes: ['project', 'structure', 'topic'] },
@@ -45,6 +53,10 @@ export const ITEMS = [
     tip: '专题：围绕一个主题自己画的总结图，可以建多个', modes: ['structure', 'topic'] },
   { id: 'stats', icon: 'chart', name: '数值对比', group: 'see', scopes: ['global'],
     tip: '模型目录里的型号：参数 / 激活 / 上下文 / 训练数据怎么涨上来的、谁更大', modes: ['structure', 'history'] },
+  // 术语（名词解释，2026-10-27）：边学边记的名词表，看书时高频要翻，所以给独立入口、各读图视图都留着
+  { id: 'terms', icon: 'bookmark', name: '术语', group: 'see', scopes: ['project', 'global'],
+    tip: '名词解释：GDT、CR3 这种随手记下的词，按语境分组，看书翻回去用',
+    modes: ['chat', 'project', 'structure', 'topic'] },
   { id: 'calendar', icon: 'clock', name: '日历', group: 'see', scopes: ['global'],
     tip: '每天建了多少、复习了多少（全是算出来的）', modes: ['chat', 'project', 'structure'] },
   { id: 'timeline', icon: 'timeline', name: '时间线', group: 'see', scopes: ['global'],

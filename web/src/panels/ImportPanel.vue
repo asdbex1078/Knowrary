@@ -31,6 +31,8 @@ const props = defineProps({
   // 从别处带过来的一篇（原文面板上「拆成知识点」）：库内路径。变一次就载一次，
   // 走「仓库里的文件」那条路——在原文目录里的会就地引用，不复制
   preset: { type: String, default: '' },
+  // 碎片归拢带过来的整理稿 {title, text, nonce}：走「粘贴」那条路，nonce 变一次填一次
+  presetText: { type: Object, default: null },
 })
 const emit = defineEmits(['applied', 'close', 'goto', 'error', 'copy'])
 
@@ -103,6 +105,16 @@ watch(() => props.preset, (path) => {
   tab.value = 'vault'
   source.value = path.split('/').pop().replace(/\.(md|markdown|txt|html|htm)$/i, '')
   pickSource(path)
+}, { immediate: true })
+
+// 碎片归拢（2026-10-23）：「长成新节点」的簇把整理稿直接带过来，当一篇粘贴的文章照常拆
+watch(() => props.presetText?.nonce, () => {
+  const got = props.presetText
+  if (!got?.text) return
+  tab.value = 'paste'
+  picked.value = ''
+  text.value = got.text
+  source.value = got.title || source.value
 }, { immediate: true })
 
 async function loadSources() {

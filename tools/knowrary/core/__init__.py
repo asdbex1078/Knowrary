@@ -43,6 +43,8 @@ from .settings import (DEFAULTS as SETTINGS_DEFAULTS, audit_force_allowed, audit
 from .usage import load_usage, note_prefix, record as record_usage, summary as usage_summary
 from .articles import ArticleConflict, ArticlePlan, plan_article, render_article, safe_name, write_article
 from .works import WORK_SUFFIXES, WorkRejected, extract_work, plan_work, work_text
+from .fragments import (FRAGMENTS_DIR, add_fragment, build_consolidate_prompt, check_clusters as check_fragment_clusters,
+                        fragments_dir, list_fragments, mark_fragments, stats as fragment_stats)
 from .sources import (Resolver as SourceResolver, article_link, backlink_refs as source_backlink_refs,
                       backlinks as source_backlinks,
                       clean_sources, sources_of)
@@ -56,6 +58,8 @@ from .article import (DEFAULT_GRAIN, GRAINS, RESHAPE_OPS, build_article_prompt, 
 from .sections import Heading, describe_outline, extract_section, find_heading, outline
 from .facts import (COMPARE_HEADING, FACTS_HEADING, FM_DIMENSIONS, Fact, bare_compare_headings,
                     compare_targets, facts_of, parse_facts, stray_facts)
+from .glossary import (GLOBAL_SCOPE, GLOSSARY_DIR, GlossaryRejected, add_term, file_for_scope,
+                       glossary_files, load_glossary, parse_glossary, scope_of_file)
 from .compare import (COMPARE_TYPE, GAP_RATIO, gaps as compare_gaps, groups as compare_groups,
                       table as compare_table)
 from .importing import (CONFIDENCE_DIRECT, ENRICH_MARK, ImportTarget, Translation, promote_in_plan,
@@ -80,6 +84,8 @@ from .relations import Edge, NormalizedEdge, RelationTypes, load_relation_types,
 from .schema import validate_index
 
 __all__ = [
+    "GLOBAL_SCOPE", "GLOSSARY_DIR", "GlossaryRejected", "add_term", "file_for_scope",
+    "glossary_files", "load_glossary", "parse_glossary", "scope_of_file",
     "ChangeRejected", "Diagnostic", "Diagnostics", "Edge", "FileEdit", "INDEX_SCHEMA_VERSION",
     "DEFAULT_LOAD", "GRADES", "ID_OK", "KINDS", "LAYERS", "UNLAYERED", "exam_state", "states_of", "study_state", "LOADS", "LOAD_HOURS", "MASTERY_ORDER", "all_progress",
     "all_schedules", "as_date", "ascii_id", "CALENDAR_MAX_DAYS", "append_answers", "build_calendar", "issues_path", "load_issues", "record_issue", "issues_summary", "build_digest", "drafts", "duplicates", "group_labels", "kinship", "link_hints", "lonely", "lonely_batches", "growth_blocker", "SCHOOL_TYPE", "DOMAIN_TYPE", "LINE_TYPES", "schools", "school_of", "line_homes", "misplaced", "no_year", "squatted", "off_canvas", "project_layouts", "streak", "build_today",
@@ -93,6 +99,8 @@ __all__ = [
     "SETTINGS_DEFAULTS", "ArticleConflict", "ArticlePlan", "plan_article", "render_article", "safe_name",
     "write_article", "SourceResolver", "article_link", "source_backlink_refs", "source_backlinks", "clean_sources", "sources_of",
     "WORK_SUFFIXES", "WorkRejected", "extract_work", "plan_work", "work_text",
+    "FRAGMENTS_DIR", "add_fragment", "build_consolidate_prompt", "check_fragment_clusters",
+    "fragments_dir", "list_fragments", "mark_fragments", "fragment_stats",
     "ArticlesNeedMove", "VaultConfigRejected", "articles_dir", "articles_dir_candidates", "list_articles",
     "list_works", "load_vault_config", "save_articles_dir", "save_models_dir", "save_works_dir", "works_dir",
     "CATALOG_FIELDS", "CATALOG_SAMPLE", "CATALOG_SAMPLE_LINEAGE", "LINEAGE_FILE", "bare_lineage", "is_family", "is_lineage",

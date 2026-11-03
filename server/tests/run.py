@@ -1617,6 +1617,70 @@ def one_project(points, **list_kw):
 
 
 @case
+def 碎片记忆_记一条_积压统计_归拢分簇_标去向():
+    """碎片层（2026-10-23）：碎片住 fragments/按天.md、不是节点不进图；归拢只出建议不写盘，
+    模型给的簇要过校验（指不到碎片的丢、编造节点的降 keep），标去向留档不删。"""
+    c, vault = client()
+    assert c.post("/api/fragments", json={"text": "   "}).status_code == 422
+    r = c.post("/api/fragments", json={"text": "PLT 是惰性绑定的\n蹦床"})
+    assert r.status_code == 200 and r.json()["text"] == "PLT 是惰性绑定的 蹦床", r.text
+    fid = r.json()["id"]
+    c.post("/api/fragments", json={"text": "evictionLock 和桶锁会叠成双重卡死"})
+    got = c.get("/api/fragments").json()
+    assert got["open"] == 2 and got["nag"] is False and len(got["entries"]) == 2, got
+    assert got["entries"][0]["text"].startswith("evictionLock"), "新的在前"
+    md = core.read(vault / "fragments" / f"{dt.date.today().isoformat()}.md")
+    assert md.count("\n") == 2 and "蹦床" in md, md
+
+    # 归拢（stub learn）：一簇并进已有节点 a；指不到碎片的丢；编造节点的降成 keep——都记进 issues
+    payload = {"clusters": [
+        {"title": "动态链接", "ids": [fid], "action": "enrich", "node": "a", "summary": "s", "text": "整理后的"},
+        {"title": "空簇", "ids": ["没这条"], "action": "keep"},
+        {"title": "编造", "ids": [got["entries"][0]["id"]], "action": "enrich", "node": "没这个点", "text": "x"}]}
+    from server import fragments as frag_mod
+    orig = frag_mod.ask_meta
+    frag_mod.ask_meta = lambda vault, role, prompt, op="?": (json.dumps(payload, ensure_ascii=False),
+                                                             {"model": "假的", "ms": 5})
+    try:
+        r = c.post("/api/fragments/consolidate")
+    finally:
+        frag_mod.ask_meta = orig
+    assert r.status_code == 200, r.text
+    d = r.json()
+    assert [cl["action"] for cl in d["clusters"]] == ["enrich", "keep"], d
+    assert d["clusters"][0]["node"] == "a" and d["model"] == "假的", d
+    assert len(d["issues"]) == 2, d["issues"]
+
+    # 标去向：行尾 `→ 目标（日期）`，留档不删；已标过的不重标、不算积压
+    assert c.post("/api/fragments/mark", json={"ids": [fid], "target": "[[a]]"}).json()["marked"] == 1
+    got = c.get("/api/fragments").json()
+    assert got["open"] == 1, got
+    done = next(e for e in got["entries"] if e["id"] == fid)
+    assert done["target"] == "[[a]]" and done["done_at"] == dt.date.today().isoformat(), done
+    assert c.post("/api/fragments/mark", json={"ids": [fid], "target": "[[a]]"}).json()["marked"] == 0
+
+
+@case
+def 施工图_项目挂专题_任意一组点的双态现算():
+    """施工图（2026-10-23）：项目挂竣工图（`topics` 字段跟 projects.json 走）；
+    `POST /api/states` 给任意一组点算学 / 考双态——专题画布的染色不局限于某个项目的清单。"""
+    c, vault = client()
+    doc = one_project([{"id": "a", "name": "A", "load": "中"}])
+    doc["llm"]["topics"] = ["文件系统", "ELF"]
+    r = c.put("/api/projects", json={"base_revision": 0, "projects": doc})
+    assert r.status_code == 200, r.text
+    assert c.get("/api/projects").json()["doc"]["projects"]["llm"]["topics"] == ["文件系统", "ELF"]
+
+    # a/b/c 真有 md（绿），"幽灵" 不在图里（灰）；考都没考过（灰）
+    r = c.post("/api/states", json={"ids": ["a", "幽灵", "a"]})
+    assert r.status_code == 200, r.text
+    got = r.json()["states"]
+    assert got["a"] == {"study": "绿", "exam": "灰"}, got
+    assert got["幽灵"] == {"study": "灰", "exam": "灰"}, got
+    assert len(got) == 2, "重复 id 去重"
+
+
+@case
 def projects_计划里的点可以指向还不存在的节点():
     c, vault, _ = with_inbox_node()
     r = c.put("/api/projects", json={"base_revision": 0, "projects": one_project([
@@ -8060,10 +8124,18 @@ def 专题画布_新建画图连线_悬空和成环被拒_改名跟着走_删画
                       "edge": "a->b#部件"}})
     assert r.status_code == 200, r.text
     rev = r.json()["revision"]
-    assert _topic_patch(c, rev, shapes={"s4": {"kind": "rect", "x": 0, "y": 0, "w": 1, "h": 1, "parent": "s3"}}).status_code == 422, "只能挂在大框里"
-    assert _topic_patch(c, rev, shapes={"s1": {"parent": "s1"}}).status_code == 422, "大框不能套自己"
+    # 2026-10-30：任意图形都能当容器（矩形、圆、圆柱、组合框……），只有「文字」不行
+    assert _topic_patch(c, rev, shapes={"st": {"kind": "text", "x": 0, "y": 0, "w": 50, "h": 20},
+                                        "s4": {"kind": "rect", "x": 0, "y": 0, "w": 1, "h": 1, "parent": "st"}}).status_code == 422, "文字不能当容器"
+    assert _topic_patch(c, rev, shapes={"s5": {"kind": "rect", "x": 0, "y": 0, "w": 1, "h": 1, "parent": "s99"}}).status_code == 422, "容器不存在"
+    assert _topic_patch(c, rev, shapes={"s1": {"parent": "s1"}}).status_code == 422, "不能套自己"
     assert _topic_patch(c, rev, links={"l2": {"source": {"kind": "shape", "id": "s9"}, "target": {"kind": "node", "id": "a"}}}).status_code == 422
-    assert _topic_patch(c, rev, shapes={"s3": {"node": "a"}}).status_code == 200
+    # 圆柱当容器、组合框当容器都允许；同批把 s3 升级成知识点（一次推进 revision）
+    r = _topic_patch(c, rev, shapes={"s4": {"kind": "rect", "x": 0, "y": 0, "w": 1, "h": 1, "parent": "s3"},
+                                     "sg": {"kind": "group", "x": 0, "y": 0, "w": 200, "h": 120},
+                                     "sgc": {"kind": "rect", "x": 5, "y": 5, "w": 40, "h": 20, "parent": "sg"},
+                                     "s3": {"node": "a"}})
+    assert r.status_code == 200, r.text
     topics = c.get("/api/topics").json()["topics"]
     assert topics == [{"topic": "文件系统", "center": None, "name": None, "canvas": True, "folder": ""}], topics
     doc = c.get("/api/layout").json()["layout"]
@@ -8291,6 +8363,30 @@ def 成品导入_成品即原文_不存副本_节点链页面锚点():
     assert w["dir"] == "works" and [x["path"] for x in w["works"]] == ["works/桶锁.html"], w
     assert w["works"][0]["title"] == "桶锁", "标题从 <title> / 第一个 <h1> 里来"
     assert w["works"][0]["refs"] == [{"id": "CHM桶锁", "name": "CHM 桶锁", "section": "sec-bin"}], w
+
+
+@case
+def 术语_加词_落到对应文件_索引跟着刷新_空词拒():
+    """随手记名词（2026-10-27）：POST /api/glossary 追加到 `术语/<语境>.md`；
+    **关键**：写完 /api/index 的 glossary 要立刻带上它（指纹得认 `术语/`，否则刷不出来）；空词 422。"""
+    c, vault = client(DEFAULT_FILES)
+    assert c.get("/api/index").json()["glossary"] == []            # 一开始没有
+
+    r = c.post("/api/glossary", json={"term": "GDT", "gloss": "全局描述符表。",
+                                      "scope": "全局", "aka": ["描述符表"], "see": "a"})
+    assert r.status_code == 200, r.text
+    assert r.json() == {"term": "GDT", "gloss": "全局描述符表。", "scope": "全局",
+                        "aka": ["描述符表"], "see": "a"}, r.json()
+    md = core.read(vault / "术语" / "_全局.md")
+    assert "## GDT" in md and "- 详见:: [[a]]" in md, md
+
+    # 专题语境 → 另一个文件；两条都要在合并后的索引里（证明指纹认了 术语/，缓存重建了）
+    assert c.post("/api/glossary", json={"term": "时间片", "gloss": "一次最多跑多久。",
+                                         "scope": "调度"}).status_code == 200
+    gloss = {(e["term"], e["scope"]) for e in c.get("/api/index").json()["glossary"]}
+    assert gloss == {("GDT", "全局"), ("时间片", "调度")}, gloss
+
+    assert c.post("/api/glossary", json={"term": "   ", "gloss": "x"}).status_code == 422   # 空词拒
 
 
 def main() -> None:

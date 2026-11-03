@@ -12,8 +12,9 @@ import Icon from '../ui/Icon.vue'
 
 const props = defineProps({
   today: { type: Object, default: null },
+  fragments: { type: Object, default: null },   // 碎片积压 {open, oldest_days, nag}：到量在这儿催一句
 })
-const emit = defineEmits(['close', 'start', 'quiz'])
+const emit = defineEmits(['close', 'start', 'quiz', 'fragments'])
 
 const KIND_NAME = { wrong: '错题', due: '待复习', unbuilt: '要新建', shell: '写正文', inbox: '上画布' }
 
@@ -39,6 +40,14 @@ const empty = computed(() => !(props.today?.items || []).length)
       <div v-if="empty" class="dim" style="line-height: 1.8">
         今天没有到期的复习，计划里的点也都建出来了。<br>
         想往前走就去项目面板加几个点，或者直接开一段对话。
+      </div>
+
+      <!-- 碎片催归（2026-10-23）：碎片箱的死法是只进不出，到量就在开场提一句 -->
+      <div v-if="fragments?.nag" class="brief-line">
+        <span class="lb">碎片</span>
+        <span class="path">积压 {{ fragments.open }} 条<template v-if="fragments.oldest_days">，最老的躺了
+          {{ fragments.oldest_days }} 天</template>——该归拢了
+          <a class="link" @click="emit('fragments')">去归拢</a></span>
       </div>
 
       <template v-else>

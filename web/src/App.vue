@@ -3,8 +3,9 @@ import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, shallowR
 import {
   fetchSettings, putSettings, fetchLLMConfig, putLLMConfig, testLLMConfig as postLLMConfigTest,
   fetchPending, postPendingDecide, postTypeDecide, postEdgesPlan, postEdgesCheck, fetchEdgeChecks, postEdgeFix, fetchVault, browseVault, initVault, putVault, forgetVault, fetchVaultConfig, putVaultConfig,
-  fetchCopySources, fetchCopyCatalog, postCopy, fetchCalendar, fetchCompareGroups, fetchTopics, fetchTopicDraft, postTopic, deleteTopic, postTopicFolder, renameTopicFolder, moveTopicFolder, deleteTopicFolder, moveTopic, fetchTopicReview, postTopicReview, markTopicReview, postTopicAdvice, fetchCompareTable, postCompareFill, fetchDigest, postSyncToGlobal, fetchDue, fetchProjects, putProjects, postPlanPropose, fetchToday, fetchUsage, postMerge, postRename, postQuiz, postQuizDiagnose, postQuizGrade, fetchOpenQuiz, dropOpenQuiz, postRegroup, fetchIndex, fetchInbox, fetchLayout, fetchModels, fetchNode,
-  patchLayout, postAudit, postChanges, postRelink, postRevise, postReviseUndo, postPlace, postCurate, postReview, postSuggest, postSummarize, postYearsPropose,
+  fetchCopySources, fetchCopyCatalog, postCopy, fetchCalendar, fetchCompareGroups, fetchTopics, fetchTopicDraft, postTopic, deleteTopic, postTopicFolder, renameTopicFolder, moveTopicFolder, deleteTopicFolder, moveTopic, fetchTopicReview, postTopicReview, markTopicReview, postTopicAdvice, fetchCompareTable, postCompareFill, fetchDigest, postSyncToGlobal, fetchDue, fetchProjects, putProjects, postPlanPropose, fetchToday, fetchUsage, postMerge, postRename, postQuiz, postQuizDiagnose, postQuizGrade, fetchOpenQuiz, dropOpenQuiz, postRegroup, fetchIndex, fetchInbox, fetchLayout, fetchModels, fetchNode, postGlossary,
+  patchLayout, postAudit, postChanges, postRelink, postRevise, postReviseUndo, postPlace, postCurate, postReview, postStates, postSuggest, postSummarize, postYearsPropose,
+  fetchFragments, markFragments,
 } from './api.js'
 import AppHeader from './components/AppHeader.vue'
 import ActivityBar from './components/ActivityBar.vue'
@@ -14,6 +15,8 @@ import DrawTools from './components/DrawTools.vue'
 import ShapePalette from './components/ShapePalette.vue'
 import BindDialog from './components/BindDialog.vue'
 import TopicAI from './components/TopicAI.vue'
+import TopicVersionBar from './components/TopicVersionBar.vue'
+import TopicDetail from './components/TopicDetail.vue'
 import ZoomBar from './components/ZoomBar.vue'
 import HistoryPlayer from './components/HistoryPlayer.vue'
 import StatusBar from './components/StatusBar.vue'
@@ -39,19 +42,24 @@ import DigestPanel from './panels/DigestPanel.vue'
 import StudyPanel from './panels/StudyPanel.vue'
 import CalendarPanel from './panels/CalendarPanel.vue'
 import StatsPanel from './panels/StatsPanel.vue'
+import TermsPanel from './panels/TermsPanel.vue'
+import TermLookup from './components/TermLookup.vue'
+import { findSenses, resolveSenses } from './canvas/glossary.js'
 import ModelLineage from './components/ModelLineage.vue'
 import ChatView from './views/ChatView.vue'
 import MorningBrief from './components/MorningBrief.vue'
 import SettingsDialog from './components/SettingsDialog.vue'
 import CopyDialog from './components/CopyDialog.vue'
 import ProjectsPanel from './panels/ProjectsPanel.vue'
+import ExplorePanel from './panels/ExplorePanel.vue'
 import ArticlesPanel from './panels/ArticlesPanel.vue'
+import FragmentsPanel from './panels/FragmentsPanel.vue'
 import ImagePicker from './panels/ImagePicker.vue'
 import TimelinePanel from './panels/TimelinePanel.vue'
 import ComparePanel from './panels/ComparePanel.vue'
 import TopicsPanel from './panels/TopicsPanel.vue'
 import { DRAG_NODE, DRAG_SHAPE, SHAPE_KINDS, draftPlan, drawCells, openReviewCounts, suggestions as topicSuggestions, editInPlace, isDrawnShape, isLink, linkNodes, shapeCellId,
-         removeEdgeChanges, upgradeChanges, writtenEdgeId } from './canvas/drawing.js'
+         removeEdgeChanges, shapesInBox, upgradeChanges, writtenEdgeId } from './canvas/drawing.js'
 import { createTopicDrawing } from './canvas/topicDraw.js'
 import CompareTable from './components/CompareTable.vue'
 import CompareFillDialog from './components/CompareFillDialog.vue'
@@ -66,14 +74,15 @@ import { ancestors as groupAncestors, computeCollapsed } from './canvas/lod.js'
 import { bucketOf, isZone, withoutZones } from './canvas/zones.js'
 import {
   applyViewport, buildCells, clearPath, contentBBox, createGraph,
-  highlightEdges, highlightPath, mount, movedPositions, setSnap, snapDelta,
+  highlightEdges, highlightPath, mount, movedPositions, paintTopicVersion, setSnap, snapDelta,
 } from './canvas/render.js'
 import { communityLayout, compareWithGroups } from './canvas/communities.js'
 import { mindmapLayout, toPatch } from './canvas/layouts.js'
 import { GROUP_LAYOUTS, layoutGroup, membersOf } from './canvas/groupLayout.js'
 import { buildMenu } from './canvas/menus.js'
 import { FAMILIES, HEAD_MAX as GROUP_HEAD, NODE_H, NODE_W, setTheme } from './canvas/shapes.js'
-import { todayISO } from './today.js'
+import { todayISO, localISO } from './today.js'
+import { weight as dayWeight } from './panels/heat.js'
 
 const canvasEl = ref(null)
 const headerEl = ref(null)
@@ -155,6 +164,27 @@ const topicAIBusy = ref('')          // '' | 'review' | 'advice'
 let reviewAfterUpgrade = null        // 「建议升级」走新建对话框：写成了才记采纳
 const topicDraft = shallowRef(null)  // 按关系算的方位（/api/topics/<专题>/draft）；没有中心就是 null
 if (mode.value === 'topic' && !topicId.value) mode.value = 'structure'   // 记着的专题模式却没有专题：别拿全局图冒充
+
+// 施工图（2026-10-23）：竣工图上的点不局限于某个项目的清单，所以专题模式下
+// 单独向 /api/states 取这张画布上全部绑定点的学 / 考双态（现算不落盘），常显染色。
+const topicStates = shallowRef({})
+const topicBoundKey = computed(() => {
+  if (mode.value !== 'topic') return ''
+  const l = layoutDoc.value || {}
+  const ids = [...Object.keys(l.nodes || {}),
+               ...Object.values(l.shapes || {}).map((s) => s.node).filter(Boolean)]
+  return [...new Set(ids)].sort().join('\u0000')
+})
+watch([topicBoundKey, indexDoc], async ([key]) => {
+  if (!key) { topicStates.value = {}; return }
+  const ids = key.split('\u0000')
+  try {
+    topicStates.value = (await postStates(ids)).states || {}
+  } catch {
+    topicStates.value = {}                 // 取不到就不染，画布照常能用
+  }
+  if (mode.value === 'topic') render()
+})
 /**
  * 「画布与外观」那一栏的**出厂默认**：别人 clone 下来第一眼看到的样子。
  *
@@ -193,6 +223,8 @@ const avoidNodes = ref(pref('avoid', VIEW_DEFAULTS.avoid))
 // 那时 projectIds 还是空的，借不出任何点，之后也没有东西触发重画；
 // 开关状态要是留在"开"，刷新回来就是一片空白，反倒像坏了。每次点一下，行为永远一致。
 const borrowOn = ref(false)
+// 知识海迷雾：项目图上按掌握态给整个节点上色（点亮/心魔/待点亮/新边疆）。只是看图的滤镜，session 内有效。
+const fogOn = ref(false)
 const focusGroup = ref(null)             // 聚焦的域：点簇卡片进入，只展开它
 const search = ref('')                   // 顶栏搜索词
 let panorama = null                      // 进入聚焦前的视口，退出时还原
@@ -230,6 +262,83 @@ const topicCenter = computed(() => (indexDoc.value?.nodes || []).find((n) => n.t
 const topicRelated = computed(() => (topicDraft.value ? topicSuggestions(layoutDoc.value, topicDraft.value) : []))
 const topicNames = computed(() => Object.fromEntries((indexDoc.value?.nodes || []).map((n) => [n.id, n.name || n.id])))
 
+// 版本演进（2026-10-27，A 方案）：中心节点 frontmatter 的 `版本` 轴 → 一根滑块；
+// 方块的 since/until 落在这些档上，滑到某版时区间不覆盖它的框淡成虚影（paintTopicVersion 现染）。
+const topicVersions = computed(() => {
+  if (mode.value !== 'topic' || !topicId.value) return []
+  const center = (indexDoc.value?.nodes || []).find((n) => n.topic === topicId.value)
+  return Array.isArray(center?.versions) ? center.versions : []
+})
+const topicVer = ref('')                        // 当前选中的版本；空 = 没有版本轴 / 全显
+const verStoreKey = (t) => `knowrary-topic-ver:${t}`
+// 换专题或版本轴变了：记着的那版还在就用它，否则默认停最新版（最全的结构）
+watch([topicVersions, topicId], ([vers, tid]) => {
+  if (!vers.length) { topicVer.value = ''; return }
+  const saved = tid ? localStorage.getItem(verStoreKey(tid)) : ''
+  topicVer.value = vers.includes(saved) ? saved : vers[vers.length - 1]
+}, { immediate: true })
+
+/** 只重染当前版，不重建 cell（滑块、换专题后补一笔都走这里）。 */
+function paintVersion() {
+  if (mode.value === 'topic' && topicVersions.value.length) {
+    paintTopicVersion(graph.value, layoutDoc.value, topicVer.value, topicVersions.value)
+  }
+}
+// topicVer 由上面的 watch 在渲染之后才落定（换专题是同步 render、watch 排在微任务里），
+// 所以这里补一次重染；滑块点击也走它。
+watch(topicVer, () => paintVersion())
+
+function setTopicVer(v) {
+  if (!topicVersions.value.includes(v)) return
+  topicVer.value = v
+  try { localStorage.setItem(verStoreKey(topicId.value), v) } catch { /* 隐私模式写不了，默认最新版照常 */ }
+}
+
+// ---- 点方块看细节（版本演进第 5 步，2026-10-27）：右侧只读抽屉，正文按版本分小节 ----
+const topicDetail = ref(null)        // { id, name } 打开的方块绑的节点；null = 抽屉收起
+const topicDetailBody = ref('')      // 去 frontmatter、切到 `## 关系`、去掉开头 H1 后的正文
+const topicDetailLoading = ref(false)
+
+/** md 原文里「正文」那一段：和检查器 bodyOf 同一套界线（frontmatter → `## 关系`），再去掉开头那行 H1
+ *  （抽屉头已经显示节点名，不重复一个大标题）。版本小节 `## 0.12` 都在这段里。 */
+function topicBodyOf(raw) {
+  let rest = String(raw || '')
+  if (rest.startsWith('---\n')) {
+    const end = rest.indexOf('\n---\n', 3)
+    if (end !== -1) rest = rest.slice(end + 5)
+  }
+  const m = rest.match(/^## 关系\s*$/m)
+  rest = m ? rest.slice(0, m.index) : rest
+  const lines = rest.split('\n')
+  let i = 0
+  while (i < lines.length && !lines[i].trim()) i += 1       // 跳过前导空行
+  if (i < lines.length && /^#\s+/.test(lines[i])) lines.splice(i, 1)   // 摘掉开头的 H1 标题
+  return lines.join('\n').trim()
+}
+
+/** 双击绑定方块 / 编辑卡上点「看细节」：把那篇正文端进右侧抽屉。读的时候收起编辑卡，专心看。 */
+async function openTopicDetail(sid) {
+  const nid = layoutDoc.value?.shapes?.[sid]?.node
+  if (!nid) return
+  draw.select(null)                 // 收起编辑卡（选中态变了，DrawTools 自己隐），不和抽屉挤右边
+  render()                          // 去掉画布上的选中金边
+  topicDetail.value = { id: nid, name: nodeNames.value[nid] || nid }
+  topicDetailBody.value = ''
+  topicDetailLoading.value = true
+  try {
+    const d = await fetchNode(nid)
+    if (topicDetail.value?.id !== nid) return     // 读的过程里又点了别的方块，这次作废
+    topicDetailBody.value = topicBodyOf(d?.raw || '')
+    topicDetail.value = { id: nid, name: d?.meta?.name || topicDetail.value.name }
+  } catch (err) {
+    if (err.status !== 404) setBanner(`读取节点失败：${err.body?.detail || err.message}`, 'error')
+  } finally {
+    if (topicDetail.value?.id === nid) topicDetailLoading.value = false
+  }
+}
+// 换专题就把细节抽屉收起来——那篇正文属于上一张专题图
+watch(topicId, () => { topicDetail.value = null })
+
 /** 方位只跟着索引、专题、跳数变；画布上摆了什么由 suggestions 现算，不用重拉。 */
 async function refreshTopicDraft() {
   if (mode.value !== 'topic' || !topicId.value || !topicCenter.value) { topicDraft.value = null; return }
@@ -261,6 +370,9 @@ watch([topicId, mode], async () => {
   try { topicReview.value = await fetchTopicReview(topicId.value) } catch { topicReview.value = {} }
   render()
 })
+
+// 进出专题模式时切换框选归谁管（专题归自己、其余归 Selection 插件）
+watch(mode, () => syncRubberbandMode())
 
 /** 框 / 知识点 id → 给人看的名字（面板里写「引导块」而不是 smv6…）。 */
 function topicThingName(id) {
@@ -472,6 +584,21 @@ async function refreshCalendar() {
   }
 }
 const nodeStates = computed(() => plansProgress.value?.[currentProject.value]?.all?.states || {})
+
+// 连续探索天数（全局习惯，不分项目）：从学习日历现算。建点 / 复习 / 答题任一 = 这天活跃。
+// 宽容：今天还没动不算断——从今天往回数，今天空就从昨天起算；本周活跃天数做个不那么苛刻的备用数。
+const streakInfo = computed(() => {
+  const days = calendar.value?.days || {}
+  const active = (d) => dayWeight(days[localISO(d)]) > 0
+  const cur = new Date(`${todayISO()}T00:00:00`)
+  if (!active(cur)) cur.setDate(cur.getDate() - 1)
+  let streak = 0
+  while (active(cur) && streak < 999) { streak += 1; cur.setDate(cur.getDate() - 1) }
+  let week = 0
+  const t = new Date(`${todayISO()}T00:00:00`)
+  for (let i = 0; i < 7; i += 1) { if (active(t)) week += 1; t.setDate(t.getDate() - 1) }
+  return { streak, week }
+})
 
 /** 把刚建好的点补进某份清单（变更卡上写明了要加到哪）。 */
 async function addToList({ project, list, points }) {
@@ -820,6 +947,7 @@ function openPanel(id, { force = false } = {}) {
   if (panel.value === 'inbox') refreshInbox()
   if (panel.value === 'study') { refreshToday(); refreshDue() }
   if (panel.value === 'plans') refreshPlans()
+  if (panel.value === 'explore') { refreshPlans(); refreshCalendar() }   // 探索台要连续天数，日历现算
   if (panel.value === 'calendar') refreshCalendar()
   if (panel.value === 'compare') refreshCompareGroups()
   if (panel.value === 'topics') refreshTopics()
@@ -916,15 +1044,20 @@ function render({ view = 'keep' } = {}) {
   const cells = buildCells(indexDoc.value, forRender, {
     families: visibleFamilies(), showLabels: labelsOn.value,
     aggregate: aggregate.value, expanded: expanded.value, collapsed: collapsedIds.value, zoom: g.zoom(),
-    due: dueIds.value, states: nodeStates.value, avoidNodes: avoidNodes.value, borrowed,
+    // 专题模式的双态盖全画布的绑定点（施工图），其余模式照旧只盖当前项目
+    due: dueIds.value, states: mode.value === 'topic' ? topicStates.value : nodeStates.value,
+    fog: fogOn.value && mode.value === 'project',   // 迷雾只在项目图（那片海有掌握态）
+    avoidNodes: avoidNodes.value, borrowed,
     only: neighborSet.value
       || (mode.value === 'project' && projectIds.value.size
         ? new Set([...projectIds.value, ...borrowed])
         : null),
   })
   if (mode.value === 'topic') {
-    const drawn = drawCells(layoutDoc.value, indexDoc.value, { shape: draw.selShape.value, link: draw.selLink.value,
-                                                              reviews: openReviewCounts(topicReview.value?.review) })
+    const drawn = drawCells(layoutDoc.value, indexDoc.value, { shape: draw.selShape.value, shapes: draw.selShapes.value,
+                                                              link: draw.selLink.value,
+                                                              reviews: openReviewCounts(topicReview.value?.review) },
+                            topicStates.value)
     cells.nodes.push(...drawn.nodes)
     cells.edges.push(...drawn.edges)
     const rubber = draw.preview()               // 正在连线：起点到鼠标的那条虚线
@@ -946,7 +1079,17 @@ function render({ view = 'keep' } = {}) {
   applyingViewport.value = false
   zoom.value = g.zoom()
   if (pathHit.value) applyPath()   // 重绘会重建 cell，高亮得重新贴一遍
+  paintVersion()                   // 专题画布：按当前版本染色（虚影 / 新增），重建 cell 后要重贴
+  // 缩放手柄靠 node:click 挂到 cell 上，但选中图形会紧接着重绘（fromJSON 重建 cell），
+  // 把刚挂上的手柄连 cell 一起销毁——所以每次重绘后，给当前主选中的图形重新挂一遍手柄。
+  if (mode.value === 'topic' && draw.selShape.value) reattachShapeHandle(g, draw.selShape.value)
   syncView()
+}
+
+/** 给手画图形重新挂上缩放手柄（见 render() 里的说明）。 */
+function reattachShapeHandle(g, sid) {
+  const cell = g.getCellById(shapeCellId(sid))
+  if (cell) g.getPlugin('transform')?.createWidget(cell)
 }
 
 /**
@@ -1239,8 +1382,80 @@ function onCanvasPointer(e) {
   if (mode.value === 'topic' && draw.linking.value) draw.trackPointer(graph.value.clientToLocal(e.clientX, e.clientY))
 }
 
+// 专题画布的框选（⇧ + 拖空白）：手画图形走自己的选区（和 Selection 插件分开，免得选中框盖住双击 / 悬停 / 缩放手柄）。
+// 所以在专题模式关掉插件的框选、这里接管；拖的时候临时禁掉平移，松手再开。
+let rubber = null   // 拖动中：{ box（图坐标两角）, el（屏幕上那个矩形）}
+
+function onRubberDown(e) {
+  if (mode.value !== 'topic' || !e.shiftKey || e.button !== 0) return
+  if (e.target.closest?.('[data-cell-id]') || e.target.closest?.('.x6-widget-transform')) return   // 点在图形 / 手柄上不算框选
+  const g = graph.value
+  if (!g) return
+  const s = g.clientToLocal(e.clientX, e.clientY)
+  const el = document.createElement('div')
+  el.className = 'rubber-box'
+  g.container.appendChild(el)
+  rubber = { box: { x1: s.x, y1: s.y, x2: s.x, y2: s.y }, el }
+  e.preventDefault()
+  // 捕获阶段挂在 window 上：X6 的插件会在 document 上拦 mouseup，挂到 window 捕获阶段才稳拿得到
+  window.addEventListener('mousemove', onRubberMove, true)
+  window.addEventListener('mouseup', onRubberUp, true)
+  try { placeRubber(g, el, rubber.box) } catch { /* 起手这一帧框是个点，画不出不要紧 */ }
+}
+
+// 专题模式按住 Shift 就禁平移（给框选让路，松手再开）。必须在 mousedown 之前禁掉——
+// X6 的平移监听比我这个 DOM 监听先跑，等进了 onRubberDown 再禁就晚了。
+function onShiftPan(e) {
+  if (e.key !== 'Shift') return
+  const g = graph.value
+  if (!g || mode.value !== 'topic') return
+  e.type === 'keydown' ? g.disablePanning() : g.enablePanning()
+}
+
+function onRubberMove(e) {
+  if (!rubber) return
+  const p = graph.value.clientToLocal(e.clientX, e.clientY)
+  rubber.box.x2 = p.x; rubber.box.y2 = p.y
+  placeRubber(graph.value, rubber.el, rubber.box)
+}
+
+function onRubberUp(e) {
+  window.removeEventListener('mousemove', onRubberMove, true)
+  window.removeEventListener('mouseup', onRubberUp, true)
+  const g = graph.value
+  if (!rubber) return
+  const { box, el } = rubber
+  rubber = null
+  el.remove()
+  const p = g.clientToLocal(e.clientX, e.clientY)
+  box.x2 = p.x; box.y2 = p.y
+  // 点一下（没拉出框）不改选区——避免 ⇧ 轻点就把选区清空
+  if (Math.abs(box.x2 - box.x1) > 4 || Math.abs(box.y2 - box.y1) > 4) {
+    ready.value = true
+    draw.selectMany(shapesInBox(layoutDoc.value.shapes || {}, box))
+    render()
+  }
+}
+
+function placeRubber(g, el, box) {
+  const r = g.localToGraph({ x: Math.min(box.x1, box.x2), y: Math.min(box.y1, box.y2),
+                             width: Math.abs(box.x2 - box.x1), height: Math.abs(box.y2 - box.y1) })
+  Object.assign(el.style, { left: `${r.x}px`, top: `${r.y}px`, width: `${r.width}px`, height: `${r.height}px` })
+}
+
+/** 专题模式用自己的框选，别让 Selection 插件也框选（会多画一个矩形、还给 kg-node 套上会挡手的选中框）。
+ *  离开专题时恢复插件框选，并把平移开回来（防止退出时还停在「按住 Shift 禁平移」的状态）。 */
+function syncRubberbandMode() {
+  const g = graph.value
+  const plugin = g?.getPlugin?.('selection')
+  if (!plugin) return
+  if (mode.value === 'topic') { plugin.disableRubberband() } else { plugin.enableRubberband(); g.enablePanning() }
+}
+
 function bindEvents(g) {
   g.container.addEventListener('mousemove', onCanvasPointer)
+  g.container.addEventListener('mousedown', onRubberDown)   // 专题画布的框选（⇧ + 拖空白），同函数引用不会重复挂
+  syncRubberbandMode()
   // 首次真实交互后才允许落盘（合成事件与真人操作都会触发 mousedown / wheel）
   const markReady = () => { ready.value = true }
   g.container.addEventListener('mousedown', markReady, { capture: true })
@@ -1255,6 +1470,10 @@ function bindEvents(g) {
   g.container.addEventListener('mousedown', yieldWheel, { capture: true })
   g.container.addEventListener('wheel', yieldWheel, { capture: true, passive: true })
 
+  g.on('node:moving', safe(({ node }) => {
+    // 多选一起拖：被拖的手画图形在选区里，就带着同选的其它图形一起走
+    if (mode.value === 'topic' && isDrawnShape(node)) draw.onMoving(node)
+  }))
   g.on('node:moved', safe(({ node }) => {
     if (!ready.value) return
     if (isDrawnShape(node)) { draw.onMoved(node); return }
@@ -1327,8 +1546,8 @@ function bindEvents(g) {
     return hit
   }
 
-  g.on('node:click', safe(({ node }) => {
-    if (mode.value === 'topic' && draw.onNodeClick(node)) return     // 连线模式 / 点了手画的图形
+  g.on('node:click', safe(({ node, e }) => {
+    if (mode.value === 'topic' && draw.onNodeClick(node, e?.shiftKey)) return     // 连线模式 / 点了手画的图形（Shift = 加选，给组合用）
     // 影子点（按流派分道时第二派起的那一份）：跳到真身，别停在合成 id 上
     if (node.shape === 'kg-dot' && node.getData()?.shadow) { gotoNode(node.getData().realId); return }
     if (node.shape === 'kg-cluster') enterGroup(node.id)
@@ -1347,8 +1566,13 @@ function bindEvents(g) {
     }
   }))
   g.on('node:dblclick', safe(({ node }) => {
-    // 双击手画的图形 = 直接改字：编辑卡里的文字框拿到焦点
-    if (isDrawnShape(node)) { editShapeText(node.getData().sid); return }   // 照 draw.io：原地改字
+    // 双击手画的图形：绑了 md 的 = 看细节（右侧抽屉按版本展开正文）；没绑的 = 照 draw.io 原地改字
+    if (isDrawnShape(node)) {
+      const sid = node.getData().sid
+      if (layoutDoc.value?.shapes?.[sid]?.node) openTopicDetail(sid)
+      else editShapeText(sid)
+      return
+    }
     if (node.shape === 'kg-note') editNote(node.id.slice(5))
     else if (node.shape === 'kg-group') exitGroup()   // 双击域的空白处退回全景
     // 历史图上双击一个点 = 只看它那条演化线（祖先 + 后代 + 直接旁系）。
@@ -1415,7 +1639,14 @@ function bindEvents(g) {
       setBanner(`「${node.id}」是借来的外部邻居，不属于这个项目——要改它请去全局图`)
       return
     }
-    if (isDrawnShape(node)) { draw.select('shape', node.getData().sid); render(); openMenu('shape', node.getData().sid, e); return }
+    if (isDrawnShape(node)) {
+      const sid = node.getData().sid
+      // 右键的图形已在多选里就别把选区缩成一个（否则「组合」这条菜单项就没了）
+      if (!draw.selShapes.value.has(sid)) draw.select('shape', sid)
+      render()
+      openMenu('shape', sid, e)
+      return
+    }
     const kind = { 'kg-node': 'node', 'kg-group': 'group', 'kg-cluster': 'cluster' }[node.shape]
       || (['kg-note', 'kg-image', 'kg-ref'].includes(node.shape) ? 'deco' : null)
     if (kind) openMenu(kind, node.id, e)
@@ -1493,7 +1724,7 @@ function menuCtx() {
   return { index: indexDoc.value, layout: layoutDoc.value, dueIds: dueIds.value,
            pathFrom: pathFrom.value, pathHit: !!pathHit.value, neighbor: neighbor.value,
            focusGroup: focusGroup.value, showMap: showMap.value, nodeName, selectedIds: selectedNodeIds(),
-           topic: mode.value === 'topic' }
+           shapeSel: [...draw.selShapes.value], topic: mode.value === 'topic' }
 }
 
 /** 画布上当前框选 / 多选的知识点 id（Selection 插件只让 kg-node 进选区）。 */
@@ -1575,6 +1806,8 @@ const MENU_ACTIONS = {
   'shape-open': (sid) => openShapeNode(sid),
   'shape-sync': (sid) => syncShapeParts(sid),
   'shape-unbind': (sid) => { draw.bind(sid, null); setBanner('已解除绑定：只改了画布，md 没动') },
+  'shape-group': () => draw.group(),
+  'shape-ungroup': (sid) => draw.ungroup(sid),
   'shape-delete': (sid) => draw.deleteShape(sid),
   ...Object.fromEntries(SHAPE_KINDS.map((k) => [`shape-kind-${k.kind}`, (sid) => draw.patchShape(sid, { kind: k.kind })])),
   ...Object.fromEntries(SHAPE_KINDS.map((k) => [`draw-${k.kind}`, (_id, at) => draw.addAt(k.kind, at)])),
@@ -1913,6 +2146,52 @@ const takenIds = computed(() => new Set((indexDoc.value?.nodes || []).map((n) =>
 /** id → 展示名：测验里的考点 chip、以及任何只拿得到 id 的地方。 */
 const nodeNames = computed(() =>
   Object.fromEntries((indexDoc.value?.nodes || []).map((n) => [n.id, n.name || n.id])))
+
+/** 术语表（名词解释）：`术语/*.md` 合并来的，骑在索引里，术语面板 / 行内悬停都从这儿取。 */
+const glossaryEntries = computed(() => (Array.isArray(indexDoc.value?.glossary) ? indexDoc.value.glossary : []))
+const termPrefill = ref(null)       // 选字记词带进术语面板的 { term, scope }（每次换对象引用触发 watch）
+const termCapture = ref(null)       // 正文里刚选中的一段 { text, x, y }：浮查词卡 / 「记为名词」
+// 选中的字正好是术语就查出义项（按当前专题语境排好）；空 = 不是术语，退回记词
+const termSenses = computed(() => {
+  if (!termCapture.value) return []
+  const hit = findSenses(glossaryEntries.value, termCapture.value.text)
+  return resolveSenses(hit, { topic: currentTermScope() })
+})
+
+/** 加一条名词：追加到 `术语/<语境>.md`，刷新索引让它上屏。 */
+async function addTerm(payload) {
+  try {
+    await postGlossary(payload)
+    await reloadIndex()
+    setBanner(`记下了名词「${payload.term}」（${payload.scope}）`, 'success')
+  } catch (err) {
+    setBanner(`记名词失败：${err.body?.detail || err.message}`, 'error')
+  }
+}
+
+/** 记名词时的默认语境：在专题图里就默认那张专题，否则全局（拿不准记当前，以后能改）。 */
+function currentTermScope() {
+  return mode.value === 'topic' && topicId.value ? topicId.value : '全局'
+}
+
+/** 正文（渲染出来的 Markdown，`.md` 里）选中一小段 → 冒出「记为名词」。太长 / 不在正文里就不冒。 */
+function onTextSelect() {
+  const sel = window.getSelection()
+  const text = sel?.toString().trim() || ''
+  if (!text || text.length > 60 || !sel.rangeCount) { termCapture.value = null; return }
+  const anchor = sel.anchorNode
+  const el = anchor?.nodeType === 3 ? anchor.parentElement : anchor
+  if (!el?.closest?.('.md')) { termCapture.value = null; return }   // 只认渲染正文，输入框 / 其它区域不管
+  const r = sel.getRangeAt(0).getBoundingClientRect()
+  termCapture.value = { text, x: Math.round(r.left + r.width / 2), y: Math.round(r.top - 6) }
+}
+
+/** 点「记为名词」：把选中的词和当前语境塞进术语面板的加词表单。 */
+function captureTerm() {
+  termPrefill.value = { term: termCapture.value.text, scope: currentTermScope() }
+  termCapture.value = null
+  openPanel('terms', { force: true })
+}
 
 /** 这个域里的节点大多存在哪个目录 / 属于哪个领域——新建时拿它当默认值。 */
 function majority(gid, pick) {
@@ -2482,6 +2761,20 @@ function toggleBorrow() {
   render()
 }
 
+/** 知识海迷雾开关（项目图）：按掌握态给整个节点上色。 */
+function toggleFog(on) {
+  fogOn.value = typeof on === 'boolean' ? on : !fogOn.value
+  render()
+}
+
+/** 从探索台「在图上看这片海」：切到项目图、开迷雾、收起抽屉。 */
+function openSeaMap() {
+  if (!currentProject.value) { setBanner('先选一个项目（远征）', 'error'); return }
+  fogOn.value = true
+  panel.value = ''
+  switchMode('project')
+}
+
 function toggleMap() {
   showMap.value = !showMap.value
   savePref('map', showMap.value)
@@ -2916,6 +3209,64 @@ async function refreshCompareTable() {
 }
 
 /** 专题目录：建了画布的 ∪ 有中心点声明的，服务端现算，每次开面板重拉。 */
+// —— 竣工图（2026-10-23）：项目挂着哪几张专题图，顶栏一键切过去看「我在结构里的哪儿」 ——
+const projectTopics = computed(() => plansDoc.value?.projects?.[currentProject.value]?.topics || [])
+
+async function bindTopic(name) {
+  const next = JSON.parse(JSON.stringify(plansDoc.value?.projects || {}))
+  const p = next[currentProject.value]
+  if (!p) return
+  if (!(p.topics || []).includes(name)) p.topics = [...(p.topics || []), name]
+  await savePlans(next)
+  openTopic(name)
+}
+
+async function unbindTopic(name) {
+  const next = JSON.parse(JSON.stringify(plansDoc.value?.projects || {}))
+  const p = next[currentProject.value]
+  if (!p?.topics?.includes(name)) return
+  p.topics = p.topics.filter((t) => t !== name)
+  await savePlans(next)
+}
+
+// —— 碎片记忆（2026-10-23）：归拢建议的落地在这儿——面板只抛事件，不自己写盘 ——
+const fragBusy = ref(false)
+const fragRefresh = ref(0)             // +1 = 面板重拉（标完去向、写完 md）
+const fragStats = shallowRef(null)     // {open, oldest_days, nag}：晨报催归拢用
+const importPresetText = shallowRef(null)   // 丢给导入面板的整理稿：{title, text, nonce}
+
+/** 并进已有节点：append_body（带「补充自碎片」引言，写入审核照常把门），然后给碎片标去向。 */
+async function fragEnrich(c) {
+  fragBusy.value = true
+  try {
+    const head = `> 补充自碎片（${todayISO()}）：${c.title}`
+    await writeChanges([{ type: 'append_body', source: c.node, body: `${head}\n\n${c.text}` }])
+    await markFragments(c.ids, `[[${c.node}]]`)
+    fragRefresh.value += 1
+    setBanner(`已把 ${c.ids.length} 条碎片并进「${nodeNames.value[c.node] || c.node}」`, 'success')
+  } catch (err) {
+    if (err.audit) { auditBlock.value = { report: err.audit, retry: () => fragEnrich(c) }; return }
+    setBanner(`并进失败：${err.body?.detail?.message || err.body?.detail || err.message}`, 'error')
+  } finally {
+    fragBusy.value = false
+  }
+}
+
+/** 长成新节点：整理稿带到导入面板照常拆；碎片随即标「导入《标题》」——去向以标记为准，留档可溯。 */
+async function fragToImport(c) {
+  try {
+    await markFragments(c.ids, `导入《${c.title}》`)
+  } catch (err) {
+    setBanner(`标记失败：${err.message}`, 'error')
+    return
+  }
+  fragRefresh.value += 1
+  importPreset.value = ''
+  openPanel('import', { force: true })
+  await nextTick()
+  importPresetText.value = { title: c.title, text: c.text, nonce: Date.now() }
+}
+
 async function refreshTopics() {
   topicBusy.value = true
   try {
@@ -3334,6 +3685,8 @@ function maybeBrief() {
     if (localStorage.getItem(BRIEF_KEY) === day) return
     localStorage.setItem(BRIEF_KEY, day)
   } catch { /* 无痕模式读不到 localStorage：那就每次都弹，总比不弹好 */ }
+  // 碎片积压顺路取一次：到量（条数或天数）晨报上催一句「该归拢了」。取不到不拦简报
+  fetchFragments().then((got) => { fragStats.value = got }).catch(() => {})
   briefOn.value = true
 }
 
@@ -3598,6 +3951,35 @@ async function refreshPlans() {
 }
 
 /** 整份提交。base_revision 对不上就重新拉取——本地改动还在面板里，不会丢。 */
+/** 探索台采纳模型起草的大纲：把勾选的点并进当前远征的「学习」清单，存盘后地图就有新边疆了。 */
+async function adoptOutline({ ids }) {
+  const prop = planProposal.value
+  const pid = currentProject.value
+  if (!prop || !pid) return
+  const want = new Set(ids)
+  const next = clone(plansDoc.value?.projects || {})
+  const pr = next[pid]
+  if (!pr) return
+  if (!pr.lists?.length) {
+    pr.lists = [{ kind: '学习', name: '主线', goal: '', coach: '', field: '', target_date: null, stages: [] }]
+  }
+  const list = pr.lists.find((l) => l.kind === '学习') || pr.lists[0]
+  const seen = new Set((list.stages || []).flatMap((s) => (s.points || []).map((p) => p.id)))
+  for (const st of prop.stages || []) {
+    const pts = (st.points || []).filter((p) => want.has(p.id) && !seen.has(p.id))
+      .map((p) => ({ id: p.id, name: p.name || p.id, why: p.why || '', load: p.load || '中',
+                     layer: p.layer || '', year: p.year ?? null }))
+    if (!pts.length) continue
+    const hit = (list.stages || []).find((x) => x.name === st.name)
+    if (hit) hit.points.push(...pts)
+    else (list.stages ||= []).push({ name: st.name, deadline: st.deadline || null, points: pts })
+    pts.forEach((p) => seen.add(p.id))
+  }
+  if (!pr.field && prop.suggested_field) pr.field = prop.suggested_field
+  planProposal.value = null
+  await savePlans(next)
+}
+
 async function savePlans(projects) {
   plansBusy.value = true
   try {
@@ -3953,6 +4335,7 @@ async function redo() {
 
 /** Esc 的收起顺序：弹窗 → 左侧工具窗口 → 右侧检查器 → 退出聚焦。 */
 function onEscape() {
+  if (topicDetail.value) { topicDetail.value = null; return }
   if (ctx.value) { ctx.value = null; return }
   if (tour.on) { stopTour(); setBanner(''); return }
   if (hist.lineage) { exitLineage(); return }
@@ -4215,6 +4598,9 @@ onMounted(async () => {
   bindEvents(g)
   loadModels()                           // 检查器的「用到它的型号」要它；不等，读不到也不挡画布
   window.addEventListener('keydown', onKeydown)
+  window.addEventListener('keydown', onShiftPan)       // 专题框选：按 Shift 禁平移
+  window.addEventListener('keyup', onShiftPan)
+  document.addEventListener('mouseup', onTextSelect)   // 正文选字 → 「记为名词」
   window.addEventListener('error', onGlobalError)
   window.addEventListener('unhandledrejection', onGlobalError)
   // 本地个人工具：暴露一个调试句柄，排查渲染问题时能在控制台直接看模型
@@ -4279,6 +4665,9 @@ onBeforeUnmount(() => {
   stopPlay()
   toastTimers.forEach((t) => clearTimeout(t))
   window.removeEventListener('keydown', onKeydown)
+  window.removeEventListener('keydown', onShiftPan)
+  window.removeEventListener('keyup', onShiftPan)
+  document.removeEventListener('mouseup', onTextSelect)
   window.removeEventListener('error', onGlobalError)
   window.removeEventListener('unhandledrejection', onGlobalError)
   patcher.value?.flush()
@@ -4290,7 +4679,9 @@ onBeforeUnmount(() => {
     <AppHeader ref="headerEl" :mode="mode" :hits="searchHits" :status="status" :status-text="statusText"
                :theme="theme" :busy="placing"
                :projects="plansDoc?.projects || {}" :project="currentProject"
+               :project-topics="projectTopics" :all-topics="topics.map((t) => t.topic)"
                @switch-mode="onHeaderMode" @switch-project="switchProject" @settings="openSettings"
+               @topics-menu="refreshTopics" @open-topic="openTopic" @bind-topic="bindTopic" @unbind-topic="unbindTopic"
                @search="search = $event" @goto="gotoNode"
                @toggle-theme="toggleTheme" @reload="reload" @rebuild="rebuildGraph('手动重建')"
                @help="showHelp = true" />
@@ -4310,8 +4701,9 @@ onBeforeUnmount(() => {
                       @toggle-lod="toggleLod()" @toggle-aggregate="toggleAggregate()"
                       @toggle-theme="toggleTheme" />
 
-      <MorningBrief v-if="briefOn" :today="todayList" @close="briefOn = false"
-                    @start="briefStart" @quiz="briefOn = false; startQuiz($event)" />
+      <MorningBrief v-if="briefOn" :today="todayList" :fragments="fragStats" @close="briefOn = false"
+                    @start="briefStart" @quiz="briefOn = false; startQuiz($event)"
+                    @fragments="briefOn = false; openPanel('fragments', { force: true })" />
 
       <ActivityBar :active="panel" :mode="mode" :project="currentProject"
                    :inbox="inboxCount" :due="dueIds.size" :pending="pendingCount" :theme="theme"
@@ -4322,11 +4714,20 @@ onBeforeUnmount(() => {
                  @suggest="suggestForInbox" @close="panel = ''" />
       <ArticlesPanel v-else-if="panel === 'articles'" class="study" :open="articleReq"
                      @goto="gotoNode" @import="importArticle" @highlight="highlightArticle" @close="panel = ''" />
+      <FragmentsPanel v-else-if="panel === 'fragments'" class="study" :busy="fragBusy" :refresh="fragRefresh"
+                      :names="(id) => nodeNames[id] || id"
+                      @goto="gotoNode" @enrich="fragEnrich" @import-cluster="fragToImport" @close="panel = ''" />
       <ImportPanel v-else-if="panel === 'import'" class="study" :fields="fieldNames" :project="currentProject"
-                   :preset="importPreset"
+                   :preset="importPreset" :preset-text="importPresetText"
                    :project-name="plansDoc?.projects?.[currentProject]?.name || ''" :project-field="projectField()"
                    :revision="indexDoc?.revision || 0" :busy="status === 'saving'"
                    @applied="onImported" @goto="gotoNode" @copy="openCopy()" @close="panel = ''" />
+      <ExplorePanel v-else-if="panel === 'explore'" :doc="plansDoc" :progress="plansProgress"
+                    :project="currentProject" :names="nodeNames" :busy="quizBusy" :streak="streakInfo"
+                    :proposal="planProposal" :proposing="planProposing"
+                    @quiz="startQuiz" @goto="gotoNode" @build="buildPoint" @refresh="refreshPlans"
+                    @propose="proposePlan" @adopt="adoptOutline" @map="openSeaMap"
+                    @plans="openPanel('plans', { force: true })" @close="panel = ''" />
       <ProjectsPanel v-else-if="panel === 'plans'" class="study" :doc="plansDoc" :progress="plansProgress"
                      :schedules="plansSchedules" :fields="fieldNames" :project="currentProject"
                      :busy="plansBusy" :proposal="planProposal" :proposing="planProposing"
@@ -4342,6 +4743,10 @@ onBeforeUnmount(() => {
                   @refresh="refreshToday" @close="panel = ''" />
       <StatsPanel v-else-if="panel === 'stats'" class="study" :models="modelsDoc"
                   @show-model="showModel" @open-lineage="setLineageKind('models'); switchMode('lineage')" @close="panel = ''" />
+      <TermsPanel v-else-if="panel === 'terms'" class="study" :entries="glossaryEntries"
+                  :node-name="(id) => nodeNames[id] || id" :current="mode === 'topic' ? topicId : ''"
+                  :prefill="termPrefill" @add="addTerm"
+                  @goto="gotoNode" @refresh="reloadIndex" @close="panel = ''" />
       <CalendarPanel v-else-if="panel === 'calendar'" class="study" :data="calendar"
                      @goto="gotoNode" @refresh="refreshCalendar" @close="panel = ''" />
       <DigestPanel v-else-if="panel === 'digest'" :busy="status === 'saving'" @regroup="regroupDrafts" class="digest" :digest="digest"
@@ -4431,9 +4836,14 @@ onBeforeUnmount(() => {
                  :focus="draw.selShape.value || ''" :names="topicThingName"
                  @review="runTopicReview" @advice="askTopicAdvice" @adopt="adoptReview"
                  @ignore="markReview($event, 'ignored')" @pick="pickReview" @close="topicAIOpen = false" />
-        <DrawTools v-if="mode === 'topic'" :shape="draw.shape.value" :link="draw.link.value"
+        <DrawTools v-if="mode === 'topic'" :shape="draw.shape.value" :link="draw.link.value" :versions="topicVersions"
                    @patch-shape="draw.patchShape" @delete-shape="draw.deleteShape"
-                   @patch-link="draw.patchLink" @delete-link="draw.deleteLink" />
+                   @patch-link="draw.patchLink" @delete-link="draw.deleteLink" @open-detail="openTopicDetail" />
+        <TopicVersionBar v-if="mode === 'topic' && topicVersions.length" :versions="topicVersions"
+                         :current="topicVer" @set="setTopicVer" />
+        <TopicDetail v-if="mode === 'topic' && topicDetail" :node="topicDetail" :body="topicDetailBody"
+                     :order="topicVersions" :current="topicVer" :loading="topicDetailLoading"
+                     @close="topicDetail = null" @goto="(id) => { topicDetail = null; gotoNode(id) }" />
 
         <div v-if="mode === 'compare'" class="sync-bar">
           <span class="dim">对比画布 · 只有这个组的成员，<b>不进全局图</b>（那张图已经够挤了）</span>
@@ -4454,11 +4864,11 @@ onBeforeUnmount(() => {
 
         <CanvasTools v-if="mode === 'structure' || mode === 'project' || mode === 'topic'" :visible="visible" :shown-families="shownFamilies"
                      :collapsed="collapsedIds.size" :aggregate="aggregate" :auto-lod="autoLod" :snap="snap" :avoid-nodes="avoidNodes"
-                     :borrow="borrowOn" :project="mode === 'project' && !!currentProject"
+                     :borrow="borrowOn" :fog="fogOn" :project="mode === 'project' && !!currentProject"
                      :layouts="mode === 'structure' ? LAYOUTS : {}" :can-undo="canUndo" :can-redo="canRedo" :locked="!!preview"
                      @toggle-family="visible[$event] = !visible[$event]; render()"
                      @toggle-aggregate="toggleAggregate()" @toggle-lod="toggleLod()"
-                     @toggle-snap="toggleSnap" @toggle-avoid="toggleAvoid" @toggle-borrow="toggleBorrow"
+                     @toggle-snap="toggleSnap" @toggle-avoid="toggleAvoid" @toggle-borrow="toggleBorrow" @toggle-fog="toggleFog"
                      @pick-layout="runLayout" @add-note="addNote" @add-image="panel = 'assets'"
                      @undo="undo" @redo="redo" />
 
@@ -4589,5 +4999,10 @@ onBeforeUnmount(() => {
                  @close="showUsage = false" />
 
     <HelpDialog v-if="showHelp" :mode="mode" @close="showHelp = false" />
+
+    <!-- 正文里选中一段字 → 是术语就浮它的解释（按需查），不是就浮「记为名词」（边学边记） -->
+    <TermLookup v-if="termCapture" :at="termCapture" :senses="termSenses"
+                :node-name="(id) => nodeNames[id] || id"
+                @add="captureTerm" @goto="(id) => { termCapture = null; gotoNode(id) }" />
   </div>
 </template>

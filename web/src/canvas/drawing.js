@@ -4,7 +4,7 @@
 // 全局图保持只有知识点和关系。图形先只是画；升级成知识点后（`node` 指向它）框上的名字和悬停摘要
 // 从索引现取，知识仍然只住在 md 里。
 import { Graph } from '@antv/x6'
-import { FAMILY_STYLE, PALETTE, currentTheme, tokens } from './shapes.js'
+import { FAMILY_STYLE, PALETTE, STATE_FILL, currentTheme, tokens } from './shapes.js'
 
 export const SHAPE_KINDS = [
   { kind: 'rect', name: '矩形', w: 140, h: 60 },
@@ -44,18 +44,30 @@ const BODY = {
   triangle: { tagName: 'polygon', attrs: { refPoints: '0,10 5,0 10,10' } },
   diamond: { tagName: 'polygon', attrs: { refPoints: '0,5 5,0 10,5 5,10' } },
   cylinder: { tagName: 'path', attrs: { refD: CYLINDER } },
+  // 组合框（2026-10-30）：把几个图形框在一起一起拖的弱框。填充近乎透明、虚线边，
+  // 孩子画在它上面（zIndex 更高）；pointerEvents: all 让框内空白也抓得住，拖它 = 拖整组。
+  group: { tagName: 'rect', attrs: { refWidth: '100%', refHeight: '100%', rx: 8, ry: 8,
+                                     strokeDasharray: '5 4', pointerEvents: 'all' } },
 }
 
 export function registerDrawShapes() {
   for (const [kind, body] of Object.entries(BODY)) {
     const frame = kind === 'frame'
+    // group 不在 SHAPE_KINDS（不从图形栏画，只由「组合」命令生成），SIZE 里没有它 → 给个兜底尺寸
+    const sz = SIZE[kind] || { w: 200, h: 120 }
     Graph.registerNode(`kg-draw-${kind}`, {
-      width: SIZE[kind].w, height: SIZE[kind].h,
+      width: sz.w, height: sz.h,
       // badge：审图意见的角标（还没处理的条数），没有意见时不画
+      // sqStudy / sqExam：施工图（2026-10-23）——绑定了知识点的框画和全局图同款的学 / 考小方块
       markup: [{ tagName: body.tagName, selector: 'body' }, { tagName: 'text', selector: 'label' },
-               { tagName: 'circle', selector: 'badge' }, { tagName: 'text', selector: 'badgeText' }],
+               { tagName: 'circle', selector: 'badge' }, { tagName: 'text', selector: 'badgeText' },
+               { tagName: 'rect', selector: 'sqStudy' }, { tagName: 'rect', selector: 'sqExam' }],
       attrs: {
         body: { ...body.attrs, strokeWidth: 1.4 },
+        sqStudy: { x: 10, refY: '100%', refY2: -13, width: 7, height: 7, rx: 2, ry: 2,
+                   fill: 'transparent', pointerEvents: 'none' },
+        sqExam: { x: 20, refY: '100%', refY2: -13, width: 7, height: 7, rx: 2, ry: 2,
+                  fill: 'transparent', pointerEvents: 'none' },
         badge: { r: 9, refX: '100%', refX2: -2, refY: 2, fill: '#d8a838', display: 'none', cursor: 'pointer' },
         badgeText: { refX: '100%', refX2: -2, refY: 2, fontSize: 10.5, fontWeight: 700, fill: '#fff',
                      textAnchor: 'middle', textVerticalAnchor: 'middle', display: 'none', pointerEvents: 'none' },
@@ -73,26 +85,84 @@ function colorOf(key) {
   return PALETTE.find((c) => c.key === key) || null
 }
 
-/** 图形的样式：没写颜色的按主题走（暗色模式自动换），写了的取那一套色板。 */
-export function shapeAttrs(shape, meta = null) {
+/** 图形的样式：没写颜色的按主题走（暗色模式自动换），写了的取那一套色板。
+ * 施工图（2026-10-23）：绑定了知识点的框**常显**学 / 考双态小方块；
+ * 还没学出来的（索引里没有、或只有壳）整框淡显——竣工图上一眼看出施工到哪了。 */
+export function shapeAttrs(shape, meta = null, state = null) {
   const dark = currentTheme() === 'dark'
   const tone = colorOf(shape.style?.fill)
   const bare = shape.kind === 'text'
-  const fill = bare ? 'transparent' : tone ? (dark ? `${tone.line}33` : tone.fill)
+  const isGroup = shape.kind === 'group'
+  const fill = bare ? 'transparent'
+    : isGroup ? (dark ? '#ffffff0a' : '#00000005')
+    : tone ? (dark ? `${tone.line}33` : tone.fill)
     : shape.kind === 'frame' ? (dark ? '#ffffff08' : '#00000005') : tokens().groupFill
-  const stroke = bare ? 'transparent' : tone ? tone.line : (dark ? '#6b7683' : '#8a99a8')
-  const text = shape.text || meta?.name || (shape.node ? shape.node : bare ? '（双击写字）' : '')
+  const stroke = bare ? 'transparent'
+    : isGroup ? (dark ? '#6b7683' : '#9aa7b4')
+    : tone ? tone.line : (dark ? '#6b7683' : '#8a99a8')
+  // 组合框不写字（它只是把别的图形框起来）；别的照旧
+  const text = isGroup ? '' : (shape.text || meta?.name || (shape.node ? shape.node : bare ? '（双击写字）' : ''))
+  const unlearned = !!shape.node && (!meta || meta.stub)
   return {
-    body: { fill, stroke, strokeWidth: shape.node ? 2.2 : 1.4 },     // 升级成知识点的框描边加粗，一眼分得出
+    body: { fill, stroke, strokeWidth: shape.node ? 2.2 : 1.4,     // 升级成知识点的框描边加粗，一眼分得出
+            fillOpacity: unlearned ? 0.5 : 1, strokeOpacity: unlearned ? 0.45 : 1,
+            ...(unlearned ? { strokeDasharray: '4 3' } : {}) },
     label: { text, fill: shape.style?.color || (tone ? tone.text : tokens().title),
+             opacity: unlearned ? 0.55 : 1,
              fontSize: shape.style?.size || (shape.kind === 'frame' ? 14 : 13),
              fontWeight: shape.style?.bold || shape.kind === 'frame' ? 600 : 400 },
+    sqStudy: { fill: shape.node && !bare && state ? (STATE_FILL[state.study] || 'transparent') : 'transparent' },
+    sqExam: { fill: shape.node && !bare && state ? (STATE_FILL[state.exam] || 'transparent') : 'transparent' },
   }
 }
 
 /** 悬停要显示的字：自己写的说明优先，升级成知识点的没写就用它的一句话摘要。 */
 export function tipOf(shape, meta = null) {
   return shape.tip || meta?.desc || ''
+}
+
+/**
+ * 一个方块（手画图形或节点框）在某个版本下的状态（版本演进 A 方案，2026-10-27）：
+ *   `present` 实显 ·  `appear` 这一版新增 ·  `ghost` 区间不覆盖当前版，淡成虚影。
+ * `order` 是中心 `版本` 轴，box 的 `since`/`until` 落在轴上比下标决定区间。
+ * 没选版本 / 没有版本轴 → 一律 present；`since`/`until` 没写 = 那一边开口；
+ * 写了却不在轴上（打错字）当没写处理，不误伤。
+ */
+export function versionStateOf(box, ver, order) {
+  if (!ver || !Array.isArray(order) || !order.length) return 'present'
+  const vi = order.indexOf(ver)
+  if (vi < 0) return 'present'
+  const si = box?.since ? order.indexOf(box.since) : -1
+  const ui = box?.until ? order.indexOf(box.until) : -1
+  if (si >= 0 && vi < si) return 'ghost'
+  if (ui >= 0 && vi > ui) return 'ghost'
+  return si >= 0 && vi === si ? 'appear' : 'present'
+}
+
+/**
+ * 把一段正文切成「前言 + 各版本小节」（细节抽屉按版本高亮，2026-10-27）。
+ * 约定：正文里 `## 0.12` / `## 2.6` 这样的二级标题，标题名对上版本轴 `order` 的就是版本小节；
+ * 第一个版本标题之前的算前言（常驻、永远显示）；对不上版本轴的二级标题留在它所在的小节里，
+ * 当普通正文走（标题行原样保留，交给 Markdown 渲染）。版本小节的标题行本身摘掉——
+ * 抽屉自己画版本条，不重复显示。返回 `[{ ver, text }]`，前言的 `ver` 为 null。
+ */
+export function splitByVersion(body, order) {
+  const axis = new Set(Array.isArray(order) ? order.map((v) => String(v).trim()) : [])
+  const blocks = []
+  let cur = { ver: null, lines: [] }
+  for (const line of String(body || '').split('\n')) {
+    const m = line.match(/^##\s+(.+?)\s*$/)
+    if (m && axis.has(m[1].trim())) {
+      blocks.push(cur)
+      cur = { ver: m[1].trim(), lines: [] }   // 标题行不进正文，抽屉自己标版本
+    } else {
+      cur.lines.push(line)
+    }
+  }
+  blocks.push(cur)
+  return blocks
+    .map((b) => ({ ver: b.ver, text: b.lines.join('\n').trim() }))
+    .filter((b) => b.ver || b.text)      // 空前言（正文一上来就是版本小节）丢掉
 }
 
 function depthOf(shapes, sid) {
@@ -104,19 +174,22 @@ function depthOf(shapes, sid) {
 
 const PICKED = '#d8a838'      // 选中的图形 / 连线描金边，和路径高亮同一支金色
 
-/** 图形和连线的 cell。大框压在下面（越外层越靠下），别的图形和知识点在上面。`picked` = 当前选中的 { shape, link }。 */
-export function drawCells(layout, index, picked = {}) {
+/** 图形和连线的 cell。大框压在下面（越外层越靠下），别的图形和知识点在上面。
+ * `picked` = 当前选中的 { shape, link }；`states` = {节点 id: {study, exam}}，施工图染色用。 */
+export function drawCells(layout, index, picked = {}, states = {}) {
   const byId = new Map((index?.nodes || []).map((n) => [n.id, n]))
   const shapes = layout?.shapes || {}
   const nodes = Object.entries(shapes).map(([sid, s]) => {
     const meta = s.node ? byId.get(s.node) : null
-    const attrs = shapeAttrs(s, meta)
-    if (picked.shape === sid) Object.assign(attrs.body, { stroke: PICKED, strokeWidth: 2.6 })
+    const attrs = shapeAttrs(s, meta, s.node ? states[s.node] : null)
+    // 选中描金边：单选（primary）或多选集合里的都算（组合前的框选）
+    if (picked.shape === sid || picked.shapes?.has?.(sid)) Object.assign(attrs.body, { stroke: PICKED, strokeWidth: 2.6 })
     const open = picked.reviews?.[sid] || 0
     if (open) Object.assign(attrs, { badge: { display: 'block' }, badgeText: { display: 'block', text: String(open) } })
     return {
       id: shapeCellId(sid), shape: `kg-draw-${s.kind}`, x: s.x, y: s.y, width: s.w, height: s.h,
-      zIndex: s.kind === 'frame' ? 1 + depthOf(shapes, sid) : 20,
+      // 大框和组合框都压在孩子下面（越外层越靠下）；别的图形和知识点在上面
+      zIndex: s.kind === 'frame' || s.kind === 'group' ? 1 + depthOf(shapes, sid) : 20,
       attrs,
       data: { kind: 'shape', sid, group: s.parent ? shapeCellId(s.parent) : null, tip: tipOf(s, meta) },
     }
@@ -182,6 +255,43 @@ export function withDescendants(shapes, sid) {
     for (const [id, s] of Object.entries(shapes)) if (s.parent === out[i] && !out.includes(id)) out.push(id)
   }
   return out
+}
+
+/** 框选命中：矩形框（图坐标，两角 x1/y1/x2/y2，顺序随意）碰到的所有图形 id（相交即选，不要求整个罩住）。 */
+export function shapesInBox(shapes, box) {
+  const x1 = Math.min(box.x1, box.x2); const x2 = Math.max(box.x1, box.x2)
+  const y1 = Math.min(box.y1, box.y2); const y2 = Math.max(box.y1, box.y2)
+  return Object.entries(shapes || {})
+    .filter(([, s]) => s.x < x2 && s.x + s.w > x1 && s.y < y2 && s.y + s.h > y1)
+    .map(([id]) => id)
+}
+
+export const GROUP_PAD = 14
+
+/** 把一组图形框起来的外接框（四周留点内边距），组合框就放在这个位置大小。 */
+export function groupBox(shapes, ids, pad = GROUP_PAD) {
+  const boxes = ids.map((id) => shapes[id]).filter(Boolean)
+  if (!boxes.length) return null
+  const x0 = Math.min(...boxes.map((s) => s.x))
+  const y0 = Math.min(...boxes.map((s) => s.y))
+  const x1 = Math.max(...boxes.map((s) => s.x + s.w))
+  const y1 = Math.max(...boxes.map((s) => s.y + s.h))
+  return { x: Math.round(x0 - pad), y: Math.round(y0 - pad),
+           w: Math.round(x1 - x0 + pad * 2), h: Math.round(y1 - y0 + pad * 2) }
+}
+
+/** 这组图形有没有共同的父：有就把新组合框挂到那个父下（保持原来的嵌套），没有就挂到顶层。 */
+export function commonParent(shapes, ids) {
+  const parents = new Set(ids.map((id) => shapes[id]?.parent || null))
+  return parents.size === 1 ? [...parents][0] : null
+}
+
+/** 解组补丁：删掉组合框本身，里面的图形改挂到组合框原来的父上（留在原位，不删）。 */
+export function ungroupPatch(layout, gid) {
+  const shapes = layout.shapes || {}
+  const host = shapes[gid]?.parent || null
+  const kids = Object.entries(shapes).filter(([, s]) => s.parent === gid)
+  return { shapes: { [gid]: null, ...Object.fromEntries(kids.map(([id]) => [id, { parent: host }])) } }
 }
 
 /** 删图形的补丁：它和它套着的小框，以及连着这些图形的线（悬空的线服务端会拒）。 */

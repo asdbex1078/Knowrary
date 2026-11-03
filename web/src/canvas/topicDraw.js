@@ -3,8 +3,8 @@
 // 单独成文件是因为 App.vue 已经四千行；这里只认一份 layout 和几个注入进来的动作，
 // 不认识模式、项目、对话。所有改动走 layout 补丁（和拖动同一条路），撤销栈照常记。
 import { computed, ref } from 'vue'
-import { isDrawnShape, isLink, linkEndOf, linksOfNode, newShape, removalPatch, shapeCellId,
-         withDescendants } from './drawing.js'
+import { commonParent, groupBox, isDrawnShape, isLink, linkEndOf, linksOfNode, newShape, removalPatch,
+         shapeCellId, ungroupPatch, withDescendants } from './drawing.js'
 
 const PREVIEW_ID = 'link:__preview'
 const uid = (prefix) => `${prefix}${Date.now().toString(36)}${Math.random().toString(36).slice(2, 5)}`
@@ -20,7 +20,8 @@ const uid = (prefix) => `${prefix}${Date.now().toString(36)}${Math.random().toSt
  *   say(text, kind)  提示条
  */
 export function createTopicDrawing(ctx) {
-  const selShape = ref(null)
+  const selShape = ref(null)          // 当前「主」选中的图形（右边编辑卡、缩放手柄认它）
+  const selShapes = ref(new Set())    // 多选集合（Shift 点选，给「组合」用）；单选时就一个
   const selLink = ref(null)
   const linking = ref(null)          // null = 不在连线；{ from: 端点 }（右键「从这里连线」开始）
   let pointer = null                  // 连线时鼠标在图上的位置：预览线的终点
@@ -47,7 +48,25 @@ export function createTopicDrawing(ctx) {
 
   function select(kind, id) {
     selShape.value = kind === 'shape' ? id : null
+    selShapes.value = kind === 'shape' ? new Set([id]) : new Set()
     selLink.value = kind === 'link' ? id : null
+  }
+
+  /** Shift 点选：往多选集合里加 / 减一个图形。主选中跟着走（减到空就清空）。 */
+  function toggleShape(id) {
+    const next = new Set(selShapes.value)
+    if (next.has(id)) next.delete(id)
+    else next.add(id)
+    selShapes.value = next
+    selShape.value = next.has(id) ? id : (next.size ? [...next][next.size - 1] : null)
+    selLink.value = null
+  }
+
+  /** 框选一批：整批替换多选集合。只选到一个时它当主选中（出编辑卡 / 缩放手柄），多个则没有主选中。 */
+  function selectMany(ids) {
+    selShapes.value = new Set(ids)
+    selShape.value = ids.length === 1 ? ids[0] : null
+    selLink.value = null
   }
 
   /** 放一个图形：`at` 是它的中心（拖进来松手的点 / 右键落点；不给就放画面中间）。落在大框里就挂到那个大框下面。 */
@@ -180,11 +199,42 @@ export function createTopicDrawing(ctx) {
     return true
   }
 
-  function onNodeClick(cell) {
+  function onNodeClick(cell, additive = false) {
     if (linking.value) return linkClick(cell)
-    if (isDrawnShape(cell)) { select('shape', cell.getData().sid); ctx.render(); return true }
+    if (isDrawnShape(cell)) {
+      const sid = cell.getData().sid
+      additive ? toggleShape(sid) : select('shape', sid)
+      ctx.render()
+      return true
+    }
     select(null)
     return false
+  }
+
+  /** 组合：把多选的图形框进一个新的「组合框」里，一起拖。至少两个才有意义。 */
+  function group() {
+    const ids = [...selShapes.value].filter((id) => ctx.layoutDoc.value?.shapes?.[id])
+    if (ids.length < 2) { ctx.say('先按住 Shift 点选至少两个图形，再组合'); return null }
+    const shapes = ctx.layoutDoc.value.shapes
+    const box = groupBox(shapes, ids)
+    const gid = uid('s')
+    put('shapes', gid, { kind: 'group', ...box, text: '', tip: '', parent: commonParent(shapes, ids) })
+    for (const id of ids) put('shapes', id, { parent: gid })
+    select('shape', gid)
+    ctx.say('组合好了：拖这个框就一起走；右键「取消组合」拆开', 'success')
+    ctx.render()
+    return gid
+  }
+
+  /** 取消组合：删掉组合框，里面的图形改挂到它原来的父上，留在原位。 */
+  function ungroup(sid) {
+    const s = ctx.layoutDoc.value?.shapes?.[sid]
+    if (!s || s.kind !== 'group') return
+    for (const [bucket, items] of Object.entries(ungroupPatch(ctx.layoutDoc.value, sid))) {
+      for (const [id, patch] of Object.entries(items)) put(bucket, id, patch)
+    }
+    select(null)
+    ctx.render()
   }
 
   function onEdgeClick(edge) {
@@ -194,15 +244,70 @@ export function createTopicDrawing(ctx) {
     return true
   }
 
-  /** 拖完：X6 带着小框一起挪了，小框的坐标也要一起记。 */
-  function onMoved(cell) {
-    const shapes = ctx.layoutDoc.value.shapes || {}
-    for (const sid of withDescendants(shapes, cell.getData().sid)) {
-      const c = ctx.graph.value.getCellById(shapeCellId(sid))
-      if (!c) continue
-      const p = c.position()
-      put('shapes', sid, { x: Math.round(p.x), y: Math.round(p.y) })
+  // 多选一起拖：拖其中一个，另外几个跟着走（draw.io 那样）。X6 只挪被抓的那个（+它套的子框）。
+  // 按「起点 + 被抓的总位移」给同伴定位（不用逐帧累加增量——Snapline 会微调被抓的落点，
+  // 累加会和吸附打架，导致同伴和被抓的错开）。drag 在一次拖动里记被抓的起点与同伴起点。
+  let drag = null
+
+  /** 拖动中：被抓的在多选里就把同选的其它图形放到「各自起点 + 被抓的位移」处（连子框一起走）。 */
+  function onMoving(cell) {
+    const sid = cell.getData?.().sid
+    if (!sid || selShapes.value.size < 2 || !selShapes.value.has(sid)) { drag = null; return }
+    // 起点锚定到 layout 里拖动前的坐标（不是第一帧 onMoving 的位置——那时被抓的已经挪过一点了），
+    // 这样算出的位移是「从真正起点到现在」的完整位移，同伴才不会短一截。
+    if (!drag || drag.grabbed !== sid) {
+      const shapes = ctx.layoutDoc.value.shapes || {}
+      const posOf = (id) => (shapes[id] ? { x: shapes[id].x, y: shapes[id].y } : null)
+      const starts = {}
+      for (const other of movePartners(sid)) { const s = posOf(other); if (s) starts[other] = s }
+      drag = { grabbed: sid, from: posOf(sid) || cell.position(), starts }
     }
+    positionPartners(cell.position())
+  }
+
+  /** 按被抓的当前位置算出位移，把每个同伴放到「它的起点 + 位移」（deep：连它套的子框一起）。 */
+  function positionPartners(grabbedPos) {
+    if (!drag) return
+    const dx = grabbedPos.x - drag.from.x; const dy = grabbedPos.y - drag.from.y
+    for (const [other, st] of Object.entries(drag.starts)) {
+      ctx.graph.value.getCellById(shapeCellId(other))?.position(st.x + dx, st.y + dy, { deep: true })
+    }
+  }
+
+  /** 该跟着被抓的 `grabbed` 一起平移的同选图形：排掉它的子孙（X6 已经带走）、它的祖先（平移会反向盖回它）、
+   *  以及被更上层的选中根罩着的（那条子树由那个根整体带走，别重复平移）。 */
+  function movePartners(grabbed) {
+    const shapes = ctx.layoutDoc.value.shapes || {}
+    const isAncestor = (a, of) => {
+      let c = shapes[of]?.parent; let n = 0
+      while (c && n < 50) { if (c === a) return true; c = shapes[c]?.parent; n += 1 }
+      return false
+    }
+    const selAncestor = (sid) => {
+      let c = shapes[sid]?.parent; let n = 0
+      while (c && n < 50) { if (selShapes.value.has(c)) return true; c = shapes[c]?.parent; n += 1 }
+      return false
+    }
+    return [...selShapes.value].filter((sid) => sid !== grabbed
+      && !isAncestor(grabbed, sid) && !isAncestor(sid, grabbed) && !selAncestor(sid))
+  }
+
+  /** 拖完：被抓的 +（多选时）同选的其它根，各自连它套的子框一起记坐标。 */
+  function onMoved(cell) {
+    const grabbed = cell.getData().sid
+    const multi = drag && drag.grabbed === grabbed
+    if (multi) positionPartners(cell.position())   // 用被抓的最终落点（含吸附）定一次同伴，确保完全一致
+    const roots = multi ? [grabbed, ...Object.keys(drag.starts)] : [grabbed]
+    const shapes = ctx.layoutDoc.value.shapes || {}
+    for (const root of roots) {
+      for (const sid of withDescendants(shapes, root)) {
+        const c = ctx.graph.value.getCellById(shapeCellId(sid))
+        if (!c) continue
+        const p = c.position()
+        put('shapes', sid, { x: Math.round(p.x), y: Math.round(p.y) })
+      }
+    }
+    drag = null
   }
 
   function onParent(cell, current) {
@@ -217,9 +322,15 @@ export function createTopicDrawing(ctx) {
     put('shapes', cell.getData().sid, { x: Math.round(p.x), y: Math.round(p.y), w: Math.round(width), h: Math.round(height) })
   }
 
-  /** Delete / Backspace：删选中的图形或连线。返回 true 表示处理了。 */
+  /** Delete / Backspace：删选中的图形（多选就都删）或连线。返回 true 表示处理了。 */
   function onDelete() {
-    if (selShape.value) { deleteShape(selShape.value); return true }
+    const ids = [...selShapes.value]
+    if (ids.length) {
+      for (const id of ids) applyRemoval(removalPatch(ctx.layoutDoc.value, id))
+      select(null)
+      ctx.render()
+      return true
+    }
     if (selLink.value) { deleteLink(selLink.value); return true }
     return false
   }
@@ -237,7 +348,7 @@ export function createTopicDrawing(ctx) {
     select(null)
   }
 
-  return { shape, link, linking, selShape, selLink, bind, applyPlan, addLink, uid, addAt, addNodeAt, patchShape, deleteShape, patchLink, deleteLink,
-           dropNodeLinks, startLink, trackPointer, preview, select, onNodeClick, onEdgeClick, onMoved, onParent,
+  return { shape, link, linking, selShape, selShapes, selLink, bind, applyPlan, addLink, uid, addAt, addNodeAt, patchShape, deleteShape, patchLink, deleteLink,
+           dropNodeLinks, startLink, trackPointer, preview, select, toggleShape, selectMany, group, ungroup, onNodeClick, onEdgeClick, onMoving, onMoved, onParent,
            onResized, onDelete, onEscape, reset }
 }

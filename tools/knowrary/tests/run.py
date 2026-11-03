@@ -3323,6 +3323,136 @@ def 成品导入_html抽成纯文本_小节对上锚点_目录外拒绝():
             assert why in str(exc), (bad, str(exc))
 
 
+@case
+def 碎片_按内容认id_人手改文件也不乱_统计催归():
+    """碎片层（2026-10-23）：碎片 id = 日期+时间+内容哈希，人手在 Obsidian 里插行、挪行，
+    已发出去的 id 照样对得上；认不出形状的行当注释跳过；到量（条数或天数）catalyst 催归。"""
+    import datetime as dt
+    vault = make_vault({"nodes/a.md": node_md("A")})
+    f1 = core.add_fragment(vault, "PLT 是惰性绑定的\n蹦床", dt.datetime(2026, 10, 1, 9, 14))
+    core.add_fragment(vault, "evictionLock 叠桶锁", dt.datetime(2026, 10, 23, 14, 2))
+    assert f1["text"] == "PLT 是惰性绑定的 蹦床" and f1["date"] == "2026-10-01", f1
+
+    # 人手改文件：顶上插一行说明、碎片行挪位置——id 按内容认，照样找得到
+    path = vault / "fragments" / "2026-10-01.md"
+    core.write(path, "随便写的说明，不是碎片\n\n" + core.read(path))
+    entries = core.list_fragments(vault)
+    assert [e["text"] for e in entries] == ["evictionLock 叠桶锁", "PLT 是惰性绑定的 蹦床"], entries
+    got = core.fragment_stats(entries, dt.date(2026, 10, 23))
+    assert got == {"open": 2, "oldest_days": 22, "nag": True}, got     # 最老 22 天 ≥ 14：催
+
+    assert core.mark_fragments(vault, [f1["id"]], "[[动态链接]]", dt.date(2026, 10, 25)) == 1
+    assert core.mark_fragments(vault, [f1["id"]], "[[动态链接]]") == 0, "已标过不重标"
+    done = next(e for e in core.list_fragments(vault) if e["id"] == f1["id"])
+    assert done["target"] == "[[动态链接]]" and done["done_at"] == "2026-10-25", done
+    assert core.fragment_stats(core.list_fragments(vault), dt.date(2026, 10, 23))["open"] == 1
+
+    # 归拢校验：指不到碎片的丢、enrich 编造节点的降 keep、没给整理稿的降 keep
+    open_ids = {e["id"] for e in core.list_fragments(vault) if not e["target"]}
+    clusters, issues = core.check_fragment_clusters(
+        {"clusters": [
+            {"title": "好簇", "ids": list(open_ids), "action": "enrich", "node": "a", "text": "整理稿", "summary": "s"},
+            {"title": "编造", "ids": list(open_ids), "action": "enrich", "node": "没这个", "text": "x"},
+            {"title": "空的", "ids": ["野 id"], "action": "keep"}]},
+        open_ids, {"a"})
+    assert [c["action"] for c in clusters] == ["enrich"], clusters    # 第二簇的碎片被第一簇占了 → 指不到 → 丢
+    assert len(issues) == 2, issues
+
+
+@case
+def 术语表_文件即语境_合并成一张表_同词多义不去重():
+    """术语表（名词解释，2026-10-27）：`术语/*.md` 合并进索引 `glossary`；文件名定默认语境，
+    `_全局` → 全局，别的文件名原样当语境；同词多义保留各自出处，不去重。"""
+    global_md = ("## GDT\n全局描述符表 —— 存段描述符的表，基址在 GDTR。\n"
+                 "- 同 :: 全局描述符表, 描述符表\n- 详见:: [[段机制]]\n\n"
+                 "## CPU\n中央处理器。\n")
+    mem_md = ("## 段\n内存分段：逻辑地址 = 段选择子 + 偏移。\n\n"
+              "## CR3\n页目录基址寄存器。\n- 语境:: 硬件\n")   # 逐条可覆盖文件默认语境
+    vault = make_vault({
+        "nodes/a.md": node_md("A"),
+        "术语/_全局.md": global_md,
+        "术语/Linux内存.md": mem_md,
+    })
+    r = core.build_index(vault)
+    assert not core.validate_index(r.data), core.validate_index(r.data)
+    gloss = {(e["term"], e["scope"]): e for e in r.data["glossary"]}
+    assert len(r.data["glossary"]) == 4, r.data["glossary"]
+    gdt = gloss[("GDT", "全局")]
+    assert gdt["gloss"].startswith("全局描述符表") and gdt["aka"] == ["全局描述符表", "描述符表"], gdt
+    assert gdt["see"] == "段机制", gdt                       # `详见:: [[段机制]]` 剥成 id
+    assert gloss[("段", "Linux内存")]["scope"] == "Linux内存"   # 文件名即默认语境
+    assert gloss[("CR3", "硬件")]["scope"] == "硬件"            # `- 语境::` 覆盖文件默认
+    # 术语/ 不在 nodes/、fields/ 下 → 不会被当成知识点
+    assert {n["id"] for n in r.data["nodes"]} == {"a"}, [n["id"] for n in r.data["nodes"]]
+
+
+@case
+def 术语表_同词两义都留_没有文件夹就空表():
+    """同一个词在不同语境各一条义项，合并时都留着（语境只排序不隐藏）；没 `术语/` 就空列表。"""
+    seg_global = "## 段\n泛指一块连续区域。\n"
+    seg_net = "## 段\nTCP 报文段。\n"
+    vault = make_vault({
+        "nodes/a.md": node_md("A"),
+        "术语/_全局.md": seg_global,
+        "术语/网络.md": seg_net,
+    })
+    r = core.build_index(vault)
+    segs = [e for e in r.data["glossary"] if e["term"] == "段"]
+    assert sorted(e["scope"] for e in segs) == ["全局", "网络"], segs   # 两义都在
+
+    bare = make_vault({"nodes/a.md": node_md("A")})
+    assert core.build_index(bare).data["glossary"] == []            # 没术语文件夹 = 空表，零破坏
+
+
+@case
+def 术语表_解析边界_缺语境默认全局_空块跳过():
+    """parse_glossary 纯函数边界：缺 `语境::` 用文件默认；别名多种分隔符；只有标题没正文也留；空文本空列表。"""
+    text = ("文件开头的说明，不是词条，忽略。\n\n"
+            "## A\n甲的解释。\n- 同:: a、A缩写 , alias\n\n"
+            "## B\n\n## C\n丙。\n- 语境:: 专题X\n")
+    out = core.parse_glossary(text, default_scope="默认域")
+    assert [e["term"] for e in out] == ["A", "B", "C"], out
+    assert out[0]["scope"] == "默认域" and out[0]["aka"] == ["a", "A缩写", "alias"], out[0]  # 顿号/逗号/空格都拆
+    assert out[1]["gloss"] == "" and out[1]["scope"] == "默认域", out[1]                     # 只有标题也留
+    assert out[2]["scope"] == "专题X", out[2]                                                # 逐条覆盖
+    assert core.parse_glossary("", "全局") == []
+
+
+@case
+def 术语表_加词_追加到对应文件_建目录_回执成形_读得回来():
+    """add_term：追加到 `术语/<语境>.md`（没有就建），`全局`→`_全局.md`；回执成形；只追加、老的不动。"""
+    vault = make_vault({"nodes/a.md": node_md("A")})
+    e = core.add_term(vault, "GDT", "全局描述符表。", "全局", aka=["描述符表"], see="甲")
+    assert e == {"term": "GDT", "gloss": "全局描述符表。", "scope": "全局", "aka": ["描述符表"], "see": "甲"}, e
+    gp = core.read(vault / "术语" / "_全局.md")
+    assert "## GDT" in gp and "- 同:: 描述符表" in gp and "- 详见:: [[甲]]" in gp, gp
+
+    core.add_term(vault, "时间片", "一次最多跑多久。", "调度")        # 专题语境 → 术语/<语境>.md
+    assert (vault / "术语" / "调度.md").is_file()
+    core.add_term(vault, "CPU", "中央处理器。", "全局")             # 再追加：老的不动、顺序在后
+    gp2 = core.read(vault / "术语" / "_全局.md")
+    assert gp2.count("\n## ") + gp2.startswith("## ") == 2, gp2
+    assert gp2.index("## GDT") < gp2.index("## CPU"), gp2
+    merged = {(x["term"], x["scope"]) for x in core.load_glossary(vault)}
+    assert merged == {("GDT", "全局"), ("CPU", "全局"), ("时间片", "调度")}, merged
+    assert vault / "术语" / "_全局.md" in core.glossary_files(vault)   # 指纹要带上的那几个文件
+
+
+@case
+def 术语表_加词_空词拒收_语境清洗不越界():
+    """空词（或全空白）拒收；语境里的路径分隔符清掉，不借它往 vault 外写。"""
+    vault = make_vault({"nodes/a.md": node_md("A")})
+    try:
+        core.add_term(vault, "   ", "x", "全局")
+        raise AssertionError("空词该被拒")
+    except core.GlossaryRejected:
+        pass
+    core.add_term(vault, "X", "x", "../逃逸/a")                   # 带 / 和 .. → 清洗成一个安全文件名
+    files = [p.name for p in core.glossary_files(vault)]
+    assert files == ["逃逸a.md"], files                          # 分隔符去掉、首尾点去掉，仍落在 术语/ 下、读得回来
+    assert core.file_for_scope("全局") == "_全局" and core.file_for_scope("") == "_全局"
+
+
 def main() -> None:
     keyword = sys.argv[1] if len(sys.argv) > 1 else ""
     picked = [c for c in CASES if keyword in c.__name__]

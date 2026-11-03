@@ -35,7 +35,7 @@ const groups = computed(() => railGroups(props.mode, props.project))
     <template v-for="(g, gi) in groups" :key="g.group">
       <span v-if="gi" class="rail-split" />
       <button v-for="it in g.items" :key="it.key || it.id" class="rail-btn"
-              :class="{ on: active === it.id }"
+              :class="{ on: active === it.id }" :data-rail="it.id"
               :data-tip="`${g.scope === 'project' ? '项目' : '全局'} · ${it.name} · ${it.tip}`"
               @click="emit('select', it.id)">
         <span class="rail-ico">

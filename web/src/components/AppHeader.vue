@@ -11,13 +11,19 @@ const props = defineProps({
   mode: { type: String, default: 'chat' },
   projects: { type: Object, default: () => ({}) },   // { id: {name} }，顶栏最左的切换器
   project: { type: String, default: '' },
+  projectTopics: { type: Array, default: () => [] },  // 竣工图：当前项目挂着的专题名
+  allTopics: { type: Array, default: () => [] },      // 库里全部专题名（挂新图时挑）
   hits: { type: Array, default: () => [] },
   status: { type: String, default: 'saved' },
   statusText: { type: String, default: '' },
   theme: { type: String, default: 'light' },
   busy: { type: Boolean, default: false },
 })
-const emit = defineEmits(['switch-mode', 'switch-project', 'search', 'goto', 'toggle-theme', 'reload', 'rebuild', 'help', 'settings'])
+const emit = defineEmits(['switch-mode', 'switch-project', 'search', 'goto', 'toggle-theme', 'reload', 'rebuild',
+                          'help', 'settings', 'topics-menu', 'open-topic', 'bind-topic', 'unbind-topic'])
+
+// 竣工图下拉：还没挂上的专题（挂上 = 加进项目的 topics 并跳过去）
+const unbound = computed(() => props.allTopics.filter((t) => !props.projectTopics.includes(t)))
 
 const q = ref('')
 const cursor = ref(0)
@@ -77,6 +83,33 @@ defineExpose({ focus: () => inputEl.value?.focus() })
               @click="emit('switch-mode', 'project')">
         <Icon name="checklist" :size="14" />项目图
       </button>
+      <!-- 竣工图（2026-10-23）：学到一半切到这个项目挂着的专题图，看「我在结构里的哪儿」。
+           学过的框带学/考方块、没学出来的淡显（染色在专题画布上常显）。 -->
+      <Popover :width="236" :disabled="!project">
+        <template #trigger="{ toggle, open }">
+          <button :class="{ active: open }" data-act="finished-map" :disabled="!project"
+                  :title="project ? '竣工图 · 这个项目挂着的专题图：切过去看学到结构里的哪儿了' : '先在左边选一个项目'"
+                  @click="emit('topics-menu'); toggle()">
+            <Icon name="map" :size="14" />竣工图
+          </button>
+        </template>
+        <template #default="{ close }">
+          <div v-if="projectTopics.length" class="pop-label">挂着的</div>
+          <div v-for="t in projectTopics" :key="t" class="pop-item topic-row">
+            <button class="topic-open" :title="`切到专题「${t}」`" @click="emit('open-topic', t); close()">
+              <Icon name="pencil" :size="14" />{{ t }}</button>
+            <button class="icon-btn ghost tiny" :title="`从这个项目摘下「${t}」（专题图本身不删）`"
+                    @click.stop="emit('unbind-topic', t)"><Icon name="x" :size="12" /></button>
+          </div>
+          <div v-if="projectTopics.length && unbound.length" class="pop-sep" />
+          <div v-if="unbound.length" class="pop-label">挂一张（挂上就切过去）</div>
+          <button v-for="t in unbound" :key="t" class="pop-item" :title="`把「${t}」挂到这个项目并切过去`"
+                  @click="emit('bind-topic', t); close()">
+            <Icon name="plus" :size="14" />{{ t }}</button>
+          <div v-if="!projectTopics.length && !unbound.length" class="pop-item muted">
+            还没有专题图——先去「专题」里画一张</div>
+        </template>
+      </Popover>
     </div>
 
     <!-- 整个图谱层面的两个视图。**和上面那组分开**：

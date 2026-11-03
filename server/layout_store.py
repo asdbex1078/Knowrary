@@ -177,18 +177,20 @@ def _assert_group_refs(doc: LayoutDoc) -> None:
 
 
 def _assert_shape_refs(doc: LayoutDoc) -> None:
-    """手画图形也要闭合：小框挂的大框得在、得真是大框、不能套成环；连线两端得在这张画布上。
+    """手画图形也要闭合：套进去的容器得在、得真是容器、不能套成环；连线两端得在这张画布上。
 
-    删大框 / 删图形时前端要把小框和连线一起改掉——悬空的留着，画出来就是飘在半空的框和线。
+    容器 = 任意手画图形里除「文字」以外的（2026-10-30：大框、组合框、矩形、圆……都能当容器，
+    拖外层带着内层走）。文字只是一行字，不能当容器。
+    删容器 / 删图形时前端要把里面的框和连线一起改掉——悬空的留着，画出来就是飘在半空的框和线。
     """
     for sid, shape in doc.shapes.items():
         seen, cur = {sid}, shape.parent
         while cur:
             host = doc.shapes.get(cur)
-            if host is None or host.kind != "frame":
-                raise PatchRejected(f"图形 `{sid}` 挂的大框 `{cur}` 不存在或不是大框")
+            if host is None or host.kind == "text":
+                raise PatchRejected(f"图形 `{sid}` 套进的容器 `{cur}` 不存在或不能当容器")
             if cur in seen:
-                raise PatchRejected(f"图形 `{sid}` 的大框套成了环")
+                raise PatchRejected(f"图形 `{sid}` 套成了环")
             seen.add(cur)
             cur = host.parent
     for lid, link in doc.links.items():

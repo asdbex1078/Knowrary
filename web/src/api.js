@@ -25,6 +25,13 @@ export const postSyncToGlobal = (project, baseRevision) =>
   })
 export const fetchHealth = () => request('/api/health')
 
+/** 任意一组点的学/考双态（施工图：专题画布染色，不局限于某个项目的清单）。 */
+export const postStates = (ids) => request('/api/states', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ ids }),
+})
+
 export const fetchNode = (id) => request(`/api/node/${encodeURIComponent(id)}`)
 
 /** Markdown 写回：dry_run=true 只预览，false 才落盘（服务端写前自动备份）。 */
@@ -137,6 +144,18 @@ export const postTypeDecide = (body) => postJSON('/api/pending/types/decide', bo
 /** 原文阅读（只读）：原文目录里的全部原文 / 读一篇（带从它拆出的点、各自链的是哪一节）。 */
 export const fetchArticles = () => request('/api/articles')
 export const fetchWorks = () => request('/api/works')
+
+// 碎片记忆（2026-10-23）：记、看（带积压统计）、归拢建议、标去向
+export const fetchFragments = () => request('/api/fragments')
+export const postFragment = (text) => request('/api/fragments', {
+  method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text }),
+})
+export const markFragments = (ids, target) => request('/api/fragments/mark', {
+  method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ids, target }),
+})
+export const consolidateFragments = () => request('/api/fragments/consolidate', { method: 'POST' })
+// 术语（名词解释）：随手记一条，追加到 术语/<语境>.md，回执是那条义项。
+export const postGlossary = (body) => postJSON('/api/glossary', body)
 export const fetchArticle = (path) => request(`/api/article?path=${encodeURIComponent(path)}`)
 /** 模型目录（家族文件）：读 / 指定目录 / 抽一篇原文成计划 / 可疑格子问 review / 写入勾选的型号。 */
 export const fetchModels = () => request('/api/models')

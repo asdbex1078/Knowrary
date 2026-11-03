@@ -552,6 +552,14 @@ select:disabled { cursor: not-allowed; opacity: .5; }
   color: var(--text-3); padding: 5px 9px 4px;
 }
 .pop-sep { height: 1px; background: var(--line); margin: 5px -6px; }
+.pop-label { font-size: 10.5px; color: var(--text-3); letter-spacing: 1px; padding: 4px 10px 2px; }
+/* 竣工图下拉：一行一个专题，名字可点、右侧小 ✕ 摘下 */
+.pop-item.topic-row { display: flex; align-items: center; gap: 4px; padding: 0 4px 0 0; }
+.pop-item.topic-row .topic-open { flex: 1; display: flex; align-items: center; gap: 8px;
+  padding: 7px 10px; background: none; border: 0; color: inherit; font: inherit;
+  cursor: pointer; text-align: left; border-radius: inherit; }
+.pop-item.muted { color: var(--text-3); cursor: default; }
+.pop-item.muted:hover { background: none; }
 .pop-item {
   display: flex; align-items: center; gap: 9px; width: 100%;
   padding: 6px 9px; border-radius: var(--r-xs);
@@ -697,6 +705,29 @@ select:disabled { cursor: not-allowed; opacity: .5; }
 .art-list, .art-read { padding: 0 2px 16px; }   /* 滚动交给外层 .drawer-body */
 .art-list-head { font-size: 11.5px; margin: 2px 0 8px; }
 .art-tabs { margin: 0 0 10px; }
+
+/* 碎片箱（2026-10-23） */
+.frag { padding: 2px 2px 20px; overflow: auto; }
+.frag-add { display: flex; gap: 6px; margin-bottom: 10px; }
+.frag-add input { flex: 1; min-width: 0; }
+.frag-stats { display: flex; align-items: center; gap: 10px; font-size: 12.5px;
+  padding: 6px 10px; border: 1px solid var(--line); border-radius: 8px; margin-bottom: 10px; }
+.frag-stats.nag { border-color: #e0891f; background: color-mix(in srgb, #e0891f 8%, transparent); }
+.frag-stats button { margin-left: auto; flex: none; }
+.frag-meta { font-size: 11.5px; margin: 0 0 6px; }
+.frag-cluster { border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; margin-bottom: 10px; }
+.frag-cluster-head { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
+.frag-cluster-items { margin: 4px 0; padding-left: 18px; font-size: 12.5px; }
+.frag-cluster-items .done { opacity: 0.45; text-decoration: line-through; }
+.frag-cluster-text { font: 12px/1.6 inherit; white-space: pre-wrap; background: var(--surface-2);
+  border-radius: 6px; padding: 8px 10px; margin: 6px 0; }
+.frag-cluster-ops { display: flex; gap: 6px; flex-wrap: wrap; }
+.frag-day-head { font-size: 11px; color: var(--text-3); letter-spacing: 1px; margin: 12px 0 4px; }
+.frag-row { display: flex; align-items: baseline; gap: 8px; padding: 3px 0; font-size: 13px; }
+.frag-row.done { opacity: 0.55; }
+.frag-time { font-size: 11px; color: var(--text-3); flex: none; }
+.frag-text { min-width: 0; overflow-wrap: anywhere; }
+.frag-target { font-size: 11.5px; flex: none; }
 /* 成品行下面那串「拆出来的点」：缩进对齐行里的名字，和行贴着 */
 .art-work-refs { display: flex; flex-wrap: wrap; gap: 4px; align-items: center;
   margin: -2px 0 8px 24px; }
@@ -1055,6 +1086,13 @@ kbd.key {
 :root[data-theme='dark'] .x6-node rect.kg-card { filter: drop-shadow(0 3px 6px rgba(0, 0, 0, .45)); }
 :root[data-theme='dark'] .x6-node rect.kg-pill { filter: drop-shadow(0 2px 3px rgba(0, 0, 0, .4)); }
 :root[data-theme='dark'] .x6-node rect.kg-group-box { filter: drop-shadow(0 4px 14px rgba(0, 0, 0, .35)); }
+
+/* 知识海迷雾：✨点亮发光、👹心魔变暗（待点亮/新边疆只压透明度，保持卡片阴影，不需额外滤镜） */
+.x6-node rect.kg-lit { filter: drop-shadow(0 0 6px color-mix(in srgb, var(--ok) 75%, transparent)) drop-shadow(0 2px 4px rgba(24, 39, 56, .09)); }
+.x6-node rect.kg-demon { filter: grayscale(.5) brightness(.8) drop-shadow(0 1px 3px rgba(24, 39, 56, .12)); }
+:root[data-theme='dark'] .x6-node rect.kg-lit { filter: drop-shadow(0 0 7px color-mix(in srgb, var(--ok) 80%, transparent)) drop-shadow(0 3px 6px rgba(0, 0, 0, .45)); }
+:root[data-theme='dark'] .x6-node rect.kg-demon { filter: grayscale(.5) brightness(.6) drop-shadow(0 3px 6px rgba(0, 0, 0, .5)); }
+
 .x6-node text { paint-order: stroke; }
 
 /* 跨代激活：金色虚线往前流 */
@@ -1104,6 +1142,14 @@ kbd.key {
   0% { stroke: #e0891f; stroke-width: 3; }
   100% { stroke-width: 1.2; }
 }
+
+/* 专题画布·版本演进（2026-10-27，A 方案）：滑块选中某版时，区间不覆盖它的方块淡成虚影，
+   这一版新增的描一圈金晕。class 由 paintTopicVersion 现加，只在专题模式出现、重建 cell 即清。 */
+.x6-node.kg-ver-ghost, .x6-edge.kg-ver-ghost { opacity: .2; transition: opacity .18s var(--ease); }
+.x6-node.kg-ver-new { filter: drop-shadow(0 0 4px rgba(216, 168, 56, .75)); }
+/* 版本条：浮在画布底部居中（专题模式没有历史播放器，这块是空的） */
+.float.ver-bar { bottom: 12px; left: 50%; translate: -50% 0; padding: 6px 12px; gap: 9px; }
+.float.ver-bar .ver-label { font-size: 12px; color: var(--text-2); font-weight: 600; }
 
 /* ---------- 20. 右键菜单 / 建立关系 / 小地图 ---------- */
 .ctx-menu {
@@ -1911,6 +1957,8 @@ kbd.key {
 .draw-swatch { width: 18px; height: 18px; border-radius: 50%; border: 1px solid var(--line-2); cursor: pointer; padding: 0; }
 .draw-swatch.on { outline: 2px solid var(--accent); outline-offset: 1px; }
 .draw-size { width: 64px !important; }
+/* 版本标的两个下拉（起 / 止）平分一行 */
+.ver-row .draw-ver { flex: 1; min-width: 0; font-size: 12px; }
 .draw-bold { display: inline-flex; align-items: center; gap: 4px; }
 .draw-tip {
   position: absolute; z-index: 40; pointer-events: none; max-width: 320px; white-space: pre-wrap;
@@ -1918,6 +1966,87 @@ kbd.key {
   background: var(--surface); color: var(--text); border: 1px solid var(--line); box-shadow: var(--sh-3);
 }
 .draw-tip[hidden] { display: none; }
+
+/* 探索台（2026-10-30）：学习这半的家 */
+.exp-empty { padding: 28px 18px; text-align: center; color: var(--text-2); font-size: 13px; line-height: 1.7; }
+.exp-empty .btn { margin-top: 12px; }
+.exp-progress { padding: 4px 2px 12px; }
+.exp-pct { display: flex; align-items: baseline; gap: 7px; }
+.exp-pct b { font-size: 30px; line-height: 1; color: var(--ok); }
+.exp-bar { height: 7px; border-radius: var(--r-pill); background: var(--line); overflow: hidden; margin: 9px 0; }
+.exp-bar i { display: block; height: 100%; background: var(--ok); border-radius: var(--r-pill); transition: width .35s; }
+.exp-counts { display: flex; flex-wrap: wrap; gap: 10px; font-size: 12px; }
+.exp-counts .c { font-weight: 600; }
+.exp-counts .c.lit { color: var(--ok); }
+.exp-counts .c.demon { color: var(--danger); }
+.exp-counts .c.untested { color: var(--warn); }
+.exp-counts .c.frontier { color: var(--accent); }
+.exp-done { margin: 2px 0 12px; padding: 11px 13px; border-radius: var(--r-sm); font-size: 13px; line-height: 1.6;
+  color: var(--ok); background: linear-gradient(120deg, var(--ok-soft), var(--accent-soft));
+  border: 1px solid color-mix(in srgb, var(--ok) 35%, var(--line)); }
+.exp-streak { display: flex; align-items: baseline; gap: 8px; margin-bottom: 12px; font-size: 13px; }
+.exp-streak .s-fire { font-weight: 600; }
+.exp-streak .s-fire.cold { opacity: .5; filter: grayscale(1); }
+.exp-today { margin-bottom: 16px; }
+.exp-today-head { font-size: 13.5px; font-weight: 600; margin-bottom: 7px; }
+.exp-clue { display: flex; align-items: center; gap: 9px; width: 100%; margin-bottom: 6px;
+  padding: 9px 11px; border: 1px solid var(--line); border-radius: var(--r-sm);
+  background: var(--surface); color: var(--text); cursor: pointer; text-align: left; }
+.exp-clue:hover { border-color: var(--accent); }
+.exp-clue:disabled { opacity: .5; cursor: default; }
+.exp-clue-emoji { font-size: 15px; }
+.exp-clue-name { flex: 1; font-size: 13px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.exp-clue-verb { font-size: 11.5px; font-weight: 600; padding: 2px 9px; border-radius: var(--r-pill); }
+.exp-clue.demon .exp-clue-verb { color: var(--danger); background: var(--danger-soft); }
+.exp-clue.untested .exp-clue-verb { color: var(--warn); background: var(--warn-soft); }
+.exp-clue.frontier .exp-clue-verb { color: var(--accent); background: var(--accent-soft); }
+.exp-sea { margin-top: 9px; display: inline-flex; align-items: center; gap: 5px; }
+.exp-interview {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap; width: 100%; margin: 4px 0 16px;
+  padding: 11px 14px; border: none; border-radius: var(--r-sm); cursor: pointer;
+  background: var(--accent); color: var(--accent-text, #fff); font-size: 13.5px; font-weight: 600;
+}
+.exp-interview:hover { background: var(--accent-hover, var(--accent)); }
+.exp-interview:disabled { opacity: .5; cursor: default; }
+.exp-interview .dim { font-weight: 400; font-size: 11px; opacity: .9; flex-basis: 100%; }
+.exp-zone { margin-bottom: 16px; }
+.exp-zone-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.exp-zone-title { font-size: 13.5px; font-weight: 600; }
+.exp-zone-hint { font-size: 11.5px; margin: 2px 0 7px; line-height: 1.5; }
+.exp-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.exp-chip {
+  padding: 4px 10px; border-radius: var(--r-pill); font-size: 12px; cursor: pointer;
+  border: 1px solid var(--line); background: var(--surface); color: var(--text);
+}
+.exp-chip:hover { border-color: var(--accent); }
+.exp-chip.demon { border-color: color-mix(in srgb, var(--danger) 45%, var(--line)); background: var(--danger-soft); color: var(--danger); }
+.exp-chip.untested { border-color: color-mix(in srgb, var(--warn) 40%, var(--line)); background: var(--warn-soft); color: var(--warn); }
+.exp-chip.frontier { border-style: dashed; color: var(--text-2); }
+.exp-chip.lit { border-color: color-mix(in srgb, var(--ok) 40%, var(--line)); background: var(--ok-soft); color: var(--ok); }
+
+/* 远征大纲：空远征的目标表单 + 模型起草后的勾选区 */
+.exp-new { padding: 18px 4px; color: var(--text-2); font-size: 13px; line-height: 1.7; }
+.exp-new p { margin: 0 0 12px; }
+.exp-goal { width: 100%; box-sizing: border-box; resize: vertical; margin-bottom: 10px;
+  padding: 8px 10px; border: 1px solid var(--line); border-radius: var(--r-sm);
+  background: var(--surface); color: var(--text); font: inherit; font-size: 13px; }
+.exp-new .btn { margin-right: 8px; }
+.exp-draft { padding: 2px 2px 8px; }
+.exp-draft h4 { margin: 0 0 10px; font-size: 14px; }
+.exp-draft-stage { margin-bottom: 11px; }
+.exp-draft-stage-name { font-size: 12px; font-weight: 600; color: var(--text-2); margin-bottom: 5px; }
+.exp-chip.draft { opacity: .55; }
+.exp-chip.draft.on { opacity: 1; border-color: var(--accent); background: var(--accent-soft); color: var(--accent-text, var(--text)); }
+.exp-chip.draft.had { text-decoration: line-through; }
+.exp-draft-acts { display: flex; gap: 8px; margin-top: 12px; position: sticky; bottom: 0;
+  padding-top: 8px; background: linear-gradient(transparent, var(--bg-1) 40%); }
+.exp-expand { width: 100%; margin-top: 4px; display: inline-flex; align-items: center; justify-content: center; gap: 5px; }
+
+/* 专题画布框选（⇧ + 拖空白）时的那个选框 */
+.rubber-box {
+  position: absolute; z-index: 38; pointer-events: none;
+  background: rgba(216, 168, 56, 0.12); border: 1.5px dashed var(--accent, #d8a838); border-radius: 3px;
+}
 
 /* 专题画布左边的图形栏（照 draw.io：拖进画布） */
 .shape-palette {

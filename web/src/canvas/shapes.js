@@ -420,7 +420,7 @@ export function activationAttrs() {
 }
 
 // 双态的四个颜色。和面板上的 .sq.s-* 是同一套语义，只是这里画在 SVG 上。
-const STATE_FILL = { 灰: 'transparent', 红: '#d9534f', 黄: '#e0891f', 绿: '#3f9e5d' }
+export const STATE_FILL = { 灰: 'transparent', 红: '#d9534f', 黄: '#e0891f', 绿: '#3f9e5d' }
 
 /** 名字的第一个字：中文取首字，英文取首字母（大写）。缩写会变成没人认得的 KVC。 */
 export function initialOf(name = '') {
@@ -492,8 +492,21 @@ export function hasWorkSource(indexNode) {
   return (indexNode?.sources || []).some((s) => /\.html?(#|\]|\|)/i.test(String(s)))
 }
 
+/** 知识海迷雾：由学/考双态定掌握态。ghost/壳=新边疆，学绿按考分点亮/心魔/待点亮。 */
+function fogStateOf(state, ghost, stub) {
+  if (ghost || stub || state?.study !== '绿') return 'frontier'
+  if (state.exam === '红' || state.exam === '黄') return 'demon'
+  return state.exam === '绿' ? 'lit' : 'untested'
+}
+const FOG = {
+  lit:      { cls: 'kg-lit',   body: 1,    text: 1 },
+  demon:    { cls: 'kg-demon', body: 0.92, text: 0.9 },
+  untested: { cls: 'kg-dim',   body: 0.82, text: 0.82 },
+  frontier: { cls: 'kg-fog',   body: 0.5,  text: 0.5 },
+}
+
 export function nodeAttrs(indexNode, layoutNode, color = NEUTRAL, opts = {}) {
-  const { due = false, state = null, ghost = false, borrowed = false } = opts
+  const { due = false, state = null, ghost = false, borrowed = false, fog = false } = opts
   const work = !ghost && hasWorkSource(indexNode)
   const draft = layoutNode?.state === 'draft'
   // 幽灵：计划里有、图里还没建。比 stub 更淡——stub 是"建了个壳"，幽灵是"压根还没有"。
@@ -506,11 +519,14 @@ export function nodeAttrs(indexNode, layoutNode, color = NEUTRAL, opts = {}) {
   const stub = !!indexNode?.stub
   const size = sizeFor(indexNode)
   const tone = stub ? NEUTRAL : color
-  return {
+  // 迷雾：按掌握态给整个节点上色/发光/变暗（一层滤镜，默认关，只在项目图开）
+  const f = fog ? FOG[fogStateOf(state, ghost, stub)] : null
+  const baseClass = size.shape === 'pill' ? 'kg-pill' : 'kg-card'
+  const attrs = {
     accent: { width: size.accent, height: size.h, fill: size.accent ? tone.line : 'transparent' },
     body: {
       rx: size.rx, ry: size.rx,
-      class: size.shape === 'pill' ? 'kg-pill' : 'kg-card',
+      class: f ? `${baseClass} ${f.cls}` : baseClass,
       fill: ghost ? 'transparent' : draft ? '#fffdf4' : size.shape === 'pill' ? tokens().pill : tone.fill,
       stroke: ghost ? '#c3cbd4' : borrowed ? BORROWED_COLOR : draft ? '#d9a53b' : tone.line,
       strokeWidth: ghost || stub ? 1 : size.shape === 'pill' ? 1.1 : 1.3,
@@ -550,6 +566,12 @@ export function nodeAttrs(indexNode, layoutNode, color = NEUTRAL, opts = {}) {
     sqStudy: { fill: size.desc && state ? (STATE_FILL[state.study] || 'transparent') : 'transparent' },
     sqExam: { fill: size.desc && state ? (STATE_FILL[state.exam] || 'transparent') : 'transparent' },
   }
+  if (f) {
+    attrs.body.opacity = f.body                       // 整张卡的明暗（发光/变暗/没入雾里）
+    attrs.title.opacity = Math.min(attrs.title.opacity, f.text)
+    attrs.desc.opacity = Math.min(attrs.desc.opacity ?? 1, f.text)
+  }
+  return attrs
 }
 
 export function groupAttrs(name, color = NEUTRAL, doc = null, zoom = 1, box = null) {

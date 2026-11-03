@@ -10,10 +10,11 @@ import { SHAPE_COLORS, SHAPE_KINDS } from '../canvas/drawing.js'
 import { PALETTE } from '../canvas/shapes.js'
 
 const props = defineProps({
-  shape: { type: Object, default: null },     // { sid, kind, text, tip, style, node, nodeName }
+  shape: { type: Object, default: null },     // { sid, kind, text, tip, style, node, nodeName, since, until }
   link: { type: Object, default: null },      // { lid, text, style }
+  versions: { type: Array, default: () => [] },  // 中心 `版本` 轴；空 = 这个专题没开版本演进，不显版本行
 })
-const emit = defineEmits(['patch-shape', 'delete-shape', 'patch-link', 'delete-link'])
+const emit = defineEmits(['patch-shape', 'delete-shape', 'patch-link', 'delete-link', 'open-detail'])
 const swatch = (key) => PALETTE.find((c) => c.key === key)?.line || 'transparent'
 const kindName = computed(() => SHAPE_KINDS.find((k) => k.kind === props.shape?.kind)?.name || '')
 
@@ -44,14 +45,20 @@ function shapeStyle(key, value) {
 function linkField(key, value) {
   later('patch-link', props.link.lid, key, value)
 }
+// 版本标是离散选择，不走打字节流：选了立刻发（空 = 清标，那一边开口）
+function shapeVer(key, value) {
+  emit('patch-shape', props.shape.sid, { [key]: value || null })
+}
 
 </script>
 
 <template>
-  <div v-if="shape" class="draw-card" data-shape-card>
+  <div v-if="shape && shape.kind !== 'group'" class="draw-card" data-shape-card>
     <div class="draw-card-head">
       <b>{{ kindName }}</b>
       <span v-if="shape.node" class="dim">· 已升级为「{{ shape.nodeName || shape.node }}」</span>
+      <button v-if="shape.node" class="icon-btn ghost tiny" title="看它的正文（按版本分小节，双击方块也能开）"
+              data-act="open-detail" @click="emit('open-detail', shape.sid)"><Icon name="file" :size="13" /></button>
       <button class="icon-btn ghost tiny" title="删掉（连同它套着的小框和连着它的线）" data-act="delete-shape"
               @click="emit('delete-shape', shape.sid)"><Icon name="trash" :size="13" /></button>
     </div>
@@ -73,6 +80,19 @@ function linkField(key, value) {
              @change="shapeStyle('size', Number($event.target.value) || null)" />
       <label class="draw-bold"><input type="checkbox" :checked="!!shape.style?.bold"
              @change="shapeStyle('bold', $event.target.checked || null)" />粗体</label>
+    </div>
+    <div v-if="versions.length" class="draw-row ver-row" data-shape-ver>
+      <span class="dim">版本</span>
+      <select class="draw-ver" :value="shape.since || ''" title="从哪一版起出现（空 = 一开始就在）"
+              data-shape-since @change="shapeVer('since', $event.target.value)">
+        <option value="">起 · 一直有</option>
+        <option v-for="v in versions" :key="v" :value="v">起 {{ v }}</option>
+      </select>
+      <select class="draw-ver" :value="shape.until || ''" title="到哪一版止（空 = 一直保留）"
+              data-shape-until @change="shapeVer('until', $event.target.value)">
+        <option value="">止 · 保留</option>
+        <option v-for="v in versions" :key="v" :value="v">止 {{ v }}</option>
+      </select>
     </div>
   </div>
 

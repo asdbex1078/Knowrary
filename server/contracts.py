@@ -59,6 +59,8 @@ class NodeBox(Strict):
     """ghost = 计划里有、图里还没建的占位。**只出现在项目画布**，不进全局 layout、不进 vault。"""
     placedAt: str | None = None   # noqa: N815  （layout.json 里就是这个键名）
     anchor: str | None = None
+    since: str | None = None      # 版本演进 A 方案（2026-10-27）：从中心 `版本` 轴的这一档起出现；空 = 全版本常驻
+    until: str | None = None      # 到这一档止；滑块滑过它之后这个框淡成虚影，不删
 
 
 class RefCard(Strict):
@@ -99,7 +101,8 @@ class EdgeStyle(Strict):
     router: str | None = None
 
 
-ShapeKind = Literal["rect", "frame", "text", "ellipse", "triangle", "diamond", "cylinder"]
+# group = 组合框（2026-10-30）：把几个图形框在一起一起拖的容器，不从图形栏画，由「组合」命令生成
+ShapeKind = Literal["rect", "frame", "text", "ellipse", "triangle", "diamond", "cylinder", "group"]
 
 
 class ShapeStyle(Strict):
@@ -128,6 +131,8 @@ class Shape(Strict):
     tip: str = ""                     # 悬停说明
     parent: str | None = None         # 套在哪个大框里（另一个 shape 的 id）
     node: str | None = None           # 升级后绑定的知识点 id
+    since: str | None = None          # 版本演进 A 方案（2026-10-27）：从中心 `版本` 轴的这一档起出现；空 = 全版本常驻
+    until: str | None = None          # 到这一档止；滑块滑过它之后这个框淡成虚影，不删
     style: ShapeStyle | None = None
 
 
@@ -141,6 +146,8 @@ class ShapePatch(Strict):
     tip: str | None = None
     parent: str | None = None
     node: str | None = None
+    since: str | None = None
+    until: str | None = None
     style: ShapeStyle | None = None
 
 
@@ -214,6 +221,8 @@ class NodePatch(Strict):
     state: Literal["final", "draft", "ghost"] | None = None
     placedAt: str | None = None   # noqa: N815
     anchor: str | None = None
+    since: str | None = None
+    until: str | None = None
 
 
 class LayoutPatch(Strict):
@@ -1049,6 +1058,9 @@ class Project(Strict):
     daily_quota: int = Field(default=2, ge=1, le=20)    # 今日清单一次摆几个建设项
     legacy_id: str | None = None       # 从 plans.json 迁来的旧 id，对话目录迁移用
     lists: list[ProjectList] = Field(default_factory=list)
+    # 竣工图（2026-10-23）：这个项目挂着哪几张专题图（专题名，全库唯一）。
+    # 学到一半从顶栏一键切过去看「我在结构里的哪儿」；一个项目可以跨好几个主题
+    topics: list[str] = Field(default_factory=list)
 
 
 class ProjectsDoc(Strict):
@@ -1063,6 +1075,88 @@ class ProjectsRead(Strict):
     progress: dict[str, Any] = Field(default_factory=dict)   # {project_id: {lists: [...], all: {...}}}
     schedules: dict[str, Any] = Field(default_factory=dict)  # {project_id: {lists: [时间账]}}
     index_revision: int = 0
+
+
+class FragmentEntry(Strict):
+    """一条碎片（fragments/日期.md 里的一个 bullet）。`target` 非空 = 已归拢（去向）。"""
+
+    id: str                            # 日期 + 时间 + 内容短哈希：按内容认，人手挪行也对得上
+    date: str
+    time: str
+    text: str
+    target: str = ""                   # 归拢去向：[[节点]] / 导入《标题》；空 = 还躺着
+    done_at: str = ""
+
+
+class FragmentsRead(Strict):
+    dir: str = "fragments"
+    entries: list[FragmentEntry] = Field(default_factory=list)   # 新的在前
+    open: int = 0                      # 没归拢的条数
+    oldest_days: int = 0               # 最老的未归拢碎片躺了几天
+    nag: bool = False                  # 到量了：该归拢了（条数或天数，阈值在 core.fragments）
+
+
+class FragmentAdd(Strict):
+    text: str = Field(min_length=1, max_length=2000)
+
+
+class FragmentsMark(Strict):
+    """给一批碎片标去向（行尾 `→ 目标（日期）`，留档不删）。"""
+
+    ids: list[str] = Field(min_length=1, max_length=500)
+    target: str = Field(min_length=1, max_length=200)   # [[节点]] / 导入《标题》
+
+
+class GlossaryAdd(Strict):
+    """随手记一条名词：追加到 `术语/<语境>.md`（只追加）。语境即文件，缺省全局。"""
+
+    term: str = Field(min_length=1, max_length=200)
+    gloss: str = Field(default="", max_length=4000)
+    scope: str = Field(default="全局", max_length=100)
+    aka: list[str] = Field(default_factory=list, max_length=20)
+    see: str | None = Field(default=None, max_length=200)
+
+
+class GlossaryEntry(Strict):
+    """一条义项（索引 `glossary` 里的，也是加词的回执）。"""
+
+    term: str
+    gloss: str = ""
+    scope: str = "全局"
+    aka: list[str] = Field(default_factory=list)
+    see: str | None = None
+
+
+class FragmentsMarked(Strict):
+    marked: int
+
+
+class FragmentCluster(Strict):
+    """归拢建议的一簇：这些碎片讲同一件事，建议怎么处置。"""
+
+    title: str
+    ids: list[str]
+    action: str                        # enrich 并进已有节点 / new 长成新节点 / keep 继续躺
+    node: str | None = None            # enrich：并进哪个已有节点
+    summary: str = ""
+    text: str = ""                     # 整理后能直接写进笔记的内容（不精简，碎片里的细节一个不丢）
+
+
+class FragmentsConsolidated(Strict):
+    clusters: list[FragmentCluster] = Field(default_factory=list)
+    issues: list[str] = Field(default_factory=list)   # 模型给的簇里被降级 / 丢掉的，不默默吞
+    model: str = ""                    # 模型调用必须看得见
+    ms: int = 0
+
+
+class StatesQuery(Strict):
+    """任意一组知识点的学 / 考双态（施工图：专题画布染色不局限于某个项目的清单）。"""
+
+    ids: list[str] = Field(default_factory=list, max_length=2000)
+
+
+class StatesRead(Strict):
+    states: dict[str, dict[str, str]] = Field(default_factory=dict)   # {id: {study, exam}}
 
 
 class ProjectsWrite(Strict):
