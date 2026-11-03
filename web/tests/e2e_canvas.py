@@ -805,7 +805,8 @@ async def case_import_panel(page: Page, ck: Check, vault: Path) -> None:
     ck.add("活动栏有「导入」，点开是导入面板", bool(opened), "" if opened else "没打开")
     if not opened:
         return
-    tabs = await page.ev("""JSON.stringify([...document.querySelectorAll('aside .imp-src .seg button')].map((b) => b.textContent.trim()))""")
+    # 只抓来源 tab：粒度 seg（粗/中/细，2026-10-13 加）也在 .imp-src 内但裹在 .imp-grain 里，用直接子级排除它
+    tabs = await page.ev("""JSON.stringify([...document.querySelectorAll('aside .imp-src > .seg button')].map((b) => b.textContent.trim()))""")
     ck.add("三种来源：粘贴 / 仓库里的文件 / 本地文件", json.loads(tabs or "[]") == ["粘贴", "仓库里的文件", "本地文件"], str(tabs))
     await click_text(page, "aside .imp-src .seg button", "仓库里的文件")
     listed = await poll(page, """JSON.stringify([...document.querySelectorAll('aside .imp-file')].map((b) => b.title))""",
@@ -972,8 +973,9 @@ async def case_project_view(page: Page, ck: Check, api: str) -> None:
            "" in json.loads(opts or "[]"), str(opts))
     scopes = await page.ev("""JSON.stringify([...document.querySelectorAll('.topbar .seg')]
       .map(g => [...g.querySelectorAll('button')].map(b => b.textContent.trim())))""")
+    # 项目级：对话 / 项目图 / 竣工图（2026-10-23 挂的专题图入口）；全局级：全局图 / 历史（合一）/ 专题（2026-10-13 画图）
     ck.add("顶栏按作用域分成两组（项目级 / 全局级），历史只有一个入口",
-           json.loads(scopes or "[]") == [["对话", "项目图"], ["全局图", "历史"]], str(scopes))
+           json.loads(scopes or "[]") == [["对话", "项目图", "竣工图"], ["全局图", "历史", "专题"]], str(scopes))
 
     ck.add("顶栏只有一个「全局图」（tab 自己就是那座桥，不另设按钮）",
            await page.ev("""[...document.querySelectorAll('.topbar button')]
