@@ -39,7 +39,7 @@ from .pool import (add as add_question, enrich as enrich_questions, for_nodes as
                    load_pool, mark as mark_questions, norm as pool_norm, pool_stats)
 from .quiz import append_answers, clear_open, load_open, load_quiz_log, save_open, wrong_nodes
 from .settings import (DEFAULTS as SETTINGS_DEFAULTS, audit_force_allowed, audit_on,
-                       load_settings, save_settings, review_in_chat, review_on)
+                       game_skin_on, load_settings, save_settings, review_in_chat, review_on)
 from .usage import load_usage, note_prefix, record as record_usage, summary as usage_summary
 from .articles import ArticleConflict, ArticlePlan, plan_article, render_article, safe_name, write_article
 from .works import WORK_SUFFIXES, WorkRejected, extract_work, plan_work, work_text
@@ -95,7 +95,7 @@ __all__ = [
     "plan_lane_growth", "plan_new_lane", "is_lane_stack",
     "projects_path", "point_ids", "by_field_and_layer", "in_box", "zones", "add_question", "enrich_questions", "pool_norm", "pool_for_nodes", "load_pool", "mark_questions", "pool_stats", "save_open", "load_open", "clear_open", "LEVELS", "DEFAULT_LEVEL", "level_of", "progress_of", "progress_of_project", "stage_points",
     "schedule_of", "upgrade_v1", "record_review", "record_usage", "note_prefix", "load_usage", "usage_summary",
-    "load_settings", "save_settings", "review_in_chat", "review_on", "audit_on", "audit_force_allowed",
+    "load_settings", "save_settings", "review_in_chat", "review_on", "audit_on", "audit_force_allowed", "game_skin_on",
     "SETTINGS_DEFAULTS", "ArticleConflict", "ArticlePlan", "plan_article", "render_article", "safe_name",
     "write_article", "SourceResolver", "article_link", "source_backlink_refs", "source_backlinks", "clean_sources", "sources_of",
     "WORK_SUFFIXES", "WorkRejected", "extract_work", "plan_work", "work_text",

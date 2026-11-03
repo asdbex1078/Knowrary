@@ -1056,6 +1056,7 @@ class Project(Strict):
     level: Level = "会用"              # 学到什么份上：出题深浅、对话详细度、拆点粒度都看它
     weekly_hours: int = Field(default=7, ge=1, le=80)   # 每周能投入几小时；时间账的分母
     daily_quota: int = Field(default=2, ge=1, le=20)    # 今日清单一次摆几个建设项
+    done_at: float = Field(default=0.8, ge=0.5, le=1.0)  # 点亮到这个比例算这场远征达成；每个远征各自定
     legacy_id: str | None = None       # 从 plans.json 迁来的旧 id，对话目录迁移用
     lists: list[ProjectList] = Field(default_factory=list)
     # 竣工图（2026-10-23）：这个项目挂着哪几张专题图（专题名，全库唯一）。
@@ -1418,6 +1419,8 @@ class SettingsRead(Strict):
     # review 角色给写入把关。唯一默认关的两个开关——它给每次内容写入加一次调用和几秒等待。
     audit_enabled: bool = False
     audit_force_allowed: bool = True
+    # 探索台皮肤。本契约里唯一后端不读的开关——只换探索台措辞，借 settings 做跨设备同步。
+    game_skin: bool = True
 
 
 class SettingsPatch(Strict):
@@ -1429,6 +1432,7 @@ class SettingsPatch(Strict):
     review_marks: bool | None = None
     audit_enabled: bool | None = None
     audit_force_allowed: bool | None = None
+    game_skin: bool | None = None
 
 
 class CopySource(Strict):

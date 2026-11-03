@@ -459,6 +459,14 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onKey, true))
               <span class="check"><Icon name="check" :size="11" :width="2.6" /></span>
               <span class="label">到期标记<span class="sub">画布上的金色小圆点、活动栏「今日」的角标</span></span>
             </label>
+            <label class="switch-row" style="border-top: 1px solid var(--line); margin-top: 6px; padding-top: 13px">
+              <input type="checkbox" :checked="settings.game_skin"
+                     @change="emit('set', { game_skin: !settings.game_skin })" />
+              <span class="check"><Icon name="check" :size="11" :width="2.6" /></span>
+              <span class="label">探索台「远征」皮肤
+                <span class="sub">开：用「远征 / 心魔 / 点亮 / 达成」那套游戏化说法鼓劲。
+                  关掉换平实措辞（项目 / 易忘 / 已掌握），结构和功能一样不少</span></span>
+            </label>
           </template>
 
           <template v-else-if="tab === 'audit'">

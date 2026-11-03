@@ -29,6 +29,10 @@ DEFAULTS = {
     # 那四个是**复习**（间隔重复），这个是 LLM 的 **review 角色**给写入把关。
     "audit_enabled": False,        # 开：正文类写入先过一遍 review 角色，出结论和建议
     "audit_force_allowed": True,   # 允许「仍然写入」——模型也会看走眼，不给后门就只能整套关掉
+    # 探索台皮肤。**本表里唯一后端不读的开关**：它只换探索台的措辞（远征/心魔/点亮 ↔
+    # 项目/难点/已学），不改任何服务端行为。放这儿而不放 localStorage，是因为「要不要那套
+    # 游戏化叙事」是人的偏好、不是「这台机器怎么看图」，换台机器不该重设一遍。
+    "game_skin": True,             # 开：探索台用「远征/心魔/点亮」那套；关：换成平实措辞
 }
 
 
@@ -83,6 +87,14 @@ def audit_on() -> bool:
 def audit_force_allowed() -> bool:
     """审核没通过时还准不准「仍然写入」。关掉 = 挡下就是挡下。"""
     return bool(load_settings().get("audit_force_allowed"))
+
+
+def game_skin_on() -> bool:
+    """探索台要不要那套「远征/心魔/点亮」的游戏化叙事。关掉换平实措辞。
+
+    **后端不靠它做任何事**——它纯粹是前端展示偏好，借 settings 做跨设备同步而已。
+    """
+    return bool(load_settings().get("game_skin"))
 
 
 def review_on() -> bool:

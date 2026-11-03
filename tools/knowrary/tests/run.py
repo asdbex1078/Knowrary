@@ -1169,6 +1169,22 @@ def 今日清单按开关摘掉复习项():
 
 
 @case
+def 探索台皮肤开关存读往返_且不碰复习():
+    """`game_skin` 是 settings 里唯一后端不读的开关：只换探索台措辞（远征/心魔/点亮 ↔
+    项目/难点/已学），借 settings 做跨设备同步。这里钉它存得住、读得回、默认开，
+    且和复习那几档互不牵连；措辞怎么切是前端 e2e 的事。"""
+    assert core.game_skin_on() is True, "新库默认该是游戏皮肤"
+    assert core.load_settings()["game_skin"] is True
+    try:
+        core.save_settings({"game_skin": False})
+        assert core.game_skin_on() is False
+        assert core.load_settings()["game_skin"] is False
+        assert core.review_on() is True, "关皮肤不该动到复习总闸"
+    finally:
+        core.save_settings({"game_skin": True})      # 还原，别串味给后面的用例
+
+
+@case
 def 缓存监控只看今天不看累计():
     """累计桶只加不减：糟过一天，这盏灯就再也不会转绿——那它既不报警也不解除，等于没有。
 

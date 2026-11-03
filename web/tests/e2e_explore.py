@@ -153,6 +153,39 @@ async def run(api: str, cdp: str, vault: Path, results: list) -> None:
             saved = json.loads((vault / ".knowrary" / "projects.json").read_text("utf-8"))
             all_ids = [p["id"] for ls in saved["projects"]["p1"]["lists"] for st in ls["stages"] for p in st["points"]]
             ck.add("大纲写进了 projects.json", "泛型" in all_ids and "丙" in all_ids, str(all_ids))
+
+            # —— 阈值每个远征各自设：进度条上有达成线 + 可调控件，拖一下落进 project.done_at ——
+            ck.add("进度条上画了达成线标记", bool(await page.ev("!!document.querySelector('.exp-bar-line')")), "")
+            ck.add("阈值 range 控件在", bool(await page.ev("!!document.querySelector('.exp-thresh input[type=range]')")), "")
+            await page.ev("""(() => { const r = document.querySelector('.exp-thresh input[type=range]');
+              r.value = '60'; r.dispatchEvent(new Event('change', { bubbles: true })); })()""")
+            await asyncio.sleep(1.2)                           # 存盘
+            saved2 = json.loads((vault / ".knowrary" / "projects.json").read_text("utf-8"))
+            ck.add("阈值落进这场远征的 done_at（0.6，每个远征各自定）",
+                   abs(saved2["projects"]["p1"].get("done_at", 0.8) - 0.6) < 1e-6,
+                   str(saved2["projects"]["p1"].get("done_at")))
+
+            # —— 游戏皮肤总开关：关掉 → 探索台换平实措辞（结构不变，心魔→易忘、点亮→已掌握）——
+            await page.ev("""fetch('/api/settings', { method:'PUT', headers:{'content-type':'application/json'},
+              body: JSON.stringify({ game_skin: false }) })""")
+            await asyncio.sleep(0.5)
+            await page.call("Page.enable")
+            await page.call("Page.reload")
+            await asyncio.sleep(3)
+            await page.call("Runtime.enable")
+            await settle(page)
+            await page.ev("""(() => { const s = document.querySelector('.proj-switch');
+              s.value = 'p1'; s.dispatchEvent(new Event('change', { bubbles: true })); })()""")
+            await asyncio.sleep(0.6)
+            await E.click_text(page, ".topbar .seg button", "对话")
+            await asyncio.sleep(0.4)
+            await page.ev("document.querySelector('[data-rail=\"explore\"]').click()")
+            await E.poll(page, "!!document.querySelector('.exp-progress')", bool, timeout=6)
+            titles = await page.ev("""JSON.stringify([...document.querySelectorAll('.exp-zone-title')].map(x=>x.textContent.trim()))""")
+            tt = json.loads(titles)
+            joined = " ".join(tt)
+            ck.add("平实皮肤：出现「待检验」，不再有游戏词「待点亮/心魔」",
+                   "待检验" in joined and "待点亮" not in joined and "心魔" not in joined, str(tt))
         finally:
             results.extend(ck.items)
 

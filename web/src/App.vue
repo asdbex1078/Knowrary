@@ -560,7 +560,9 @@ const briefOn = ref(false)
 // 画布 / 外观那些仍旧各自记在 localStorage——它们是"这台机器上怎么看图"。
 // 先给默认值（全开）：接口还没回来的那一瞬间不该先闪一下"关着"的样子。
 const settings = ref({ review_enabled: true, review_in_chat: true, review_brief: true,
-                       review_marks: true, audit_enabled: false, audit_force_allowed: true })
+                       review_marks: true, audit_enabled: false, audit_force_allowed: true,
+                       game_skin: true })
+const gameSkin = computed(() => settings.value.game_skin !== false)
 // 审核挡下来的那一次：{ report, retry }。retry 是**调用方给的闭包**，因为"写入"往往
 // 不只是写文件（还要落位、补清单、推留档游标），强制写入得把那一整套重跑一遍。
 const auditBlock = shallowRef(null)
@@ -3229,6 +3231,15 @@ async function unbindTopic(name) {
   await savePlans(next)
 }
 
+/** 探索台调「达成阈值」：pct 是 0–100 的整数，落成 0.5–1.0 的比例存进这场远征（每个各自定）。 */
+async function setProjectThreshold(pct) {
+  const next = JSON.parse(JSON.stringify(plansDoc.value?.projects || {}))
+  const p = next[currentProject.value]
+  if (!p) return
+  p.done_at = Math.min(1, Math.max(0.5, Math.round(pct) / 100))
+  await savePlans(next)
+}
+
 // —— 碎片记忆（2026-10-23）：归拢建议的落地在这儿——面板只抛事件，不自己写盘 ——
 const fragBusy = ref(false)
 const fragRefresh = ref(0)             // +1 = 面板重拉（标完去向、写完 md）
@@ -4509,6 +4520,10 @@ function banner_of(patch) {
     return settings.value.review_in_chat ? '教练会在对话里考你了'
                                          : '教练不再考你、不再催欠账；「今日」分栏里照常能复习'
   }
+  if ('game_skin' in patch) {
+    return gameSkin.value ? '探索台换回「远征」皮肤'
+                          : '探索台换成平实措辞了'
+  }
   return '设置已保存'
 }
 
@@ -4724,9 +4739,9 @@ onBeforeUnmount(() => {
                    @applied="onImported" @goto="gotoNode" @copy="openCopy()" @close="panel = ''" />
       <ExplorePanel v-else-if="panel === 'explore'" :doc="plansDoc" :progress="plansProgress"
                     :project="currentProject" :names="nodeNames" :busy="quizBusy" :streak="streakInfo"
-                    :proposal="planProposal" :proposing="planProposing"
+                    :proposal="planProposal" :proposing="planProposing" :game-skin="gameSkin"
                     @quiz="startQuiz" @goto="gotoNode" @build="buildPoint" @refresh="refreshPlans"
-                    @propose="proposePlan" @adopt="adoptOutline" @map="openSeaMap"
+                    @propose="proposePlan" @adopt="adoptOutline" @map="openSeaMap" @threshold="setProjectThreshold"
                     @plans="openPanel('plans', { force: true })" @close="panel = ''" />
       <ProjectsPanel v-else-if="panel === 'plans'" class="study" :doc="plansDoc" :progress="plansProgress"
                      :schedules="plansSchedules" :fields="fieldNames" :project="currentProject"

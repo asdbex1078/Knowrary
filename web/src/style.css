@@ -1973,16 +1973,32 @@ kbd.key {
 .exp-progress { padding: 4px 2px 12px; }
 .exp-pct { display: flex; align-items: baseline; gap: 7px; }
 .exp-pct b { font-size: 30px; line-height: 1; color: var(--ok); }
-.exp-bar { height: 7px; border-radius: var(--r-pill); background: var(--line); overflow: hidden; margin: 9px 0; }
+.exp-bar { position: relative; height: 7px; border-radius: var(--r-pill); background: var(--line); overflow: hidden; margin: 9px 0; }
 .exp-bar i { display: block; height: 100%; background: var(--ok); border-radius: var(--r-pill); transition: width .35s; }
+/* 达成线标记：这场远征点亮到这儿就算达成 */
+.exp-bar-line { position: absolute; top: 0; bottom: 0; width: 2px; margin-left: -1px;
+  background: color-mix(in srgb, var(--ok) 65%, var(--fg)); opacity: .5; }
+.exp-thresh { display: flex; align-items: center; gap: 9px; margin: 0 0 11px; font-size: 12px; }
+.exp-thresh input[type=range] { flex: 1; accent-color: var(--ok); cursor: pointer; }
+/* 达成那一刻撒一次花（只在当场跨过达成线时放，打开就已达成的不放） */
+.exp-confetti { position: absolute; inset: 0; pointer-events: none; overflow: hidden; }
+.exp-confetti i { position: absolute; top: -12px; width: 7px; height: 11px; border-radius: 1px; opacity: .9;
+  animation: exp-fall 1.5s ease-in forwards; }
+@keyframes exp-fall {
+  0% { transform: translateY(-12px) rotate(0); opacity: 0; }
+  12% { opacity: 1; }
+  100% { transform: translateY(96px) rotate(280deg); opacity: 0; }
+}
+@media (prefers-reduced-motion: reduce) { .exp-confetti { display: none; } }
 .exp-counts { display: flex; flex-wrap: wrap; gap: 10px; font-size: 12px; }
 .exp-counts .c { font-weight: 600; }
 .exp-counts .c.lit { color: var(--ok); }
 .exp-counts .c.demon { color: var(--danger); }
 .exp-counts .c.untested { color: var(--warn); }
 .exp-counts .c.frontier { color: var(--accent); }
-.exp-done { margin: 2px 0 12px; padding: 11px 13px; border-radius: var(--r-sm); font-size: 13px; line-height: 1.6;
-  color: var(--ok); background: linear-gradient(120deg, var(--ok-soft), var(--accent-soft));
+.exp-done { position: relative; overflow: hidden; margin: 2px 0 12px; padding: 11px 13px; border-radius: var(--r-sm);
+  font-size: 13px; line-height: 1.6; color: var(--ok);
+  background: linear-gradient(120deg, var(--ok-soft), var(--accent-soft));
   border: 1px solid color-mix(in srgb, var(--ok) 35%, var(--line)); }
 .exp-streak { display: flex; align-items: baseline; gap: 8px; margin-bottom: 12px; font-size: 13px; }
 .exp-streak .s-fire { font-weight: 600; }
