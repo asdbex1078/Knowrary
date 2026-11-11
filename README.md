@@ -1,3 +1,28 @@
+<h1 align="center">🌳 计算机与人工智能知识树</h1>
+
+<p align="center">
+  同一粒种子——图灵 1936 年的一纸证明——长成两棵树：<br>
+  <b>左 = 计算机 / 软件</b>，<b>右 = 人工智能</b>，一张按年份生长、点枝收展的<b>交互知识图</b>。
+</p>
+
+<p align="center">
+  <a href="https://raw.githack.com/asdbex1078/Atlas/main/works/%E8%AE%A1%E7%AE%97%E6%9C%BA%E4%B8%8EAI%E7%9F%A5%E8%AF%86%E6%A0%91.html">
+    <img src="docs/assets/knowledge-tree-hero.png" width="880" alt="计算机与人工智能知识树">
+  </a>
+</p>
+
+<p align="center">
+  <a href="https://raw.githack.com/asdbex1078/Atlas/main/works/%E8%AE%A1%E7%AE%97%E6%9C%BA%E4%B8%8EAI%E7%9F%A5%E8%AF%86%E6%A0%91.html"><b>▶ 打开完整交互版</b></a>
+  &nbsp;&nbsp;·&nbsp;&nbsp;
+  <a href="https://github.com/asdbex1078/Atlas/blob/main/works/%E8%AE%A1%E7%AE%97%E6%9C%BA%E4%B8%8EAI%E7%9F%A5%E8%AF%86%E6%A0%91.html">查看源码</a>
+</p>
+
+> **这是本库「成品层」的招牌。** 双树同根、关系按类型配色（演进 / 实现 / 运行 / 规范 / 算力），逐年生长动画；每个节点可点开讲解卡（含机器学习任务、损失函数、激活函数、编译器等**可视化迷你树**），底部还有「一段代码怎么跑起来」交互详解，与「**AI 系统五层分层**：领域 → 开发 → 框架 → 编译器 → 芯片」。
+>
+> 🔧 **单一来源**：图的内容维护在 [**Atlas**](https://github.com/asdbex1078/Atlas) 仓库的 `works/计算机与AI知识树.html`——**以后改动只更新 Atlas**，上面的「打开交互版」链接会自动指向最新版（上方预览图是静态快照，偶尔随大改动刷新即可）。
+
+---
+
 # Knowrary
 
 > **愿景：沉淀一座属于自己的、活的知识库**——看得见（可视化）、长得大（可成长）、
