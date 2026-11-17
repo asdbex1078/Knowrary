@@ -179,7 +179,11 @@ const draggable = (shape) => DRAGGABLE.has(shape) || isDrawnShape({ shape })
 
 export const LABEL_ZOOM = 0.8 // 边标签只在放大到这个比例以上才画（性能守则 4）
 
-export function createGraph(container) {
+/**
+ * `canNestGroup(childId, parentId)`：分组往分组里拖时额外问一句能不能套（全局图只许两层，见 palace.js）。
+ * 不传就只防环。
+ */
+export function createGraph(container, { canNestGroup = null } = {}) {
   registerShapes()
   registerDrawShapes()
   const graph = new Graph({
@@ -233,7 +237,7 @@ export function createGraph(container) {
           if (cur.id === child.id) return false
           cur = cur.getParent()
         }
-        return true
+        return !canNestGroup || canNestGroup(child.id, parent.id)
       },
     },
     // 全图默认走直线：orth 直角折线不做避障，193 条边会绕成迷宫。

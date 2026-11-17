@@ -9,6 +9,7 @@
  * （幽灵点不能从它出发连边、父域里没有组内重排、没拐点时清拐点是灰的），
  * 以前只能靠真无头浏览器点开菜单才验得到。
  */
+import { canAddSubgroup } from './palace.js'
 import { GROUP_LAYOUTS, hasSubGroups } from './groupLayout.js'
 import { SHAPE_KINDS, linkNodes } from './drawing.js'
 
@@ -94,7 +95,9 @@ export function groupMenu(gid, folded, ctx) {
     { id: 'pin-auto', label: '恢复自动折叠', icon: 'rotate', disabled: !g?.pinned },
     { sep: true },
     { id: 'new-node', label: '在这里新建知识点…', icon: 'plus', hint: '写 md' },
-    { id: 'new-subgroup', label: '在这里新建子簇', icon: 'grid' },
+    canAddSubgroup(ctx.layout, gid, ctx.depthCap)
+      ? { id: 'new-subgroup', label: '在这里新建子簇', icon: 'grid' }
+      : { id: 'new-subgroup', label: '在这里新建子簇', icon: 'grid', disabled: true, hint: '宫殿只有两层：岛 → 簇' },
     // 框是排版，概括节点是知识：把框里的点概括成一个上位节点（「包含」边），并绑成这个框的总览
     ...(count >= 2 && !doc ? [{ id: 'summarize', label: `把框里的 ${count} 个点概括成一个节点…`, icon: 'layers', hint: '写 md' }] : []),
     { id: 'rename', label: '重命名这个域', icon: 'pencil' },

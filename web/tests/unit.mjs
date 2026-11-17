@@ -27,9 +27,42 @@ import { COL, LEFT, MIN_GAP, YEAR_PX, badgeOf, computeLanes, humanNumber, humanP
 import { boundChildren, commonParent, draftPlan, groupBox, linkNodes, openReviewCounts, removalPatch, shapeAttrs, shapesInBox, splitByVersion, suggestions as topicSuggestions, removeEdgeChanges, ungroupPatch, upgradeChanges, versionStateOf, writtenEdgeId } from '../src/canvas/drawing.js'
 import { findSenses, resolveSenses } from '../src/canvas/glossary.js'
 import { nodeAttrs } from '../src/canvas/shapes.js'
+import { PALACE_DEPTH, canAddSubgroup, canNest, groupDepth, subtreeHeight } from '../src/canvas/palace.js'
 
 const CASES = []
 const test = (name, fn) => CASES.push([name, fn])
+
+// ---------------------------------------------------------------- 记忆宫殿：两层分组（2026-11-17）
+const palace = { groups: {
+  岛: { name: '岛', parent: null }, 簇: { name: '簇', parent: '岛' },
+  孤岛: { name: '孤岛', parent: null }, 区块: { name: '区块', parent: '岛', kind: 'zone' },
+} }
+test('宫殿：岛 1 层、簇 2 层，层区块不算层', () => {
+  assert.equal(PALACE_DEPTH, 2)
+  assert.equal(groupDepth(palace, '岛'), 1)
+  assert.equal(groupDepth(palace, '簇'), 2)
+  assert.equal(groupDepth(palace, '区块'), 0)
+  assert.equal(subtreeHeight(palace, '岛'), 2, '区块不该把岛撑高')
+  assert.equal(subtreeHeight(palace, '孤岛'), 1)
+})
+test('宫殿：簇里不能再开簇，岛里可以；不限层的画布都放行', () => {
+  assert.ok(canAddSubgroup(palace, '岛'))
+  assert.ok(!canAddSubgroup(palace, '簇'))
+  assert.ok(canAddSubgroup(palace, '簇', null), '项目 / 专题画布 cap=null 不限')
+})
+test('宫殿：拖分组进分组——孤岛进岛可以，带簇的岛进孤岛不行，任何框进簇不行', () => {
+  assert.ok(canNest(palace, '孤岛', '岛'))
+  assert.ok(!canNest(palace, '岛', '孤岛'), '岛自带一层簇，再套进去就是三层')
+  assert.ok(!canNest(palace, '孤岛', '簇'))
+  assert.ok(canNest(palace, '岛', null), '拖出来当顶层岛总是可以')
+  assert.ok(canNest(palace, '岛', '孤岛', null))
+})
+test('宫殿：簇的右键菜单里「新建子簇」是灰的并说明原因', () => {
+  const item = (gid, cap) => groupMenu(gid, false, { layout: palace, depthCap: cap }).items.find((i) => i.id === 'new-subgroup')
+  assert.ok(!item('岛', 2).disabled)
+  assert.ok(item('簇', 2).disabled && item('簇', 2).hint.includes('两层'))
+  assert.ok(!item('簇', null).disabled, '不限层的画布照常给')
+})
 
 // ---------------------------------------------------------------- 夹具
 

@@ -123,6 +123,8 @@ def apply_patch(vault: Path, patch: LayoutPatch, index: dict, name: str = DEFAUL
         backup = backup_layout(vault, doc, name) if is_bulk(patch) and doc.revision else None
         _merge(doc, patch)
         _assert_group_refs(doc)
+        if name == DEFAULT_LAYOUT:
+            _assert_palace_depth(doc)
         _assert_shape_refs(doc)
         return write_layout(vault, doc, name), find_orphans(doc, index, vault), backup
 
@@ -174,6 +176,28 @@ def _assert_group_refs(doc: LayoutDoc) -> None:
     for nid, node in doc.nodes.items():
         if node.group and node.group not in known:
             raise PatchRejected(f"节点 `{nid}` 的分组 `{node.group}` 不存在")
+
+
+PALACE_DEPTH = 2
+
+
+def _assert_palace_depth(doc: LayoutDoc) -> None:
+    """全局图是记忆宫殿：分组只许两层——岛（顶层框）→ 簇（岛里的框）（2026-11-17）。
+
+    专题套专题越理越乱，就是层级没上限；这里卡死，前端（web/src/canvas/palace.js）拖不进、菜单不给，
+    后端兜底拒收。层区块（kind=zone）只是底色不是分组，不算层。项目 / 专题 / 对比画布不受约束。
+    """
+    groups = doc.groups
+    for gid, group in groups.items():
+        if group.kind == "zone":
+            continue
+        depth, cur, seen = 0, gid, set()
+        while cur and cur in groups and groups[cur].kind != "zone" and cur not in seen:
+            seen.add(cur)
+            depth += 1
+            cur = groups[cur].parent
+        if depth > PALACE_DEPTH:
+            raise PatchRejected(f"分组 `{group.name}` 套到了第 {depth} 层：宫殿只有两层（岛 → 簇），再细的写进笔记正文")
 
 
 def _assert_shape_refs(doc: LayoutDoc) -> None:

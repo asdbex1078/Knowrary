@@ -230,6 +230,30 @@ def 非法补丁被拒绝():
 
 
 @case
+def 宫殿分组只许两层():
+    """全局图 = 记忆宫殿：岛 → 簇两层，第三层拒收（2026-11-17）；项目画布是草稿纸，不限层。"""
+    c, _ = client()
+    box = lambda name, parent=None: {"name": name, "x": 0, "y": 0, "w": 400, "h": 300, "parent": parent}
+    rev = get_layout(c)["layout"]["revision"]
+    r = patch(c, {"base_revision": rev, "groups": {"g-岛": box("岛"), "g-簇": box("簇", "g-岛")}})
+    assert r.status_code == 200, f"两层应该放行：{r.text[:200]}"
+    rev = r.json()["revision"]
+    r = patch(c, {"base_revision": rev, "groups": {"g-第三层": box("第三层", "g-簇")}})
+    assert r.status_code == 422 and "两层" in r.text, f"第三层应被拒：{r.status_code} {r.text[:200]}"
+    # 把一座带簇的岛整个拖进另一座岛，也是三层
+    r = patch(c, {"base_revision": rev, "groups": {"g-另一岛": box("另一岛"), "g-岛": {"parent": "g-另一岛"}}})
+    assert r.status_code == 422, f"带簇的岛套进岛应被拒：{r.status_code}"
+    assert get_layout(c)["layout"]["revision"] == rev, "被拒的补丁不该落盘"
+
+    c.put("/api/projects", json={"base_revision": 0, "projects": {"demo": {
+        "name": "演示", "lists": [{"kind": "学习", "name": "主线", "stages": [{"name": "一", "points": [{"id": "a"}]}]}]}}})
+    proj = c.get("/api/layout?layout=demo").json()["layout"]
+    r = c.patch("/api/layout?layout=demo", json={"base_revision": proj["revision"], "groups": {
+        "g-1": box("一"), "g-2": box("二", "g-1"), "g-3": box("三", "g-2")}})
+    assert r.status_code == 200, f"项目画布不受宫殿层数约束：{r.text[:200]}"
+
+
+@case
 def 孤立引用只报告不删除():
     c, vault = client()
     layout = get_layout(c)["layout"]

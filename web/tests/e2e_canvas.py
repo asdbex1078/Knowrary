@@ -2817,6 +2817,23 @@ async def case_subgroup(page: Page, ck: Check) -> None:
     }})()""", lambda v: v == gid, timeout=6)
     ck.add("子簇在画布上真的挂在父簇下", nested == gid, f"父 cell = {nested}")
 
+    # 记忆宫殿（2026-11-17）：全局图只许两层。刚建的「子域」已经是第二层——
+    # 它的菜单里「新建子簇」得是灰的，强行触发（prompt 已打桩）也不能多出第三层。
+    kid = await page.ev(f"""Object.entries(__kg.layout.groups).find(([, g]) => g.parent === '{gid}' && g.name === '子域')?.[0] || ''""")
+    await page.ev("document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))")
+    await right_click(page, kid, grab="title")
+    item = json.loads(await poll(page, """JSON.stringify([...document.querySelectorAll('.ctx-menu .pop-item')]
+      .filter((b) => b.textContent.includes('在这里新建子簇')).map((b) => ({ dis: b.disabled, text: b.textContent.trim() })))""",
+                                 lambda v: v != "[]", timeout=6))
+    ck.add("宫殿：簇的菜单里「新建子簇」是灰的", bool(item) and item[0]["dis"] and "两层" in item[0]["text"],
+           json.dumps(item, ensure_ascii=False))
+    before = len(json.loads(await page.ev("JSON.stringify(Object.keys(__kg.layout.groups))")))
+    await click_text(page, ".ctx-menu .pop-item", "在这里新建子簇")
+    await asyncio.sleep(0.6)
+    after = len(json.loads(await page.ev("JSON.stringify(Object.keys(__kg.layout.groups))")))
+    ck.add("宫殿：点灰掉的「新建子簇」不会建出第三层", after == before, f"分组数 {before} → {after}")
+    await page.ev("document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))")
+
 
 async def case_group_doc(page: Page, ck: Check, vault: Path) -> None:
     """域的总览文档：点域弹工具条 → 加总览 → 写正文，关系区块不能被碰掉。"""

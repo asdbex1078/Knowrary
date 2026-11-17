@@ -72,6 +72,7 @@ import { useCamera } from './composables/useCamera.js'
 import { usePathSearch } from './composables/usePathSearch.js'
 import { ancestors as groupAncestors, computeCollapsed } from './canvas/lod.js'
 import { bucketOf, isZone, withoutZones } from './canvas/zones.js'
+import { PALACE_DEPTH, canAddSubgroup, canNest } from './canvas/palace.js'
 import {
   applyViewport, buildCells, clearPath, contentBBox, createGraph,
   highlightEdges, highlightPath, mount, movedPositions, paintTopicVersion, setSnap, snapDelta,
@@ -789,6 +790,16 @@ function layoutName() {
   return scoped && currentProject.value ? currentProject.value : null
 }
 
+/** 分组层数上限：只有全局图（记忆宫殿）限两层，其余画布是草稿纸、不限。见 canvas/palace.js。 */
+function depthCap() {
+  return layoutName() === null ? PALACE_DEPTH : null
+}
+
+/** 拖分组进分组时 X6 问的那一句：套进去会不会超过上限。 */
+function canNestGroup(childId, parentId) {
+  return canNest(layoutDoc.value, childId, parentId, depthCap())
+}
+
 // 当前项目里的点。项目图有**自己的一份 layout**（四期），里面还带着「未建」的幽灵占位。
 const projectIds = computed(() =>
   new Set(Object.keys(plansProgress.value?.[currentProject.value]?.all?.points || {})))
@@ -1347,7 +1358,7 @@ function rebuildGraph(reason = '') {
   } catch {
     /* 已经坏掉的实例，忽略 */
   }
-  const fresh = createGraph(canvasEl.value)
+  const fresh = createGraph(canvasEl.value, { canNestGroup })
   graph.value = fresh
   setSnap(fresh, snap.value)
   bindEvents(fresh)
@@ -1728,7 +1739,7 @@ function menuCtx() {
   return { index: indexDoc.value, layout: layoutDoc.value, dueIds: dueIds.value,
            pathFrom: pathFrom.value, pathHit: !!pathHit.value, neighbor: neighbor.value,
            focusGroup: focusGroup.value, showMap: showMap.value, nodeName, selectedIds: selectedNodeIds(),
-           shapeSel: [...draw.selShapes.value], topic: mode.value === 'topic' }
+           shapeSel: [...draw.selShapes.value], topic: mode.value === 'topic', depthCap: depthCap() }
 }
 
 /** 画布上当前框选 / 多选的知识点 id（Selection 插件只让 kg-node 进选区）。 */
@@ -1960,6 +1971,10 @@ function dissolveGroup(gid) {
  * 传 parent 就是在某个域里开子域——层次化的"看得见"那一半（另一半是结构族关系边）。
  */
 function newGroup(at, parent = null) {
+  if (parent && !canAddSubgroup(layoutDoc.value, parent, depthCap())) {
+    setBanner(`「${layoutDoc.value.groups[parent]?.name}」已经是簇了：宫殿只有两层（岛 → 簇），再细的写进笔记正文`, 'info')
+    return
+  }
   const name = window.prompt(parent ? `在「${layoutDoc.value.groups[parent]?.name}」里新建子簇` : '新簇的名称', '')
   if (!name || !name.trim()) return
   const gid = `g-${Date.now().toString(36)}`
@@ -4591,7 +4606,7 @@ watch([panel, inspectorOpen], () => {
 onMounted(async () => {
   setTheme(theme.value)
   document.documentElement.dataset.theme = theme.value
-  const g = createGraph(canvasEl.value)
+  const g = createGraph(canvasEl.value, { canNestGroup })
   graph.value = g
   setSnap(g, snap.value)
   patcher.value = createPatcher({
