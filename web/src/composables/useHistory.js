@@ -35,6 +35,7 @@ export function useHistory(deps) {
   const histPlan = ref(null)
   const linPlan = ref(null)          // 谱系树算出来的那份
   const timelines = ref([])          // 选中的 layout 分组 id（空 = 全部）
+  const expanded = ref(new Set())    // 已展开的折叠头 id（空 = 全部收起）；只是视图态，不持久化
   const histActiveCount = ref(0)
   // 排查"点该亮没亮"时要能从控制台看到这一帧到底点亮了谁（App.vue 的 window.knowrary）
   const activeIds = () => (histActive ? [...histActive] : null)
@@ -123,7 +124,7 @@ export function useHistory(deps) {
     const g = graph.value
     const cells = buildHistoryCells(indexDoc.value, layoutDoc.value, {
       timelines: timelines.value, families: histFamilies(), compact: hist.compact, trunk: hist.trunk,
-      schools: schools.value, homes: homes.value, lineage: hist.lineage,
+      schools: schools.value, homes: homes.value, lineage: hist.lineage, expanded: expanded.value,
     })
     histPlan.value = cells.plan
     applyingViewport.value = true
@@ -351,6 +352,16 @@ export function useHistory(deps) {
     renderHistory({ view: 'fit' })
   }
 
+  // 折叠头的展开 / 收起（点历史图上带「＋N」的头节点）。只挪视图态、保持视口——
+  // 展开几个细节点不该把整张图重新缩放一遍。
+  function toggleFold(headId) {
+    if (!headId) return
+    const next = new Set(expanded.value)
+    next.has(headId) ? next.delete(headId) : next.add(headId)
+    expanded.value = next
+    renderHistory({ view: 'keep' })
+  }
+
   // —— 只看某个点那条演化线 ——
   //
   // 入口是**双击历史图上的圆点**。为什么不是右键菜单：历史视图是只读视图，
@@ -412,6 +423,6 @@ export function useHistory(deps) {
     histFamilies, renderHistory, renderLineage, paintTime, markHistoryContainer, setUpto,
     togglePlay, setSpeed, stopPlay, evoGap, startTour, tourGo, paintTour, scheduleTour,
     toggleTourAuto, stopTour, toggleTimeline, toggleHistFamily, histActiveIds: activeIds,
-    enterLineage, exitLineage, lineageSize, histLineageName: nodeName,
+    enterLineage, exitLineage, lineageSize, histLineageName: nodeName, toggleFold,
   }
 }

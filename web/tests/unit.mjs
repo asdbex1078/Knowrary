@@ -326,6 +326,32 @@ test('只看一条线 + 主干道：主轴就是这条线里最长的那串', ()
   assert.ok(!plan.placed.get('MLA').trunk, 'MLA 是旁支，挂在主轴上下')
 })
 
+test('history:false 的点不进历史图（哪怕有 year）', () => {
+  const index = { nodes: [
+    { id: 'A', name: 'A', year: 2000, field: 'X' },
+    { id: 'B', name: 'B', year: 2001, field: 'X', history: false },
+  ], edges: [] }
+  const plan = buildTimeline(index, { nodes: {}, groups: {} }, {})
+  assert.ok(plan.placed.has('A'))
+  assert.ok(!plan.placed.has('B'), '历史视图是面 / 点，history:false 的细节直接剔除')
+})
+
+test('折叠：默认收起、头带＋N；展开后成员进图、头标记 open', () => {
+  const index = { nodes: [
+    { id: '注意力机制', name: '注意力机制', year: 2014, field: 'AI' },
+    { id: 'MHA', name: 'MHA', year: 2017, field: 'AI', fold_under: '注意力机制' },
+    { id: 'MQA', name: 'MQA', year: 2019, field: 'AI', fold_under: '注意力机制' },
+  ], edges: [] }
+  const layout = { nodes: {}, groups: {} }
+  const collapsed = buildTimeline(index, layout, {})
+  assert.ok(collapsed.placed.has('注意力机制'), '头永远在')
+  assert.ok(!collapsed.placed.has('MHA') && !collapsed.placed.has('MQA'), '默认收起：成员不进图')
+  assert.deepEqual(collapsed.placed.get('注意力机制').fold, { count: 2, open: false }, '头带＋N 徽标信息')
+  const open = buildTimeline(index, layout, { expanded: new Set(['注意力机制']) })
+  assert.ok(open.placed.has('MHA') && open.placed.has('MQA'), '展开后成员进图')
+  assert.equal(open.placed.get('注意力机制').fold.open, true, '头标记已展开')
+})
+
 // ---------------------------------------------------------------- 流派泳道
 
 test('流派分道：出现早的在上面，未归派垫底', () => {

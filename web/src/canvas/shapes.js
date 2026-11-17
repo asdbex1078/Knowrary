@@ -433,11 +433,16 @@ export function initialOf(name = '') {
 /** 时间轴上的圆点：圆 + 首字 + 旁边的全名（挤的时候由 showName 关掉）。 */
 export function dotAttrs(meta, color = NEUTRAL,
                          { showName = true, year = null, schools = [], shadow = false,
-                           kin = false } = {}) {
+                           kin = false, fold = null } = {}) {
   const name = meta?.name || meta?.id || ''
-  const tip = schools.length
-    ? `${name}${year ? `（${year}）` : ''} · ${schools.map((s) => s.name).join(' / ')}`
-    : (year ? `${name}（${year}）` : name)
+  // 折叠头：名字后缀「＋N」（收起，点开看 N 项）/「－」（已展开，点击收起）。头的名字永远显示。
+  const label = fold ? `${name}${fold.open ? '  －' : `  ＋${fold.count}`}` : name
+  if (fold) showName = true
+  const tip = fold
+    ? `${name} · 点击${fold.open ? '收起' : `展开 ${fold.count} 项`}`
+    : schools.length
+      ? `${name}${year ? `（${year}）` : ''} · ${schools.map((s) => s.name).join(' / ')}`
+      : (year ? `${name}（${year}）` : name)
   return {
     // 影子实例：这个点在别的流派道里也出现了一次，**这一份不带边**。
     // 画成空心是为了让"它同时属于两派"这件事在图上看得见，而不是让人以为建了两个点。
@@ -452,7 +457,7 @@ export function dotAttrs(meta, color = NEUTRAL,
     // 文本**永远画出来**，只把 opacity 压成 0：这样悬停和回放点亮时，
     // CSS 一句 opacity:1 就能让它现形（presentation 属性打不过 CSS）。
     // 真删掉文本的话，DOM 里没东西可现。
-    name: { text: name, fill: tokens().title, opacity: showName ? 1 : 0 },
+    name: { text: label, fill: tokens().title, opacity: showName ? 1 : 0 },
     tip: { text: tip },
   }
 }

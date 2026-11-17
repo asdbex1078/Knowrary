@@ -35,7 +35,7 @@ NEWER_FIRST = ("修订",)
 INDEX_SCHEMA_VERSION = 1
 NODE_FM_FIELDS = ("name", "field", "type", "status", "desc", "year", "start_year", "end_year",
                   "aliases", "tags", "learned", "layer", "params", "dimensions", "color",
-                  "timeless")
+                  "timeless", "history")
 
 
 @dataclass
@@ -356,6 +356,11 @@ def _node_payload(vault: Path, node: Node) -> dict:
         names = line_names(node.fm.get(key))
         if names:
             d[out_key] = names
+    # 折叠归属（历史视图用）：成员平时收进头节点，点开才展开。只是视图分组提示，不是知识关系边，
+    # 所以走 frontmatter 字段而非关系；`[[头]]` 剥成目标 id，头不存在则前端找不到、成员照常显示。
+    head = line_names(node.fm.get("fold_under"))
+    if head:
+        d["fold_under"] = head[0]
     srcs = sources_of(node.fm)
     if srcs:
         d["sources"] = srcs

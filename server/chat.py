@@ -922,7 +922,10 @@ FORMAT_DOC = {
   （不改类型就填一样的）；`year` 和 `note` **给了才动，没给就保持原样**。
 - `update_frontmatter`：`fields` 里逐个字段给新值。能改的只有 `name / field / layer / params /
   type / status / year / start_year / end_year / aliases / tags / desc / learned / sources / source /
-  color / timeless / 流派 / 领域线 / 专题`；
+  color / timeless / history / fold_under / 流派 / 领域线 / 专题`；
+  `history: false` 表示这个点是细节、不进历史视图（历史视图只画面上的大事）；
+  `fold_under` 写成链接 `"[[头节点]]"`：历史视图里平时收进那个头节点、点开才展开——只是视图提示，不是关系边。
+  这两个**别主动改**，由人在历史图上整理时决定；
   `sources` 是来源列表：库里的原文写完整路径的链接 `"[[articles/文章名]]"`，外部来源（论文、书、图）写纯文字；
   **给的是完整列表**，写了它旧的单值 `source` 会一并并掉，所以原来那几项要一起带上。`source` 是旧写法，别再用；
   `id` 和画布坐标（`x / y / w / h / group / collapsed / pinned`）永远改不了，提了整批退回。

@@ -451,7 +451,7 @@ export function activeAt(plan, upto, validity) {
  */
 export function buildTimeline(index, layout, opts = {}) {
   const { timelines = [], families = new Set(['演化']), compact = false, trunk = false,
-          schools = [], homes = {}, lineage = null } = opts
+          schools = [], homes = {}, lineage = null, expanded = new Set() } = opts
   // upto / validity **不参与布局**：它们只决定哪些点画成"已发生"（见 activeAt）。
   // 以前这两个值会把节点整个滤掉，于是 yearScale 只拿可见年份算，
   // 滑块一动整条 X 轴就重新拉伸、泳道行数也跟着变——回放时全图一直在滑在跳。
@@ -462,8 +462,26 @@ export function buildTimeline(index, layout, opts = {}) {
   // 只看某个点那条演化线时，可见集合先按血缘裁一刀，**再**算比例尺和泳道——
   // 顺序反了的话年宽还是按全图跨度算的，裁完的图仍然挤在一条线上。
   const lin = lineage ? lineageOf(index.edges, lineage) : null
+  // 折叠分组：`fold_under` 指向头节点。成员平时收进头里，头在 expanded 里才展开。
+  // 只是历史视图的显示分组（面 → 点开才见细节），不是知识关系。
+  const headMembers = new Map()        // headId → [memberId]
+  const headOf = new Map()             // memberId → headId
+  for (const n of index.nodes) {
+    if (!n.fold_under) continue
+    headOf.set(n.id, n.fold_under)
+    if (!headMembers.has(n.fold_under)) headMembers.set(n.fold_under, [])
+    headMembers.get(n.fold_under).push(n.id)
+  }
+  const markFold = (placed) => {
+    for (const [head, members] of headMembers) {
+      const b = placed.get(head)
+      if (b) b.fold = { count: members.length, open: expanded.has(head) }
+    }
+  }
   const withYear = index.nodes.filter(
     (n) => !n.virtual && !n.aggregate && typeof n.year === 'number'
+           && n.history !== false                                    // history:false 不进历史视图
+           && (!headOf.has(n.id) || expanded.has(headOf.get(n.id)))  // 折叠成员：头展开才出现
            && (!lin || lin.core.has(n.id) || lin.kin.has(n.id)))
   const laneNames = new Map()
   const kept = []
@@ -481,8 +499,11 @@ export function buildTimeline(index, layout, opts = {}) {
     const inGraph = new Set(kept.map((k) => k.node.id))
     const ev = index.edges.filter((e) => inGraph.has(e.source) && inGraph.has(e.target))
     const laid = trunkLayout(kept, scale, ev)
-    if (laid) return finish(laid.placed, laid.lanes, laid.height, scale, index, kept, withYear,
-                            families, { trunk: laid.chain, lineage: linInfo(lin, lineage) })
+    if (laid) {
+      markFold(laid.placed)
+      return finish(laid.placed, laid.lanes, laid.height, scale, index, kept, withYear,
+                    families, { trunk: laid.chain, lineage: linInfo(lin, lineage) })
+    }
   }
 
   // **流派只在「按流派」这一档里出现**，不在默认视图里摆一排带子。
@@ -557,6 +578,7 @@ export function buildTimeline(index, layout, opts = {}) {
     y += h + LANE_GAP
   }
 
+  markFold(placed)
   return finish(placed, lanes, y, scale, index, kept, withYear, families,
                 { peak, lineage: linInfo(lin, lineage) })
 }

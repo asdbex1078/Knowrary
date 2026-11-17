@@ -518,7 +518,7 @@ const {
   renderHistory, renderLineage, paintTime, markHistoryContainer, setUpto,
   togglePlay, setSpeed, stopPlay, evoGap, startTour, tourGo, paintTour, scheduleTour,
   toggleTourAuto, stopTour, toggleTimeline, toggleHistFamily, histActiveIds,
-  enterLineage, exitLineage,
+  enterLineage, exitLineage, toggleFold,
 } = useHistory({
   graph, indexDoc, layoutDoc, zoom, applyingViewport,
   setBanner: (...a) => setBanner(...a),
@@ -1550,6 +1550,8 @@ function bindEvents(g) {
 
   g.on('node:click', safe(({ node, e }) => {
     if (mode.value === 'topic' && draw.onNodeClick(node, e?.shiftKey)) return     // 连线模式 / 点了手画的图形（Shift = 加选，给组合用）
+    // 折叠头（历史图上带「＋N」的点）：单击展开 / 收起它那组细节，别再往下跑
+    if (node.shape === 'kg-dot' && node.getData()?.fold) { toggleFold(node.getData().realId || node.id); return }
     // 影子点（按流派分道时第二派起的那一份）：跳到真身，别停在合成 id 上
     if (node.shape === 'kg-dot' && node.getData()?.shadow) { gotoNode(node.getData().realId); return }
     if (node.shape === 'kg-cluster') enterGroup(node.id)

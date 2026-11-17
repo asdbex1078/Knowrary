@@ -25,7 +25,7 @@ from .topic import TOPIC_KEY
 # 允许通过 ChangeSet 修改的 frontmatter 字段；布局字段和 id 永远不许改
 EDITABLE_FIELDS = ("name", "field", "layer", "params", "type", "status", "year", "start_year", "end_year",
                    "aliases", "tags", "desc", "learned", "source", "sources", "color", "timeless",
-                   "流派", "领域线", TOPIC_KEY)
+                   "history", "fold_under", "流派", "领域线", TOPIC_KEY)
 CHANGE_TYPES = ("add_edge", "remove_edge", "update_edge", "update_frontmatter", "create_node",
                 "update_body", "append_body", "set_fact", "move_node")
 # 新建的知识点只允许落在这两棵树下（规范 2：nodes/ 是知识点，fields/ 是领域总览）
