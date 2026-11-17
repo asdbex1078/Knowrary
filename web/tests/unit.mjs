@@ -57,6 +57,12 @@ test('宫殿：拖分组进分组——孤岛进岛可以，带簇的岛进孤�
   assert.ok(canNest(palace, '岛', null), '拖出来当顶层岛总是可以')
   assert.ok(canNest(palace, '岛', '孤岛', null))
 })
+test('宫殿总图：不管缩放多少，只折顶层岛；进了岛就按聚焦规则走', () => {
+  const layout = { nodes: { a: { group: '簇' }, b: { group: '孤岛' } }, groups: palace.groups }
+  assert.deepEqual([...computeCollapsed(layout, 3, { overview: true })].sort(), ['孤岛', '岛'].sort(), '放大到 300% 也只剩岛卡片')
+  const inside = computeCollapsed(layout, 3, { overview: true, focus: '岛' })
+  assert.ok(!inside.has('岛') && inside.has('孤岛') && inside.has('簇'), '进了岛：岛展开、簇是卡片、别的岛还是卡片')
+})
 test('宫殿：簇的右键菜单里「新建子簇」是灰的并说明原因', () => {
   const item = (gid, cap) => groupMenu(gid, false, { layout: palace, depthCap: cap }).items.find((i) => i.id === 'new-subgroup')
   assert.ok(!item('岛', 2).disabled)

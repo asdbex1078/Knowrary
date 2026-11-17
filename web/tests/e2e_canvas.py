@@ -2835,6 +2835,55 @@ async def case_subgroup(page: Page, ck: Check) -> None:
     await page.ev("document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))")
 
 
+async def case_palace_overview(page: Page, ck: Check) -> None:
+    """宫殿总图（2026-11-17）：按钮一开，放多大都只剩岛卡片；点岛进去、面包屑「总图 › 岛」、点「总图」退回。"""
+    cells = """JSON.stringify({ cluster: [...document.querySelectorAll('[data-shape="kg-cluster"]')].map((e) => e.getAttribute('data-cell-id')),
+      group: document.querySelectorAll('[data-shape="kg-group"]').length })"""
+    tops = json.loads(await page.ev("JSON.stringify(Object.entries(__kg.layout.groups).filter(([, g]) => !g.parent).map(([id]) => id))"))
+    await page.ev("__kg.graph.zoomTo(2)")
+    await click_text(page, '[data-act="palace-overview"]', "总图")
+    got = json.loads(await poll(page, cells, lambda v: json.loads(v)["group"] == 0, timeout=6))
+    ck.add("宫殿总图：放大到 200% 也只剩岛卡片", sorted(got["cluster"]) == sorted(tops) and got["group"] == 0,
+           f"岛 {tops}，卡片 {got}")
+    # 开着总图缩放：onZoom 和 render 必须用同一套折叠参数，否则两边来回改、无限递归到栈溢出（第一版就栽在这）
+    await page.ev("__kg.graph.zoomTo(1.5)")
+    await asyncio.sleep(0.6)
+    await page.ev("__kg.graph.zoomTo(0.7)")
+    zoomed = json.loads(await poll(page, cells, lambda v: bool(json.loads(v)["cluster"]), timeout=6))
+    banner = await page.ev("document.querySelector('.toast .toast-text')?.textContent || ''")
+    ck.add("宫殿总图：开着总图缩放，还是只剩岛卡片、画布不出错",
+           zoomed["group"] == 0 and sorted(zoomed["cluster"]) == sorted(tops) and "画布出错" not in banner,
+           f"{zoomed}，提示「{banner}」")
+    island = tops[0]
+    clicked = await page.ev(f"""(() => {{
+      const el = document.querySelector('[data-cell-id="{island}"]');
+      if (!el) return 'missing';
+      const r = el.getBoundingClientRect();
+      const at = (x, y) => document.elementFromPoint(x, y) || document.body;
+      const fire = (t, x, y) => at(x, y).dispatchEvent(new MouseEvent(t, {{ bubbles: true, cancelable: true,
+        clientX: x, clientY: y, view: window, button: 0, buttons: t === 'mouseup' ? 0 : 1 }}));
+      const x = r.x + r.width / 2, y = r.y + r.height / 2;
+      fire('mousedown', x, y); fire('mouseup', x, y);
+      return 'clicked';
+    }})()""")
+    if clicked != "clicked":
+        diag = await page.ev(cells + ".concat(' ', document.querySelector('[data-act=palace-overview]')?.className || 'no-btn', ' mode=', __kg.mode || '')")
+        ck.add("宫殿总图：点岛进去", False, f"岛卡片不在 DOM 里：{diag}")
+        return
+    crumbs = await poll(page, "document.querySelector('[data-crumbs] .crumbs')?.textContent.replace(/\\s+/g, '') || ''",
+                        lambda v: v.startswith("总图"), timeout=6)
+    inside = json.loads(await page.ev(cells))
+    ck.add("宫殿总图：点岛进去，面包屑「总图 › 岛」、岛里的簇是卡片",
+           crumbs.startswith("总图") and inside["group"] >= 1 and island not in inside["cluster"],
+           f"面包屑「{crumbs}」，{inside}")
+    await click_text(page, "[data-crumbs] .link", "总图")
+    back = json.loads(await poll(page, cells, lambda v: json.loads(v)["group"] == 0, timeout=6))
+    ck.add("宫殿总图：点面包屑「总图」退回门口（还是只剩岛卡片）", back["group"] == 0 and sorted(back["cluster"]) == sorted(tops), json.dumps(back))
+    await click_text(page, '[data-act="palace-overview"]', "总图")      # 关掉，别影响后面的用例（localStorage 会跨刷新）
+    off = json.loads(await poll(page, cells, lambda v: json.loads(v)["group"] > 0, timeout=6))
+    ck.add("宫殿总图：再点一次关掉，回到按缩放自动折叠", off["group"] > 0, json.dumps(off))
+
+
 async def case_group_doc(page: Page, ck: Check, vault: Path) -> None:
     """域的总览文档：点域弹工具条 → 加总览 → 写正文，关系区块不能被碰掉。"""
     await page.ev("window.dispatchEvent(new KeyboardEvent('keydown', { key: 'f', bubbles: true }))")
@@ -2945,6 +2994,7 @@ async def scenarios(page: Page, api: str, results: list) -> None:
     await case_blank_menu(page, ck)
     await case_create_node(page, ck, VAULT_HOLDER[0])
     await case_subgroup(page, ck)
+    await case_palace_overview(page, ck)
     await case_group_doc(page, ck, VAULT_HOLDER[0])
     await case_edges_dodge(page, ck)
     await case_stale_index(page, ck, VAULT_HOLDER[0], api)

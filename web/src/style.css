@@ -528,6 +528,7 @@ select:disabled { cursor: not-allowed; opacity: .5; }
   border: none; background: transparent;
 }
 .zoom-val:hover { background: var(--surface-2); color: var(--text); }
+.zoom-val.active { background: var(--accent-soft); color: var(--accent-text); }
 
 /* 面包屑（聚焦某个域时） */
 .crumbs { display: flex; align-items: center; gap: 5px; font-size: 12.5px; padding: 0 4px 0 8px; }

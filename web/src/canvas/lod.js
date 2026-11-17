@@ -44,8 +44,13 @@ export function containerOf(layout, nodeId, collapsed) {
 }
 
 /** 算出当前缩放下应该折叠哪些分组（只返回最外层的折叠分组）。 */
-export function computeCollapsed(layout, zoom, { auto = true, focus = null } = {}) {
+export function computeCollapsed(layout, zoom, { auto = true, focus = null, overview = false } = {}) {
   const groups = layout.groups || {}
+  // 宫殿总图（2026-11-17）：不管缩放多少，每座岛（顶层框）都折成一张卡片，图上只剩岛和岛之间的粗线。
+  // 进了某座岛（focus）就走下面的聚焦规则——总图只是「站在门口」那一层。
+  if (overview && !(focus && groups[focus])) {
+    return new Set(Object.keys(groups).filter((gid) => !groups[gid].parent))
+  }
   // 聚焦模式：点开某个域时，只有它（及其祖先链）展开，其余一律保持簇卡片——
   // 否则放大会把所有域一起展开，等于没聚焦。
   if (focus && groups[focus]) {

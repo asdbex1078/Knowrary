@@ -14,11 +14,13 @@ import {
   LABEL_ZOOM, applyEdgeLabels, currentViewport,
 } from '../canvas/render.js'
 import { computeCollapsed } from '../canvas/lod.js'
+import { withoutZones } from '../canvas/zones.js'
 
 export function useCamera(deps) {
   const {
     graph, indexDoc, layoutDoc, patcher, mode, collapsedIds, autoLod, focusGroup,
     ready, applyingViewport, writable, render,
+    overviewOn = () => false,      // 宫殿总图开着没（只有全局图有）；没传就当没有
   } = deps
 
   const zoom = ref(1)                    // 给右下角缩放条读数用，随 scale 事件更新
@@ -87,8 +89,10 @@ export function useCamera(deps) {
     // 历史视图没有 LOD 折叠：缩放就只是看大看小，走结构视图那套会每滚一格就整图重建，
     // 还会把结构视图的折叠集合改掉（切回去时折叠状态就错了）
     if (mode.value === 'history') return
-    const next = computeCollapsed(layoutDoc.value, g.zoom(),
-      { auto: autoLod.value, focus: focusGroup.value })
+    // 必须和 render() 用同一套参数：少了 overview，这边算「该展开」、render 算「只剩岛」，
+    // 每次重绘的缩放事件又触发重绘——无限递归到栈溢出（2026-11-17 总图按钮白屏就是它）
+    const next = computeCollapsed(withoutZones(layoutDoc.value), g.zoom(),
+      { auto: autoLod.value, focus: focusGroup.value, overview: overviewOn() })
     const changed = next.size !== collapsedIds.value.size
       || [...next].some((id) => !collapsedIds.value.has(id))
     // 折叠集合变了要重画；有簇卡片时缩放跨档（卡片尺寸分档跟随缩放）也要重画

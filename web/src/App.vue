@@ -227,6 +227,7 @@ const borrowOn = ref(false)
 // 知识海迷雾：项目图上按掌握态给整个节点上色（点亮/心魔/待点亮/新边疆）。只是看图的滤镜，session 内有效。
 const fogOn = ref(false)
 const focusGroup = ref(null)             // 聚焦的域：点簇卡片进入，只展开它
+const overview = ref(localStorage.getItem('knowrary-overview') === '1')   // 宫殿总图：每座岛折成卡片，只看岛和桥
 const search = ref('')                   // 顶栏搜索词
 let panorama = null                      // 进入聚焦前的视口，退出时还原
 const collapsedIds = shallowRef(new Set())
@@ -499,6 +500,7 @@ const {
   ready, applyingViewport,
   writable: () => writable(),
   render: (...a) => render(...a),
+  overviewOn: () => overviewOn(),
 })
 
 // 路径搜索：两个知识点之间最短的那条解释链
@@ -795,6 +797,34 @@ function depthCap() {
   return layoutName() === null ? PALACE_DEPTH : null
 }
 
+/** 总图只属于全局图（结构模式）：项目 / 专题画布没有「岛」这个概念。 */
+function overviewOn() {
+  return overview.value && mode.value === 'structure' && layoutName() === null
+}
+
+/** 开 / 关宫殿总图。开的时候顺手退出聚焦、贴合窗口，一眼看全所有岛。 */
+function toggleOverview() {
+  overview.value = !overview.value
+  localStorage.setItem('knowrary-overview', overview.value ? '1' : '0')
+  if (focusGroup.value) { focusGroup.value = null; activeGroup.value = null; groupBarAt.value = null; panorama = null }
+  render()
+  if (overview.value) {
+    applyingViewport.value = true
+    graph.value.zoomToFit({ padding: 80, maxScale: 1 })
+    applyingViewport.value = false
+    zoom.value = graph.value.zoom()
+  }
+}
+
+/** 面包屑：总图 / 全景 › 岛 › 簇。点祖先回到那一层，点第一项退回门口。 */
+const focusChain = computed(() => {
+  if (!focusGroup.value || mode.value !== 'structure') return []
+  const groups = layoutDoc.value?.groups || {}
+  const chain = []
+  for (let cur = focusGroup.value; cur && groups[cur]; cur = groups[cur].parent) chain.unshift({ id: cur, name: groups[cur].name })
+  return chain
+})
+
 /** 拖分组进分组时 X6 问的那一句：套进去会不会超过上限。 */
 function canNestGroup(childId, parentId) {
   return canNest(layoutDoc.value, childId, parentId, depthCap())
@@ -1047,7 +1077,7 @@ function render({ view = 'keep' } = {}) {
   if (mode.value === 'lineage') return renderLineage({ view })
   const g = graph.value
   collapsedIds.value = computeCollapsed(withoutZones(layoutDoc.value), g.zoom(),
-    { auto: autoLod.value, focus: focusGroup.value })
+    { auto: autoLod.value, focus: focusGroup.value, overview: overviewOn() })
   // 借来的外部邻居只叠在**这一次渲染**用的 layout 上，layoutDoc 本身一个字都不改——
   // 它是要落盘的那份，混进不属于这个项目的点就再也分不干净了
   const borrowed = borrowedIds.value
@@ -4405,6 +4435,7 @@ function onKeydown(e) {
   else if (e.key === '4') enterHistory()
   else if (e.key.toLowerCase() === 'f') fit()
   else if (e.key.toLowerCase() === 'i' && mode.value === 'structure') openPanel('inbox')
+  else if (e.key.toLowerCase() === 'g' && mode.value === 'structure' && !layoutName()) toggleOverview()
   else if (e.key.toLowerCase() === 'd') openPanel('digest')
 }
 
@@ -4642,6 +4673,7 @@ onMounted(async () => {
     get index() { return indexDoc.value },
     // 排查"为什么没高亮 / 为什么画布是空的"这类问题时，没有这几个就只能靠猜
     get mode() { return mode.value },
+    get collapsed() { return [...collapsedIds.value] },   // 哪些分组此刻折成了簇卡片（总图 / LOD 排查用）
     get project() { return currentProject.value },
     get projectIds() { return [...projectIds.value] },
     get progress() { return plansProgress.value },
@@ -4906,7 +4938,8 @@ onBeforeUnmount(() => {
 
         <!-- 模型谱系盖着画布时它管不到那张图（泳道图自己滚轮缩放），不摆出来 -->
         <ZoomBar v-if="!(mode === 'lineage' && lineageKind === 'models')" :zoom="zoom" :map="showMap && mode !== 'history'" @zoom-in="stepZoom(1.25)"
-                 @zoom-out="stepZoom(0.8)" @reset="resetZoom" @fit="fit" @toggle-map="toggleMap" />
+                 @zoom-out="stepZoom(0.8)" @reset="resetZoom" @fit="fit" @toggle-map="toggleMap"
+                 :overview="mode === 'structure' && !layoutName() ? overview : null" @toggle-overview="toggleOverview" />
 
         <HistoryPlayer v-if="mode === 'history'" :playing="isPlaying" :upto="hist.upto" :range="yearRange"
                        :speed="speed" @speed="setSpeed"
@@ -4938,13 +4971,16 @@ onBeforeUnmount(() => {
             <Icon name="x" :size="15" />
           </button>
         </div>
-        <div v-else-if="focusName" class="float context">
+        <div v-else-if="focusName" class="float context" data-crumbs>
           <div class="crumbs">
-            <span class="link" @click="exitGroup">全景</span>
-            <Icon name="chevronRight" :size="12" class="sep-icon" />
-            <span class="cur">{{ focusName }}</span>
+            <span class="link" @click="exitGroup">{{ overviewOn() ? '总图' : '全景' }}</span>
+            <template v-for="(c, i) in focusChain" :key="c.id">
+              <Icon name="chevronRight" :size="12" class="sep-icon" />
+              <span v-if="i < focusChain.length - 1" class="link" @click="enterGroup(c.id)">{{ c.name }}</span>
+              <span v-else class="cur">{{ c.name }}</span>
+            </template>
           </div>
-          <button class="icon-btn" title="返回全景（Esc）" @click="exitGroup"><Icon name="x" :size="15" /></button>
+          <button class="icon-btn" :title="overviewOn() ? '回到总图（Esc）' : '返回全景（Esc）'" @click="exitGroup"><Icon name="x" :size="15" /></button>
         </div>
 
         <GroupBar v-if="groupBarAt && activeGroupBox && mode === 'structure'"
